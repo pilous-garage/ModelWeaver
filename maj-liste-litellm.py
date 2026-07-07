@@ -260,11 +260,12 @@ def merge_models(new_list: list, new_budgets: dict, old_list: list, old_budgets:
             # Modèle existant mais plus dans la source → marquer
             old_m.setdefault("model_info", {})["status"] = "possibly-dead"
             new_list.append(old_m)
-            mid = old_m["model_info"]["id"]
-            if mid in old_budgets:
+            mid = old_m["model_info"].get("id", "")
+            if mid and mid in old_budgets:
                 new_budgets[mid] = old_budgets.get(mid, 400_000)
             marked_dead += 1
-            print(f"   ⚰️  {old_m['model_info']['id']:40s} → possibly-dead")
+            label = mid or old_m["litellm_params"]["model"]
+            print(f"   ⚰️  {label:40s} → possibly-dead")
         else:
             preserved += 1
 
