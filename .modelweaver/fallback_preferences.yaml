@@ -9,9 +9,13 @@
 #
 # Cooldown : temps d'attente (en secondes) avant de réessayer un groupe
 # après un échec.
-
+#
 groups:
   - name: nvidia_direct
+    pattern: "^nvidia/"
+    cooldown: 60
+
+  - name: openrouter_nvidia
     pattern: "openrouter/nvidia"
     cooldown: 60
 

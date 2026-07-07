@@ -59,7 +59,7 @@ PROVIDER_PREFIX_MAP = {
 
 # Mots-clés pour filtrer les modèles non-chat
 NON_CHAT_KEYWORDS = [
-    "embedding", "embed", "tts", "speech", "whisper",
+    "embedding", "embed", "bge", "tts", "speech", "whisper",
     "imagen", "veo", "lyria", "sora",
     "robotics", "learnlm",
     "prompt-guard", "safeguard",
@@ -71,6 +71,30 @@ ZEN_MODELS = [
         "model": "deepseek-v4-flash-free",
         "litellm_model": "openai/deepseek-v4-flash-free",
         "id": "zen-deepseek-v4-flash-free",
+    },
+]
+
+# Modèles NVIDIA directs (API NVIDIA directe, base URL: integrate.api.nvidia.com)
+NVIDIA_MODELS = [
+    {
+        "model": "nemotron-3-ultra",
+        "litellm_model": "nvidia/nemotron-3-ultra",
+        "id": "nvidia-nemotron-3-ultra",
+    },
+    {
+        "model": "nemotron-3-ultra-550b",
+        "litellm_model": "nvidia/nemotron-3-ultra-550b",
+        "id": "nvidia-nemotron-3-ultra-550b",
+    },
+    {
+        "model": "nemotron-4-340b",
+        "litellm_model": "nvidia/nemotron-4-340b",
+        "id": "nvidia-nemotron-4-340b",
+    },
+    {
+        "model": "nemotron-3-8b",
+        "litellm_model": "nvidia/nemotron-3-8b",
+        "id": "nvidia-nemotron-3-8b",
     },
 ]
 
@@ -164,9 +188,29 @@ def build_model_list(api_data: dict, keys: dict) -> list[dict]:
         if not isinstance(models, dict):
             continue
 
+        # Extra: Fetch models directly from NVIDIA API to be complete
+        if api_provider == "nvidia":
+            try:
+                import urllib.request
+                print("   ↳ Fetching additional models from NVIDIA API...")
+                nvidia_resp = urllib.request.urlopen("https://integrate.api.nvidia.com/v1/models", timeout=10)
+                nvidia_api_data = json.loads(nvidia_resp.read())
+                for m in nvidia_api_data.get("data", []):
+                    m_id = m["id"]
+                    if m_id not in models and is_chat_model(m_id):
+                        models[m_id] = {"id": m_id}
+            except Exception as e:
+                print(f"   ⚠️  Could not fetch extra NVIDIA models: {e}")
+
         api_key = keys[litellm_provider]["api_key"]
-        api_base = keys[litellm_provider].get("api_base")  # None pour la plupart
+        api_base = keys[litellm_provider].get("api_base")  # None for most
+        
+        # For NVIDIA, always use the direct API base if not provided
+        if api_provider == "nvidia" and not api_base:
+            api_base = "https://integrate.api.nvidia.com/v1"
+
         budget = DEFAULT_BUDGETS.get(litellm_provider, 400_000)
+
 
         count = 0
         for model_id, model_info in models.items():
@@ -200,7 +244,7 @@ def build_model_list(api_data: dict, keys: dict) -> list[dict]:
     return model_list, model_budgets, stats
 
 
-# ─── Étape 4 : Modèles spéciaux (Zen, etc.) ─────────────────────────────────
+# ─── Étape 4 : Modèles spéciaux (Zen, NVIDIA, etc.) ─────────────────────────────────
 def add_special_models(model_list: list, model_budgets: dict, keys: dict):
     print("\n" + "━" * 50)
     print("🧩 4/5 — Ajout des modèles spéciaux")
@@ -225,6 +269,28 @@ def add_special_models(model_list: list, model_budgets: dict, keys: dict):
             print(f"   ✓ {zm['id']}")
     else:
         print("   ⚠️  Pas de clé Zen — modèles Zen ignorés")
+
+    # Modèles NVIDIA directs
+    nvidia_key = keys.get("nvidia")
+    if nvidia_key:
+        print("   📦 Ajout modèles NVIDIA directs...")
+        for nm in NVIDIA_MODELS:
+            entry = {
+                "model_name": "opencode-engine",
+                "litellm_params": {
+                    "model": nm["litellm_model"],
+                    "api_key": nvidia_key["api_key"],
+                    "api_base": "https://integrate.api.nvidia.com/v1",
+                },
+                "model_info": {
+                    "id": nm["id"],
+                },
+            }
+            model_list.append(entry)
+            model_budgets[nm["id"]] = 400_000
+            print(f"   ✓ {nm['id']}")
+    else:
+        print("   ⚠️  Pas de clé NVIDIA — modèles NVIDIA ignorés")
 
 
 # ─── Étape 5 : Merge avec config existante ──────────────────────────────────
