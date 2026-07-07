@@ -2020,9 +2020,9 @@ def parse_args() -> dict:
                         choices=["install", "check", "config", "status", "menu", "help"])
     parser.add_argument("--mode", choices=["YES", "NO", "ASK"], help="Forcer le mode d'installation")
     parser.add_argument("--only", help="Composant à installer uniquement (engine, bridge, agent, interface)")
-parser.add_argument("--skip-audit", action="store_true", help="Ignorer l'audit système")
-parser.add_argument("--skip-tinyllama", action="store_true", help="Ignorer tinyllama")
-parser.add_argument("--skip-webui", action="store_true", help="Ignorer Open WebUI")
+    parser.add_argument("--skip-audit", action="store_true", help="Ignorer l'audit système")
+    parser.add_argument("--skip-tinyllama", action="store_true", help="Ignorer tinyllama")
+    parser.add_argument("--skip-webui", action="store_true", help="Ignorer Open WebUI")
 
     parser.add_argument("--routing", choices=["test", "main"], default=None, help="Ordre de routage (test: groq→openrouter→ollama, main: opencode-zen→...)")
     parser.add_argument("--help", action="store_true", help="Afficher l'aide")
@@ -2036,9 +2036,9 @@ def main() -> None:
     cmd = args["command"]
     force_mode = args["mode"]
     only_comp = args["only"]
-        skip_audit = args["skip_audit"]
-        skip_tinyllama = args["skip_tinyllama"]
-        skip_webui = args["skip_webui"]
+    skip_audit = args["skip_audit"]
+    skip_tinyllama = args["skip_tinyllama"]
+    skip_webui = args["skip_webui"]
 
     routing_mode = args.get("routing", "")
     show_help = args["help"]
