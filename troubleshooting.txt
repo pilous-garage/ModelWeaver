@@ -1,0 +1,12 @@
+=== TROUBLESHOOTING — Historique ===
+
+✅ RÉSOLU : Problème Gemini 429 (2026-07-07)
+Description : Erreur 429 (quota exceeded) systématique sur les modèles Gemini directs.
+Solution : Implémentation d'un système de cooldown intelligent dans `litellm_router_proxy.py` via `fallback_preferences.yaml`. Le groupe "google_direct" est mis en pause 60s après une erreur de quota, évitant les délais de fallback répétitifs.
+
+---
+
+❌ EN COURS : Problème Tool Calling via Routeur (2026-07-07)
+Description : Lorsque la requête passe par le routeur ModelWeaver, l'agent semble perdre la capacité d'exécuter des actions (appels d'outils/Bash/Read etc.) et se limite à des réponses textuelles.
+Observation : Le comportement est normal en accès direct, mais dégradé via le proxy.
+Hypothèse : Le proxy `litellm_router_proxy.py` ou la configuration du modèle via LiteLLM ne transmet pas/ne supporte pas correctement le format des tool calls (function calling) vers le modèle final ou ne les retourne pas correctement à OpenCode.

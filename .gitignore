@@ -1,5 +1,5 @@
 # Backups Docker (trop lourds pour git)
-docker-backup/*.tar
+docker-backup/
 
 # Cache et config générés à l'exécution
 .modelweaver/*

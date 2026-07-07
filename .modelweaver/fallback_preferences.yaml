@@ -11,6 +11,14 @@
 # après un échec.
 
 groups:
+  - name: gemma_direct
+    pattern: "^gemini/gemma"
+    cooldown: 60
+
+  - name: google_direct
+    pattern: "^gemini/"
+    cooldown: 60
+
   - name: google_direct
     pattern: "^gemini/"
     cooldown: 60

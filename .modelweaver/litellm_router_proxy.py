@@ -37,6 +37,40 @@ for m in model_list:
 # Budgets par modèle (chars max de contexte)
 model_budgets = config.get("model_budgets", {})
 
+# === CHARGEMENT PRÉFÉRENCES FALLBACK (patterns + cooldowns) ===
+pref_path = os.path.join(os.path.dirname(__file__), "fallback_preferences.yaml")
+groups_list = []
+patterns_dict = {}
+if os.path.exists(pref_path):
+    try:
+        with open(pref_path) as f:
+            prefs = yaml.safe_load(f)
+        for g in prefs.get("groups", []):
+            name = g.get("name", "?")
+            pattern_str = g.get("pattern", "$^")
+            try:
+                compiled = re.compile(pattern_str, re.IGNORECASE)
+                cd = g.get("cooldown", 300)
+                groups_list.append(name)
+                patterns_dict[name] = (compiled, cd)
+            except re.error:
+                logger.warning(f"⚠️  Regex invalide pour {name}: {pattern_str}")
+    except Exception as e:
+        logger.warning(f"⚠️  Impossible de charger fallback_preferences.yaml: {e}")
+
+def classify_model(model_key: str) -> str:
+    """Trouve le groupe fallback d'un modèle."""
+    key_lower = model_key.lower()
+    for name in groups_list:
+        compiled, _ = patterns_dict[name]
+        if compiled.search(key_lower):
+            return name
+    return groups_list[-1] if groups_list else "other"
+
+# Cooldowns en mémoire : model_cooldowns[model_id] = timestamp, group_cooldowns[group_name] = timestamp
+model_cooldowns = {}
+group_cooldowns = {}
+
 # === GESTIONNAIRE DE CONTEXTE (gitingest) ===
 ctx_settings = config.get("context_settings", {})
 CTX_ENABLED = ctx_settings.get("enabled", False)
@@ -161,6 +195,20 @@ async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
         actual_model = dep["litellm_params"]["model"]
         api_key = dep["litellm_params"]["api_key"]
         budget = model_budgets.get(model_id, 200000)
+        model_group = classify_model(actual_model)
+
+        # Vérifier cooldowns
+        now = time.time()
+        if model_id in model_cooldowns and now < model_cooldowns[model_id]:
+            remaining = int(model_cooldowns[model_id] - now)
+            logger.info(f"⏭️  {model_id} ignoré (cooldown modèle {remaining}s)")
+            errors.append({"id": model_id, "error": f"cooldown modèle ({remaining}s)"})
+            continue
+        if model_group in group_cooldowns and now < group_cooldowns[model_group]:
+            remaining = int(group_cooldowns[model_group] - now)
+            logger.info(f"⏭️  {model_id} ignoré (cooldown groupe '{model_group}' {remaining}s)")
+            errors.append({"id": model_id, "error": f"cooldown groupe '{model_group}' ({remaining}s)"})
+            continue
 
         # Tronquer le contexte pour ce modèle
         ctx_for_model = ctx_text
@@ -188,21 +236,36 @@ async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
                 timeout=30,
             )
             resp = response.model_dump() if hasattr(response, "model_dump") else response
-            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            msg = resp.get("choices", [{}])[0].get("message", {})
+            content = msg.get("content") or msg.get("reasoning_content") or ""
             if not content or not content.strip():
                 logger.warning(f"⚠️  {model_id}: réponse vide, essai suivant")
                 errors.append({"id": model_id, "error": "réponse vide"})
                 continue
+            # Fix content into the response so signature works
+            if not msg.get("content"):
+                msg["content"] = content
             logger.info(f"✅ {model_id} a répondu ({len(content)} chars)")
             return resp, model_id, errors, total
 
         except asyncio.TimeoutError:
             logger.warning(f"⏱️  {model_id}: timeout")
             errors.append({"id": model_id, "error": "timeout (30s)"})
+            model_cooldowns[model_id] = time.time() + 120
         except Exception as e:
             msg = str(e)[:200]
             logger.warning(f"❌ {model_id}: {msg}")
             errors.append({"id": model_id, "error": msg})
+            msg_lower = msg.lower()
+            is_group_block = any(kw in msg_lower for kw in ["rate limit", "quota", "429", "authentication", "unauthorized", "401", "403", "api key"])
+            _, group_cd = patterns_dict.get(model_group, (None, 300))
+            cd_duration = group_cd
+            if is_group_block:
+                group_cooldowns[model_group] = time.time() + cd_duration
+                logger.warning(f"🧊 Groupe '{model_group}' mis en cooldown {cd_duration}s (tous les modèles sautés)")
+            else:
+                model_cooldowns[model_id] = time.time() + cd_duration
+                logger.warning(f"🧊 Modèle {model_id} mis en cooldown {cd_duration}s")
 
     raise HTTPException(502, {
         "error": "Tous les modèles ont échoué",
