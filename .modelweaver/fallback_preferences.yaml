@@ -1,0 +1,41 @@
+# =============================================================================
+# Préférences de fallback pour ordonner-fallback.py
+# =============================================================================
+# Les groupes sont testés dans l'ordre. Le premier pattern qui match classe
+# le modèle dans ce groupe.
+#
+# Syntaxe des patterns : expression régulière Python (re.search).
+# Le test s'effectue sur le champ "model" (ex: "gemini/gemini-3.5-flash").
+#
+# Cooldown : temps d'attente (en secondes) avant de réessayer un groupe
+# après un échec.
+
+groups:
+  - name: google_direct
+    pattern: "^gemini/"
+    cooldown: 60
+
+  - name: mistral_direct
+    pattern: "^mistral/"
+    cooldown: 300
+
+  - name: zen_deepseek_free
+    pattern: "deepseek-v4-flash-free"
+    cooldown: 60
+
+  - name: openrouter_nemotron_free
+    pattern: "^openrouter/nvidia/nemotron.*:free$"
+    cooldown: 60
+
+  - name: free
+    pattern: ":free"
+    cooldown: 300
+
+  - name: ollama
+    pattern: "^ollama/"
+    cooldown: 600
+
+  # Tout ce qui n'a matché aucun groupe ci-dessus → other
+  - name: other
+    pattern: "(?!)"    # never matches
+    cooldown: 300

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "{APP_DIR}/docker-backup",
+      "reason": "Snapshots Docker copiés par docker cp (volumineux, inutiles dans le container)"
+    },
+    {
+      "path": "{APP_DIR}/.modelweaver/apt-lists",
+      "reason": "Copie des listes apt depuis l'hôte (docker cp)"
+    },
+    {
+      "path": "{APP_DIR}/.modelweaver/apt-cache",
+      "reason": "Copie du cache apt depuis l'hôte (docker cp)"
+    },
+    {
+      "path": "/root/.cache/uv",
+      "reason": "Cache uv (redirigé vers le volume monté dans les nouveaux builds)"
+    },
+    {
+      "path": "/var/lib/apt/lists",
+      "reason": "Listes de paquets apt (plus nécessaires après installation des dépendances)"
+    }
+  ]
+}

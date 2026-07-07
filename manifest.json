@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "project": "ModelWeaver",
+  "components": {
+    "engine": {
+      "name": "ollama",
+      "type": "binary",
+      "package": null
+    },
+    "bridge": {
+      "name": "litellm",
+      "type": "python-module",
+      "package": "litellm[proxy]"
+    },
+    "agent": {
+      "name": "opencode",
+      "type": "binary",
+      "package": null
+    },
+    "interface": {
+      "name": "open-webui",
+      "type": "python-module",
+      "package": "open-webui"
+    },
+    "context": {
+      "name": "gitingest",
+      "type": "python-module",
+      "package": "gitingest"
+    }
+  }
+}

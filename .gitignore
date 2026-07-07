@@ -1,0 +1,29 @@
+# Backups Docker (trop lourds pour git)
+docker-backup/*.tar
+
+# Cache et config générés à l'exécution
+.modelweaver/*
+!.modelweaver/fallback_preferences.yaml
+.modelweaver_config
+
+# Fichiers versionnés dans .modelweaver/ (exceptions)
+!.modelweaver/litellm_router_proxy.py
+!.modelweaver/opencode-wrapper.sh
+
+# Fichiers temporaires
+/tmp/
+*.tmp
+__pycache__/
+
+# Config personnelle OpenCode (pas versionnée)
+.opencode/
+opencode.json
+tui.json
+
+# Clés API (fichier utilisateur)
+.env
+
+# Liste des providers dont les clés sont commitées (à révoquer en V2)
+# Seulement ajouter, jamais supprimer
+.env.committed
+.modelweaver/routing_mode
