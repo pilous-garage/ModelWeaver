@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tool",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the tool"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name of the tool"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of what the tool does"
+    },
+    "parameters": {
+      "type": "object",
+      "description": "JSON Schema for the tool's input parameters"
+    }
+  },
+  "required": ["id", "name", "description"]
+}

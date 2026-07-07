@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Model",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the model (e.g., 'llama3-70b-8192')"
+    },
+    "provider_id": {
+      "type": "string",
+      "description": "ID of the provider this model belongs to"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name of the model"
+    },
+    "context_window": {
+      "type": "integer",
+      "description": "Maximum context window in tokens"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of model capabilities (e.g., ['chat', 'vision'])"
+    },
+    "is_chat_model": {
+      "type": "boolean",
+      "description": "Whether the model is a chat model"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional model-specific metadata"
+    }
+  },
+  "required": ["id", "provider_id", "name", "is_chat_model"]
+}

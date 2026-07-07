@@ -1,0 +1,762 @@
+[
+  {
+    "id": "test_prov",
+    "name": "Test Provider",
+    "type": "local"
+  },
+  {
+    "id": "requesty",
+    "name": "Requesty",
+    "type": "cloud"
+  },
+  {
+    "id": "qiniu-ai",
+    "name": "Qiniu-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba-cn",
+    "name": "Alibaba-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "regolo-ai",
+    "name": "Regolo-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "stackit",
+    "name": "Stackit",
+    "type": "cloud"
+  },
+  {
+    "id": "vercel",
+    "name": "Vercel",
+    "type": "cloud"
+  },
+  {
+    "id": "submodel",
+    "name": "Submodel",
+    "type": "cloud"
+  },
+  {
+    "id": "huggingface",
+    "name": "Huggingface",
+    "type": "cloud"
+  },
+  {
+    "id": "minimax-coding-plan",
+    "name": "Minimax-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "novita-ai",
+    "name": "Novita-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "xai",
+    "name": "Xai",
+    "type": "cloud"
+  },
+  {
+    "id": "privatemode-ai",
+    "name": "Privatemode-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "drun",
+    "name": "Drun",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba-token-plan-cn",
+    "name": "Alibaba-token-plan-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "moonshotai",
+    "name": "Moonshotai",
+    "type": "cloud"
+  },
+  {
+    "id": "fireworks-ai",
+    "name": "Fireworks-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "vultr",
+    "name": "Vultr",
+    "type": "cloud"
+  },
+  {
+    "id": "302ai",
+    "name": "302ai",
+    "type": "cloud"
+  },
+  {
+    "id": "trustedrouter",
+    "name": "Trustedrouter",
+    "type": "cloud"
+  },
+  {
+    "id": "zhipuai",
+    "name": "Zhipuai",
+    "type": "cloud"
+  },
+  {
+    "id": "cortecs",
+    "name": "Cortecs",
+    "type": "cloud"
+  },
+  {
+    "id": "nebius",
+    "name": "Nebius",
+    "type": "cloud"
+  },
+  {
+    "id": "auriko",
+    "name": "Auriko",
+    "type": "cloud"
+  },
+  {
+    "id": "stepfun-ai",
+    "name": "Stepfun-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "vivgrid",
+    "name": "Vivgrid",
+    "type": "cloud"
+  },
+  {
+    "id": "tinfoil",
+    "name": "Tinfoil",
+    "type": "cloud"
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral",
+    "type": "cloud"
+  },
+  {
+    "id": "cloudflare-workers-ai",
+    "name": "Cloudflare-workers-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "bailing",
+    "name": "Bailing",
+    "type": "cloud"
+  },
+  {
+    "id": "anyapi",
+    "name": "Anyapi",
+    "type": "cloud"
+  },
+  {
+    "id": "google",
+    "name": "Google",
+    "type": "cloud"
+  },
+  {
+    "id": "opencode-go",
+    "name": "Opencode-go",
+    "type": "cloud"
+  },
+  {
+    "id": "digitalocean",
+    "name": "Digitalocean",
+    "type": "cloud"
+  },
+  {
+    "id": "subconscious",
+    "name": "Subconscious",
+    "type": "cloud"
+  },
+  {
+    "id": "venice",
+    "name": "Venice",
+    "type": "cloud"
+  },
+  {
+    "id": "lmstudio",
+    "name": "Lmstudio",
+    "type": "cloud"
+  },
+  {
+    "id": "poolside",
+    "name": "Poolside",
+    "type": "cloud"
+  },
+  {
+    "id": "zenmux",
+    "name": "Zenmux",
+    "type": "cloud"
+  },
+  {
+    "id": "kenari",
+    "name": "Kenari",
+    "type": "cloud"
+  },
+  {
+    "id": "openai",
+    "name": "Openai",
+    "type": "cloud"
+  },
+  {
+    "id": "berget",
+    "name": "Berget",
+    "type": "cloud"
+  },
+  {
+    "id": "snowflake-cortex",
+    "name": "Snowflake-cortex",
+    "type": "cloud"
+  },
+  {
+    "id": "tencent-token-plan",
+    "name": "Tencent-token-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "github-models",
+    "name": "Github-models",
+    "type": "cloud"
+  },
+  {
+    "id": "neuralwatt",
+    "name": "Neuralwatt",
+    "type": "cloud"
+  },
+  {
+    "id": "siliconflow-cn",
+    "name": "Siliconflow-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "merge-gateway",
+    "name": "Merge-gateway",
+    "type": "cloud"
+  },
+  {
+    "id": "qihang-ai",
+    "name": "Qihang-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "xiaomi-token-plan-ams",
+    "name": "Xiaomi-token-plan-ams",
+    "type": "cloud"
+  },
+  {
+    "id": "modelscope",
+    "name": "Modelscope",
+    "type": "cloud"
+  },
+  {
+    "id": "groq",
+    "name": "Groq",
+    "type": "cloud"
+  },
+  {
+    "id": "mixlayer",
+    "name": "Mixlayer",
+    "type": "cloud"
+  },
+  {
+    "id": "orcarouter",
+    "name": "Orcarouter",
+    "type": "cloud"
+  },
+  {
+    "id": "helicone",
+    "name": "Helicone",
+    "type": "cloud"
+  },
+  {
+    "id": "zai",
+    "name": "Zai",
+    "type": "cloud"
+  },
+  {
+    "id": "nearai",
+    "name": "Nearai",
+    "type": "cloud"
+  },
+  {
+    "id": "llmgateway",
+    "name": "Llmgateway",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba-coding-plan-cn",
+    "name": "Alibaba-coding-plan-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "abacus",
+    "name": "Abacus",
+    "type": "cloud"
+  },
+  {
+    "id": "cloudferro-sherlock",
+    "name": "Cloudferro-sherlock",
+    "type": "cloud"
+  },
+  {
+    "id": "ollama-cloud",
+    "name": "Ollama-cloud",
+    "type": "cloud"
+  },
+  {
+    "id": "cloudflare-ai-gateway",
+    "name": "Cloudflare-ai-gateway",
+    "type": "cloud"
+  },
+  {
+    "id": "moonshotai-cn",
+    "name": "Moonshotai-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "morph",
+    "name": "Morph",
+    "type": "cloud"
+  },
+  {
+    "id": "sakana",
+    "name": "Sakana",
+    "type": "cloud"
+  },
+  {
+    "id": "deepinfra",
+    "name": "Deepinfra",
+    "type": "cloud"
+  },
+  {
+    "id": "google-vertex-anthropic",
+    "name": "Google-vertex-anthropic",
+    "type": "cloud"
+  },
+  {
+    "id": "v0",
+    "name": "V0",
+    "type": "cloud"
+  },
+  {
+    "id": "azure",
+    "name": "Azure",
+    "type": "cloud"
+  },
+  {
+    "id": "cerebras",
+    "name": "Cerebras",
+    "type": "cloud"
+  },
+  {
+    "id": "zai-coding-plan",
+    "name": "Zai-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "nvidia",
+    "name": "Nvidia",
+    "type": "cloud"
+  },
+  {
+    "id": "evroc",
+    "name": "Evroc",
+    "type": "cloud"
+  },
+  {
+    "id": "xiaomi",
+    "name": "Xiaomi",
+    "type": "cloud"
+  },
+  {
+    "id": "inception",
+    "name": "Inception",
+    "type": "cloud"
+  },
+  {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "type": "cloud"
+  },
+  {
+    "id": "tencent-coding-plan",
+    "name": "Tencent-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "freemodel",
+    "name": "Freemodel",
+    "type": "cloud"
+  },
+  {
+    "id": "sap-ai-core",
+    "name": "Sap-ai-core",
+    "type": "cloud"
+  },
+  {
+    "id": "opencode",
+    "name": "Opencode",
+    "type": "cloud"
+  },
+  {
+    "id": "inference",
+    "name": "Inference",
+    "type": "cloud"
+  },
+  {
+    "id": "inceptron",
+    "name": "Inceptron",
+    "type": "cloud"
+  },
+  {
+    "id": "llama",
+    "name": "Llama",
+    "type": "cloud"
+  },
+  {
+    "id": "llmtr",
+    "name": "Llmtr",
+    "type": "cloud"
+  },
+  {
+    "id": "cohere",
+    "name": "Cohere",
+    "type": "cloud"
+  },
+  {
+    "id": "sarvam",
+    "name": "Sarvam",
+    "type": "cloud"
+  },
+  {
+    "id": "stepfun",
+    "name": "Stepfun",
+    "type": "cloud"
+  },
+  {
+    "id": "hpc-ai",
+    "name": "Hpc-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "minimax-cn",
+    "name": "Minimax-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba-coding-plan",
+    "name": "Alibaba-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "longcat",
+    "name": "Longcat",
+    "type": "cloud"
+  },
+  {
+    "id": "poe",
+    "name": "Poe",
+    "type": "cloud"
+  },
+  {
+    "id": "kimi-for-coding",
+    "name": "Kimi-for-coding",
+    "type": "cloud"
+  },
+  {
+    "id": "dinference",
+    "name": "Dinference",
+    "type": "cloud"
+  },
+  {
+    "id": "perplexity-agent",
+    "name": "Perplexity-agent",
+    "type": "cloud"
+  },
+  {
+    "id": "siliconflow",
+    "name": "Siliconflow",
+    "type": "cloud"
+  },
+  {
+    "id": "umans-ai-coding-plan",
+    "name": "Umans-ai-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "io-net",
+    "name": "Io-net",
+    "type": "cloud"
+  },
+  {
+    "id": "gmicloud",
+    "name": "Gmicloud",
+    "type": "cloud"
+  },
+  {
+    "id": "xiaomi-token-plan-cn",
+    "name": "Xiaomi-token-plan-cn",
+    "type": "cloud"
+  },
+  {
+    "id": "zeldoc",
+    "name": "Zeldoc",
+    "type": "cloud"
+  },
+  {
+    "id": "scaleway",
+    "name": "Scaleway",
+    "type": "cloud"
+  },
+  {
+    "id": "ovhcloud",
+    "name": "Ovhcloud",
+    "type": "cloud"
+  },
+  {
+    "id": "friendli",
+    "name": "Friendli",
+    "type": "cloud"
+  },
+  {
+    "id": "tencent-tokenhub",
+    "name": "Tencent-tokenhub",
+    "type": "cloud"
+  },
+  {
+    "id": "wandb",
+    "name": "Wandb",
+    "type": "cloud"
+  },
+  {
+    "id": "kuae-cloud-coding-plan",
+    "name": "Kuae-cloud-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "gitlab",
+    "name": "Gitlab",
+    "type": "cloud"
+  },
+  {
+    "id": "kilo",
+    "name": "Kilo",
+    "type": "cloud"
+  },
+  {
+    "id": "lucidquery",
+    "name": "Lucidquery",
+    "type": "cloud"
+  },
+  {
+    "id": "meganova",
+    "name": "Meganova",
+    "type": "cloud"
+  },
+  {
+    "id": "perplexity",
+    "name": "Perplexity",
+    "type": "cloud"
+  },
+  {
+    "id": "amazon-bedrock",
+    "name": "Amazon-bedrock",
+    "type": "cloud"
+  },
+  {
+    "id": "umans-ai",
+    "name": "Umans-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "togetherai",
+    "name": "Togetherai",
+    "type": "cloud"
+  },
+  {
+    "id": "frogbot",
+    "name": "Frogbot",
+    "type": "cloud"
+  },
+  {
+    "id": "openrouter",
+    "name": "Openrouter",
+    "type": "cloud"
+  },
+  {
+    "id": "jiekou",
+    "name": "Jiekou",
+    "type": "cloud"
+  },
+  {
+    "id": "nova",
+    "name": "Nova",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba-token-plan",
+    "name": "Alibaba-token-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "alibaba",
+    "name": "Alibaba",
+    "type": "cloud"
+  },
+  {
+    "id": "databricks",
+    "name": "Databricks",
+    "type": "cloud"
+  },
+  {
+    "id": "crof",
+    "name": "Crof",
+    "type": "cloud"
+  },
+  {
+    "id": "fastrouter",
+    "name": "Fastrouter",
+    "type": "cloud"
+  },
+  {
+    "id": "abliteration-ai",
+    "name": "Abliteration-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "xpersona",
+    "name": "Xpersona",
+    "type": "cloud"
+  },
+  {
+    "id": "azure-cognitive-services",
+    "name": "Azure-cognitive-services",
+    "type": "cloud"
+  },
+  {
+    "id": "baseten",
+    "name": "Baseten",
+    "type": "cloud"
+  },
+  {
+    "id": "atomic-chat",
+    "name": "Atomic-chat",
+    "type": "cloud"
+  },
+  {
+    "id": "routing-run",
+    "name": "Routing-run",
+    "type": "cloud"
+  },
+  {
+    "id": "aihubmix",
+    "name": "Aihubmix",
+    "type": "cloud"
+  },
+  {
+    "id": "google-vertex",
+    "name": "Google-vertex",
+    "type": "cloud"
+  },
+  {
+    "id": "nano-gpt",
+    "name": "Nano-gpt",
+    "type": "cloud"
+  },
+  {
+    "id": "moark",
+    "name": "Moark",
+    "type": "cloud"
+  },
+  {
+    "id": "lilac",
+    "name": "Lilac",
+    "type": "cloud"
+  },
+  {
+    "id": "ambient",
+    "name": "Ambient",
+    "type": "cloud"
+  },
+  {
+    "id": "neon",
+    "name": "Neon",
+    "type": "cloud"
+  },
+  {
+    "id": "upstage",
+    "name": "Upstage",
+    "type": "cloud"
+  },
+  {
+    "id": "zhipuai-coding-plan",
+    "name": "Zhipuai-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "chutes",
+    "name": "Chutes",
+    "type": "cloud"
+  },
+  {
+    "id": "minimax-cn-coding-plan",
+    "name": "Minimax-cn-coding-plan",
+    "type": "cloud"
+  },
+  {
+    "id": "deepseek",
+    "name": "Deepseek",
+    "type": "cloud"
+  },
+  {
+    "id": "wafer.ai",
+    "name": "Wafer.ai",
+    "type": "cloud"
+  },
+  {
+    "id": "minimax",
+    "name": "Minimax",
+    "type": "cloud"
+  },
+  {
+    "id": "github-copilot",
+    "name": "Github-copilot",
+    "type": "cloud"
+  },
+  {
+    "id": "clarifai",
+    "name": "Clarifai",
+    "type": "cloud"
+  },
+  {
+    "id": "the-grid-ai",
+    "name": "The-grid-ai",
+    "type": "cloud"
+  },
+  {
+    "id": "synthetic",
+    "name": "Synthetic",
+    "type": "cloud"
+  },
+  {
+    "id": "iflowcn",
+    "name": "Iflowcn",
+    "type": "cloud"
+  },
+  {
+    "id": "xiaomi-token-plan-sgp",
+    "name": "Xiaomi-token-plan-sgp",
+    "type": "cloud"
+  },
+  {
+    "id": "claudinio",
+    "name": "Claudinio",
+    "type": "cloud"
+  }
+]

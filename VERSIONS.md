@@ -123,7 +123,7 @@ Tout le socle : script d'installation complet, vérification de toutes les dépe
 
 ---
 
-## V0.2 (En cours 🏗️) — Le Grand Split en Modules
+## V0.2 (Terminée ✅) — Le Grand Split en Modules
 
 **Objectif** : Refonte architecturale complète pour passer d'un script monolithique à un système modulaire de 9 composants interconnectés.
 
@@ -148,15 +148,29 @@ Tout le socle : script d'installation complet, vérification de toutes les dépe
 
 Chaque étape consiste à développer un module et à le valider par des tests.
 
-1.  [ ] **Étape 1** : Module `/catalogue`
-2.  [ ] **Étape 2** : Module `/key_manager`
-3.  [ ] **Étape 3** : Module `/checker`
-4.  [ ] **Étape 4** : Module `/installer`
-5.  [ ] **Étape 5** : Module `/container_manager`
-6.  [ ] **Étape 6** : Module `/test_runner`
-7.  [ ] **Étape 7** : Module `/plumber`
-8.  [ ] **Étape 8** : Module `/organiser`
-9.  [ ] **Étape 9** : Module `/dashboard`
+1.  [x] **Étape 1** : Module `/catalogue`
+    * [x] 1.1. Définition des schémas JSON (Fournisseurs, Modèles, Outils).
+    * [x] 1.2. Implémentation de la lecture/écriture du Catalogue.
+    * [x] 1.3. Intégration de la récupération automatique via `models.dev` et l'API NVIDIA.
+    * [x] 1.4. Test unitaire du module Catalogue.
+2.  [x] **Étape 2** : Module `/key_manager`
+    * [x] 2.1. Implement the vault (storage of keys).
+    * [x] 2.2. Implement automatic onboarding.
+3.  [x] **Étape 3** : Module `/checker`
+    * [x] 3.1. Inspection du système (PATH, Ollama, etc.) $\to$ `system_state.json`.
+4.  [x] **Étape 4** : Module `/installer`
+    * [x] 4.1. Préparation d'environnement (apt, winget, brew, sandbox locale).
+5.  [x] **Étape 5** : Module `/container_manager`
+    * [x] 5.1. Orchestration Docker pour exécution isolée (sandbox).
+6.  [x] **Étape 6** : Module `/test_runner`
+    * [x] 6.1. Validation des scripts agents dans le conteneur Docker.
+7.  [x] **Étape 7** : Module `/plumber`
+    * [x] 7.1. Routeur d'API intelligent (fallback transparent, gestion des quotas, adaptateurs OpenAI/Gemini).
+8.  [x] **Étape 8** : Module `/organiser`
+    * [x] 8.1. Studio de création visuel (Low-Code, drag-and-drop) basé sur `system_state.json`.
+9.  [x] **Étape 9** : Module `/dashboard`
+    * [x] 9.1. Tour de contrôle (Play/Stop, logs temps réel, monitoring ressources).
+
 
 ### Limites & Focus
 - **Focus initial** : Développement exclusif sur Ubuntu/Linux.

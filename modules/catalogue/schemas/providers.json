@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Provider",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the provider (e.g., 'groq', 'openai', 'ollama')"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name of the provider"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["cloud", "local", "hybrid"],
+      "description": "Type of the provider"
+    },
+    "api_base_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Base URL for the provider's API"
+    },
+    "is_free": {
+      "type": "boolean",
+      "description": "Whether the provider offers free tier/models"
+    }
+  },
+  "required": ["id", "name", "type"]
+}

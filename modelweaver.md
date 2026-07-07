@@ -10,7 +10,7 @@ Deux phases :
 - `modelweaver.sh` — bootstrap minimal en sh portable
 - `modelweaver.py` — cœur Python (audit, cache, installation)
 
-### V0.2 (En cours 🏗️) — Le Grand Split en Modules
+### V0.2 (Terminée ✅) — Le Grand Split en Modules
 Architecture divisée en 3 couches et 9 modules interconnectés :
 
 **Couche 1 : Données, Sécurité & Découverte Automatique**

@@ -24,15 +24,9 @@ pour un dérivé proche. Ce univers est distinct du noyau technique ModelWeaver
 Séparation stricte entre le noyau technique (ModelWeaver, Open Source) et les
 projets créatifs personnels (l'Univers).
 
-### 1.4 Split technique — V0.2 (prioritaire)
+### 1.4 Split technique — V0.2 (Terminée ✅)
 
-Refactor de `modelweaver.py` en trois modules :
-
-| Module | Rôle | Obligatoire |
-|--------|------|-------------|
-| **common** | Bibliothèque de base, audit machine, types partagés, interfaces | ✅ Oui |
-| **install** | Logique d'installation sécurisée et isolée (sandbox) | ❌ Remplaçable |
-| **orchestrator** | "Tissage" : analyse les requêtes, interroge common, orchestre via install | ❌ Remplaçable |
+Refactor de `modelweaver.py` en 9 modules interconnectés (3 couches).
 
 Chaque module a un **nom mythologique** interne (identité de marque), mais son
 interface technique reste référencée par son rôle (orchestrator, install, common)
@@ -190,8 +184,7 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 | Version | Périmètre | Statut |
 |---------|-----------|--------|
 | V0.1 | Socle : install, audit, composants, fallback, CLI, GUI | ✅ Terminée |
-| V0.10 | Automatisation proxy context-aware, gitingest, budgets | 🔜 Prochaine |
-| V0.2 | Split common/install/orchestrator **obligatoire** | 🔜 Après V0.10 |
+| V0.2 | Split en 9 modules (3 couches) | ✅ Terminée |
 | V1.0 | Version publique distribuable (cible de stabilité) | 🎯 Objectif |
 | Vn+ | Univers, jeux, mascotte, monétisation | 📝 Idées |
 
