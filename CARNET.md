@@ -195,4 +195,7 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 | V1.0 | Version publique distribuable (cible de stabilité) | 🎯 Objectif |
 | Vn+ | Univers, jeux, mascotte, monétisation | 📝 Idées |
 
+### Idées V0.2+
+- **gitingest intelligent** : adapter la taille du contexte injecté par modèle (Gemini peut recevoir ~2M chars, Mistral/OpenAI ~400K). Implémenté dans `litellm_router_proxy.py` via `try_deployments` avec troncature par budget. À améliorer : fenêtres préférées configurables par modèle/groupe, priorisation des fichiers les plus pertinents plutôt que simple troncature FIFO.
+
 Détail des versions dans `VERSIONS.md`.

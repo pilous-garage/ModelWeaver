@@ -94,8 +94,8 @@ class ProjectContext:
             combined = "\n\n".join(parts)
 
         # Forcer la limite absolue
-        if len(combined) > CTX_MAX_CHARS:
-            combined = combined[:CTX_MAX_CHARS] + "\n\n[...tronqué]"
+        if len(combined) > budget_chars:
+            combined = combined[:budget_chars] + "\n\n[...tronqué]"
 
         return combined
 
@@ -137,40 +137,44 @@ def add_signature(content: str | None, model_id: str) -> str:
 def count_chars(msgs: list) -> int:
     return sum(len(m.get("content", "")) for m in msgs)
 
-def select_deployments_for_context(total_chars: int, deployments: list) -> list:
-    """Filtre les déploiements par budget contexte."""
-    if not model_budgets:
-        return deployments
-    viable = []
-    for dep in deployments:
-        mid = dep.get("model_info", {}).get("id", "")
-        budget = model_budgets.get(mid, 200000)
-        if total_chars <= budget:
-            viable.append(dep)
-    if not viable:
-        # Si aucun ne peut, garder le plus grand budget
-        dep_budgets = [(dep, model_budgets.get(dep.get("model_info", {}).get("id", ""), 0)) for dep in deployments]
-        dep_budgets.sort(key=lambda x: -x[1])
-        viable = [dep_budgets[0][0]]
-        logger.warning(f"⚠️  Contexte {total_chars} chars dépasse tous les budgets, force {viable[0].get('model_info',{}).get('id','?')}")
-    return viable
+def inject_context(msgs: list, ctx_text: str) -> list:
+    """Injecte le contexte projet dans les messages."""
+    msgs = [dict(m) for m in msgs]  # copie
+    sys_idx = next((i for i, m in enumerate(msgs) if m.get("role") == "system"), None)
+    ctx_block = f"[Contexte du projet]\n{ctx_text}"
+    if sys_idx is not None:
+        msgs.insert(sys_idx + 1, {"role": "system", "content": ctx_block})
+    else:
+        msgs.insert(0, {"role": "system", "content": ctx_block})
+    return msgs
 
-async def try_deployments(req: ChatRequest, msgs: list):
+async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
     deployments = groups.get(req.model)
     if not deployments:
         raise HTTPException(404, f"Modèle '{req.model}' inconnu")
 
-    # Budget contexte
-    total = count_chars(msgs)
-    deployments = select_deployments_for_context(total, deployments)
-
+    user_chars = count_chars(raw_msgs)
     errors = []
+
     for dep in deployments:
         model_id = dep.get("model_info", {}).get("id", "?")
         actual_model = dep["litellm_params"]["model"]
         api_key = dep["litellm_params"]["api_key"]
         budget = model_budgets.get(model_id, 200000)
-        logger.info(f"Trying {model_id} ({actual_model}) [budget: {budget} chars, utilisé: {total}]")
+
+        # Tronquer le contexte pour ce modèle
+        ctx_for_model = ctx_text
+        ctx_budget = budget - user_chars - 200  # réserve pour le message système
+        if ctx_budget < 200:
+            logger.warning(f"⚠️  {model_id}: budget trop petit ({budget} chars pour {user_chars} de user)")
+            errors.append({"id": model_id, "error": f"budget insuffisant ({budget} chars)"})
+            continue
+        if len(ctx_for_model) > ctx_budget:
+            ctx_for_model = ctx_for_model[:ctx_budget] + "\n\n[...tronqué]"
+
+        msgs = inject_context(raw_msgs, ctx_for_model)
+        total = count_chars(msgs)
+        logger.info(f"Trying {model_id} ({actual_model}) [budget: {budget} chars, contexte: {len(ctx_for_model)}, total: {total}]")
 
         try:
             response = await asyncio.wait_for(
@@ -184,8 +188,13 @@ async def try_deployments(req: ChatRequest, msgs: list):
                 timeout=30,
             )
             resp = response.model_dump() if hasattr(response, "model_dump") else response
-            logger.info(f"✅ {model_id} a répondu")
-            return resp, model_id, errors
+            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not content or not content.strip():
+                logger.warning(f"⚠️  {model_id}: réponse vide, essai suivant")
+                errors.append({"id": model_id, "error": "réponse vide"})
+                continue
+            logger.info(f"✅ {model_id} a répondu ({len(content)} chars)")
+            return resp, model_id, errors, total
 
         except asyncio.TimeoutError:
             logger.warning(f"⏱️  {model_id}: timeout")
@@ -202,38 +211,28 @@ async def try_deployments(req: ChatRequest, msgs: list):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest):
-    # Rafraîchir contexte projet si nécessaire
     await project_ctx.refresh()
 
-    msgs = [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages]
+    raw_msgs = [m.model_dump() if hasattr(m, "model_dump") else m for m in req.messages]
 
-    # Injecter le contexte projet
+    # Construire le contexte projet (une seule fois, taille max)
+    ctx_text = ""
     if CTX_ENABLED and CTX_ROOT:
-        ctx_budget = CTX_MAX_CHARS
-        ctx_text = project_ctx.build_context(budget_chars=ctx_budget)
-        if ctx_text:
-            # Trouver ou créer le message système
-            sys_idx = next((i for i, m in enumerate(msgs) if m.get("role") == "system"), None)
-            ctx_block = f"[Contexte du projet]\n{ctx_text}"
-            if sys_idx is not None:
-                # Ajouter après le système existant
-                msgs.insert(sys_idx + 1, {"role": "system", "content": ctx_block})
-            else:
-                msgs.insert(0, {"role": "system", "content": ctx_block})
+        ctx_text = project_ctx.build_context(budget_chars=CTX_MAX_CHARS)
 
     if req.stream:
-        return await stream_response(req, msgs)
+        return await stream_response(req, raw_msgs, ctx_text)
 
-    resp, model_id, errors = await try_deployments(req, msgs)
+    resp, model_id, errors, total = await try_deployments(req, raw_msgs, ctx_text)
     content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
     resp["choices"][0]["message"]["content"] = add_signature(content, model_id)
     resp["_responded"] = model_id
     resp["_eliminated"] = [e["id"] for e in errors]
-    resp["_context_chars"] = count_chars(msgs)
+    resp["_context_chars"] = total
     return resp
 
-async def stream_response(req: ChatRequest, msgs: list):
-    resp, model_id, errors = await try_deployments(req, msgs)
+async def stream_response(req: ChatRequest, raw_msgs: list, ctx_text: str):
+    resp, model_id, errors, total = await try_deployments(req, raw_msgs, ctx_text)
     content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
     signed = add_signature(content, model_id)
     resp_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"

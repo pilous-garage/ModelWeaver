@@ -24,6 +24,7 @@ from pathlib import Path
 ENV_MAP = [
     ("OPENAI_API_KEY",        "openai",       {}),
     ("GOOGLE_GEMINI_API_KEY", "gemini",       {}),
+    ("GOOGLE_API_KEY",        "gemini",       {}),
     ("MISTRAL_API_KEY",       "mistral",      {}),
     ("GROQ_API_KEY",          "groq",         {}),
     ("DEEPSEEK_API_KEY",      "deepseek",     {}),
