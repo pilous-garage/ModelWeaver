@@ -1,0 +1,13 @@
+FROM python:3.12-slim
+
+RUN apt-get update -qq && apt-get install -y -qq curl git > /dev/null 2>&1 && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir litellm fastapi uvicorn pyyaml pydantic httpx openai gitingest
+
+WORKDIR /app
+COPY .modelweaver/litellm_router_proxy.py /app/litellm_router_proxy.py
+COPY .modelweaver/litellm_config.yaml /app/litellm_config.yaml
+# Créer un projet factice pour éviter l'erreur gitingest
+RUN mkdir -p /app/fake-project && echo "test" > /app/fake-project/README.md
+
+EXPOSE 8000
+CMD ["python3", "/app/litellm_router_proxy.py", "8000"]

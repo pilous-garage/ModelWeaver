@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FROM_IMAGE="ubuntu-bare"
 IMAGE_NAME="model-weaver-v0.1"
 SKIP_TINYLLAMA=true
+CONTINUE_CONTAINER=""
 
 usage() {
     cat <<EOF
@@ -15,6 +16,7 @@ Usage: $0 [options]
 Options:
   --from <image>       Image de base (défaut: ubuntu-bare)
   --name <tag>         Nom de l'image finale (défaut: model-weaver-v0.1)
+  --continue <nom>     Reprendre un container existant (saute create/copie)
   --tinyllama          Inclure le téléchargement de tinyllama (~637 Mo)
   --help, -h           Affiche cette aide
 EOF
@@ -25,78 +27,96 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --from) FROM_IMAGE="$2"; shift 2 ;;
         --name) IMAGE_NAME="$2"; shift 2 ;;
+        --continue) CONTINUE_CONTAINER="$2"; shift 2 ;;
         --tinyllama) SKIP_TINYLLAMA=false; shift ;;
         --help|-h) usage ;;
         *) echo "❌ Argument inconnu: $1"; usage ;;
     esac
 done
 
-CONTAINER_NAME="mw-build-$(date +%s)"
+if [ -z "$CONTINUE_CONTAINER" ]; then
+    CONTAINER_NAME="mw-build-$(date +%s)"
 
-# Vérifier que l'image de base existe
-if ! docker image inspect "$FROM_IMAGE" &>/dev/null; then
-    echo "❌ Image de base introuvable : $FROM_IMAGE"
-    echo "   Construisez-la d'abord avec : docker build -t $FROM_IMAGE -f- . <<<'FROM ubuntu:24.04'"
-    exit 1
+    if ! docker image inspect "$FROM_IMAGE" &>/dev/null; then
+        echo "❌ Image de base introuvable : $FROM_IMAGE"
+        echo "   Construisez-la d'abord avec : docker build -t $FROM_IMAGE -f- . <<<'FROM ubuntu:24.04'"
+        exit 1
+    fi
+
+    # Caches persistants
+    MW_CACHE_DIR="$SCRIPT_DIR/.modelweaver/cache"
+    APT_CACHE_DIR="$SCRIPT_DIR/.modelweaver/apt-cache"
+    APT_LISTS_DIR="$SCRIPT_DIR/.modelweaver/apt-lists"
+    mkdir -p "$MW_CACHE_DIR" "$APT_CACHE_DIR" "$APT_LISTS_DIR"
+
+    MW_ARGS="--mode YES --skip-audit"
+    if [ "$SKIP_TINYLLAMA" = true ]; then
+        MW_ARGS="$MW_ARGS --skip-tinyllama"
+    fi
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Build ModelWeaver Docker Image"
+    echo "  Base  : $FROM_IMAGE"
+    echo "  Cible : $IMAGE_NAME"
+    echo "  Tiny  : $([ "$SKIP_TINYLLAMA" = true ] && echo 'non' || echo 'oui')"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    cleanup() {
+        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    # Création du container
+    echo "🚀 Création du container..."
+    docker create \
+        --workdir /app \
+        --name "$CONTAINER_NAME" \
+        --env PYTHONUNBUFFERED=1 \
+        --env DEBIAN_FRONTEND=noninteractive \
+        --volume "$APT_CACHE_DIR:/var/cache/apt/archives" \
+        --volume "$APT_LISTS_DIR:/var/lib/apt/lists" \
+        --volume "$MW_CACHE_DIR:/app/.modelweaver/cache" \
+        "$FROM_IMAGE" \
+        bash /app/modelweaver.sh $MW_ARGS >/dev/null
+
+    # Copie des fichiers du projet
+    echo "📂 Copie des fichiers du projet..."
+    tar cf - \
+        --exclude='.opencode' \
+        --exclude='.modelweaver' \
+        --exclude='docker-backup' \
+        --exclude='__pycache__' \
+        --exclude='node_modules' \
+        -C "$SCRIPT_DIR" . | docker cp - "$CONTAINER_NAME:/app"
+
+    # Copie du .env si présent
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        echo "🔑 Copie de .env..."
+        docker cp "$SCRIPT_DIR/.env" "$CONTAINER_NAME:/app/.env"
+    fi
+
+    # Mode YES
+    echo "YES" > /tmp/.mw_config_build
+    docker cp /tmp/.mw_config_build "$CONTAINER_NAME:/app/.modelweaver_config"
+    rm -f /tmp/.mw_config_build
+else
+    CONTAINER_NAME="$CONTINUE_CONTAINER"
+
+    if ! docker inspect "$CONTAINER_NAME" &>/dev/null; then
+        echo "❌ Container introuvable : $CONTAINER_NAME"
+        exit 1
+    fi
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Reprise du container $CONTAINER_NAME"
+    echo "  Cible : $IMAGE_NAME"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    cleanup() {
+        true  # ne pas supprimer le container en mode --continue
+    }
+    trap cleanup EXIT
 fi
-
-# Caches persistants
-MW_CACHE_DIR="$SCRIPT_DIR/.modelweaver/cache"
-APT_CACHE_DIR="$SCRIPT_DIR/.modelweaver/apt-cache"
-APT_LISTS_DIR="$SCRIPT_DIR/.modelweaver/apt-lists"
-mkdir -p "$MW_CACHE_DIR" "$APT_CACHE_DIR" "$APT_LISTS_DIR"
-
-# Arguments pour modelweaver
-MW_ARGS="--mode YES --skip-audit"
-if [ "$SKIP_TINYLLAMA" = true ]; then
-    MW_ARGS="$MW_ARGS --skip-tinyllama"
-fi
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Build ModelWeaver Docker Image"
-echo "  Base  : $FROM_IMAGE"
-echo "  Cible : $IMAGE_NAME"
-echo "  Tiny  : $([ "$SKIP_TINYLLAMA" = true ] && echo 'non' || echo 'oui')"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-cleanup() {
-    docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Création du container
-echo "🚀 Création du container..."
-docker create \
-    --workdir /app \
-    --name "$CONTAINER_NAME" \
-    --env PYTHONUNBUFFERED=1 \
-    --env DEBIAN_FRONTEND=noninteractive \
-    --volume "$APT_CACHE_DIR:/var/cache/apt/archives" \
-    --volume "$APT_LISTS_DIR:/var/lib/apt/lists" \
-    --volume "$MW_CACHE_DIR:/app/.modelweaver/cache" \
-    "$FROM_IMAGE" \
-    bash /app/modelweaver.sh $MW_ARGS >/dev/null
-
-# Copie des fichiers du projet
-echo "📂 Copie des fichiers du projet..."
-tar cf - \
-    --exclude='.opencode' \
-    --exclude='.modelweaver' \
-    --exclude='docker-backup' \
-    --exclude='__pycache__' \
-    --exclude='node_modules' \
-    -C "$SCRIPT_DIR" . | docker cp - "$CONTAINER_NAME:/app"
-
-# Copie du .env si présent
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    echo "🔑 Copie de .env..."
-    docker cp "$SCRIPT_DIR/.env" "$CONTAINER_NAME:/app/.env"
-fi
-
-# Mode YES
-echo "YES" > /tmp/.mw_config_build
-docker cp /tmp/.mw_config_build "$CONTAINER_NAME:/app/.modelweaver_config"
-rm -f /tmp/.mw_config_build
 
 # Exécution
 echo "▶️  Installation (cette étape peut prendre 5-15 minutes)..."
@@ -106,6 +126,7 @@ docker start -a "$CONTAINER_NAME" || EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
     echo "❌ Installation échouée (code $EXIT_CODE)."
     echo "   Pour déboguer : docker start -ai $CONTAINER_NAME"
+    echo "   Pour reprendre : $0 --continue $CONTAINER_NAME --name $IMAGE_NAME"
     exit $EXIT_CODE
 fi
 
