@@ -137,6 +137,29 @@ def add_signature(content: str | None, model_id: str) -> str:
 def count_chars(msgs: list) -> int:
     return sum(len(m.get("content", "")) for m in msgs)
 
+# Cache des providers rate-limités (429)
+_rate_limited: dict[str, dict] = {}  # provider_prefix → {"until": timestamp, "cooldown": seconds}
+
+def extract_provider(model_id: str) -> str:
+    """Extrait le provider depuis un model_id ex: 'google-gemini-3.1-flash-lite' → 'google'"""
+    return model_id.split("-")[0] if model_id else ""
+
+def is_rate_limited(provider: str) -> bool:
+    if provider not in _rate_limited:
+        return False
+    entry = _rate_limited[provider]
+    if time.time() >= entry["until"]:
+        del _rate_limited[provider]
+        return False
+    return True
+
+def mark_rate_limited(provider: str):
+    now = time.time()
+    entry = _rate_limited.get(provider, {"until": now, "cooldown": 10})
+    new_cooldown = min(entry["cooldown"] * 2, 300)  # ×2, max 5 min
+    _rate_limited[provider] = {"until": now + new_cooldown, "cooldown": new_cooldown}
+    logger.warning(f"⛔ Provider {provider} rate-limité pour {new_cooldown}s")
+
 def inject_context(msgs: list, ctx_text: str) -> list:
     """Injecte le contexte projet dans les messages."""
     msgs = [dict(m) for m in msgs]  # copie
@@ -156,15 +179,28 @@ async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
     user_chars = count_chars(raw_msgs)
     errors = []
 
+    # Providers exclus (rate-limités dans cette request)
+    excluded_providers: set = set()
+
     for dep in deployments:
         model_id = dep.get("model_info", {}).get("id", "?")
         actual_model = dep["litellm_params"]["model"]
         api_key = dep["litellm_params"]["api_key"]
         budget = model_budgets.get(model_id, 200000)
 
+        provider = extract_provider(model_id)
+        if provider in excluded_providers:
+            logger.info(f"⏭️  {model_id}: provider {provider} exclu (429), on saute")
+            errors.append({"id": model_id, "error": f"provider {provider} rate-limité"})
+            continue
+        if is_rate_limited(provider):
+            logger.info(f"⏭️  {model_id}: provider {provider} en cooldown, on saute")
+            errors.append({"id": model_id, "error": f"provider {provider} en cooldown"})
+            continue
+
         # Tronquer le contexte pour ce modèle
         ctx_for_model = ctx_text
-        ctx_budget = budget - user_chars - 200  # réserve pour le message système
+        ctx_budget = budget - user_chars - 200
         if ctx_budget < 200:
             logger.warning(f"⚠️  {model_id}: budget trop petit ({budget} chars pour {user_chars} de user)")
             errors.append({"id": model_id, "error": f"budget insuffisant ({budget} chars)"})
@@ -174,7 +210,7 @@ async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
 
         msgs = inject_context(raw_msgs, ctx_for_model)
         total = count_chars(msgs)
-        logger.info(f"Trying {model_id} ({actual_model}) [budget: {budget} chars, contexte: {len(ctx_for_model)}, total: {total}]")
+        logger.info(f"Trying {model_id} ({actual_model}) [provider: {provider}, budget: {budget}, contexte: {len(ctx_for_model)}, total: {total}]")
 
         try:
             response = await asyncio.wait_for(
@@ -201,7 +237,13 @@ async def try_deployments(req: ChatRequest, raw_msgs: list, ctx_text: str):
             errors.append({"id": model_id, "error": "timeout (30s)"})
         except Exception as e:
             msg = str(e)[:200]
-            logger.warning(f"❌ {model_id}: {msg}")
+            is_429 = "429" in msg or "RateLimitError" in msg or "quota" in msg.lower()
+            if is_429:
+                mark_rate_limited(provider)
+                excluded_providers.add(provider)
+                logger.warning(f"⛔❌ {model_id}: 429 rate-limit, provider {provider} exclu pour cette requête")
+            else:
+                logger.warning(f"❌ {model_id}: {msg}")
             errors.append({"id": model_id, "error": msg})
 
     raise HTTPException(502, {
