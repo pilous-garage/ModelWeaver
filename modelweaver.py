@@ -1851,6 +1851,7 @@ Options:
   --only COMPONENT   Installer uniquement ce composant (engine, bridge, agent, interface)
   --skip-audit       Ignorer l'audit système
   --skip-tinyllama   Ignorer le téléchargement de tinyllama
+  --skip-webui       Ignorer l'installation d'Open WebUI
 """
 
 
@@ -2019,8 +2020,10 @@ def parse_args() -> dict:
                         choices=["install", "check", "config", "status", "menu", "help"])
     parser.add_argument("--mode", choices=["YES", "NO", "ASK"], help="Forcer le mode d'installation")
     parser.add_argument("--only", help="Composant à installer uniquement (engine, bridge, agent, interface)")
-    parser.add_argument("--skip-audit", action="store_true", help="Ignorer l'audit système")
-    parser.add_argument("--skip-tinyllama", action="store_true", help="Ignorer tinyllama")
+parser.add_argument("--skip-audit", action="store_true", help="Ignorer l'audit système")
+parser.add_argument("--skip-tinyllama", action="store_true", help="Ignorer tinyllama")
+parser.add_argument("--skip-webui", action="store_true", help="Ignorer Open WebUI")
+
     parser.add_argument("--routing", choices=["test", "main"], default=None, help="Ordre de routage (test: groq→openrouter→ollama, main: opencode-zen→...)")
     parser.add_argument("--help", action="store_true", help="Afficher l'aide")
     args = parser.parse_args()
@@ -2033,8 +2036,10 @@ def main() -> None:
     cmd = args["command"]
     force_mode = args["mode"]
     only_comp = args["only"]
-    skip_audit = args["skip_audit"]
-    skip_tinyllama = args["skip_tinyllama"]
+        skip_audit = args["skip_audit"]
+        skip_tinyllama = args["skip_tinyllama"]
+        skip_webui = args["skip_webui"]
+
     routing_mode = args.get("routing", "")
     show_help = args["help"]
 
@@ -2113,6 +2118,9 @@ def main() -> None:
     else:
         print(f"\n📋  Composants à installer : {len(components)}")
         for comp_id, comp in components.items():
+            if comp_id == "interface" and skip_webui:
+                print(f"   ⏭️  {comp['name']} ignoré (option --skip-webui)")
+                continue
             install_component(comp_id, comp, mode)
 
     configured = configure_api()

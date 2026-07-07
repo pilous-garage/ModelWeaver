@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FROM_IMAGE="ubuntu-bare"
 IMAGE_NAME="model-weaver-v0.1"
 SKIP_TINYLLAMA=true
+SKIP_WEBUI=true
 CONTINUE_CONTAINER=""
 
 usage() {
@@ -18,6 +19,7 @@ Options:
   --name <tag>         Nom de l'image finale (défaut: model-weaver-v0.1)
   --continue <nom>     Reprendre un container existant (saute create/copie)
   --tinyllama          Inclure le téléchargement de tinyllama (~637 Mo)
+  --skip-webui         Ignorer l'installation d'Open WebUI
   --help, -h           Affiche cette aide
 EOF
     exit 0
@@ -29,6 +31,7 @@ while [[ $# -gt 0 ]]; do
         --name) IMAGE_NAME="$2"; shift 2 ;;
         --continue) CONTINUE_CONTAINER="$2"; shift 2 ;;
         --tinyllama) SKIP_TINYLLAMA=false; shift ;;
+        --skip-webui) SKIP_WEBUI=false; shift ;;
         --help|-h) usage ;;
         *) echo "❌ Argument inconnu: $1"; usage ;;
     esac
@@ -52,6 +55,9 @@ if [ -z "$CONTINUE_CONTAINER" ]; then
     MW_ARGS="--mode YES --skip-audit"
     if [ "$SKIP_TINYLLAMA" = true ]; then
         MW_ARGS="$MW_ARGS --skip-tinyllama"
+    fi
+    if [ "$SKIP_WEBUI" = true ]; then
+        MW_ARGS="$MW_ARGS --skip-webui"
     fi
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
