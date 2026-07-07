@@ -20,7 +20,8 @@
     "interface": {
       "name": "open-webui",
       "type": "python-module",
-      "package": "open-webui"
+      "package": "open-webui",
+      "soft_fail": true
     },
     "context": {
       "name": "gitingest",

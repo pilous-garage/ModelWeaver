@@ -685,6 +685,10 @@ def _install_python_module(comp: dict, mode: str) -> None:
             print(f"      ⏭️  {pkg} introuvable sur PyPI (version incompatible)")
             return
         print(f"      ❌  Erreur : {stderr}")
+        soft_fail = comp.get("soft_fail", False)
+        if soft_fail:
+            print(f"      ⏭️  {name} optionnel — installation ignorée")
+            return
         if mode != "ASK" and not old_python:
             sys.exit(1)
         return
