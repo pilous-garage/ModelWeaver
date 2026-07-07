@@ -130,6 +130,41 @@ if [ $EXIT_CODE -ne 0 ]; then
     exit $EXIT_CODE
 fi
 
+# Pipeline de configuration API et routage
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    echo "🔧  Configuration du routage et du fallback..."
+    MW_DIR="$SCRIPT_DIR/.modelweaver"
+    # Copier les fichiers de configuration du routage (dans .modelweaver/ exclu du tar)
+    for f in fallback_preferences.yaml model_scores.json litellm_router_proxy.py cache/models_api.json; do
+        [ -f "$MW_DIR/$f" ] && docker cp "$MW_DIR/$f" "$CONTAINER_NAME:/app/.modelweaver/$f"
+    done
+    # maj-liste-litellm.py gère toute la pipeline : prepare_keys → fetch → ordonner_fallback
+    echo "   🌐  Synchronisation des modèles et configuration du routage..."
+    # Utiliser le bon Python (static 3.10 si présent, sinon système)
+    PYCMD="python3"
+    docker exec "$CONTAINER_NAME" bash -c '[ -x /opt/python3.10-static/python/bin/python3 ] && echo "static" || echo "system"' > /tmp/.mw_pycheck 2>/dev/null || true
+    if grep -q "static" /tmp/.mw_pycheck 2>/dev/null; then
+        PYCMD="/opt/python3.10-static/python/bin/python3"
+    fi
+    rm -f /tmp/.mw_pycheck
+    docker exec "$CONTAINER_NAME" bash -c "
+        cd /app
+        $PYCMD maj-liste-litellm.py --skip-fetch 2>&1 | tail -5
+        # Ajuster project_root pour le container
+        $PYCMD -c \"
+import yaml
+with open('/app/.modelweaver/litellm_config.yaml') as f:
+    cfg = yaml.safe_load(f)
+if 'context_settings' in cfg:
+    cfg['context_settings']['project_root'] = '/app'
+with open('/app/.modelweaver/litellm_config.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+print('   ✅  Configuration du routage terminée')
+\"
+        echo \"   📊  \$(wc -l < /app/.modelweaver/litellm_config.yaml) lignes dans litellm_config.yaml\"
+    " 2>&1
+fi
+
 # Commit de l'image
 echo "📸 Commit de l'image $IMAGE_NAME..."
 docker commit "$CONTAINER_NAME" "$IMAGE_NAME" >/dev/null
