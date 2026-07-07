@@ -36,7 +36,9 @@ ENV_MAP = [
 ]
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_ENV_PATH = APP_DIR.parent / ".env"
+# Cherche .env d'abord dans APP_DIR, puis dans APP_DIR.parent
+_env_candidates = [APP_DIR / ".env", APP_DIR.parent / ".env"]
+DEFAULT_ENV_PATH = next((p for p in _env_candidates if p.exists()), _env_candidates[0])
 OUTPUT_PATH = APP_DIR / ".modelweaver" / "keys.json"
 
 
