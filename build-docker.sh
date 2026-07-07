@@ -83,7 +83,7 @@ if [ -z "$CONTINUE_CONTAINER" ]; then
         --volume "$APT_LISTS_DIR:/var/lib/apt/lists" \
         --volume "$MW_CACHE_DIR:/app/.modelweaver/cache" \
         "$FROM_IMAGE" \
-        bash /app/modelweaver.sh $MW_ARGS >/dev/null
+        sleep 9999 >/dev/null
 
     # Copie des fichiers du projet
     echo "📂 Copie des fichiers du projet..."
@@ -127,7 +127,8 @@ fi
 # Exécution
 echo "▶️  Installation (cette étape peut prendre 5-15 minutes)..."
 EXIT_CODE=0
-docker start -a "$CONTAINER_NAME" || EXIT_CODE=$?
+docker start "$CONTAINER_NAME" >/dev/null
+docker exec "$CONTAINER_NAME" bash /app/modelweaver.sh $MW_ARGS || EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
     echo "❌ Installation échouée (code $EXIT_CODE)."
