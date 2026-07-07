@@ -11,16 +11,16 @@
 # après un échec.
 
 groups:
+  - name: nvidia_direct
+    pattern: "openrouter/nvidia"
+    cooldown: 60
+
   - name: gemma_direct
     pattern: "^gemini/gemma"
     cooldown: 60
 
   - name: google_direct
     pattern: "^gemini/"
-    cooldown: 60
-
-  - name: nvidia_direct
-    pattern: "^nvidia/"
     cooldown: 60
 
   - name: mistral_direct

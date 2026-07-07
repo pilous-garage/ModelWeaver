@@ -39,9 +39,9 @@ DEFAULT_BUDGETS = {
     "groq": 400_000,
     "deepseek": 400_000,
     "cohere": 400_000,
-    "huggingface": 400_000,
+"huggingface": 400_000,
     "openrouter": 400_000,
-    "opencode-zen": 400_000,
+    "nvidia": 400_000,
 }
 
 # Mapping provider models.dev → prefix litellm
@@ -54,6 +54,7 @@ PROVIDER_PREFIX_MAP = {
     "cohere": "cohere",
     "huggingface": "huggingface",
     "openrouter": "openrouter",
+    "nvidia": "nvidia",
 }
 
 # Mots-clés pour filtrer les modèles non-chat
