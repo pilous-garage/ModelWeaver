@@ -27,11 +27,13 @@ ENV_MAP = [
     ("GOOGLE_API_KEY",        "gemini",       {}),
     ("MISTRAL_API_KEY",       "mistral",      {}),
     ("GROQ_API_KEY",          "groq",         {}),
-    ("DEEPSEEK_API_KEY",      "deepseek",     {}),
-    ("COHERE_API_KEY",        "cohere",       {}),
-    ("HUGGINGFACE_API_KEY",   "huggingface",  {}),
-    ("OPENROUTER_API_KEY",    "openrouter",   {}),
-    # Provider spéciaux (api_base personnalisé)
+  ("DEEPSEEK_API_KEY",      "deepseek",     {}),
+  ("COHERE_API_KEY",        "cohere",       {}),
+  ("HUGGINGFACE_API_KEY",   "huggingface",  {}),
+  ("NVIDIA_API_KEY",        "nvidia",       {}),
+  ("OPENROUTER_API_KEY",    "openrouter",   {}),
+  # Provider spéciaux (api_base personnalisé)
+
     ("OPENCODE_ZEN_API_KEY",  "opencode-zen", {"api_base": "https://opencode.ai/zen/v1"}),
 ]
 

@@ -19,8 +19,8 @@ groups:
     pattern: "^gemini/"
     cooldown: 60
 
-  - name: google_direct
-    pattern: "^gemini/"
+  - name: nvidia_direct
+    pattern: "^nvidia/"
     cooldown: 60
 
   - name: mistral_direct
