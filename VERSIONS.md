@@ -116,28 +116,49 @@ Tout le socle : script d'installation complet, vérification de toutes les dépe
   - [x] Cache 60s du contexte gitingest
 - [x] **V0.1.10.5** — Pipeline maj-liste-litellm
   - [x] `prepare_keys.py` : lit `.env` → `.modelweaver/keys.json`
-  - [x] `maj-liste-litellm.py` : fetch models.dev → filtre par clé → merge config → possibly-dead → fallback
+  - [x] `maj-liste-litellm.py` : fetch models.dev → filtre par clé → merge config → possibly-dead → ordonner-fallback
   - [x] `ordonner-fallback.py` : lit `fallback_preferences.yaml` → applique priorités
   - [x] `.modelweaver/fallback_preferences.yaml` : fichier séparé éditable
   - [x] 521 modèles, 7 possibly-dead, Google → Mistral → Zen → Nemotron Free → Free → Other
 
 ---
 
-## V0.2 (prochaine version)
+## V0.2 (En cours 🏗️) — Le Grand Split en Modules
 
-**Limite obligatoire** : split common/install/orchestrator.
+**Objectif** : Refonte architecturale complète pour passer d'un script monolithique à un système modulaire de 9 composants interconnectés.
 
-Pool des fonctionnalités candidates :
-- Assurer le cache pour tout : unifier et forcer l'utilisation des caches
-- Rotation des clés API
-- Isolation complète de l'environnement dev
-- Gestionnaire de téléchargements
-- Miroir des dépendances
-- Logs mythologiques
-- Conversation archiver
-- Plugin system
-- Multi-agent workflows
-- Multi-système : Windows, macOS, Android
-- Requêtes parallèles / watchdog
-- Serveur de cache LAN
-- Peer-to-peer (torrent)
+### Architecture (3 Couches, 9 Modules)
+
+**Couche 1 : Données, Sécurité & Découverte Automatique**
+1.  **Le Catalogue** (`/catalogue`) : Source de vérité (JSON). Répertorie fournisseurs, modèles et outils.
+2.  **Le Gestionnaire de Clés** (`/key_manager`) : Coffre-fort et onboarding automatique (détection de signature, auto-enrichissement via `/models` et métadonnées IA).
+
+**Couche 2 : Le Moteur Logique (Le Core)**
+3.  **Le Checkeur** (`/checker`) : Inspection du système (PATH, Ollama, etc.) $\to$ `system_state.json`.
+4.  **L'Installeur** (`/installer`) : Préparation d'environnement (apt, winget, brew, sandbox locale).
+5.  **Le Gestionnaire de Conteneurs** (`/container_manager`) : Orchestration Docker pour exécution isolée (sandbox).
+6.  **Le Module de Test** (`/test_runner`) : Validation des scripts agents dans le conteneur Docker.
+7.  **Le Plombier** (`/plumber`) : Routeur d'API intelligent (fallback transparent, gestion des quotas, adaptateurs OpenAI/Gemini).
+
+**Couche 3 : L'Interface Utilisateur (UI)**
+8.  **L'Organiseur** (`/organiser`) : Studio de création visuel (Low-Code, drag-and-drop) basé sur `system_state.json`.
+9.  **Le Dashboard** (`/dashboard`) : Tour de contrôle (Play/Stop, logs temps réel, monitoring ressources).
+
+### Stratégie de développement (9 étapes)
+
+Chaque étape consiste à développer un module et à le valider par des tests.
+
+1.  [ ] **Étape 1** : Module `/catalogue`
+2.  [ ] **Étape 2** : Module `/key_manager`
+3.  [ ] **Étape 3** : Module `/checker`
+4.  [ ] **Étape 4** : Module `/installer`
+5.  [ ] **Étape 5** : Module `/container_manager`
+6.  [ ] **Étape 6** : Module `/test_runner`
+7.  [ ] **Étape 7** : Module `/plumber`
+8.  [ ] **Étape 8** : Module `/organiser`
+9.  [ ] **Étape 9** : Module `/dashboard`
+
+### Limites & Focus
+- **Focus initial** : Développement exclusif sur Ubuntu/Linux.
+- **Conception** : Isolation stricte des commandes système et utilisation systématique de `pathlib`.
+- **Workflow** : Clé $\to$ Découverte $\to$ Catalogue $\to$ UI $\to$ Agents $\to$ Plombier $\to$ Sandbox.
