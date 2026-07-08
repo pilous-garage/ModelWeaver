@@ -1,31 +1,55 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "project": "ModelWeaver",
   "components": {
     "engine": {
       "name": "ollama",
       "type": "binary",
+      "description": "Moteur LLM local (Ollama)",
+      "install_method": "installer-script",
+      "default_download_url": "https://ollama.com/install.sh",
+      "allowed_platforms": "Linux,Darwin",
+      "allowed_arches": "x86_64,aarch64",
+      "current_version": "0.31.1",
       "package": null
     },
     "bridge": {
       "name": "litellm",
       "type": "python-module",
+      "description": "Routeur LLM multi-providers (LiteLLM)",
+      "install_method": "pip",
+      "allowed_platforms": "Linux,Darwin,Windows",
+      "allowed_arches": "x86_64,aarch64",
       "package": "litellm[proxy]"
     },
     "agent": {
       "name": "opencode",
       "type": "binary",
+      "description": "Agent IA en ligne de commande (OpenCode)",
+      "install_method": "github-release",
+      "default_download_url": null,
+      "allowed_platforms": "Linux,Darwin",
+      "allowed_arches": "x86_64,aarch64",
+      "current_version": "1.17.15",
       "package": null
     },
     "interface": {
       "name": "open-webui",
       "type": "python-module",
+      "description": "Interface Web pour LLMs (Open WebUI)",
+      "install_method": "pip",
+      "allowed_platforms": "Linux,Darwin,Windows",
+      "allowed_arches": "x86_64,aarch64",
       "package": "open-webui",
       "soft_fail": true
     },
     "context": {
       "name": "gitingest",
       "type": "python-module",
+      "description": "Analyse de contexte projet (gitingest)",
+      "install_method": "pip",
+      "allowed_platforms": "Linux,Darwin,Windows",
+      "allowed_arches": "x86_64,aarch64",
       "package": "gitingest"
     }
   }

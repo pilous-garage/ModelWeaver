@@ -1,15 +1,266 @@
-import subprocess
-import platform
+import json
 import os
+import platform
+import shutil
+import subprocess
+import sys
+import tarfile
+import zipfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 
 class Installer:
+    """Installe un outil à partir d'une ligne du catalogue.
+
+    Usage:
+        installer = Installer()
+        tool = {"ref": "ollama", "tool_type": "binary",
+                "install_method": "github-release",
+                "default_download_url": "https://..."}
+        installer.install(tool)
+    """
+
     def __init__(self, cache_dir: Optional[Path] = None):
         self.os_type = platform.system()
         self.distro = self._get_distro()
-        self.cache_dir = cache_dir or Path(__file__).parent.parent / ".modelweaver" / "cache"
+        self.arch = self._normalize_arch(platform.machine())
+        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".modelweaver" / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── API publique ──
+
+    def install(self, tool: Dict[str, Any]) -> bool:
+        """Installe un outil décrit par un dictionnaire catalogue.
+
+        Champs utilisés : ref, name, tool_type, install_method,
+        default_download_url, installer_params, allowed_platforms,
+        allowed_arches, current_version.
+        """
+        ref = tool.get("ref") or tool.get("name", "?")
+        if not self._compatible_platform(tool):
+            print(f"  ⏭️  {ref} : non compatible {self.os_type}/{self.arch}")
+            return False
+
+        method = tool.get("install_method")
+        if not method:
+            raise ValueError(f"install_method manquant pour {ref}")
+
+        dispatch = {
+            "pip": self._install_via_pip,
+            "apt": self._install_via_apt,
+            "brew": self._install_via_brew,
+            "winget": self._install_via_winget,
+            "package-manager": self._install_via_pkg_mgr,
+            "direct-url": self._install_via_url,
+            "github-release": self._install_via_github,
+            "installer-script": self._install_via_script,
+        }
+        handler = dispatch.get(method)
+        if not handler:
+            raise ValueError(f"Méthode inconnue '{method}' pour {ref}")
+
+        print(f"  📦 {ref} : {method}")
+        ok = handler(tool)
+        if ok:
+            print(f"  ✅ {ref} installé")
+        else:
+            print(f"  ❌ {ref} : échec")
+        return ok
+
+    def uninstall(self, tool: Dict[str, Any]):
+        """Désinstallation — non implémentée."""
+        ref = tool.get("ref") or tool.get("name", "?")
+        print(f"  ⏸️  uninstall({ref}) pas encore implémentée")
+
+    # ── Vérifications ──
+
+    def _compatible_platform(self, tool: Dict[str, Any]) -> bool:
+        allowed_platforms = tool.get("allowed_platforms")
+        if allowed_platforms:
+            platforms = [p.strip() for p in allowed_platforms.split(",")]
+            if self.os_type not in platforms and self.distro not in platforms:
+                return False
+        allowed_arches = tool.get("allowed_arches")
+        if allowed_arches:
+            arches = [a.strip() for a in allowed_arches.split(",")]
+            if self.arch not in arches:
+                return False
+        return True
+
+    # ── Handlers d'installation ──
+
+    def _install_via_pip(self, tool: Dict[str, Any]) -> bool:
+        pkg = self._get_params(tool).get("package", tool["ref"])
+        return self._run(["pip", "install", pkg])
+
+    def _install_via_apt(self, tool: Dict[str, Any]) -> bool:
+        pkg = self._get_params(tool).get("package", tool["ref"])
+        return self._run_apt(pkg)
+
+    def _install_via_brew(self, tool: Dict[str, Any]) -> bool:
+        pkg = self._get_params(tool).get("package", tool["ref"])
+        return self._run(["brew", "install", pkg])
+
+    def _install_via_winget(self, tool: Dict[str, Any]) -> bool:
+        pkg = self._get_params(tool).get("package", tool["ref"])
+        return self._run(["winget", "install", "--id", pkg])
+
+    def _install_via_pkg_mgr(self, tool: Dict[str, Any]) -> bool:
+        pkg = self._get_params(tool).get("package", tool["ref"])
+        if self.os_type == "Linux":
+            return self._run_apt(pkg)
+        elif self.os_type == "Darwin":
+            return self._run(["brew", "install", pkg])
+        elif self.os_type == "Windows":
+            return self._run(["winget", "install", "--id", pkg])
+        print(f"  ⚠️  Pas de gestionnaire de paquets pour {self.os_type}")
+        return False
+
+    def _install_via_url(self, tool: Dict[str, Any]) -> bool:
+        url = tool.get("default_download_url")
+        if not url:
+            print("  ⚠️  default_download_url manquant")
+            return False
+        dest = self._cached_download(url, tool["ref"])
+        if not dest:
+            return False
+        return self._deploy_asset(dest, tool)
+
+    def _install_via_github(self, tool: Dict[str, Any]) -> bool:
+        """Télécharge depuis un binaire GitHub et le déploie."""
+        url = tool.get("default_download_url")
+        if not url:
+            repo = tool.get("ref")
+            url = self._github_release_url(repo)
+        if not url:
+            print("  ⚠️  Pas d'URL de téléchargement pour github-release")
+            return False
+        dest = self._cached_download(url, tool["ref"])
+        if not dest:
+            return False
+        return self._deploy_asset(dest, tool)
+
+    def _install_via_script(self, tool: Dict[str, Any]) -> bool:
+        url = tool.get("default_download_url")
+        if url:
+            dest = self._cached_download(url, tool["ref"])
+            if not dest:
+                return False
+            dest.chmod(0o755)
+            return self._run([str(dest)])
+        script = self._get_params(tool).get("script")
+        if script:
+            return self._run(["bash", "-c", script])
+        print("  ⚠️  installer-script sans URL ni script param")
+        return False
+
+    # ── Utilitaires ──
+
+    def _get_params(self, tool: Dict[str, Any]) -> Dict[str, Any]:
+        raw = tool.get("installer_params")
+        if isinstance(raw, str):
+            return json.loads(raw) if raw else {}
+        return raw or {}
+
+    def _run(self, cmd: list) -> bool:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return True
+        except FileNotFoundError:
+            print(f"  ⚠️  Commande introuvable : {cmd[0]}")
+            return False
+        except subprocess.CalledProcessError as e:
+            print(f"  ⚠️  {cmd[0]} a échoué : {e.stderr[:200] if e.stderr else e}")
+            return False
+
+    def _run_apt(self, pkg: str) -> bool:
+        use_sudo = hasattr(os, "getuid") and os.getuid() != 0
+        prefix = ["sudo"] if use_sudo else []
+        try:
+            subprocess.run(prefix + ["apt-get", "install", "-y", pkg],
+                           capture_output=True, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"  ⚠️  apt install {pkg} : {e.stderr[:200] if e.stderr else e}")
+            return False
+
+    def _cached_download(self, url: str, name: str) -> Optional[Path]:
+        filename = url.split("/")[-1] or f"{name}.bin"
+        dest = self.cache_dir / filename
+        if dest.exists():
+            print(f"  📦 Utilisation du cache : {dest.name}")
+            return dest
+        print(f"  ⬇️  Téléchargement de {name}...")
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(url, dest)
+            return dest
+        except Exception as e:
+            print(f"  ⚠️  Téléchargement échoué : {e}")
+            return None
+
+    def _deploy_asset(self, asset: Path, tool: Dict[str, Any]) -> bool:
+        ttype = tool.get("tool_type", "binary")
+        if ttype == "python-module":
+            return self._run([sys.executable, "-m", "pip", "install", str(asset)])
+
+        if asset.suffix in (".tar.gz", ".tgz"):
+            extract_dir = self.cache_dir / f"{tool['ref']}_extracted"
+            extract_dir.mkdir(exist_ok=True)
+            with tarfile.open(asset, "r:gz") as tar:
+                tar.extractall(extract_dir)
+            return self._install_from_dir(extract_dir, tool)
+
+        if asset.suffix == ".zip":
+            extract_dir = self.cache_dir / f"{tool['ref']}_extracted"
+            extract_dir.mkdir(exist_ok=True)
+            with zipfile.ZipFile(asset, "r") as z:
+                z.extractall(extract_dir)
+            return self._install_from_dir(extract_dir, tool)
+
+        # Binaire simple : copier dans /usr/local/bin
+        local_bin = Path("/usr/local/bin")
+        if not local_bin.exists():
+            local_bin = Path.home() / ".local" / "bin"
+            local_bin.mkdir(parents=True, exist_ok=True)
+        dest = local_bin / tool["ref"]
+        shutil.copy2(asset, dest)
+        dest.chmod(0o755)
+        return True
+
+    def _install_from_dir(self, extract_dir: Path, tool: Dict[str, Any]) -> bool:
+        bin_name = tool.get("ref")
+        candidates = list(extract_dir.rglob(bin_name))
+        if candidates:
+            local_bin = Path("/usr/local/bin")
+            if not local_bin.exists():
+                local_bin = Path.home() / ".local" / "bin"
+                local_bin.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidates[0], local_bin / bin_name)
+            (local_bin / bin_name).chmod(0o755)
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            return True
+        # Sinon, ajouter le dossier extrait au PATH
+        print(f"  ⚠️  Binaire '{bin_name}' introuvable dans l'archive")
+        shell_cfg = Path.home() / ".bashrc"
+        if shell_cfg.exists():
+            with open(shell_cfg, "a") as f:
+                f.write(f'\nexport PATH="{extract_dir}:$PATH"\n')
+        return True
+
+    def _github_release_url(self, repo: str) -> Optional[str]:
+        patterns = {
+            ("Linux", "x86_64"): f"linux-amd64",
+            ("Linux", "aarch64"): f"linux-arm64",
+            ("Darwin", "x86_64"): f"darwin-amd64",
+            ("Darwin", "aarch64"): f"darwin-arm64",
+        }
+        suffix = patterns.get((self.os_type, self.arch))
+        if not suffix:
+            return None
+        return (f"https://github.com/{repo}/{repo}/releases/latest/download/"
+                f"{repo}_{suffix}.tar.gz")
 
     def _get_distro(self) -> str:
         try:
@@ -22,68 +273,13 @@ class Installer:
             pass
         return "unknown"
 
-    def install_package(self, package_name: str) -> bool:
-        """Installs a package using the system package manager, checking cache first."""
-        # In a real V0.2 installer, we would check if the package exists in cache_dir
-        # For this test, we simulate the check.
-        cache_path = self.cache_dir / f"{package_name}.deb"
-        if cache_path.exists():
-            print(f"📦 Using cached package: {package_name}")
-            return True
+    @staticmethod
+    def _normalize_arch(raw: str) -> str:
+        mapping = {"amd64": "x86_64", "x86_64": "x86_64",
+                   "aarch64": "aarch64", "arm64": "aarch64"}
+        return mapping.get(raw, raw)
 
-        if self.os_type == "Linux" and self.distro == "ubuntu":
-            return self._install_apt(package_name)
-        elif self.os_type == "Darwin":
-            return self._install_brew(package_name)
-        else:
-            print(f"Unsupported OS/Distro: {self.os_type} {self.distro}")
-            return False
-
-    def _install_apt(self, package_name: str) -> bool:
-        print(f"Installing {package_name} via apt...")
-        
-        # Determine if we need sudo. In Docker, we usually don't.
-        use_sudo = False
-        try:
-            if os.getuid() != 0:
-                use_sudo = True
-        except AttributeError:
-            # Handle cases where getuid() is not available
-            pass
-            
-        cmd_prefix = ["sudo"] if use_sudo else []
-        
-        try:
-            subprocess.run(cmd_prefix + ["apt-get", "update"], check=True, capture_output=True)
-            subprocess.run(cmd_prefix + ["apt-get", "install", "-y", package_name], check=True, capture_output=True)
-            # Simulate caching the package
-            (self.cache_dir / f"{package_name}.deb").touch()
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to install {package_name} via apt: {e.stderr.decode()}")
-            return False
-        except Exception as e:
-            print(f"An error occurred during apt installation: {e}")
-            return False
-
-    def _install_brew(self, package_name: str) -> bool:
-        print(f"Installing {package_name} via brew...")
-        try:
-            subprocess.run(["brew", "install", package_name], check=True, capture_output=True)
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to install {package_name} via brew: {e.stderr.decode()}")
-            return False
-
-    def install_dependencies(self, dependencies: List[str]) -> Dict[str, bool]:
-        """Installs a list of dependencies."""
-        results = {}
-        for dep in dependencies:
-            results[dep] = self.install_package(dep)
-        return results
 
 if __name__ == "__main__":
-    # Quick test
-    installer = Installer(cache_dir=Path("test_cache"))
-    print(f"OS: {installer.os_type}, Distro: {installer.distro}, Cache: {installer.cache_dir}")
-    # installer.install_package("curl")
+    inst = Installer()
+    print(f"OS={inst.os_type} Distro={inst.distro} Arch={inst.arch} Cache={inst.cache_dir}")

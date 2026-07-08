@@ -84,6 +84,7 @@ V0.1 terminée, V0.2 terminée. Voir [VERSIONS.md](VERSIONS.md).
 
 ### Session récente (2026-07-08)
 - V0.3.5 : catalogue distant HTTP + synchro depuis serveur (`sql/catalogue_server.py`)
+- V0.3.6 : Installer DB-driven, manifest.json v2.0 enrichi, migration enrichie
 - `CatalogueDB.sync_from_url()` + `_ensure_schema()` auto
 - `install_in_docker.py` version SQLite opérationnelle
 - `build-docker.sh --sqlite` : copie `catalogue.db` → `catalogue.remote.db`, serveur dédié, conteneur avec `CATALOGUE_URL`

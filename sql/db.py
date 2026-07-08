@@ -448,9 +448,12 @@ class ToolRepository:
             except Exception:
                 pass
 
-            im = "package-manager" if ref in ("python3", "git", "curl") else "direct-url"
+            existing = self.get(ref)
+            im = existing["install_method"] if existing else (
+                "package-manager" if ref in ("python3", "git", "curl") else "direct-url")
+            tt = existing["tool_type"] if existing else "binary"
             self.save({"ref": ref, "name": ref,
-                        "tool_type": "binary",
+                        "tool_type": tt,
                         "install_method": im,
                         "current_version": version})
             tool = self.conn.execute("SELECT id FROM tools WHERE ref = ?", (ref,)).fetchone()
@@ -481,9 +484,12 @@ class ToolRepository:
                     version = pip_map.get(pkg_name.lower())
                     if not version:
                         continue
+                    existing = self.get(ref)
+                    im = existing["install_method"] if existing else "pip"
+                    tt = existing["tool_type"] if existing else "python-module"
                     self.save({"ref": ref, "name": ref,
-                                "tool_type": "python-module",
-                                "install_method": "pip",
+                                "tool_type": tt,
+                                "install_method": im,
                                 "current_version": version})
                     tool = self.conn.execute("SELECT id FROM tools WHERE ref = ?", (ref,)).fetchone()
                     if tool:
@@ -523,22 +529,26 @@ class ToolRepository:
             cur = self.conn.execute("SELECT id FROM tools WHERE ref = ?", (ref,))
             existing = cur.fetchone()
             if existing:
-                self.conn.execute("""
-                    UPDATE tools SET name=?, description=?, tool_type=?, install_method=?,
-                        current_version=?, default_download_url=?, checksum_algorithm=?,
-                        is_core=?, allowed_platforms=?, allowed_arches=?,
-                        installer_params=?, fallback_chain=?,
-                        updated_at=strftime('%s','now')
-                    WHERE id=?
-                """, (
-                    data.get("name"), data.get("description"),
-                    data.get("tool_type"), data.get("install_method"),
-                    data.get("current_version"), data.get("default_download_url"),
-                    data.get("checksum_algorithm", "sha256"),
-                    data.get("is_core", 0), data.get("allowed_platforms"),
-                    data.get("allowed_arches"), data.get("installer_params"),
-                    data.get("fallback_chain"), existing["id"]
-                ))
+                cols = ["updated_at = strftime('%s','now')"]
+                params = []
+                for key, col in [
+                    ("name", "name"), ("description", "description"),
+                    ("tool_type", "tool_type"), ("install_method", "install_method"),
+                    ("current_version", "current_version"),
+                    ("default_download_url", "default_download_url"),
+                    ("checksum_algorithm", "checksum_algorithm"),
+                    ("is_core", "is_core"), ("allowed_platforms", "allowed_platforms"),
+                    ("allowed_arches", "allowed_arches"),
+                    ("installer_params", "installer_params"),
+                    ("fallback_chain", "fallback_chain"),
+                ]:
+                    if key in data:
+                        cols.append(f"{col} = ?")
+                        params.append(data[key])
+                if len(cols) > 1:
+                    params.append(existing["id"])
+                    self.conn.execute(
+                        f"UPDATE tools SET {', '.join(cols)} WHERE id = ?", params)
                 return existing["id"]
 
         cur = self.conn.execute("""

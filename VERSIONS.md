@@ -235,10 +235,15 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - [x] `install_in_docker.py` : version SQLite (utilise `ModelWeaverDB` + `CatalogueDB`)
 - [x] `build-docker.sh --sqlite` : copie `catalogue.db` → `catalogue.remote.db`, démarre le serveur, injecte `CATALOGUE_URL` dans le container
 
-**V0.3.6** — Nettoyage et finalisation
-- [ ] Suppression des fichiers JSON obsolètes
-- [ ] Tests d'intégration complets (Docker --sqlite)
-- [ ] Documentation du schéma
+**V0.3.6** — Installer DB-driven + enrichissement catalogue
+- [x] `Installer.install(tool_dict)` : dispatch par `install_method` (pip, apt, brew, winget, direct-url, github-release, installer-script, package-manager)
+- [x] `Installer.uninstall()` : stub vide
+- [x] Cache : `_cached_download()` évite re-téléchargements
+- [x] `scan_installed()` préserve `install_method` et `tool_type` existants
+- [x] `ToolRepository.save()` met à jour seulement les champs fournis
+- [x] `manifest.json` version 2.0 : descriptions, `install_method`, `default_download_url`, `allowed_platforms`, `allowed_arches`
+- [x] Migration enrichie : copie les nouveaux champs vers `tools` + `catalogue_tools`
+- [x] Test Docker --sqlite validé : installation `curl`, `git`, `python3` via l'Installer
 
 ---
 

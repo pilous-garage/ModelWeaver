@@ -154,12 +154,20 @@ def migrate_local_db(db_path: Path) -> None:
         ref_id = comp.get("name", cid)
         ttype = comp.get("type", "binary")
         pkg = comp.get("package")
-        inst = "pip" if ttype == "python-module" else ("github-release" if ttype == "binary" else "direct-url")
+        inst = comp.get("install_method") or (
+            "pip" if ttype == "python-module"
+            else "github-release" if ttype == "binary"
+            else "direct-url")
+        bparams = {"package": pkg} if pkg else {}
         cur.execute("""
-            INSERT OR IGNORE INTO tools (ref, name, tool_type, install_method, installer_params, catalogue_ref)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (ref_id, ref_id, ttype, inst,
-              json.dumps({"package": pkg}) if pkg else None, ref_id))
+            INSERT OR IGNORE INTO tools (ref, name, description, tool_type, install_method,
+                current_version, default_download_url, allowed_platforms, allowed_arches,
+                installer_params, catalogue_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ref_id, ref_id, comp.get("description"), ttype, inst,
+              comp.get("current_version"), comp.get("default_download_url"),
+              comp.get("allowed_platforms"), comp.get("allowed_arches"),
+              json.dumps(bparams) if bparams else None, ref_id))
         tool_count += 1
 
     for t in tools_data:
@@ -237,12 +245,15 @@ def migrate_catalogue_db(db_path: Path) -> None:
         """, (row["ref"], row["name"], row["developer"], row["architecture"],
               row["parameter_count"], row["modality"], row["target_use"]))
 
-    for row in local.execute("SELECT ref, name, tool_type, install_method, current_version, allowed_platforms, allowed_arches FROM tools"):
+    for row in local.execute("SELECT ref, name, description, tool_type, install_method, current_version, default_download_url, allowed_platforms, allowed_arches FROM tools"):
         cur.execute("""
-            INSERT OR IGNORE INTO catalogue_tools (ref, name, tool_type, install_method, current_version, allowed_platforms, allowed_arches)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (row["ref"], row["name"], row["tool_type"], row["install_method"],
-              row["current_version"], row["allowed_platforms"], row["allowed_arches"]))
+            INSERT OR IGNORE INTO catalogue_tools
+                (ref, name, description, tool_type, install_method, current_version,
+                 default_download_url, allowed_platforms, allowed_arches)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (row["ref"], row["name"], row["description"], row["tool_type"],
+              row["install_method"], row["current_version"], row["default_download_url"],
+              row["allowed_platforms"], row["allowed_arches"]))
 
     for row in local.execute("SELECT ref, name, description, command_type FROM commands"):
         cur.execute("""

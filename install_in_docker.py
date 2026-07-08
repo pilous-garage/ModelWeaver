@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installation complète dans Docker — utilise la nouvelle implémentation SQLite.
+"""Installation complète dans Docker — utilise le nouvel Installer.
 
 Usage:
     CATALOGUE_URL=http://host.docker.internal:8765/api python3 install_in_docker.py
@@ -11,7 +11,7 @@ Variables d'environnement :
 
 import os
 import sys
-import subprocess
+import json
 from pathlib import Path
 
 sys.path.insert(0, "/app")
@@ -28,56 +28,47 @@ def main():
     catalogue_url = os.environ.get("CATALOGUE_URL", "")
 
     if not catalogue_url:
-        print("❌ CATALOGUE_URL non définie. Usage: CATALOGUE_URL=http://... python3 install_in_docker.py")
+        print("❌ CATALOGUE_URL non définie.")
         sys.exit(1)
 
     print(f"🚀 Installation Docker (SQLite)")
     print(f"   Cache     : {cache_dir}")
     print(f"   Catalogue : {catalogue_url}")
-    print()
 
-    # ── 1. Installer les dépendances système ──
     installer = Installer(cache_dir=cache_dir)
-    deps = ["curl", "git", "python3-requests", "python3-yaml"]
-    print("📦 Dépendances système...")
-    installer.install_dependencies(deps)
 
-    # ── 2. Créer venv + installer paquets Python ──
-    venv_dir = app_dir / ".venv"
-    if not venv_dir.exists():
-        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-    venv_pip = str(venv_dir / "bin" / "pip")
+    # ── 1. Synchroniser le catalogue ──
+    print("🌐 Synchro catalogue...")
+    cat_db = CatalogueDB()
+    results = cat_db.sync_from_url(catalogue_url)
+    cat_db.close()
 
-    pkgs = ["litellm", "gitingest", "pyyaml", "requests"]
-    for pkg in pkgs:
-        subprocess.run([venv_pip, "install", pkg], check=True, capture_output=True)
-
-    # ── 3. Initialiser la BDD locale ──
-    print("🗄️  Initialisation de la BDD locale...")
+    # ── 2. Initialiser la BDD locale ──
+    print("🗄️  BDD locale...")
     local_db = ModelWeaverDB()
-
-    # Scan des outils installés
     n = local_db.scan_installed_tools()
     print(f"   → {n} outils installés détectés")
 
-    # ── 4. Synchroniser le catalogue ──
-    print(f"🌐 Synchronisation du catalogue depuis {catalogue_url}...")
-    cat_db = CatalogueDB()
-    results = cat_db.sync_from_url(catalogue_url)
-    for table, count in results.items():
-        print(f"   → {table}: {count}")
-    cat_db.close()
-
-    # ── 5. Importer les clés ──
+    # ── 3. Importer les clés ──
     env_path = app_dir / ".env"
     if env_path.exists():
-        print("🔑 Import des clés depuis .env...")
+        print("🔑 Import des clés...")
         km = KeyManager(db=local_db)
         obo = Onboarder(km)
-        n = obo.onboard_from_env(env_path)
-        print(f"   → {n} clés importées")
-    else:
-        print("⚠️  Aucun .env trouvé, pas de clés importées")
+        nk = obo.onboard_from_env(env_path)
+        print(f"   → {nk} clés importées")
+
+    # ── 4. Installer les outils du catalogue ──
+    print("📦 Installation des outils catalogue...")
+    tools = local_db.tools.list_all()
+    for t in tools:
+        params_raw = t.get("installer_params")
+        if isinstance(params_raw, str):
+            try:
+                t["installer_params"] = json.loads(params_raw)
+            except json.JSONDecodeError:
+                t["installer_params"] = {}
+        installer.install(t)
 
     print("\n   Résumé BDD locale :")
     for table in ["providers", "models", "provider_models", "api_keys", "tools", "local_tools", "commands"]:
@@ -85,8 +76,7 @@ def main():
         print(f"     {table:20s} → {c}")
     local_db.close()
 
-    print()
-    print("✅ Installation terminée. La BDD est prête.")
+    print("✅ Installation terminée.")
     return 0
 
 

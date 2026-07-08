@@ -61,8 +61,8 @@ class CatalogueAPIHandler(BaseHTTPRequestHandler):
         rows = self._query("SELECT * FROM catalogue_commands ORDER BY name")
         self.send_json(rows)
 
-    def _query(self, sql: str) -> List[Dict[str, Any]]:
-        cur = self.server.conn.execute(sql)
+    def _query(self, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        cur = self.server.conn.execute(sql, params)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
