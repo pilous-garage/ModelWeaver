@@ -141,7 +141,7 @@ Tout le socle : script d'installation complet, vérification de toutes les dépe
 7.  **Le Plombier** (`/plumber`) : Routeur d'API intelligent (fallback transparent, gestion des quotas, adaptateurs OpenAI/Gemini).
 
 **Couche 3 : L'Interface Utilisateur (UI)**
-8.  **L'Organiseur** (`/organiser`) : Studio de création visuel (Low-Code, drag-and-drop) basé sur `system_state.json`.
+8.  **L'Organiseur** (`/organiser`) : Interface de configuration (CLI/TUI) basée sur `system_state.json`.
 9.  **Le Dashboard** (`/dashboard`) : Tour de contrôle (Play/Stop, logs temps réel, monitoring ressources).
 
 ### Stratégie de développement (9 étapes)
@@ -176,3 +176,86 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - **Focus initial** : Développement exclusif sur Ubuntu/Linux.
 - **Conception** : Isolation stricte des commandes système et utilisation systématique de `pathlib`.
 - **Workflow** : Clé $\to$ Découverte $\to$ Catalogue $\to$ UI $\to$ Agents $\to$ Plombier $\to$ Sandbox.
+
+---
+
+## V0.3 (En cours 🚧) — Intégration SQLite Complète
+
+**Objectif** : Remplacer les JSON bordéliques par une structure SQLite relationnelle. Le catalogue devient la BDD globale.
+
+### Architecture BDD
+
+**Deux bases SQLite distinctes :**
+1. **Catalogue DB** (`.modelweaver/catalogue.db`) — référence publique, mise à jour possible via BDD distante
+2. **Local DB** (`.modelweaver/modelweaver.db`) — état local (clés, outils installés, config)
+
+### Tables prévues
+
+| Table | Rôle | Champs clés |
+|-------|------|-------------|
+| `providers` | Fournisseurs d'API | id unique, nom, type, limites, prochain reset |
+| `api_keys` | Clés API | fournisseur_id (FK), tag free/payant, date péremption |
+| `models` | Modèles connus (indépendants) | nom, contexte, capacités, métadonnées |
+| `provider_models` | Liaison fournisseur↔modèles | nom chez le fournisseur, limites, rate limits, reset |
+| `tools` | Outils du catalogue | vérification existence, liste fournisseurs |
+| `local_tools` | Outils installés localement | version, chemin, statut |
+| `commands` | Commandes supportées implémentées | utilitaires non triviaux pour la gestion IA |
+
+### Tables catalogue
+- `catalogue_providers`, `catalogue_tools` — allégées, juste de quoi vérifier l'existence et lister les fournisseurs
+
+### Sous-versions
+
+**V0.3.0** — Design du schéma et migration
+- [ ] Définition complète du schéma SQLite (tables, indexes, contraintes)
+- [ ] Script de migration des JSON → SQLite
+- [ ] Tests de validation du schéma
+
+**V0.3.1** — Module catalogue porté sur SQLite
+- [ ] Remplacement des JSON par des queries SQLite
+- [ ] Sync catalogue distant → local
+
+**V0.3.2** — Module key_manager porté sur SQLite
+- [ ] Stockage des clés en base avec chiffrement
+- [ ] Tags free/payant, dates péremption
+
+**V0.3.3** — Module checker/installer porté sur SQLite
+- [ ] État système dans SQLite
+- [ ] Traçabilité des installations
+
+**V0.3.4** — Module plumber porté sur SQLite
+- [x] Constructeurs des repositories sans arguments utilisés
+- [ ] Limites, rate limits, quotas lus depuis la BDD
+- [ ] Routage basé sur les données BDD
+
+**V0.3.5** — Catalogue distant + synchro HTTP
+- [x] `sql/catalogue_server.py` : serveur HTTP sur port configurable
+- [x] `CatalogueDB.sync_from_url()` : sync toutes les tables depuis une URL
+- [x] `CatalogueDB._ensure_schema()` : auto-création des tables si vide
+- [x] `install_in_docker.py` : version SQLite (utilise `ModelWeaverDB` + `CatalogueDB`)
+- [x] `build-docker.sh --sqlite` : copie `catalogue.db` → `catalogue.remote.db`, démarre le serveur, injecte `CATALOGUE_URL` dans le container
+
+**V0.3.6** — Nettoyage et finalisation
+- [ ] Suppression des fichiers JSON obsolètes
+- [ ] Tests d'intégration complets (Docker --sqlite)
+- [ ] Documentation du schéma
+
+---
+
+## V0.4 (Planifiée 📅) — Agent Factory & Orchestration
+
+**Objectif** : Factory d'agents spécialisés, orchestration multi-agents, exécution planifiée.
+
+### Sous-versions
+
+**V0.4.0** — Agent Factory
+- [ ] Définition des types d'agents (code, review, debug, search, etc.)
+- [ ] Création dynamique d'agents avec prompts et outils configurables
+
+**V0.4.1** — Orchestration multi-agents
+- [ ] File d'attente, priorisation, exécution parallèle
+- [ ] Communication inter-agents
+
+**V0.4.2** — Planification et automatisation
+- [ ] Tâches planifiées (cron-like)
+- [ ] Pipelines de traitement configurables

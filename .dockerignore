@@ -1,0 +1,10 @@
+.modelweaver
+test_assembly_data
+test_vault.json
+test_state.json
+test_cache
+test_env
+test_proxy_in_docker.py
+integration_test.py
+Dockerfile.bare
+install_in_docker.py

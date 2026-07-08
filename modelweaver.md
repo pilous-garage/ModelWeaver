@@ -14,7 +14,7 @@ Deux phases :
 Architecture divisée en 3 couches et 9 modules interconnectés :
 
 **Couche 1 : Données, Sécurité & Découverte Automatique**
-1. **Le Catalogue** (`/catalogue`) : Source de vérité (JSON).
+1. **Le Catalogue** (`/catalogue`) : Source de vérité (JSON → SQLite V0.3).
 2. **Le Gestionnaire de Clés** (`/key_manager`) : Coffre-fort et onboarding automatique.
 
 **Couche 2 : Le Moteur Logique (Le Core)**
@@ -25,8 +25,18 @@ Architecture divisée en 3 couches et 9 modules interconnectés :
 7. **Le Plombier** (`/plumber`) : Routeur d'API intelligent (fallback, quotas, adaptateurs).
 
 **Couche 3 : L'Interface Utilisateur (UI)**
-8. **L'Organiseur** (`/organiser`) : Studio de création visuel (Low-Code).
+8. **L'Organiseur** (`/organiser`) : Interface de configuration (CLI/TUI).
 9. **Le Dashboard** (`/dashboard`) : Tour de contrôle (Play/Stop, logs, monitoring).
+
+### V0.3 (En cours 🚧) — Intégration SQLite
+
+**Objectif** : Remplacer les JSON par SQLite avec deux BDD :
+- `.modelweaver/modelweaver.db` — état local (12 tables)
+- `.modelweaver/catalogue.db` — référence publique (4 tables)
+
+**Couche données** : `sql/` — DAO/Repository pattern
+- `sql/db.py` : ModelWeaverDB + CatalogueDB + 7 repositories
+- `sql/catalogue_server.py` : serveur HTTP pour synchro distant
 
 ## Conventions
 
@@ -70,10 +80,11 @@ Si aucune estimation n'est donnée, le premier point de contrôle est à 1 minut
 
 ## État actuel
 
-V0.1 terminée, V0.2 en cours de définition. Voir [VERSIONS.md](VERSIONS.md).
+V0.1 terminée, V0.2 terminée. Voir [VERSIONS.md](VERSIONS.md).
 
-### Session récente (2026-07-05)
-- Le bridge ModelWeaver est maintenant installé sous `opencode-modelweaver`.
-- La commande `opencode` reste directe pour un usage standard.
-- Les requêtes passent par LiteLLM avec un fallback visible et une trace de route dans `.modelweaver/route_trace.log`.
-- Les erreurs d’authentification et de saturation déclenchent désormais un rebond explicite.
+### Session récente (2026-07-08)
+- V0.3.5 : catalogue distant HTTP + synchro depuis serveur (`sql/catalogue_server.py`)
+- `CatalogueDB.sync_from_url()` + `_ensure_schema()` auto
+- `install_in_docker.py` version SQLite opérationnelle
+- `build-docker.sh --sqlite` : copie `catalogue.db` → `catalogue.remote.db`, serveur dédié, conteneur avec `CATALOGUE_URL`
+- `ModelWeaverDB._ensure_schema()` auto-création des tables

@@ -21,14 +21,7 @@ class Plumber:
         }
 
 if __name__ == "__main__":
-    # Quick test
-    from pathlib import Path
-    cat = Catalogue(data_dir=Path("test_cat_data"))
-    km = KeyManager(vault_path=Path("test_km_vault.json"))
+    cat = Catalogue()
+    km = KeyManager()
     plumber = Plumber(cat, km)
     print(plumber.route_request("Hello!"))
-    
-    # Cleanup
-    import shutil
-    if Path("test_cat_data").exists(): shutil.rmtree("test_cat_data")
-    if Path("test_km_vault.json").exists(): os.remove("test_km_vault.json")

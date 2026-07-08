@@ -1,76 +1,94 @@
-import sys
+#!/usr/bin/env python3
+"""Installation complète dans Docker — utilise la nouvelle implémentation SQLite.
+
+Usage:
+    CATALOGUE_URL=http://host.docker.internal:8765/api python3 install_in_docker.py
+
+Variables d'environnement :
+    CATALOGUE_URL   — URL du serveur catalogue (obligatoire)
+    MW_CACHE_DIR    — cache des téléchargements (défaut: /app/.modelweaver/cache)
+"""
+
 import os
+import sys
 import subprocess
 from pathlib import Path
 
-# Add the current directory to sys.path so we can import modules
-sys.path.append("/app")
+sys.path.insert(0, "/app")
 
 from modules.installer.installer import Installer
-from modules.catalogue.catalogue import Catalogue
 from modules.key_manager.key_manager import KeyManager
 from modules.key_manager.onboarder import Onboarder
+from sql.db import ModelWeaverDB, CatalogueDB
+
 
 def main():
-    print("🚀 Starting Installation inside Docker...")
-    
-    # 1. Setup paths
     app_dir = Path("/app")
-    venv_dir = app_dir / ".venv"
-    cache_dir = app_dir / ".modelweaver_cache"
-    cache_dir.mkdir(exist_ok=True)
-    
-    # Create virtual environment if it doesn't exist
-    if not venv_dir.exists():
-        print(f"📦 Creating virtual environment in {venv_dir}...")
-        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-    
-    venv_python = venv_dir / "bin" / "python3"
-    venv_pip = venv_dir / "bin" / "pip"
+    cache_dir = Path(os.environ.get("MW_CACHE_DIR", app_dir / ".modelweaver" / "cache"))
+    catalogue_url = os.environ.get("CATALOGUE_URL", "")
 
-    # In a real scenario, we'd use the project's .env
-    env_path = app_dir / ".env"
-    
-    # 2. Initialize modules
+    if not catalogue_url:
+        print("❌ CATALOGUE_URL non définie. Usage: CATALOGUE_URL=http://... python3 install_in_docker.py")
+        sys.exit(1)
+
+    print(f"🚀 Installation Docker (SQLite)")
+    print(f"   Cache     : {cache_dir}")
+    print(f"   Catalogue : {catalogue_url}")
+    print()
+
+    # ── 1. Installer les dépendances système ──
     installer = Installer(cache_dir=cache_dir)
-    catalogue = Catalogue(data_dir=app_dir / ".modelweaver/catalogue_data", cache_dir=cache_dir)
-    key_manager = KeyManager(vault_path=app_dir / ".modelweaver/vault.json")
-    
-    # 3. Install dependencies
-    print("Step 1: Installing system dependencies...")
-    deps = ["curl", "git", "python3-requests"]
-    results = installer.install_dependencies(deps)
-    print(f"Dependencies results: {results}")
+    deps = ["curl", "git", "python3-requests", "python3-yaml"]
+    print("📦 Dépendances système...")
+    installer.install_dependencies(deps)
 
-    # Install python dependencies into the venv
-    print("Step 1.5: Installing Python packages into venv...")
-    python_packages = ["litellm", "fastapi", "uvicorn", "pydantic", "gitingest", "pyyaml", "requests"]
-    for pkg in python_packages:
-        print(f"Installing {pkg}...")
-        try:
-            subprocess.run([str(venv_pip), "install", pkg], check=True, capture_output=True, text=True)
-            print(f"✅ {pkg} installed.")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to install {pkg}: {e.stderr}")
-            sys.exit(1)
+    # ── 2. Créer venv + installer paquets Python ──
+    venv_dir = app_dir / ".venv"
+    if not venv_dir.exists():
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+    venv_pip = str(venv_dir / "bin" / "pip")
 
-    # Debug: List installed python packages in venv
-    print("Listing installed python packages in venv:")
-    subprocess.run([str(venv_pip), "list"], check=True)
+    pkgs = ["litellm", "gitingest", "pyyaml", "requests"]
+    for pkg in pkgs:
+        subprocess.run([venv_pip, "install", pkg], check=True, capture_output=True)
 
-    # 4. Onboard keys from .env
+    # ── 3. Initialiser la BDD locale ──
+    print("🗄️  Initialisation de la BDD locale...")
+    local_db = ModelWeaverDB()
+
+    # Scan des outils installés
+    n = local_db.scan_installed_tools()
+    print(f"   → {n} outils installés détectés")
+
+    # ── 4. Synchroniser le catalogue ──
+    print(f"🌐 Synchronisation du catalogue depuis {catalogue_url}...")
+    cat_db = CatalogueDB()
+    results = cat_db.sync_from_url(catalogue_url)
+    for table, count in results.items():
+        print(f"   → {table}: {count}")
+    cat_db.close()
+
+    # ── 5. Importer les clés ──
+    env_path = app_dir / ".env"
     if env_path.exists():
-        print("Step 2: Onboarding keys from .env...")
-        onboarder = Onboarder(key_manager, catalogue=catalogue)
-        onboarder.onboard_from_env(env_path)
+        print("🔑 Import des clés depuis .env...")
+        km = KeyManager(db=local_db)
+        obo = Onboarder(km)
+        n = obo.onboard_from_env(env_path)
+        print(f"   → {n} clés importées")
     else:
-        print("⚠️  No .env file found in /app. Skipping onboarding.")
+        print("⚠️  Aucun .env trouvé, pas de clés importées")
 
-    # 5. Sync catalogue
-    print("Step 3: Syncing catalogue...")
-    catalogue.sync_with_remote()
+    print("\n   Résumé BDD locale :")
+    for table in ["providers", "models", "provider_models", "api_keys", "tools", "local_tools", "commands"]:
+        c = local_db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        print(f"     {table:20s} → {c}")
+    local_db.close()
 
-    print("\n✅ Installation inside container completed successfully!")
+    print()
+    print("✅ Installation terminée. La BDD est prête.")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

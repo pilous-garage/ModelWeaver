@@ -185,6 +185,7 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 |---------|-----------|--------|
 | V0.1 | Socle : install, audit, composants, fallback, CLI, GUI | ✅ Terminée |
 | V0.2 | Split en 9 modules (3 couches) | ✅ Terminée |
+| V0.3 | Agent Factory (Génération d'agents via config personnalisée) | 🔜 Prochaine |
 | V1.0 | Version publique distribuable (cible de stabilité) | 🎯 Objectif |
 | Vn+ | Univers, jeux, mascotte, monétisation | 📝 Idées |
 
