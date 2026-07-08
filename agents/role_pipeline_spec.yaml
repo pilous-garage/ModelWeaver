@@ -1,0 +1,176 @@
+# Role Pipeline Spec v2.0 — Agent Workflow DSL
+# ==============================================
+# Langage YAML structuré pour définir les workflows d'agents.
+# Chaque rôle YAML peut inclure une section `workflow:` optionnelle.
+# L'interpréteur exécute les étapes dans l'ordre chaîné par `next`.
+
+# ──────────────────────────────────────────────────────────────
+# SCHÉMA COMPLET D'UN FICHIER DE RÔLE
+# ──────────────────────────────────────────────────────────────
+# classification:
+#   class: str              # Classe principale (worker, coordinator, tool)
+#   sub_class: str          # Sous-classe (code_gen, review, architecture...)
+#
+# name: str                 # Identifiant unique du rôle
+# description: str
+# system_prompt: str
+# skills: list[str]
+# contexts: list[str]
+# model_requirements:       # Contraintes sur le modèle
+#   min_context_tokens: int
+#   max_context_chars: int
+#   capabilities: list[str]
+# default_config:
+#   temperature: float
+#   max_tokens: int
+#
+# branches:                 # Points d'entrée/sortie standards
+#   chatroom: true|false    # Connecté au chatroom public ?
+#   todo: true|false        # Peut piocher/écrire dans le todo ?
+#   queue: true|false       # Écoute sa queue de messages ?
+#   files: [str]            # Chemins de fichiers autorisés
+#   api: [str]              # APIs externes autorisées
+#
+# workflow:                 # Optionnel — étapes chaînées
+#   version: "1.0"
+#   max_iterations: int     # Limite d'itérations (sécurité anti-boucle infinie)
+#   steps:
+#     - id: str             # ID unique dans ce workflow
+#       type: llm_call|switch|sleep|end|connect|disconnect|signal_successor|save_state
+#       ...                 # Voir ci-dessous pour chaque type
+
+# ──────────────────────────────────────────────────────────────
+# TYPES D'ÉTAPES
+# ──────────────────────────────────────────────────────────────
+
+# --- LLM CALL ---
+# - id: "action_X"
+#   type: "llm_call"
+#   agent_id: str           # ID dans agent_pool du workflow
+#   skill_prompt: str       # Prompt spécifique
+#   output_capture: str     # Nom de variable pour stocker la réponse
+#   temperature: float      # Optionnel, écrase default
+#   max_tokens: int         # Optionnel
+#   next: str               # ID de l'étape suivante
+
+# --- SWITCH (branchement conditionnel) ---
+# - id: "switch_X"
+#   type: "switch"
+#   variable: str           # Nom de la variable à évaluer
+#   conditions:
+#     - operator: CONTAINS|EQUALS|NOT_EQUALS|GREATER|LESS
+#       value: str|int
+#       next: str           # ID si condition remplie
+#   default: str            # ID si aucune condition remplie
+
+# --- SLEEP (pause déportée en BDD) ---
+# - id: "pause_X"
+#   type: "sleep"
+#   duration_seconds: int
+#   next: str
+
+# --- END ---
+# - id: "end_X"
+#   type: "end"
+#   status: SUCCESS|FAILED
+#   successor: str          # Optionnel — rôle du successeur à créer
+
+# --- EXTRACT CONTEXT ---
+# - id: "ctx_X"
+#   type: "extract_context"
+#   sources:
+#     files: [str]
+#     commands: [str]
+#   max_chars: int
+#   insert_into: str        # ID de l'étape llm_call qui recevra le contexte
+
+# --- SAVE STATE ---
+# - id: "save_X"
+#   type: "save_state"
+#   variables: [str]        # Noms des variables à persister dans state_json
+
+# --- SIGNAL SUCCESSOR ---
+# - id: "sig_X"
+#   type: "signal_successor"
+#   reason: str             # Raison du besoin de relais
+#   sessions: [str]         # Sessions à transférer
+
+# --- BRANCH / CONNECT ---
+# - id: "br_X"
+#   type: "connect"
+#   channel: chatroom|todo|queue|file|api|agent
+#   target: str             # Nom de l'agent, chemin fichier, URL...
+
+# --- DISCONNECT ---
+# - id: "dc_X"
+#   type: "disconnect"
+#   channel: str
+
+# --- SET VARIABLE ---
+# - id: "var_X"
+#   type: "set_variable"
+#   name: str
+#   value: str|int|float|bool
+
+# --- CONCAT ---
+# - id: "cat_X"
+#   type: "concat"
+#   target: system|user|assistant
+#   position: before|after|replace
+#   value: str
+
+# ──────────────────────────────────────────────────────────────
+# EXEMPLE : Réflexion locale avec boucle critique NPU
+# ──────────────────────────────────────────────────────────────
+# name: codeur_npu
+# description: "Génération de code avec boucle réflexive sur NPU"
+# classification:
+#   class: worker
+#   sub_class: code_reflexive
+# skills: [code_gen, debug, critique]
+# branches:
+#   chatroom: true
+#   todo: true
+#   queue: true
+# workflow:
+#   version: "1.0"
+#   global_iterations: 5
+#   agent_pool:
+#     - id: "gen"
+#       hardware: "AMD_NPU"
+#       model: "smol_lm_135m"
+#     - id: "critic"
+#       hardware: "AMD_NPU"
+#       model: "smol_lm_135m"
+#   steps:
+#     - id: "generer"
+#       type: "llm_call"
+#       agent_id: "gen"
+#       skill_prompt: "Écris une fonction Python nommée 'somme_impairs(n)'."
+#       output_capture: "code_output"
+#       next: "evaluer"
+#     - id: "evaluer"
+#       type: "llm_call"
+#       agent_id: "critic"
+#       skill_prompt: "Le code ci-dessus contient-il une erreur ? Réponds OUI ou NON."
+#       output_capture: "verification"
+#       next: "switch_eval"
+#     - id: "switch_eval"
+#       type: "switch"
+#       variable: "verification"
+#       conditions:
+#         - operator: CONTAINS
+#           value: "OUI"
+#           next: "corriger"
+#         - operator: CONTAINS
+#           value: "NON"
+#           next: "end_ok"
+#       default: "evaluer"
+#     - id: "corriger"
+#       type: "llm_call"
+#       agent_id: "gen"
+#       skill_prompt: "Corrige le code selon les retours précédents."
+#       next: "evaluer"
+#     - id: "end_ok"
+#       type: "end"
+#       status: SUCCESS

@@ -247,13 +247,15 @@ CREATE TABLE IF NOT EXISTS model_providers (
 -- 14. AGENTS — Identité et couplage modèle/hardware
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agents (
-    agent_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    role_type   TEXT NOT NULL,
-    provider_id INTEGER REFERENCES model_providers(provider_id),
-    status      TEXT DEFAULT 'IDLE' CHECK(status IN ('IDLE', 'BUSY', 'PAUSED', 'STOPPED')),
-    config_json TEXT,
-    created_at  TEXT DEFAULT (datetime('now'))
+    agent_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    role_type     TEXT NOT NULL,
+    provider_id   INTEGER REFERENCES model_providers(provider_id),
+    status        TEXT DEFAULT 'IDLE' CHECK(status IN ('IDLE', 'BUSY', 'PAUSED', 'STOPPED', 'TERMINATED')),
+    config_json   TEXT,
+    state_json    TEXT,
+    successor_id  INTEGER REFERENCES agents(agent_id),
+    created_at    TEXT DEFAULT (datetime('now'))
 );
 
 -- ============================================================
@@ -296,6 +298,75 @@ CREATE TABLE IF NOT EXISTS wakeup_calls (
 );
 
 -- ============================================================
+-- 18. AGENT_QUEUE — Messagerie inter-agents (direct + broadcast)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_queue (
+    queue_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_agent_id INTEGER NOT NULL REFERENCES agents(agent_id),
+    to_agent_id   INTEGER REFERENCES agents(agent_id),   -- NULL = broadcast
+    topic         TEXT,                                    -- pour pub/sub, NULL = direct
+    message_type  TEXT DEFAULT 'text' CHECK(message_type IN ('text', 'task_assignment', 'notification', 'broadcast')),
+    content       TEXT NOT NULL,
+    status        TEXT DEFAULT 'TODO' CHECK(status IN ('TODO', 'READ', 'ARCHIVED')),
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 19. CHATROOM_MESSAGES — Board public avec threads
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chatroom_messages (
+    message_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id     INTEGER REFERENCES chatroom_messages(message_id),  -- NULL = top-level
+    agent_id      INTEGER NOT NULL REFERENCES agents(agent_id),
+    content       TEXT NOT NULL,
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 20. SHARED_TASKS — Todo partagé entre agents
+-- ============================================================
+CREATE TABLE IF NOT EXISTS shared_tasks (
+    task_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    title          TEXT NOT NULL,
+    description    TEXT,
+    required_role  TEXT,                  -- rôle requis (NULL = tout le monde)
+    context        TEXT DEFAULT 'general',-- contexte (ex: "project:modelweaver")
+    status         TEXT DEFAULT 'TODO' CHECK(status IN ('TODO', 'IN_PROGRESS', 'DONE', 'FAILED', 'CANCELLED')),
+    assigned_to    INTEGER REFERENCES agents(agent_id),
+    parent_task_id INTEGER REFERENCES shared_tasks(task_id),
+    priority       INTEGER DEFAULT 0,     -- plus haut = plus prioritaire
+    created_at     TEXT DEFAULT (datetime('now')),
+    updated_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 21. WATCHERS — Surveillants automatiques
+-- ============================================================
+CREATE TABLE IF NOT EXISTS watchers (
+    watcher_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        INTEGER NOT NULL REFERENCES agents(agent_id),
+    watch_type      TEXT NOT NULL CHECK(watch_type IN ('tasks', 'queue', 'chatroom', 'agents', 'successor_requests')),
+    filter_criteria TEXT,
+    interval_seconds INTEGER DEFAULT 60,
+    last_checked_at TEXT,
+    enabled         INTEGER DEFAULT 1,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 22. AGENT_CONNECTIONS — Branchements persistants
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_connections (
+    conn_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id    INTEGER NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL CHECK(channel IN ('chatroom', 'todo', 'queue', 'file', 'api', 'agent')),
+    target_id   INTEGER,                 -- agent_id si channel='agent', NULL sinon
+    config_json TEXT,                     -- {topic, path, url, ...}
+    enabled     INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_providers_ref ON providers(ref);
@@ -313,3 +384,12 @@ CREATE INDEX IF NOT EXISTS idx_wakeup_ticker ON wakeup_calls(status, execute_aft
 CREATE INDEX IF NOT EXISTS idx_messages_session ON agent_messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_agents_provider ON agents(provider_id);
+CREATE INDEX IF NOT EXISTS idx_queue_recipient ON agent_queue(to_agent_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_queue_broadcast ON agent_queue(topic, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_chatroom_thread ON chatroom_messages(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chatroom_agent ON chatroom_messages(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_role_context ON shared_tasks(required_role, context, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON shared_tasks(status, priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON shared_tasks(assigned_to, status);
+CREATE INDEX IF NOT EXISTS idx_watchers_type ON watchers(watch_type, enabled);
+CREATE INDEX IF NOT EXISTS idx_connections_agent ON agent_connections(agent_id, channel);

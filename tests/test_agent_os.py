@@ -218,7 +218,7 @@ def test_role_manager():
     role = rm.get_role("assistant")
     assert role is not None
     assert "Tu es un assistant" in role.system_prompt
-    assert "chat" in role.allowed_skills
+    assert "chat" in role.skills
     assert role.default_config["temperature"] == 0.7
 
     print(f"  ✅ Role manager OK ({len(roles)} rôle(s))")

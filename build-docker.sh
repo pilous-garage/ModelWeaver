@@ -188,9 +188,9 @@ fi
 docker start "$CONTAINER_NAME" >/dev/null
 
 if [ "$SQLITE_MODE" = true ]; then
-    echo "▶️  Installation SQLite (install_in_docker.py)..."
+    echo "▶️  Installation SQLite (modelweaver.sh + modelweaver.py)..."
     EXIT_CODE=0
-    docker exec "$CONTAINER_NAME" python3 /app/install_in_docker.py || EXIT_CODE=$?
+    docker exec "$CONTAINER_NAME" bash /app/modelweaver.sh --cache=/app/.modelweaver/cache || EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
         echo "❌ Installation SQLite échouée (code $EXIT_CODE)."

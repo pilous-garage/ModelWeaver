@@ -666,7 +666,22 @@ class AgentDBMixin:
         self.wakeup_calls = WakeupCallRepository(self.conn)
 
 
-class ModelWeaverDB(AgentDBMixin):
+class OrchestrationDBMixin:
+    """Orchestration repositories (queue, chatroom, todo, watchers)."""
+
+    def _init_orchestration_repos(self):
+        from sql.orchestration_repository import (
+            AgentQueueRepository, ChatroomRepository,
+            SharedTaskRepository, WatcherRepository, ConnectionRepository,
+        )
+        self.queue = AgentQueueRepository(self.conn)
+        self.chatroom = ChatroomRepository(self.conn)
+        self.shared_tasks = SharedTaskRepository(self.conn)
+        self.watchers = WatcherRepository(self.conn)
+        self.connections = ConnectionRepository(self.conn)
+
+
+class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
     """Point d'entrée unique pour la base locale.
 
     Crée automatiquement les tables si elles n'existent pas.
@@ -695,6 +710,7 @@ class ModelWeaverDB(AgentDBMixin):
         self.llms = LocalLLMRepository(self.conn)
         self.commands = CommandRepository(self.conn)
         self._init_agent_repos()
+        self._init_orchestration_repos()
 
     def _ensure_schema(self):
         """Crée les tables si elles n'existent pas encore.

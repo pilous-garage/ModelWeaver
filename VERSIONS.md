@@ -257,7 +257,7 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 
 **Couplage Agent + Rôle + Modèle** : chaque agent est lié déterministiquement à un modèle/provider et à un rôle (fichier YAML). Les petits modèles ne peuvent pas s'auto-attribuer des tâches critiques.
 
-### Composants livrés
+### Composants livrés (V0.4.0)
 
 | Composant | Fichier | Rôle |
 |-----------|---------|------|
@@ -295,10 +295,143 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - [x] Test intégration Agent Codeur : génération d'un tic-tac-toe fonctionnel via Groq (API réelle)
 - [x] Test Docker : conteneur isolé, agent codeur → script valide, vérifications passées
 
-**V0.4.1** — Orchestration multi-agents (TODO)
-- [ ] File d'attente, priorisation, exécution parallèle
-- [ ] Communication inter-agents (chatroom, todo partagé)
+**V0.4.1** — Workflow DSL & Connexions (En cours 🚧)
+- [x] Spec YAML complète (`agents/role_pipeline_spec.yaml`) : workflow, llm_call, switch, sleep, end, signal_successor, save_state, connect, branches
+- [x] 11 rôles classiques créés (assistant, codeur, architecte, controleur_qualite, relecteur, debugger, planificateur, chercheur, documentaliste, orchestrateur, critique)
+- [x] Classification par class/sub_class dans chaque rôle
+- [x] Tables orchestration : agent_queue, chatroom_messages, shared_tasks, watchers
+- [x] Repositories orchestration : AgentQueue, Chatroom, SharedTask, Watcher
+- [x] BDD : agents.state_json, agents.successor_id, status TERMINATED, table agent_connections
+- [x] PipelineExecutor base (concat, extract_context, if, loop, set_variable, translate_context, call_function)
+- [ ] ConnectionRepository + hook dans ModelWeaverDB
+- [ ] AgentRepository mis à jour (state_json, successor_id, TERMINATED)
+- [ ] DSL Executor complet (chaînage par `next`, switch multi-branches, sleep → wakeup_calls)
+- [ ] AgentFactory/Agent : `exit(successor_role, successor_config)`, save/restore state
+- [ ] Mécanisme de succession : signal `succession_request`, watcher écoute, déploie successeur
+- [ ] Worker : exécuter le workflow DSL au lieu du simple appel LLM
+- [ ] Branches : connect/disconnect automatiques selon config rôle
+- [ ] Tests unitaires complets du nouveau système
+- [ ] Test intégration : boucle réflexive (génération + critique + correction) via Groq
+- [ ] Test Docker : workflow multi-agents en conteneur
+- [ ] **Commit V0.4.1**
 
-**V0.4.2** — Planification et automatisation (TODO)
-- [ ] Tâches planifiées (cron-like)
+**V0.4.2** — Orchestration multi-agents (TODO)
+- [ ] Orchestrateur fonctionnel : répartition des tâches, détection de blocages
+- [ ] Watchers opérationnels : auto-assignation, auto-création/suppression d'agents
+- [ ] Communication inter-agents : queue + chatroom + todo partagé fonctionnels
+- [ ] Test intégration : 3+ agents collaborating sur une tâche réelle
+- [ ] Test Docker : orchestration multi-agents en conteneur
+- [ ] **Commit V0.4.2**
+
+**V0.4.3** — Planification et automatisation (TODO)
+- [ ] Tâches planifiées (cron-like via wakeup_calls)
 - [ ] Pipelines de traitement configurables
+- [ ] Test intégration : pipeline planifié récurrent
+- [ ] **Commit V0.4.3**
+
+**V0.4.x** — Boucle spec → code → test → debug (récursif)
+- [ ] LLM teste les agents en profondeur, identifie les bugs, les corrige
+- [ ] Migration BDD propre entre sous-versions ( ALTER TABLE si nécessaire)
+- [ ] Robustesse : gestion des timeouts, erreurs réseau, concurrence
+- [ ] Chaque sous-point commit séparé avec vérification dédiée
+- [ ] **Commit après chaque sous-point**
+
+---
+
+## V0.5 (Planifiée 📋) — GUI Installateur
+
+**Objectif** : Première interface graphique utilisable — installateur de ModelWeaver.
+
+### Périmètre
+- Catalogue (browse, search, filtre)
+- Outils locaux (état, version)
+- Installateur (lancer, suivre, annuler)
+- Installateur de modèles via Ollama ou block
+- Logging et feedback visuel
+
+### Sous-versions
+- **V0.5.0** — Wireframe + framework GUI
+- **V0.5.1** — Vue catalogue
+- **V0.5.2** — Vue outils locaux + installer
+- **V0.5.3** — Vue modèles (Ollama)
+- **V0.5.4** — Tests GUI automatisés
+
+---
+
+## V0.6 (Planifiée 📋) — GUI Agencement des Rôles
+
+**Objectif** : Interface visuelle pour composer les rôles (blocks, drag-and-drop).
+
+### Périmètre
+- Éditeur de rôles en blocks visuels (pipeline → blocs)
+- Bibliothèque de roles existants
+- Prévisualisation du YAML généré
+- Import/export de rôles
+
+### Sous-versions
+- **V0.6.0** — Wireframe + block library
+- **V0.6.1** — Drag-and-drop pipeline
+- **V0.6.2** — Prévisualisation YAML
+- **V0.6.3** — Import/export rôles
+- **V0.6.4** — Tests GUI
+
+---
+
+## V0.7 (Planifiée 📋) — GUI Définition d'Agent
+
+**Objectif** : Interface visuelle pour créer, configurer et déployer un agent.
+
+### Périmètre
+- Création d'agent (nom, rôle, provider, limites)
+- Configuration du workflow
+- Branchements (connect à chatroom/todo/queue/agent)
+- Déploiement (compile the YAML → BDD)
+- Monitoring de l'agent (status, messages, sessions)
+
+### Sous-versions
+- **V0.7.0** — Wireframe + création d'agent
+- **V0.7.1** — Config workflow visuel
+- **V0.7.2** — Branchements visuels
+- **V0.7.3** — Déploiement + monitoring
+- **V0.7.4** — Tests GUI
+
+---
+
+## V0.8 (Planifiée 📋) — Dashboard
+
+**Objectif** : Tour de contrôle simple — voir et piloter les agents en cours.
+
+### Périmètre
+- Vue d'ensemble des agents (statut, activité)
+- Play/Stop/Restart des agents
+- Logs en temps réel
+- Monitoring ressources (CPU, RAM)
+- Vue tâches partagées + chatroom
+
+### Sous-versions
+- **V0.8.0** — Wireframe + vue d'ensemble
+- **V0.8.1** — Contrôles Play/Stop/Restart
+- **V0.8.2** — Logs temps réel
+- **V0.8.3** — Monitoring ressources
+- **V0.8.4** — Tests dashboard
+
+---
+
+## V0.9 (Planifiée 📋) — Test Complet
+
+**Objectif** : Test de bout en bout — de l'installation au déploiement d'agents.
+
+### Périmètre
+- Test installation complète via GUI V0.5
+- Test création de rôles via GUI V0.6
+- Test déploiement d'agent via GUI V0.7
+- Test monitoring via dashboard V0.8
+- Test orchestration multi-agents sur tâche réelle
+- Validation performances et robustesse
+
+### Sous-versions
+- **V0.9.0** — Scénarios de test E2E
+- **V0.9.1** — Test installation GUI
+- **V0.9.2** — Test création rôles + agents GUI
+- **V0.9.3** — Test orchestration multi-agents
+- **V0.9.4** — Validation finale + documentation

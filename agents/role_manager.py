@@ -1,10 +1,20 @@
 """RoleManager — Chargement et validation des définitions de rôles YAML.
 
-Chaque rôle est un fichier YAML décrivant :
-  - system_prompt: le prompt système qui définit le comportement
-  - allowed_skills: liste des skills que le rôle peut exécuter
-  - model_requirements: contraintes sur le modèle (contexte mini, capacités...)
-  - default_config: configuration par défaut
+Chaque rôle est un fichier YAML avec ce schéma :
+
+```yaml
+name: str                    # Identifiant unique du rôle
+description: str             # Description courte
+system_prompt: str           # Prompt système définissant le comportement
+skills: list[str]            # Compétences : code_gen, review, debug, refactor, research, plan, doc, qa, orchestrate, monitor
+model_requirements:          # Contraintes sur le modèle
+  min_context_tokens: int    # Contexte minimum requis
+  capabilities: list[str]    # text_generation, code_generation, vision, reasoning
+contexts: list[str]          # Contextes de travail (ex: "general", "project:modelweaver")
+default_config:              # Configuration par défaut
+  temperature: float
+  max_tokens: int
+```
 """
 
 import json
@@ -15,6 +25,20 @@ from typing import Any, Dict, List, Optional
 
 ROLES_DIR = Path(__file__).resolve().parent / "roles"
 
+VALID_SKILLS = {
+    "chat", "code_gen", "review", "debug", "refactor",
+    "research", "plan", "doc", "qa", "orchestrate", "monitor",
+    "architect", "critique", "summarize", "search",
+}
+
+VALID_CAPABILITIES = {
+    "text_generation", "code_generation", "vision", "reasoning", "audio",
+}
+
+
+class RoleValidationError(ValueError):
+    pass
+
 
 class RoleDefinition:
     """Définition chargée d'un rôle."""
@@ -23,8 +47,9 @@ class RoleDefinition:
         self.name: str = data.get("name", "unknown")
         self.description: str = data.get("description", "")
         self.system_prompt: str = data.get("system_prompt", "")
-        self.allowed_skills: List[str] = data.get("allowed_skills", [])
+        self.skills: List[str] = data.get("skills", data.get("allowed_skills", []))
         self.model_requirements: Dict[str, Any] = data.get("model_requirements", {})
+        self.contexts: List[str] = data.get("contexts", ["general"])
         self.default_config: Dict[str, Any] = data.get("default_config", {})
         self.raw: Dict[str, Any] = data
 
@@ -34,15 +59,48 @@ class RoleDefinition:
             data = yaml.safe_load(f)
         return cls(data or {})
 
+    def validate(self) -> List[str]:
+        errors = []
+        if not self.name:
+            errors.append("name requis")
+        if not self.system_prompt:
+            errors.append("system_prompt requis")
+        for s in self.skills:
+            if s not in VALID_SKILLS:
+                errors.append(f"skill inconnu: {s} (valides: {', '.join(sorted(VALID_SKILLS))})")
+        req = self.model_requirements
+        if req:
+            for cap in req.get("capabilities", []):
+                if cap not in VALID_CAPABILITIES:
+                    errors.append(f"capabilité inconnue: {cap}")
+        return errors
+
+    def classification_str(self) -> str:
+        cls = self.raw.get("classification", {})
+        if not cls:
+            return "uncategorized"
+        parts = [cls.get("class", "")]
+        if cls.get("sub_class"):
+            parts.append(cls["sub_class"])
+        return "/".join(parts)
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "name": self.name,
             "description": self.description,
             "system_prompt": self.system_prompt,
-            "allowed_skills": self.allowed_skills,
+            "skills": self.skills,
             "model_requirements": self.model_requirements,
+            "contexts": self.contexts,
             "default_config": self.default_config,
         }
+        classification = self.raw.get("classification")
+        if classification:
+            result["classification"] = classification
+        pipeline = self.raw.get("pipeline")
+        if pipeline:
+            result["pipeline"] = pipeline
+        return result
 
 
 class RoleManager:
@@ -54,26 +112,25 @@ class RoleManager:
         self._cache: Dict[str, RoleDefinition] = {}
 
     def list_roles(self) -> List[str]:
-        """Liste les noms de rôles disponibles."""
         self._refresh_cache()
         return sorted(self._cache.keys())
 
     def get_role(self, name: str) -> Optional[RoleDefinition]:
-        """Charge un rôle par son nom."""
         self._refresh_cache()
         return self._cache.get(name)
 
     def get_system_prompt(self, name: str) -> str:
-        """Retourne le system prompt d'un rôle, ou chaîne vide."""
         role = self.get_role(name)
         return role.system_prompt if role else ""
 
-    def get_allowed_skills(self, name: str) -> List[str]:
+    def get_skills(self, name: str) -> List[str]:
         role = self.get_role(name)
-        return role.allowed_skills if role else []
+        return role.skills if role else []
 
     def save_role(self, definition: RoleDefinition) -> Path:
-        """Sauvegarde ou écrase un fichier de rôle."""
+        errors = definition.validate()
+        if errors:
+            raise RoleValidationError(f"Rôle '{definition.name}' invalide: {'; '.join(errors)}")
         path = self.roles_dir / f"{definition.name}.yaml"
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(definition.to_dict(), f, default_flow_style=False, allow_unicode=True)
@@ -89,12 +146,17 @@ class RoleManager:
         return False
 
     def _refresh_cache(self):
-        for path in self.roles_dir.glob("*.yaml"):
+        for path in sorted(self.roles_dir.glob("*.yaml")):
             if path.stem not in self._cache:
                 try:
-                    self._cache[path.stem] = RoleDefinition.from_file(path)
+                    role = RoleDefinition.from_file(path)
+                    errors = role.validate()
+                    if errors:
+                        print(f"  ⚠️  Rôle {path.name}: {'; '.join(errors)}")
+                    else:
+                        self._cache[path.stem] = role
                 except Exception as e:
-                    print(f"  ⚠️  Rôle {path.name}: erreur de chargement ({e})")
+                    print(f"  ⚠️  Rôle {path.name}: erreur ({e})")
 
     def to_json(self) -> str:
         return json.dumps({k: v.to_dict() for k, v in self._cache.items()}, indent=2)

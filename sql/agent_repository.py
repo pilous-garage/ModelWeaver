@@ -134,12 +134,13 @@ class AgentRepository:
 
     def save(self, data: Dict[str, Any]) -> int:
         cur = self.conn.execute("""
-            INSERT INTO agents (name, role_type, provider_id, status, config_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO agents (name, role_type, provider_id, status, config_json, state_json)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             data["name"], data["role_type"], data.get("provider_id"),
             data.get("status", "IDLE"),
-            json.dumps(data.get("config", {})) if data.get("config") else None
+            json.dumps(data.get("config", {})) if data.get("config") else None,
+            json.dumps(data.get("state", {})) if data.get("state") else None
         ))
         return cur.lastrowid
 
@@ -148,6 +149,48 @@ class AgentRepository:
             "UPDATE agents SET status = ? WHERE agent_id = ?",
             (status, agent_id)
         )
+
+    def save_state(self, agent_id: int, state: Dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE agents SET state_json = ? WHERE agent_id = ?",
+            (json.dumps(state) if state else None, agent_id)
+        )
+
+    def load_state(self, agent_id: int) -> Dict[str, Any]:
+        cur = self.conn.execute(
+            "SELECT state_json FROM agents WHERE agent_id = ?", (agent_id,)
+        )
+        row = cur.fetchone()
+        if row and row["state_json"]:
+            return json.loads(row["state_json"])
+        return {}
+
+    def set_successor(self, agent_id: int, successor_id: int) -> None:
+        self.conn.execute(
+            "UPDATE agents SET successor_id = ? WHERE agent_id = ?",
+            (successor_id, agent_id)
+        )
+
+    def get_successor(self, agent_id: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("""
+            SELECT a2.* FROM agents a1
+            JOIN agents a2 ON a2.agent_id = a1.successor_id
+            WHERE a1.agent_id = ?
+        """, (agent_id,))
+        return _row_to_dict(cur.fetchone())
+
+    def terminate(self, agent_id: int, successor_id: Optional[int] = None) -> None:
+        """Marque l'agent comme TERMINATED avec successeur optionnel."""
+        if successor_id:
+            self.conn.execute(
+                "UPDATE agents SET status='TERMINATED', successor_id=? WHERE agent_id=?",
+                (successor_id, agent_id)
+            )
+        else:
+            self.conn.execute(
+                "UPDATE agents SET status='TERMINATED' WHERE agent_id=?",
+                (agent_id,)
+            )
 
     def delete(self, agent_id: int) -> bool:
         cur = self.conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
@@ -204,6 +247,16 @@ class SessionRepository:
             "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?",
             (status, now, session_id)
         )
+
+    def transfer_to_agent(self, from_agent_id: int, to_agent_id: int,
+                          status: str = "ACTIVE") -> int:
+        """Transfert les sessions actives d'un agent à un autre (succession)."""
+        now = _now_iso()
+        cur = self.conn.execute("""
+            UPDATE sessions SET agent_id = ?, updated_at = ?
+            WHERE agent_id = ? AND status = 'ACTIVE'
+        """, (to_agent_id, now, from_agent_id))
+        return cur.rowcount
 
 
 class AgentMessageRepository:
@@ -284,6 +337,22 @@ class WakeupCallRepository:
             "UPDATE wakeup_calls SET status = 'COMPLETED', result_summary = ? WHERE task_id = ?",
             (result_summary, task_id)
         )
+
+    def update_sleep(self, task_id: int, seconds: int, next_step_id: Optional[str]) -> None:
+        """Programme le réveil de la tâche après N secondes et mémorise l'étape suivante."""
+        now = _now_iso()
+        # On calcule l'heure de réveil (approximation simple en ISO)
+        # Pour être précis on pourrait utiliser datetime, mais on reste cohérent avec _now_iso()
+        from datetime import datetime, timedelta, timezone
+        wakeup_time = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        self.conn.execute("""
+            UPDATE wakeup_calls SET 
+                status = 'TODO', 
+                execute_after = ?, 
+                request_payload = json_insert(ifnull(request_payload, '{}'), '$.next_step_id', ?)
+            WHERE task_id = ?
+        """, (wakeup_time, next_step_id, task_id))
 
     def fail(self, task_id: int, reason: Optional[str] = None) -> None:
         self.conn.execute(
