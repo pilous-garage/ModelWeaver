@@ -179,7 +179,7 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 
 ---
 
-## V0.3 (En cours 🚧) — Intégration SQLite Complète
+## V0.3 (Terminée ✅) — Intégration SQLite Complète
 
 **Objectif** : Remplacer les JSON bordéliques par une structure SQLite relationnelle. Le catalogue devient la BDD globale.
 
@@ -207,26 +207,26 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 ### Sous-versions
 
 **V0.3.0** — Design du schéma et migration
-- [ ] Définition complète du schéma SQLite (tables, indexes, contraintes)
-- [ ] Script de migration des JSON → SQLite
-- [ ] Tests de validation du schéma
+- [x] Définition complète du schéma SQLite (tables, indexes, contraintes)
+- [x] Script de migration des JSON → SQLite
+- [x] Tests de validation du schéma
 
 **V0.3.1** — Module catalogue porté sur SQLite
-- [ ] Remplacement des JSON par des queries SQLite
-- [ ] Sync catalogue distant → local
+- [x] Remplacement des JSON par des queries SQLite
+- [x] Sync catalogue distant → local
 
 **V0.3.2** — Module key_manager porté sur SQLite
-- [ ] Stockage des clés en base avec chiffrement
-- [ ] Tags free/payant, dates péremption
+- [ ] Stockage des clés en base avec chiffrement (repoussé)
+- [x] Tags free/payant, dates péremption
 
 **V0.3.3** — Module checker/installer porté sur SQLite
-- [ ] État système dans SQLite
-- [ ] Traçabilité des installations
+- [x] État système dans SQLite
+- [x] Traçabilité des installations
 
 **V0.3.4** — Module plumber porté sur SQLite
 - [x] Constructeurs des repositories sans arguments utilisés
-- [ ] Limites, rate limits, quotas lus depuis la BDD
-- [ ] Routage basé sur les données BDD
+- [ ] Limites, rate limits, quotas lus depuis la BDD (repoussé V0.5)
+- [ ] Routage basé sur les données BDD (repoussé V0.5)
 
 **V0.3.5** — Catalogue distant + synchro HTTP
 - [x] `sql/catalogue_server.py` : serveur HTTP sur port configurable
@@ -247,7 +247,7 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 
 ---
 
-## V0.4 (Planifiée 📅) — Agent Factory & Orchestration
+## V0.4 (En cours 🚧) — Agent Factory & Orchestration
 
 **Objectif** : Factory d'agents spécialisés, orchestration multi-agents, exécution planifiée.
 
