@@ -228,6 +228,74 @@ CREATE TABLE IF NOT EXISTS tool_config (
 );
 
 -- ============================================================
+-- 13. MODEL_PROVIDERS — Ressources hardware/cloud pour les agents
+-- ============================================================
+CREATE TABLE IF NOT EXISTS model_providers (
+    provider_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL,
+    engine_type      TEXT NOT NULL CHECK(engine_type IN ('openai_api', 'litellm', 'ollama', 'llamacpp', 'onnx_runtime', 'transformers')),
+    model_name       TEXT NOT NULL,
+    endpoint_url     TEXT,
+    max_concurrent   INTEGER DEFAULT 1,
+    current_concurrent INTEGER DEFAULT 0,
+    cooldown_until   TEXT,
+    api_key_ref      TEXT REFERENCES api_keys(ref),
+    created_at       TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 14. AGENTS — Identité et couplage modèle/hardware
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    role_type   TEXT NOT NULL,
+    provider_id INTEGER REFERENCES model_providers(provider_id),
+    status      TEXT DEFAULT 'IDLE' CHECK(status IN ('IDLE', 'BUSY', 'PAUSED', 'STOPPED')),
+    config_json TEXT,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 15. SESSIONS — Fils de discussion persistants
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id      TEXT PRIMARY KEY,
+    agent_id        INTEGER NOT NULL REFERENCES agents(agent_id),
+    status          TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'COMPLETED', 'ARCHIVED')),
+    context_summary TEXT,
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 16. AGENT_MESSAGES — Mémoire brute au format OpenAI
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_messages (
+    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    role       TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant', 'tool')),
+    content    TEXT NOT NULL,
+    tokens_used INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 17. WAKEUP_CALLS — Système nerveux (tâches et réveils)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS wakeup_calls (
+    task_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id       INTEGER NOT NULL REFERENCES agents(agent_id),
+    session_id     TEXT NOT NULL REFERENCES sessions(session_id),
+    skill          TEXT NOT NULL,
+    request_payload TEXT,
+    status         TEXT DEFAULT 'TODO' CHECK(status IN ('TODO', 'BUSY', 'COMPLETED', 'FAILED')),
+    execute_after  TEXT NOT NULL,
+    result_summary TEXT,
+    created_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_providers_ref ON providers(ref);
@@ -241,3 +309,7 @@ CREATE INDEX IF NOT EXISTS idx_tools_priority ON tools(is_core);
 CREATE INDEX IF NOT EXISTS idx_local_tools_tool ON local_tools(tool_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON install_job_log(job_timestamp);
 CREATE INDEX IF NOT EXISTS idx_packages_tool ON tool_packages(tool_id);
+CREATE INDEX IF NOT EXISTS idx_wakeup_ticker ON wakeup_calls(status, execute_after);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON agent_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_agents_provider ON agents(provider_id);

@@ -251,16 +251,54 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 
 **Objectif** : Factory d'agents spécialisés, orchestration multi-agents, exécution planifiée.
 
+### Architecture
+
+**Paradigme Phénix (Stateless Code / Stateful DB)** : les agents n'existent que comme lignes en BDD. Un Ticker asynchrone les hydrate à la demande, exécute la tâche LLM, puis les déshydrate. 0% CPU au repos.
+
+**Couplage Agent + Rôle + Modèle** : chaque agent est lié déterministiquement à un modèle/provider et à un rôle (fichier YAML). Les petits modèles ne peuvent pas s'auto-attribuer des tâches critiques.
+
+### Composants livrés
+
+| Composant | Fichier | Rôle |
+|-----------|---------|------|
+| Tables BDD | `sql/modelweaver_schema.sql` | 5 tables : model_providers, agents, sessions, agent_messages, wakeup_calls |
+| Repositories | `sql/agent_repository.py` | 5 DAOs (ModelProvider, Agent, Session, AgentMessage, WakeupCall) |
+| Agent Factory | `agents/factory.py` | `createAgent()`, `Agent.execute()`, `Agent.exit()`, `create_request_agent()` |
+| Worker | `agents/worker.py` | Hydrate → appel HTTP OpenAI direct → déshydrate |
+| Ticker | `agents/ticker.py` | Boucle asynchrone, anti-fantôme, wakeup event |
+| Rôles | `agents/role_manager.py` | Chargement YAML depuis `agents/roles/` |
+| Role codeur | `agents/roles/codeur.yaml` | System prompt + skills + config |
+
 ### Sous-versions
 
-**V0.4.0** — Agent Factory
-- [ ] Définition des types d'agents (code, review, debug, search, etc.)
-- [ ] Création dynamique d'agents avec prompts et outils configurables
+**V0.4.0** — Agent Factory ✅
+- [x] Architecture Phénix : agents = lignes en BDD, stateless, 0 CPU au repos
+- [x] 5 tables SQLite avec WAL, indexes, contraintes
+- [x] Repositories DAO (même pattern que sql/db.py)
+- [x] `ModelWeaverDB._ensure_schema` auto-applique tout le schema (IF NOT EXISTS)
+- [x] `AgentFactory.createAgent(name, role_type, provider_id, config)` + injecte le system_prompt du rôle
+- [x] `Agent.execute(request, additional_context, reset_context, session_id, skill)`
+- [x] `Agent.exit()` marque STOPPED + archive les sessions
+- [x] `AgentFactory.create_request_agent()` jetable (one-shot)
+- [x] Worker : appel HTTP direct en format OpenAI compatible (plus de callback)
+- [x] Chargement des clés API depuis `api_keys` via `model_providers.api_key_ref`
+- [x] Worker gère les erreurs HTTP (timeout, 429, 500) proprement
+- [x] Claim atomique via `UPDATE ... WHERE status='TODO'` (pas de BEGIN IMMEDIATE)
+- [x] Anti-fantôme : `reset_busy()` au démarrage du Ticker
+- [x] Catch-up : les tâches en retard sont traitées séquentiellement
+- [x] `AsyncTicker` : asyncio.Event pour réveil immédiat, polling configurable
+- [x] `python -m agents [--once] [--list-roles]` — CLI du Ticker
+- [x] Rôle `assistant` : prompt généraliste, température 0.7
+- [x] Rôle `codeur` : prompt code, température 0.3, skills code_gen/review/debug/refactor
+- [x] `RoleManager` : charge/sauvegarde les YAML dans `agents/roles/`
+- [x] Test unitaire : 7 tests (schéma, création, execute, wakeup lifecycle, anti-ghost, rôles, one-shot)
+- [x] Test intégration Agent Codeur : génération d'un tic-tac-toe fonctionnel via Groq (API réelle)
+- [x] Test Docker : conteneur isolé, agent codeur → script valide, vérifications passées
 
-**V0.4.1** — Orchestration multi-agents
+**V0.4.1** — Orchestration multi-agents (TODO)
 - [ ] File d'attente, priorisation, exécution parallèle
-- [ ] Communication inter-agents
+- [ ] Communication inter-agents (chatroom, todo partagé)
 
-**V0.4.2** — Planification et automatisation
+**V0.4.2** — Planification et automatisation (TODO)
 - [ ] Tâches planifiées (cron-like)
 - [ ] Pipelines de traitement configurables

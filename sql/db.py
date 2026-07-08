@@ -651,7 +651,22 @@ class CommandRepository:
 #  Main DB class
 # ──────────────────────────────────────────────
 
-class ModelWeaverDB:
+class AgentDBMixin:
+    """Agent OS repositories (importés séparément pour éviter les dépendances circulaires)."""
+
+    def _init_agent_repos(self):
+        from sql.agent_repository import (
+            AgentRepository, AgentMessageRepository,
+            ModelProviderRepository, SessionRepository, WakeupCallRepository,
+        )
+        self.model_providers = ModelProviderRepository(self.conn)
+        self.agents = AgentRepository(self.conn)
+        self.sessions = SessionRepository(self.conn)
+        self.agent_messages = AgentMessageRepository(self.conn)
+        self.wakeup_calls = WakeupCallRepository(self.conn)
+
+
+class ModelWeaverDB(AgentDBMixin):
     """Point d'entrée unique pour la base locale.
 
     Crée automatiquement les tables si elles n'existent pas.
@@ -679,16 +694,16 @@ class ModelWeaverDB:
         self.local_tools = LocalToolRepository(self.conn)
         self.llms = LocalLLMRepository(self.conn)
         self.commands = CommandRepository(self.conn)
+        self._init_agent_repos()
 
     def _ensure_schema(self):
-        """Crée les tables si elles n'existent pas encore."""
-        cur = self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='providers'"
-        )
-        if not cur.fetchone():
-            schema = Path(__file__).resolve().parent / "modelweaver_schema.sql"
-            if schema.exists():
-                self.conn.executescript(schema.read_text())
+        """Crée les tables si elles n'existent pas encore.
+
+        Applique tout le schema à chaque connexion (sûr grâce à IF NOT EXISTS).
+        """
+        schema = Path(__file__).resolve().parent / "modelweaver_schema.sql"
+        if schema.exists():
+            self.conn.executescript(schema.read_text())
 
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""

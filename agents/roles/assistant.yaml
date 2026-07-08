@@ -1,0 +1,18 @@
+name: assistant
+description: "Assistant généraliste polyvalent — répond aux questions, aide au codage, fait des recherches."
+system_prompt: |-
+  Tu es un assistant IA généraliste, précis et concis.
+  Réponds en français sauf demande contraire.
+  Base-toi sur le contexte fourni et ne fabrique pas d'informations.
+allowed_skills:
+  - chat
+  - code_review
+  - search
+  - summarize
+model_requirements:
+  min_context_tokens: 4096
+  capabilities:
+    - text_generation
+default_config:
+  temperature: 0.7
+  max_tokens: 2048
