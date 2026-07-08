@@ -12,6 +12,7 @@ Usage :
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,10 +60,12 @@ def main():
     print(f"     {len(db.commands.list_all())} commandes")
 
     # Sync catalogue depuis le serveur local si dispo
-    cat_url = "http://localhost:8764/api"
+    cat_url = os.environ.get("CATALOGUE_URL", "http://localhost:8764/api")
     try:
         import urllib.request
-        req = urllib.request.Request(f"{cat_url}/health", headers={"User-Agent": "ModelWeaver"})
+        from urllib.parse import urljoin
+        req = urllib.request.Request(urljoin(cat_url, "/health"),
+                                     headers={"User-Agent": "ModelWeaver"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status == 200:
                 print(f"  🌐 Synchronisation depuis {cat_url}...")
