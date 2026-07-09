@@ -117,6 +117,10 @@ function App() {
   const [installProgress, setInstallProgress] = useState<{ percent: number; message: string } | null>(null);
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
   const [packageManagers, setPackageManagers] = useState<PackageManager[]>([]);
+  const [showAddTool, setShowAddTool] = useState(false);
+  const [installMode, setInstallMode] = useState<'form' | 'raw'>('raw');
+  const [newTool, setNewTool] = useState({ ref: '', name: '', description: '', tool_type: 'binary', class: 'other', recipe_path: '' });
+  const [rawCommands, setRawCommands] = useState('');
 
   useEffect(() => {
     const unlisten = listen<{ percent: number; message: string }>('install-progress', (event) => {
@@ -246,6 +250,52 @@ function App() {
     setInstallProgress(null);
   };
 
+  const addTool = async () => {
+    if (installMode === 'form' && (!newTool.ref || !newTool.name)) return;
+    if (installMode === 'raw' && !rawCommands.trim()) return;
+    setLoading(true);
+
+    if (installMode === 'raw') {
+      addLog(`➕ Parsing commands...`);
+      try {
+        const res: any = await invoke('run_python_script', {
+          scriptPath: `${SCRIPTS_DIR}/add_tool_from_cmds.py`,
+          args: [JSON.stringify({ commands: rawCommands, ref: newTool.ref, class: newTool.class })]
+        });
+        if (res.status === 'success') {
+          addLog(`✅ Tool ${res.data.ref} added (${res.data.manager || 'binary'})`);
+          setShowAddTool(false);
+          setRawCommands('');
+          setNewTool({ ref: '', name: '', description: '', tool_type: 'binary', class: 'other', recipe_path: '' });
+          await fetchCatalogue();
+        } else {
+          addLog(`❌ Add failed: ${res.error}`);
+        }
+      } catch (e) {
+        addLog(`❌ System error: ${e}`);
+      }
+    } else {
+      addLog(`➕ Adding tool ${newTool.ref}...`);
+      try {
+        const res: any = await invoke('run_python_script', {
+          scriptPath: `${SCRIPTS_DIR}/add_tool.py`,
+          args: [JSON.stringify(newTool)]
+        });
+        if (res.status === 'success') {
+          addLog(`✅ Tool ${newTool.ref} added to catalog`);
+          setShowAddTool(false);
+          setNewTool({ ref: '', name: '', description: '', tool_type: 'binary', class: 'other', recipe_path: '' });
+          await fetchCatalogue();
+        } else {
+          addLog(`❌ Add failed: ${res.error}`);
+        }
+      } catch (e) {
+        addLog(`❌ System error: ${e}`);
+      }
+    }
+    setLoading(false);
+  };
+
   const fetchPackageManagers = async () => {
     try {
       const res: any = await invoke('run_python_script', {
@@ -312,6 +362,12 @@ function App() {
             className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition"
           >
             Refresh Models
+          </button>
+          <button
+            onClick={() => setShowAddTool(true)}
+            className="px-4 py-2 bg-green-700 hover:bg-green-600 rounded-md text-sm transition"
+          >
+            + Add Tool
           </button>
         </div>
       </header>
@@ -677,6 +733,87 @@ function App() {
                   Install
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Tool Modal */}
+      {showAddTool && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setShowAddTool(false)}>
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-600 shadow-2xl max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-white">Add Tool to Catalog</h3>
+              <button onClick={() => setShowAddTool(false)} className="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+            </div>
+            <div className="flex gap-2 mb-4">
+              <button onClick={() => setInstallMode('raw')} className={`px-3 py-1.5 text-xs rounded-md transition ${installMode === 'raw' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}>Paste Commands</button>
+              <button onClick={() => setInstallMode('form')} className={`px-3 py-1.5 text-xs rounded-md transition ${installMode === 'form' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'}`}>Manual Form</button>
+            </div>
+
+            {installMode === 'raw' ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Install commands (one per line)</label>
+                  <textarea value={rawCommands} onChange={e => setRawCommands(e.target.value)} rows={6} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white font-mono" placeholder={"apt-get install -y neofetch\nnpm install -g yarn\npip install requests"} />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Ref (optional, auto-detected if empty)</label>
+                  <input value={newTool.ref} onChange={e => setNewTool({...newTool, ref: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white" placeholder="e.g. my-custom-stack" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Class</label>
+                  <select value={newTool.class} onChange={e => setNewTool({...newTool, class: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white">
+                    {catalogue?.classes.map(cls => (
+                      <option key={cls.ref} value={cls.ref}>{cls.label || cls.ref}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Ref *</label>
+                  <input value={newTool.ref} onChange={e => setNewTool({...newTool, ref: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white" placeholder="e.g. mytool" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Name *</label>
+                  <input value={newTool.name} onChange={e => setNewTool({...newTool, name: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white" placeholder="e.g. My Tool" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Description</label>
+                  <input value={newTool.description} onChange={e => setNewTool({...newTool, description: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white" placeholder="Short description" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Type</label>
+                    <select value={newTool.tool_type} onChange={e => setNewTool({...newTool, tool_type: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white">
+                      <option value="binary">Binary</option>
+                      <option value="python-module">Python Module</option>
+                      <option value="archive">Archive</option>
+                      <option value="source">Source</option>
+                      <option value="container">Container</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Class</label>
+                    <select value={newTool.class} onChange={e => setNewTool({...newTool, class: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white">
+                      {catalogue?.classes.map(cls => (
+                        <option key={cls.ref} value={cls.ref}>{cls.label || cls.ref}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Recipe path (.mw.yaml)</label>
+                  <input value={newTool.recipe_path} onChange={e => setNewTool({...newTool, recipe_path: e.target.value})} className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white" placeholder="install_recipe/mytool.mw.yaml" />
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setShowAddTool(false)} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition">Cancel</button>
+              <button onClick={addTool} disabled={loading || (installMode === 'form' && (!newTool.ref || !newTool.name))} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-md text-sm transition disabled:opacity-50">Add</button>
             </div>
           </div>
         </div>

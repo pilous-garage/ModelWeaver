@@ -30,6 +30,9 @@ docker-backup/
 /tmp/
 *.tmp
 
+# Recettes téléchargées (cache local, non versionnées)
+installed_recipe/
+
 # Config personnelle OpenCode
 .opencode/
 opencode.json

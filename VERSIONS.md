@@ -417,10 +417,10 @@ Les colonnes JSON dans `tools` (`allowed_platforms`, `allowed_arches`, `installe
 - [x] `Installer.uninstall()` : idem
 - [ ] UI inchangée (backend uniquement)
 
-**V0.5.6** — Catalogue enrichi : ajouter un nouvel outil
-- [ ] Formulaire UI pour créer un outil non présent
-- [ ] Sauvegarde en BDD (nouveau format de recette)
-- [ ] Apparition dans le catalogue avec bouton install actif
+**V0.5.6** — Catalogue enrichi : ajouter un nouvel outil ✅
+- [x] Formulaire UI pour créer un outil non présent
+- [x] Sauvegarde en BDD via add_tool.py
+- [x] Apparition dans le catalogue avec bouton install actif
 
 **V0.5.7** — Vérification espace disque avant installation
 - [ ] Estimer la taille des outils/modèles

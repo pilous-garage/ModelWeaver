@@ -52,5 +52,35 @@
     "latest": "3.12.3",
     "class": "language",
     "description": "Python runtime"
+  },
+  "my-custom-stack": {
+    "file": "my-custom-stack.mw.yaml",
+    "latest": "1.0.0",
+    "class": "other",
+    "description": "neofetch - auto-generated recipe"
+  },
+  "custom-tool": {
+    "file": "custom-tool.mw.yaml",
+    "latest": "1.0.0",
+    "class": "other",
+    "description": "custom-tool - auto-generated recipe"
+  },
+  "sl": {
+    "file": "sl.mw.yaml",
+    "latest": "1.0.0",
+    "class": "other",
+    "description": "sl - auto-generated recipe"
+  },
+  "test-sl": {
+    "file": "test-sl.mw.yaml",
+    "latest": "1.0.0",
+    "class": "other",
+    "description": "sl - auto-generated recipe"
+  },
+  "test-sl2": {
+    "file": "test-sl2.mw.yaml",
+    "latest": "1.0.0",
+    "class": "other",
+    "description": "sl - auto-generated recipe"
   }
 }
