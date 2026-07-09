@@ -1,0 +1,6 @@
+block:
+  commands:
+  - brew update
+  - brew install python
+  package: python
+version: 3.12.3

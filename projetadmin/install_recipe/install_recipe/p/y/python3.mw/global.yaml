@@ -1,0 +1,8 @@
+class: language
+description: Python programming language interpreter
+name: python3
+post_install:
+- command: python3 --version
+  shell: true
+pre_install: []
+timeout: 120

@@ -1,0 +1,5 @@
+block:
+  commands:
+  - winget install --id Python.Python.3.12 -e
+  package: Python.Python.3.12
+version: 3.12.3

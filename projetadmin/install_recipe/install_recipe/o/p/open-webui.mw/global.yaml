@@ -1,0 +1,8 @@
+class: chat-llm
+description: Self-hosted LLM chat interface for private AI conversations
+name: open-webui
+post_install:
+- command: python3 -c "import open_webui; print('ok')"
+  shell: true
+pre_install: []
+timeout: 120

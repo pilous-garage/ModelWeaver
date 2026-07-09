@@ -1,0 +1,5 @@
+block:
+  commands:
+  - winget install --id Git.Git -e
+  package: Git.Git
+version: 2.45.0

@@ -1,0 +1,12 @@
+block:
+  commands:
+  - tar -xzf {archive} -C {extract_to}
+  - chmod +x {extract_to}/opencode
+  download_name: opencode-linux-x64.tar.gz
+  extract: true
+  extract_to: /usr/local/bin
+  pre_steps:
+  - command: mkdir -p {extract_to}
+    sudo: false
+  url: https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-linux-x64.tar.gz
+version: 1.17.15

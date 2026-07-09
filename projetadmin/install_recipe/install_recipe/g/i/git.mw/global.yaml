@@ -1,0 +1,8 @@
+class: dev
+description: Distributed version control system
+name: git
+post_install:
+- command: git --version
+pre_install:
+- command: echo "Installing git..."
+timeout: 120

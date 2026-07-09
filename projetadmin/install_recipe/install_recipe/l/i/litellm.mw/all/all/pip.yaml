@@ -1,0 +1,5 @@
+block:
+  commands:
+  - pip install litellm
+  package: litellm
+version: 1.91.0
