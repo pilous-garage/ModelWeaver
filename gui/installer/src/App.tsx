@@ -82,6 +82,16 @@ function App() {
   const [catalogue, setCatalogue] = useState<CatalogueData | null>(null);
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [classFilter, setClassFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'installed' | 'not_installed'>('all');
+  const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const addLog = (msg: string) => {
     setLogs(prev => [msg, ...prev].slice(0, 50));
@@ -220,10 +230,56 @@ function App() {
         {/* Catalogue by class */}
         <section className="col-span-2 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
           <h2 className="text-xl font-semibold mb-4 text-slate-300">Available Tools</h2>
+          <input
+            type="text"
+            placeholder="Search tools..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full mb-2 px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
+          />
+          <div className="flex gap-2 mb-4">
+            <select
+              value={classFilter}
+              onChange={e => setClassFilter(e.target.value)}
+              className="px-2 py-1.5 bg-slate-900 border border-slate-600 rounded-md text-xs text-slate-300 focus:outline-none focus:border-blue-500"
+            >
+              <option value="">All classes</option>
+              {catalogue && catalogue.classes.sort((a: any, b: any) => a.sort_order - b.sort_order).map(cls => (
+                <option key={cls.ref} value={cls.ref}>{cls.label || cls.ref}</option>
+              ))}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as any)}
+              className="px-2 py-1.5 bg-slate-900 border border-slate-600 rounded-md text-xs text-slate-300 focus:outline-none focus:border-blue-500"
+            >
+              <option value="all">All</option>
+              <option value="installed">Installed</option>
+              <option value="not_installed">Not installed</option>
+            </select>
+          </div>
           {catalogue ? (
             <div className="space-y-4 overflow-y-auto max-h-[600px] pr-2">
               {catalogue.classes.sort((a: any, b: any) => a.sort_order - b.sort_order).map(cls => {
-                const toolsInClass = catalogue.catalog.filter((t: any) => t.class === cls.ref);
+                if (classFilter && cls.ref !== classFilter) return null;
+                let toolsInClass = catalogue.catalog.filter((t: any) => t.class === cls.ref);
+                if (debouncedQuery) {
+                  const q = debouncedQuery.toLowerCase();
+                  toolsInClass = toolsInClass.filter((t: any) =>
+                    t.name.toLowerCase().includes(q) ||
+                    t.ref.toLowerCase().includes(q) ||
+                    (t.description && t.description.toLowerCase().includes(q))
+                  );
+                }
+                if (statusFilter === 'installed') {
+                  toolsInClass = toolsInClass.filter((t: any) =>
+                    catalogue.installed.some((it: any) => it.tool_ref === t.ref)
+                  );
+                } else if (statusFilter === 'not_installed') {
+                  toolsInClass = toolsInClass.filter((t: any) =>
+                    !catalogue.installed.some((it: any) => it.tool_ref === t.ref)
+                  );
+                }
                 if (toolsInClass.length === 0) return null;
                 const installedInClass = toolsInClass.filter((t: any) =>
                   catalogue.installed.some((it: any) => it.tool_ref === t.ref)
@@ -239,7 +295,11 @@ function App() {
                         const isInstalled = catalogue.installed.some((it: any) => it.tool_ref === tool.ref);
                         const localTool = catalogue.installed.find((it: any) => it.tool_ref === tool.ref);
                         return (
-                          <div key={tool.ref} className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-slate-700 hover:border-slate-500 transition">
+                          <div
+                            key={tool.ref}
+                            onClick={() => setSelectedTool(tool)}
+                            className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-slate-700 hover:border-slate-500 transition cursor-pointer"
+                          >
                             <div className="flex flex-col gap-0.5 flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="font-medium text-white truncate">{tool.name}</span>
@@ -258,7 +318,7 @@ function App() {
                                 </span>
                               ) : (
                                 <button
-                                  onClick={() => installTool(tool.ref)}
+                                  onClick={(e) => { e.stopPropagation(); installTool(tool.ref); }}
                                   disabled={loading}
                                   className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-md transition disabled:opacity-50 font-medium"
                                 >
@@ -279,6 +339,62 @@ function App() {
           )}
         </section>
       </div>
+
+      {/* Tool Detail Modal */}
+      {selectedTool && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setSelectedTool(null)}>
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-600 shadow-2xl max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-bold text-white">{selectedTool.name}</h3>
+                <span className="text-xs text-slate-500">({selectedTool.ref})</span>
+              </div>
+              <button onClick={() => setSelectedTool(null)} className="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+            </div>
+            <div className="space-y-3 text-sm text-slate-300">
+              <div>
+                <span className="text-slate-500 block text-xs">Description</span>
+                <p>{selectedTool.description || 'No description'}</p>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                  <span className="text-slate-500 block text-xs">Type</span>
+                  <span className="bg-slate-700 px-2 py-0.5 rounded text-xs">{selectedTool.tool_type}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-xs">Class</span>
+                  <span className="bg-slate-700 px-2 py-0.5 rounded text-xs">{catalogue?.classes.find(c => c.ref === selectedTool.class)?.label || selectedTool.class}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-xs">Status</span>
+                  {catalogue?.installed.some(it => it.tool_ref === selectedTool.ref) ? (
+                    <span className="text-green-400 text-xs">Installed</span>
+                  ) : (
+                    <span className="text-yellow-400 text-xs">Not installed</span>
+                  )}
+                </div>
+              </div>
+              {(() => {
+                const localTool = catalogue?.installed.find(it => it.tool_ref === selectedTool.ref);
+                return localTool ? (
+                  <div>
+                    <span className="text-slate-500 block text-xs">Install Info</span>
+                    <p className="text-xs">Version: {localTool.version} | Path: {localTool.install_path}</p>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setSelectedTool(null)} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition">Close</button>
+              {!catalogue?.installed.some(it => it.tool_ref === selectedTool.ref) && (
+                <button onClick={() => { installTool(selectedTool.ref); setSelectedTool(null); }} disabled={loading} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-md text-sm transition disabled:opacity-50">
+                  Install
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Log Terminal */}
       <footer className="mt-auto">

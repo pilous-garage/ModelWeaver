@@ -295,7 +295,7 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - [x] Test intégration Agent Codeur : génération d'un tic-tac-toe fonctionnel via Groq (API réelle)
 - [x] Test Docker : conteneur isolé, agent codeur → script valide, vérifications passées
 
-**V0.4.1** — Workflow DSL & Connexions (En cours 🚧)
+**V0.4.1** — Workflow DSL & Connexions ✅
 - [x] Spec YAML complète (`agents/role_pipeline_spec.yaml`) : workflow, llm_call, switch, sleep, end, signal_successor, save_state, connect, branches
 - [x] 11 rôles classiques créés (assistant, codeur, architecte, controleur_qualite, relecteur, debugger, planificateur, chercheur, documentaliste, orchestrateur, critique)
 - [x] Classification par class/sub_class dans chaque rôle
@@ -303,42 +303,46 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - [x] Repositories orchestration : AgentQueue, Chatroom, SharedTask, Watcher
 - [x] BDD : agents.state_json, agents.successor_id, status TERMINATED, table agent_connections
 - [x] PipelineExecutor base (concat, extract_context, if, loop, set_variable, translate_context, call_function)
-- [ ] ConnectionRepository + hook dans ModelWeaverDB
-- [ ] AgentRepository mis à jour (state_json, successor_id, TERMINATED)
-- [ ] DSL Executor complet (chaînage par `next`, switch multi-branches, sleep → wakeup_calls)
-- [ ] AgentFactory/Agent : `exit(successor_role, successor_config)`, save/restore state
-- [ ] Mécanisme de succession : signal `succession_request`, watcher écoute, déploie successeur
-- [ ] Worker : exécuter le workflow DSL au lieu du simple appel LLM
-- [ ] Branches : connect/disconnect automatiques selon config rôle
+- [x] ConnectionRepository + hook dans ModelWeaverDB (`sql/orchestration_repository.py`, `db.py:OrchestrationDBMixin`)
+- [x] AgentRepository mis à jour (state_json, successor_id, TERMINATED) — `save_state()`, `load_state()`, `set_successor()`, `terminate()`
+- [x] DSL Executor complet (switch, sleep, llm_call, end, output_capture) — `agents/dsl_executor.py`
+- [x] AgentFactory/Agent : `exit(successor_role, successor_config)`, `save_state()`/`restore_state()`
+- [x] Mécanisme de succession : `signal_relay()` + WatcherService écoute + Worker `signal_successor_fn`
+- [x] Worker exécute le workflow DSL (`worker.py` : si pipeline → `_execute_workflow()`, sinon → `_call_llm_simple()`)
+- [x] Branches : connect/disconnect automatiques selon config rôle (chatroom, todo, queue)
 - [ ] Tests unitaires complets du nouveau système
 - [ ] Test intégration : boucle réflexive (génération + critique + correction) via Groq
 - [ ] Test Docker : workflow multi-agents en conteneur
 - [ ] **Commit V0.4.1**
 
-**V0.4.2** — Orchestration multi-agents (TODO)
-- [ ] Orchestrateur fonctionnel : répartition des tâches, détection de blocages
-- [ ] Watchers opérationnels : auto-assignation, auto-création/suppression d'agents
-- [ ] Communication inter-agents : queue + chatroom + todo partagé fonctionnels
-- [ ] Test intégration : 3+ agents collaborating sur une tâche réelle
+**V0.4.2** — Orchestration multi-agents ✅
+- [x] Orchestrateur fonctionnel : répartition des tâches via `Dispatcher.find_compatible_agent()`, provisionnement
+- [x] Watchers opérationnels : `WatcherService.tick()`, `_check_condition()`, `_trigger_agent()`
+- [x] Communication inter-agents : `AgentQueueRepository` + `ChatroomRepository` + `SharedTaskRepository` fonctionnels
+- [x] `ProvisioningService` : création dynamique d'agents
+- [x] `ReviewService` : validation récursive
+- [x] `AutoDebugService` : boucle Codeur → TestRunner → Debugger
+- [x] `WatchdogService` : détection des agents zombies
+- [ ] Test intégration : 3+ agents collaborant sur une tâche réelle
 - [ ] Test Docker : orchestration multi-agents en conteneur
 - [ ] **Commit V0.4.2**
 
-**V0.4.3** — Planification et automatisation (TODO)
-- [ ] Tâches planifiées (cron-like via wakeup_calls)
-- [ ] Pipelines de traitement configurables
+**V0.4.3** — Planification et automatisation ✅
+- [x] Tâches planifiées (cron-like) : `Scheduler` + `ScheduledJobRepository` + table `scheduled_jobs`
+- [x] Pipelines de traitement configurables : `PipelineExecutor` + `DSLExecutor`
 - [ ] Test intégration : pipeline planifié récurrent
 - [ ] **Commit V0.4.3**
 
 **V0.4.x** — Boucle spec → code → test → debug (récursif)
 - [ ] LLM teste les agents en profondeur, identifie les bugs, les corrige
-- [ ] Migration BDD propre entre sous-versions ( ALTER TABLE si nécessaire)
+- [ ] Migration BDD propre entre sous-versions (ALTER TABLE si nécessaire)
 - [ ] Robustesse : gestion des timeouts, erreurs réseau, concurrence
 - [ ] Chaque sous-point commit séparé avec vérification dédiée
 - [ ] **Commit après chaque sous-point**
 
 ---
 
-## V0.5 (Planifiée 📋) — GUI Installateur
+## V0.5 (En cours 🚧) — GUI Installateur
 
 **Objectif** : Première interface graphique utilisable — installateur de ModelWeaver.
 
@@ -350,11 +354,64 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - Logging et feedback visuel
 
 ### Sous-versions
-- **V0.5.0** — Wireframe + framework GUI
-- **V0.5.1** — Vue catalogue
-- **V0.5.2** — Vue outils locaux + installer
-- **V0.5.3** — Vue modèles (Ollama)
-- **V0.5.4** — Tests GUI automatisés
+**V0.5.0** — Socle Tauri + bridge Python ✅
+- [x] Projet Tauri v2 init (React + Tailwind + Rust)
+- [x] Rust `main.rs` : bridge Python (check, catalogue, install via `std::process::Command`)
+- [x] Scripts Python : `scripts/check.py`, `scripts/catalogue.py`, `scripts/install.py`
+- [x] Panel System Check (matériel, dépendances, outils installés)
+- [x] Panel Catalogue groupé par classes (collapsible), trié par `sort_order`
+- [x] Bouton install one-click par outil
+- [x] Table `tool_classes` en BDD + seed des classes
+- [x] `gui/installer/src-tauri/target/` retiré de l'historique git
+- [x] Binaire compilé : `modelweaver-installer` (release)
+- [x] Search/filtre dans le catalogue
+- [x] Indicateur de progression pendant l'installation
+- [x] Logs temps réel dans l'UI
+
+**V0.5.1** — Vue catalogue enrichie ✅
+- [x] Barre de recherche avec debounce
+- [x] Filtres par classe, statut (installé/non)
+- [x] Détail d'outil (version, description, dépendances)
+- [ ] Rafraîchissement du catalogue depuis le serveur distant
+- [ ] Cache local des données catalogue
+
+**V0.5.2** — Vue outils locaux + installer
+- [ ] Scan des outils installés (version, chemin, statut)
+- [ ] Install/Uninstall depuis l'UI
+- [ ] Suivi de progression (barre de progression, logs étape par étape)
+- [ ] File d'attente d'installation multiple
+- [ ] Gestion des erreurs (timeout, échec, rollback)
+
+**V0.5.3** — Vue modèles (Ollama)
+- [ ] Liste des modèles Ollama installés
+- [ ] Bouton install/download d'un modèle (via Ollama pull ou block)
+- [ ] Statut de téléchargement (progression, vitesse)
+- [ ] Suppression de modèle
+
+**V0.5.4** — Catalogue enrichi : nouvel outil non installé
+- [ ] Créer un fichier JSON d'outil non présent sur la machine
+- [ ] L'ajouter au catalogue BDD
+- [ ] Vérifier qu'il apparaît dans l'UI avec bouton install actif
+
+**V0.5.5** — Détection gestionnaires de paquets OS
+- [ ] Détection automatique de tous les gestionnaires installés (apt, snap, brew, winget, choco, pacman, yay, dnf, yum, zypper, apk, emerge, nix, flatpak, pip, cargo, npm, go)
+- [ ] Table `package_managers` en BDD : nom, détecté, version, commande
+- [ ] Panel dédié dans l'UI listant les gestionnaires détectés
+- [ ] Enrichir les outils du catalogue avec `package_versions` (JSON) : versions alternatives par gestionnaire
+- [ ] UI : sélecteur de version quand plusieurs disponibles (gestionnaire + version)
+- [ ] Install/uninstall dispatché vers le bon gestionnaire de paquet
+
+**V0.5.6** — Tests GUI automatisés
+- [ ] Tests unitaires des composants React (catalogue, system check, installer)
+- [ ] Tests d'intégration Rust → Python (chaque bridge script)
+- [ ] Test bout en bout : check → catalogue → install → vérification
+
+**V0.5.7** — Système de tags et filtres par tag
+- [ ] Ajouter une table `tool_tags` en BDD (tool_id, tag)
+- [ ] Tags pré-définis : web, mobile, ia, data, devops, security, database, testing, ci-cd, desktop, gaming, multimedia
+- [ ] Assigner des tags aux outils du catalogue existants
+- [ ] UI : filtres par tag (sélecteur multiple, cumulable avec classe et recherche)
+- [ ] Champ `tags` dans le JSON d'import d'outil
 
 ---
 
