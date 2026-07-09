@@ -7,7 +7,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 
 class Installer:
@@ -30,15 +30,22 @@ class Installer:
 
     # ── API publique ──
 
-    def install(self, tool: Dict[str, Any]) -> bool:
+    def install(self, tool: Dict[str, Any], progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
         """Installe un outil décrit par un dictionnaire catalogue.
 
         Champs utilisés : ref, name, tool_type, install_method,
         default_download_url, installer_params, allowed_platforms,
         allowed_arches, current_version.
+
+        Si progress_callback est fourni, il est appelé avec (percent, message)
+        à chaque étape.
         """
         ref = tool.get("ref") or tool.get("name", "?")
+        if progress_callback:
+            progress_callback(0, f"Vérification de {ref}...")
         if not self._compatible_platform(tool):
+            if progress_callback:
+                progress_callback(100, f"{ref} : non compatible {self.os_type}/{self.arch}")
             print(f"  ⏭️  {ref} : non compatible {self.os_type}/{self.arch}")
             return False
 
@@ -60,11 +67,17 @@ class Installer:
         if not handler:
             raise ValueError(f"Méthode inconnue '{method}' pour {ref}")
 
+        if progress_callback:
+            progress_callback(15, f"Installation de {ref} via {method}...")
         print(f"  📦 {ref} : {method}")
         ok = handler(tool)
         if ok:
+            if progress_callback:
+                progress_callback(90, f"Finalisation de {ref}...")
             print(f"  ✅ {ref} installé")
         else:
+            if progress_callback:
+                progress_callback(100, f"Échec de {ref}")
             print(f"  ❌ {ref} : échec")
         return ok
 

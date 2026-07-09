@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
+use tauri::Emitter;
 
 #[derive(Serialize, Deserialize)]
 struct PythonResponse {
@@ -12,7 +14,6 @@ struct PythonResponse {
 }
 
 fn get_project_root() -> PathBuf {
-    // src-tauri is 2 levels below project root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir)
         .parent() // gui/installer/
@@ -28,7 +29,7 @@ fn get_project_root() -> PathBuf {
 fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonResponse, String> {
     let root = get_project_root();
     let full_script_path = root.join(&script_path);
-    
+
     let output = Command::new("python3")
         .arg(&full_script_path)
         .args(&args)
@@ -54,10 +55,76 @@ fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonRes
     }
 }
 
+#[tauri::command]
+async fn install_tool(app_handle: tauri::AppHandle, tool_ref: String) -> Result<PythonResponse, String> {
+    let root = get_project_root();
+    let script_path = root.join("gui/installer/scripts/install.py");
+
+    let mut child = Command::new("python3")
+        .arg(&script_path)
+        .arg(&tool_ref)
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn python3: {}", e))?;
+
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "No stdout from child".to_string())?;
+    let reader = BufReader::new(stdout);
+
+    let mut last_result = PythonResponse {
+        status: "error".to_string(),
+        data: serde_json::Value::Null,
+        error: Some("No output".to_string()),
+    };
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+            match val.get("type").and_then(|t| t.as_str()) {
+                Some("progress") => {
+                    let _ = app_handle.emit("install-progress", &val);
+                }
+                Some("result") => {
+                    let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("error").to_string();
+                    let error = val.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+                    last_result = PythonResponse {
+                        status,
+                        data: val,
+                        error,
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Wait error: {}", e))?;
+    if !status.success() {
+        let stderr = child.stderr.take()
+            .map(|s| {
+                let mut buf = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(s), &mut buf);
+                buf
+            })
+            .unwrap_or_default();
+        if last_result.error.is_none() {
+            last_result.error = Some(if stderr.is_empty() { "Process failed".into() } else { stderr });
+            last_result.status = "error".to_string();
+        }
+    }
+
+    Ok(last_result)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![run_python_script])
+        .invoke_handler(tauri::generate_handler![run_python_script, install_tool])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

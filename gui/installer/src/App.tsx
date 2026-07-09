@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const SCRIPTS_DIR = 'gui/installer/scripts';
 
@@ -98,6 +99,15 @@ function App() {
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
   const [leftOpen, setLeftOpen] = useState<boolean | null>(null);
   const [catalogueOpen, setCatalogueOpen] = useState<boolean | null>(null);
+  const [installProgress, setInstallProgress] = useState<{ percent: number; message: string } | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<{ percent: number; message: string }>('install-progress', (event) => {
+      setInstallProgress({ percent: event.payload.percent, message: event.payload.message });
+      addLog(event.payload.message);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
@@ -148,12 +158,10 @@ function App() {
 
   const installTool = async (ref: string) => {
     setLoading(true);
+    setInstallProgress({ percent: 0, message: `Installation de ${ref}...` });
     addLog(`📦 Installing ${ref}...`);
     try {
-      const res: any = await invoke('run_python_script', {
-        scriptPath: `${SCRIPTS_DIR}/install.py`,
-        args: [ref]
-      });
+      const res: any = await invoke('install_tool', { toolRef: ref });
       if (res.status === 'success') {
         addLog(`✅ ${ref} installed`);
         await fetchCatalogue();
@@ -165,6 +173,7 @@ function App() {
       addLog(`❌ System error: ${e}`);
     }
     setLoading(false);
+    setInstallProgress(null);
   };
 
   useEffect(() => {
@@ -193,6 +202,21 @@ function App() {
           </button>
         </div>
       </header>
+
+      {installProgress && (
+        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-slate-300 truncate">{installProgress.message}</span>
+            <span className="text-xs text-slate-500">{installProgress.percent}%</span>
+          </div>
+          <div className="w-full bg-slate-900 rounded-full h-2.5">
+            <div
+              className="bg-blue-600 h-2.5 rounded-full transition-all duration-300 ease-out"
+              style={{ width: `${installProgress.percent}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* System State */}
