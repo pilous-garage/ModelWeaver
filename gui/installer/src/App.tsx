@@ -213,12 +213,36 @@ function App() {
 
               <CollapsibleSection title="Installed Tools" count={systemState.tools_installed.length}>
                 <div className="space-y-1">
-                  {systemState.tools_installed.map(tool => (
-                    <div key={tool.tool_ref} className="flex items-center justify-between text-sm bg-slate-900 px-2 py-1 rounded">
-                      <span className="text-slate-300">{tool.tool_name}</span>
-                      <span className="text-xs text-slate-500">{tool.version}</span>
-                    </div>
-                  ))}
+                  {(() => {
+                    const byClass: Record<string, InstalledTool[]> = {};
+                    for (const tool of systemState.tools_installed) {
+                      const catTool = catalogue?.catalog.find((c: any) => c.ref === tool.tool_ref);
+                      const cls = catTool?.class || 'other';
+                      if (!byClass[cls]) byClass[cls] = [];
+                      byClass[cls].push(tool);
+                    }
+                    const classes = catalogue?.classes || [];
+                    const sortedClassRefs = Object.keys(byClass).sort((a, b) => {
+                      const ca = classes.find((c: any) => c.ref === a);
+                      const cb = classes.find((c: any) => c.ref === b);
+                      return (ca?.sort_order ?? 99) - (cb?.sort_order ?? 99);
+                    });
+                    return sortedClassRefs.map(clsRef => {
+                      const clsLabel = classes.find((c: any) => c.ref === clsRef)?.label || clsRef;
+                      const tools = byClass[clsRef];
+                      return (
+                        <div key={clsRef} className="mb-2">
+                          <div className="text-xs text-slate-500 uppercase mb-1">{clsLabel} ({tools.length})</div>
+                          {tools.map(tool => (
+                            <div key={tool.tool_ref} className="flex items-center justify-between text-sm bg-slate-900 px-2 py-1 rounded mb-0.5">
+                              <span className="text-slate-300">{tool.tool_name}</span>
+                              <span className="text-xs text-slate-500">{tool.version}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </CollapsibleSection>
             </div>
