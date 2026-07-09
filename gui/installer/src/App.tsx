@@ -61,18 +61,27 @@ interface CatalogueData {
   classes: ToolClass[];
 }
 
-function CollapsibleSection({ title, count, defaultOpen = true, children }: { title: string; count?: number | string; defaultOpen?: boolean; children: React.ReactNode }) {
+function CollapsibleSection({ title, count, defaultOpen = true, controlledOpen, onManualToggle, children }: { title: string; count?: number | string; defaultOpen?: boolean; controlledOpen?: boolean | null; onManualToggle?: () => void; children: React.ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
+  const isOpen = controlledOpen !== null && controlledOpen !== undefined ? controlledOpen : open;
+
+  const handleToggle = () => {
+    if (controlledOpen !== null && controlledOpen !== undefined) {
+      onManualToggle?.();
+    } else {
+      setOpen(!open);
+    }
+  };
   return (
     <div>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={handleToggle}
         className="flex items-center justify-between w-full text-xs uppercase text-slate-500 font-bold mb-2 hover:text-slate-300 transition"
       >
         <span>{title}{count !== undefined ? ` (${count})` : ''}</span>
-        <span className="text-slate-600">{open ? '▼' : '▶'}</span>
+        <span className="text-slate-600">{isOpen ? '▼' : '▶'}</span>
       </button>
-      {open && children}
+      {isOpen && children}
     </div>
   );
 }
@@ -87,6 +96,8 @@ function App() {
   const [classFilter, setClassFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'installed' | 'not_installed'>('all');
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
+  const [leftOpen, setLeftOpen] = useState<boolean | null>(null);
+  const [catalogueOpen, setCatalogueOpen] = useState<boolean | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
@@ -186,10 +197,16 @@ function App() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* System State */}
         <section className="col-span-1 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
-          <h2 className="text-xl font-semibold mb-4 text-slate-300">System State</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-slate-300">System State</h2>
+            <div className="flex gap-1">
+              <button onClick={() => setLeftOpen(true)} className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs transition">+ All</button>
+              <button onClick={() => setLeftOpen(false)} className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs transition">− All</button>
+            </div>
+          </div>
           {systemState ? (
             <div className="space-y-6">
-              <CollapsibleSection title="Hardware" count={undefined}>
+              <CollapsibleSection title="Hardware" count={undefined} controlledOpen={leftOpen} onManualToggle={() => setLeftOpen(null)}>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <span className="text-slate-400">RAM:</span>
                   <span className="text-right">{systemState.hardware.ram_total_gb} GB</span>
@@ -198,7 +215,7 @@ function App() {
                 </div>
               </CollapsibleSection>
 
-              <CollapsibleSection title="Dependencies" count={systemState.dependencies.length}>
+              <CollapsibleSection title="Dependencies" count={systemState.dependencies.length} controlledOpen={leftOpen} onManualToggle={() => setLeftOpen(null)}>
                 <div className="space-y-2">
                   {systemState.dependencies.map(dep => (
                     <div key={dep.name} className="flex items-center justify-between text-sm">
@@ -211,7 +228,7 @@ function App() {
                 </div>
               </CollapsibleSection>
 
-              <CollapsibleSection title="Installed Tools" count={systemState.tools_installed.length}>
+              <CollapsibleSection title="Installed Tools" count={systemState.tools_installed.length} controlledOpen={leftOpen} onManualToggle={() => setLeftOpen(null)}>
                 <div className="space-y-1">
                   {(() => {
                     const byClass: Record<string, InstalledTool[]> = {};
@@ -231,7 +248,7 @@ function App() {
                       const clsLabel = classes.find((c: any) => c.ref === clsRef)?.label || clsRef;
                       const tools = byClass[clsRef];
                       return (
-                        <CollapsibleSection key={clsRef} title={clsLabel} count={tools.length} defaultOpen={false}>
+                        <CollapsibleSection key={clsRef} title={clsLabel} count={tools.length} defaultOpen={false} controlledOpen={leftOpen} onManualToggle={() => setLeftOpen(null)}>
                           {tools.map(tool => (
                             <div key={tool.tool_ref} className="flex items-center justify-between text-sm bg-slate-900 px-2 py-1 rounded mb-0.5">
                               <span className="text-slate-300">{tool.tool_name}</span>
@@ -252,7 +269,13 @@ function App() {
 
         {/* Catalogue by class */}
         <section className="col-span-2 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
-          <h2 className="text-xl font-semibold mb-4 text-slate-300">Available Tools</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-slate-300">Available Tools</h2>
+            <div className="flex gap-1">
+              <button onClick={() => setCatalogueOpen(true)} className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs transition">+ All</button>
+              <button onClick={() => setCatalogueOpen(false)} className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs transition">− All</button>
+            </div>
+          </div>
           <input
             type="text"
             placeholder="Search tools..."
@@ -312,6 +335,8 @@ function App() {
                     key={cls.ref}
                     title={cls.label || cls.ref}
                     count={`${installedInClass.length}/${toolsInClass.length}`}
+                    controlledOpen={catalogueOpen}
+                    onManualToggle={() => setCatalogueOpen(null)}
                   >
                     <div className="space-y-2">
                       {toolsInClass.map(tool => {
