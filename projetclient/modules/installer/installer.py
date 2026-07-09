@@ -8,8 +8,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
-
 from .recipe_parser import RecipeParser
+from modules.utils.logger import log
 
 
 class Installer:
@@ -58,6 +58,7 @@ class Installer:
         if recipe:
             if progress_callback:
                 progress_callback(5, f"Utilisation de la recette {ref}")
+            log.info(f"Installing {ref} using recipe")
             # Résolution du chemin de téléchargement pour les binaires
             download_path = None
             if tool.get("tool_type") == "binary":
@@ -84,6 +85,7 @@ class Installer:
             return ok
 
         # Fallback legacy
+        log.warn(f"No recipe found for {ref}, falling back to legacy installation")
         return self._install_legacy(tool, ref, progress_callback)
 
     def uninstall(self, tool: Dict[str, Any], install_path: Optional[str] = None,
@@ -285,13 +287,13 @@ class Installer:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             return True
         except FileNotFoundError:
-            print(f"  ⚠️  Commande introuvable : {cmd[0]}")
+            log.error(f"Commande introuvable : {cmd[0]}")
             return False
         except subprocess.CalledProcessError as e:
-            print(f"  ⚠️  {cmd[0]} a échoué : {e.stderr[:200] if e.stderr else e}")
+            log.error(f"{cmd[0]} a échoué : {e.stderr[:200] if e.stderr else e}")
             return False
         except Exception as e:
-            print(f"  ⚠️  Erreur inattendue : {e}")
+            log.critical(f"Erreur inattendue lors de l'exécution de {cmd[0]}: {e}")
             return False
         except FileNotFoundError:
             print(f"  ⚠️  Commande introuvable : {cmd[0]}")
