@@ -231,15 +231,14 @@ function App() {
                       const clsLabel = classes.find((c: any) => c.ref === clsRef)?.label || clsRef;
                       const tools = byClass[clsRef];
                       return (
-                        <div key={clsRef} className="mb-2">
-                          <div className="text-xs text-slate-500 uppercase mb-1">{clsLabel} ({tools.length})</div>
+                        <CollapsibleSection key={clsRef} title={clsLabel} count={tools.length} defaultOpen={false}>
                           {tools.map(tool => (
                             <div key={tool.tool_ref} className="flex items-center justify-between text-sm bg-slate-900 px-2 py-1 rounded mb-0.5">
                               <span className="text-slate-300">{tool.tool_name}</span>
                               <span className="text-xs text-slate-500">{tool.version}</span>
                             </div>
                           ))}
-                        </div>
+                        </CollapsibleSection>
                       );
                     });
                   })()}
