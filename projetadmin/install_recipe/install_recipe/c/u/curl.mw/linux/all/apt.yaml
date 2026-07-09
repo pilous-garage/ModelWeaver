@@ -1,0 +1,8 @@
+block:
+  install:
+  - apt-get install -y curl
+  package: curl
+  uninstall:
+  - apt-get remove -y curl
+  - apt-get autoremove -y
+version: 1.0.0

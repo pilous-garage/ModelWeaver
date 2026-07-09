@@ -1,0 +1,5 @@
+block:
+  commands:
+  - brew install git
+  package: git
+version: 2.45.0

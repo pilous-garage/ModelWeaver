@@ -1,0 +1,5 @@
+block:
+  commands:
+  - pip install gitingest
+  package: gitingest
+version: 0.3.1

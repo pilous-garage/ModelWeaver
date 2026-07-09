@@ -1,0 +1,14 @@
+class: system
+description: ModelWeaver orchestrator - installs and coordinates AI tools
+name: modelweaver
+post_install:
+- command: python3 modelweaver.py check
+  shell: true
+pre_install:
+- command: which git || apt-get install -y git
+  sudo: true
+- command: which curl || apt-get install -y curl
+  sudo: true
+- command: which python3 || apt-get install -y python3
+  sudo: true
+timeout: 300

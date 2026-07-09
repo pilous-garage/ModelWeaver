@@ -1,0 +1,8 @@
+class: other
+description: curl - auto-generated recipe
+name: curl
+post_install:
+- command: curl --version
+pre_install:
+- command: echo "Installing curl..."
+timeout: 120

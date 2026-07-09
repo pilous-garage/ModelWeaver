@@ -1,0 +1,10 @@
+class: engine
+description: "Local LLM runner \u2014 download and run large language models locally"
+name: ollama
+post_install:
+- command: ollama --version
+  shell: true
+pre_install:
+- command: echo "Installing ollama..."
+  shell: true
+timeout: 300

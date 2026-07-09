@@ -1,0 +1,8 @@
+class: chat-llm
+description: AI-powered coding assistant CLI
+name: opencode
+post_install:
+- command: opencode --version
+  shell: true
+pre_install: []
+timeout: 120
