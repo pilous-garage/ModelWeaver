@@ -198,6 +198,21 @@ class SharedTaskRepository:
         """, (task_id,))
         return _row_to_dict(cur.fetchone())
 
+    def list_done_without_review(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Tâches DONE qui n'ont pas d'enfant de type 'critique'."""
+        cur = self.conn.execute("""
+            SELECT * FROM shared_tasks st
+            WHERE st.status = 'DONE'
+              AND NOT EXISTS (
+                SELECT 1 FROM shared_tasks child 
+                WHERE child.parent_task_id = st.task_id 
+                  AND child.required_role = 'critique'
+              )
+            ORDER BY st.updated_at ASC
+            LIMIT ?
+        """, (limit,))
+        return _rows_to_list(cur.fetchall())
+
     def list_by_agent(self, agent_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         cur = self.conn.execute("""
             SELECT * FROM shared_tasks

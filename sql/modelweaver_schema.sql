@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS tools (
     default_download_url TEXT,
     checksum_algorithm TEXT DEFAULT 'sha256',
     is_core            INTEGER DEFAULT 0,
+    class              TEXT DEFAULT 'other',
     allowed_platforms  TEXT,
     allowed_arches     TEXT,
     installer_params   TEXT,
@@ -112,6 +113,18 @@ CREATE TABLE IF NOT EXISTS tools (
     catalogue_ref      TEXT,
     created_at         INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at         INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- ============================================================
+-- 5.5. TOOL_CLASSES — Catégories d'outils
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tool_classes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref         TEXT UNIQUE NOT NULL,
+    label       TEXT NOT NULL,
+    sort_order  INTEGER DEFAULT 0,
+    created_at  INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at  INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
 -- ============================================================
@@ -367,8 +380,21 @@ CREATE TABLE IF NOT EXISTS agent_connections (
 );
 
 -- ============================================================
--- INDEXES
+-- 23. SCHEDULED_JOBS — Tâches récurrentes / Planification
 -- ============================================================
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        INTEGER REFERENCES agents(agent_id) ON DELETE CASCADE,
+    role_type       TEXT,                    -- Si NULL, lié à l'agent_id. Sinon, n'importe quel agent du rôle.
+    skill           TEXT NOT NULL,           -- Skill à déclencher
+    request_payload TEXT,                    -- Payload de la wakeup_call
+    interval_seconds INTEGER,                -- Intervalle de répétition (0 = one-shot)
+    next_run_at     TEXT NOT NULL,           -- Date/Heure du prochain déclenchement
+    enabled         INTEGER DEFAULT 1,       -- 1 = actif, 0 = pause
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run_at, enabled);
 CREATE INDEX IF NOT EXISTS idx_providers_ref ON providers(ref);
 CREATE INDEX IF NOT EXISTS idx_models_ref ON models(ref);
 CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider_id);

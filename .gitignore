@@ -24,6 +24,10 @@ tui.json
 # Clés API (fichier utilisateur)
 .env
 
+# Archives de backup
+*.tar
+*.zip
+
 # Liste des providers dont les clés sont commitées (à révoquer en V2)
 # Seulement ajouter, jamais supprimer
 .env.committed

@@ -11,6 +11,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from sql.migrations import MigrationManager
 
 
 def _ref(prefix: str = "key") -> str:
@@ -537,7 +538,8 @@ class ToolRepository:
                     ("current_version", "current_version"),
                     ("default_download_url", "default_download_url"),
                     ("checksum_algorithm", "checksum_algorithm"),
-                    ("is_core", "is_core"), ("allowed_platforms", "allowed_platforms"),
+                    ("is_core", "is_core"), ("class", "class"),
+                    ("allowed_platforms", "allowed_platforms"),
                     ("allowed_arches", "allowed_arches"),
                     ("installer_params", "installer_params"),
                     ("fallback_chain", "fallback_chain"),
@@ -554,17 +556,17 @@ class ToolRepository:
         cur = self.conn.execute("""
             INSERT INTO tools (ref, name, description, tool_type, install_method,
                 current_version, default_download_url, checksum_algorithm,
-                is_core, allowed_platforms, allowed_arches,
+                is_core, class, allowed_platforms, allowed_arches,
                 installer_params, fallback_chain, catalogue_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ref or _ref("tool"), data.get("name"), data.get("description"),
             data.get("tool_type", "binary"), data.get("install_method", "direct-url"),
             data.get("current_version"), data.get("default_download_url"),
             data.get("checksum_algorithm", "sha256"),
-            data.get("is_core", 0), data.get("allowed_platforms"),
-            data.get("allowed_arches"), data.get("installer_params"),
-            data.get("fallback_chain"), data.get("catalogue_ref")
+            data.get("is_core", 0), data.get("class", "other"),
+            data.get("allowed_platforms"), data.get("allowed_arches"),
+            data.get("installer_params"), data.get("fallback_chain"), data.get("catalogue_ref")
         ))
         return cur.lastrowid
 
@@ -648,6 +650,46 @@ class CommandRepository:
 
 
 # ──────────────────────────────────────────────
+#  Tool Classes Repository
+# ──────────────────────────────────────────────
+
+class ToolClassRepository:
+    """Classes/catégories d'outils."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM tool_classes ORDER BY sort_order, label")
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM tool_classes WHERE ref = ?", (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        ref = data.get("ref")
+        existing = None
+        if ref:
+            cur = self.conn.execute("SELECT id FROM tool_classes WHERE ref = ?", (ref,))
+            existing = cur.fetchone()
+        if existing:
+            self.conn.execute("""
+                UPDATE tool_classes SET label=?, sort_order=?
+                WHERE id=?
+            """, (data.get("label"), data.get("sort_order", 0), existing["id"]))
+            return existing["id"]
+        cur = self.conn.execute("""
+            INSERT INTO tool_classes (ref, label, sort_order) VALUES (?, ?, ?)
+        """, (ref, data.get("label"), data.get("sort_order", 0)))
+        return cur.lastrowid
+
+    def delete(self, ref: str) -> bool:
+        cur = self.conn.execute("DELETE FROM tool_classes WHERE ref = ?", (ref,))
+        return cur.rowcount > 0
+
+
+# ──────────────────────────────────────────────
 #  Main DB class
 # ──────────────────────────────────────────────
 
@@ -696,21 +738,30 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_local_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self._ensure_schema()
+        
+        # Appliquer les migrations SQL
+        migrations_dir = Path(__file__).resolve().parent / "migrations"
+        if migrations_dir.exists():
+            manager = MigrationManager(self.db_path)
+            manager.apply_migrations(migrations_dir)
 
         self.providers = ProviderRepository(self.conn)
         self.models = ModelRepository(self.conn)
         self.keys = KeyRepository(self.conn)
         self.tools = ToolRepository(self.conn)
+        self.tool_classes = ToolClassRepository(self.conn)
         self.local_tools = LocalToolRepository(self.conn)
         self.llms = LocalLLMRepository(self.conn)
         self.commands = CommandRepository(self.conn)
         self._init_agent_repos()
         self._init_orchestration_repos()
+        from sql.agent_repository import ScheduledJobRepository
+        self.scheduled_jobs = ScheduledJobRepository(self.conn)
 
     def _ensure_schema(self):
         """Crée les tables si elles n'existent pas encore.

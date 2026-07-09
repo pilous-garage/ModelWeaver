@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS catalogue_tools (
     install_method      TEXT NOT NULL,
     current_version     TEXT,
     default_download_url TEXT,
+    class               TEXT DEFAULT 'other',
     allowed_platforms   TEXT,
     allowed_arches      TEXT,
     created_at          INTEGER DEFAULT (strftime('%s', 'now'))

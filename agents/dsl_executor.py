@@ -61,12 +61,14 @@ class DSLExecutor:
         save_state_fn: Optional[Callable] = None,
         signal_successor_fn: Optional[Callable] = None,
         connect_fn: Optional[Callable] = None,
+        tool_call_fn: Optional[Callable] = None,
     ):
         self.pipeline = pipeline_executor or PipelineExecutor()
         self.llm_call = llm_call_fn
         self.save_state = save_state_fn
         self.signal_successor = signal_successor_fn
         self.connect_fn = connect_fn
+        self.tool_call = tool_call_fn
 
     def run(
         self,
@@ -324,6 +326,39 @@ class DSLExecutor:
         result.messages, result.variables = self.pipeline._step_call_function(
             step, result.messages, result.variables
         )
+        result.next_step_id = step.get("next")
+        return True
+
+    def _dsl_tool_call(self, step: Dict, result: WorkflowResult) -> bool:
+        """Appel d'outil système (write_file, run_shell...)."""
+        if not self.tool_call:
+            result.status = "failed"
+            result.end_reason = "Aucun ToolExecutor configuré"
+            return False
+        
+        tool_name = step.get("tool", "")
+        args = step.get("args", {})
+        
+        # Résolution des variables dans les arguments
+        resolved_args = {}
+        for k, v in args.items():
+            if isinstance(v, str):
+                resolved_args[k] = self._resolve(v, result.variables)
+            else:
+                resolved_args[k] = v
+        
+        try:
+            output = self.tool_call(tool_name, resolved_args)
+            output_capture = step.get("output_capture")
+            if output_capture:
+                result.variables[output_capture] = output
+            
+            result.messages.append({"role": "system", "content": f"Outil {tool_name} résultat : {output}"})
+        except Exception as e:
+            result.status = "failed"
+            result.end_reason = f"Tool call error: {e}"
+            return False
+            
         result.next_step_id = step.get("next")
         return True
 

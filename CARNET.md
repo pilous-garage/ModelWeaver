@@ -191,5 +191,6 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 
 ### Idées V0.2+
 - **gitingest intelligent** : adapter la taille du contexte injecté par modèle (Gemini peut recevoir ~2M chars, Mistral/OpenAI ~400K). Implémenté dans `litellm_router_proxy.py` via `try_deployments` avec troncature par budget. À améliorer : fenêtres préférées configurables par modèle/groupe, priorisation des fichiers les plus pertinents plutôt que simple troncature FIFO.
+- **Plugin OpenCode sudo** : Créer un plugin pour OpenCode permettant de gérer les requêtes `sudo` de manière élégante (demander la préférence de l'utilisateur ou gérer l'authentification via un canal sécurisé) pour éviter les blocages en CLI.
 
 Détail des versions dans `VERSIONS.md`.

@@ -196,19 +196,8 @@ class Agent:
         return result
 
     def signal_relay(self, reason: str,
-                     successor_role: Optional[str] = None) -> int:
-        """Envoie un signal de relais dans la queue (pour l'orchestrateur).
-
-        L'agent signale qu'il a besoin d'un successeur. L'orchestrateur
-        écoute la queue et décide de créer le successeur.
-
-        Args:
-            reason: Raison du relais (ex: 'limite_contexte', 'cout', 'cooldown').
-            successor_role: Rôle suggéré pour le successeur.
-
-        Returns:
-            L'ID du message en queue.
-        """
+                        successor_role: Optional[str] = None) -> int:
+        """Envoie un signal de relais dans la queue (pour l'orchestrateur)."""
         content = json.dumps({
             "type": "succession_request",
             "agent_id": self.agent_id,
@@ -227,7 +216,41 @@ class Agent:
         self.db.commit()
         return msg_id
 
-    # ── Helpers ────────────────────────────────────────────
+    def send(self, target_name: str, message: str) -> int:
+        """Envoie un message direct à un autre agent."""
+        target = self.db.agents.get_by_name(target_name)
+        if not target:
+            raise ValueError(f"Agent {target_name} introuvable")
+        
+        msg_id = self.db.queue.send_direct(
+            from_id=self.agent_id,
+            to_id=target["agent_id"],
+            content=message
+        )
+        self.db.commit()
+        return msg_id
+
+    def broadcast(self, message: str, topic: str = "general") -> int:
+        """Diffuse un message dans le chatroom / broadcast."""
+        msg_id = self.db.queue.send_broadcast(
+            from_agent_id=self.agent_id,
+            content=message,
+            topic=topic
+        )
+        self.db.commit()
+        return msg_id
+
+    def add_task(self, title: str, role: Optional[str] = None, 
+                 context: str = "general", description: Optional[str] = None) -> int:
+        """Ajoute une tâche dans le todo partagé."""
+        task_id = self.db.shared_tasks.create(
+            title=title,
+            description=description,
+            required_role=role,
+            context=context
+        )
+        self.db.commit()
+        return task_id
 
     def get_history(self, limit: int = 50) -> List[Dict[str, Any]]:
         sessions = self.db.sessions.list_all(agent_id=self.agent_id, status="ACTIVE")

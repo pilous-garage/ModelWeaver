@@ -388,8 +388,52 @@ class WakeupCallRepository:
         """, (agent_id, limit))
         return _rows_to_list(cur.fetchall())
 
+# ... (previous code)
     def get(self, task_id: int) -> Optional[Dict[str, Any]]:
         cur = self.conn.execute(
             "SELECT * FROM wakeup_calls WHERE task_id = ?", (task_id,)
         )
         return _row_to_dict(cur.fetchone())
+
+
+class ScheduledJobRepository:
+    """Gestion des tâches récurrentes et planifiées."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_due(self) -> List[Dict[str, Any]]:
+        """Récupère les jobs activés dont la date de run est passée."""
+        now = _now_iso()
+        cur = self.conn.execute("""
+            SELECT * FROM scheduled_jobs 
+            WHERE enabled = 1 AND next_run_at <= ?
+            ORDER BY next_run_at ASC
+        """, (now,))
+        return _rows_to_list(cur.fetchall())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        cur = self.conn.execute("""
+            INSERT INTO scheduled_jobs (agent_id, role_type, skill, request_payload, 
+                                       interval_seconds, next_run_at, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get("agent_id"), data.get("role_type"), data["skill"],
+            data.get("request_payload"), data.get("interval_seconds", 0),
+            data["next_run_at"], data.get("enabled", 1)
+        ))
+        return cur.lastrowid
+
+    def update_next_run(self, job_id: int, next_run_at: str) -> None:
+        self.conn.execute(
+            "UPDATE scheduled_jobs SET next_run_at = ? WHERE job_id = ?",
+            (next_run_at, job_id)
+        )
+
+    def get(self, job_id: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM scheduled_jobs WHERE job_id = ?", (job_id,))
+        return _row_to_dict(cur.fetchone())
+
+    def delete(self, job_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM scheduled_jobs WHERE job_id = ?", (job_id,))
+        return cur.rowcount > 0

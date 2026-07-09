@@ -6,31 +6,44 @@ Au repos : 0% CPU (asyncio.Event en attente).
 Cycle :
   1. Anti-fantôme au démarrage (BUSY → TODO)
   2. Boucle : attend un event ou un intervalle
-  3. Récupère les tâches mûres (execute_after <= now)
-  4. Assigne chaque tâche via une transaction IMMEDIATE
-  5. Lance un Worker pour chaque tâche
-  6. Retourne en attente
+  3. Dispatcher : assigne les shared_tasks aux agents IDLE ou provisionne
+  4. Récupère les tâches mûres (execute_after <= now)
+  5. Assigne chaque tâche via une transaction IMMEDIATE
+  6. Lance un Worker pour chaque tâche
+  7. Retourne en attente
 """
 
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 from sql.db import ModelWeaverDB
 from agents.worker import Worker
+from agents.dispatcher import Dispatcher
+from agents.provisioning import ProvisioningService
+from agents.factory import AgentFactory
+from agents.scheduler import Scheduler
+from agents.review_service import ReviewService
+from agents.watchdog_service import WatchdogService
+from agents.watcher_service import WatcherService
+from agents.auto_debug_service import AutoDebugService
+
+logger = logging.getLogger("modelweaver.ticker")
+
+logger = logging.getLogger("modelweaver.ticker")
+
+logger = logging.getLogger("modelweaver.ticker")
+
+logger = logging.getLogger("modelweaver.ticker")
+
+logger = logging.getLogger("modelweaver.ticker")
 
 logger = logging.getLogger("modelweaver.ticker")
 
 
 class AsyncTicker:
-    """Ticker asynchrone avec wake-up immédiat.
-
-    Usage:
-        ticker = AsyncTicker()
-        await ticker.start()  # Boucle forever
-    """
+    """Ticker asynchrone avec wake-up immédiat."""
 
     def __init__(
         self,
@@ -43,6 +56,16 @@ class AsyncTicker:
         self.max_tasks_per_cycle = max_tasks_per_cycle
         self._wake_event = asyncio.Event()
         self._running = False
+
+        # Core services
+        self.factory = AgentFactory(db=self.db)
+        self.provisioning = ProvisioningService(self.db, self.factory)
+        self.dispatcher = Dispatcher(self.db, self.provisioning)
+        self.scheduler = Scheduler(self.db, self.dispatcher)
+        self.review_service = ReviewService(self.db, self.dispatcher)
+        self.watchdog = WatchdogService(self.db)
+        self.watcher_service = WatcherService(self.db, self.dispatcher)
+        self.auto_debug = AutoDebugService(self.db, self.dispatcher)
 
         self._worker = Worker(
             agents=self.db.agents,
@@ -71,6 +94,39 @@ class AsyncTicker:
                      self.poll_interval, self.max_tasks_per_cycle)
 
         while self._running:
+            # 0. Scheduler : On déclenche les jobs planifiés
+            scheduled = self.scheduler.tick()
+            if scheduled > 0:
+                logger.debug("Scheduler : %d jobs déclenchés", scheduled)
+
+            # 1. WatcherService : On vérifie les conditions de surveillance
+            watched = self.watcher_service.tick()
+            if watched > 0:
+                logger.debug("WatcherService : %d agents réveillés", watched)
+
+            # 2. AutoDebug : On fait avancer la boucle recursive de correction
+            debugged = self.auto_debug.tick()
+            if debugged > 0:
+                logger.debug("AutoDebug : %d étapes de debug créées", debugged)
+
+            # 3. ReviewService : On vérifie les tâches DONE pour lancer des revues
+            reviewed = self.review_service.process_completed_tasks()
+            if reviewed > 0:
+                logger.debug("ReviewService : %d revues lancées", reviewed)
+
+            # 4. Dispatcher : On tente d'assigner des tâches partagées
+            assigned = self.dispatcher.dispatch_pending_tasks()
+            if assigned > 0:
+                logger.debug("Dispatcher : %d tâches assignées", assigned)
+
+            # 3. Watchdog : Nettoyage périodique des agents zombies (tous les 60s approx)
+            # On peut utiliser un compteur de cycles ou juste le lancer
+            if time.time() % 60 < 1: # Très basique, juste pour l'exemple
+                zombies = self.watchdog.check_zombies()
+                if zombies > 0:
+                    logger.info("Watchdog : %d agents zombies reset", zombies)
+
+            # 2. Worker cycle : On traite les wakeup_calls (incluant celles du dispatcher)
             processed = self._process_cycle()
 
             if processed > 0:

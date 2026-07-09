@@ -41,3 +41,12 @@ pipeline:
   - step: translate_context
     strategy: truncate
     max_tokens: 8000
+  - step: llm_call
+    temperature: 0.2
+    max_tokens: 4096
+    output_capture: generated_code
+  - step: tool_call
+    tool: write_file
+    args:
+      path: "fibonacci.py"
+      content: "{{generated_code}}"

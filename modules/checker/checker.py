@@ -44,7 +44,7 @@ class Checker:
 
     def check_dependencies(self) -> List[Dict[str, Any]]:
         """Checks for required dependencies."""
-        dependencies = ["python3", "git", "curl", "ollama"]
+        dependencies = ["python3", "git", "curl"]
         results = []
         for dep in dependencies:
             results.append({
