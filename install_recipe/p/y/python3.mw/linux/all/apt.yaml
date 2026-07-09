@@ -1,0 +1,8 @@
+block:
+  auto_yes: true
+  commands:
+  - apt-get update -y
+  - apt-get install -y python3
+  package: python3
+  sudo: true
+version: 3.12.3

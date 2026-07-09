@@ -1,0 +1,8 @@
+block:
+  auto_yes: true
+  commands:
+  - apt-get update -y
+  - apt-get install -y git curl python3
+  package: git
+  sudo: true
+version: '0.5'

@@ -1,0 +1,14 @@
+block:
+  commands:
+  - make prefix=/usr/local all
+  - make prefix=/usr/local install
+  extract: true
+  extract_to: /usr/local/bin
+  pre_steps:
+  - auto_yes: true
+    command: apt-get install -y build-essential libssl-dev libcurl4-gnutls-dev libexpat1-dev
+      gettext
+    sudo: true
+  sha256: '...'
+  url: https://github.com/git/git/archive/refs/tags/v2.45.0.tar.gz
+version: 2.45.0

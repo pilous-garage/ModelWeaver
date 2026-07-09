@@ -1,0 +1,11 @@
+block:
+  commands:
+  - unzip -o {archive} -d {extract_to}
+  - chmod +x {extract_to}/ollama
+  extract: true
+  extract_to: /usr/local/bin
+  pre_steps:
+  - command: mkdir -p {extract_to}
+    sudo: false
+  url: https://ollama.com/download/Ollama-darwin.zip
+version: 0.31.1

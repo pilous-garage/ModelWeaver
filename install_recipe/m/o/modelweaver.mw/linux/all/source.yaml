@@ -1,0 +1,7 @@
+block:
+  commands:
+  - git clone {url} /usr/local/share/modelweaver-{version}
+  - ln -sf /usr/local/share/modelweaver-{version}/modelweaver.py /usr/local/bin/modelweaver
+  extract: false
+  url: https://github.com/PilousGarage/ModelWeaver.git
+version: '0.5'

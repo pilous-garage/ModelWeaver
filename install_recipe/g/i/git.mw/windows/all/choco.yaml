@@ -1,0 +1,5 @@
+block:
+  commands:
+  - choco install git -y
+  package: git
+version: 2.45.0

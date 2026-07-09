@@ -1,0 +1,5 @@
+block:
+  commands:
+  - pip install open-webui
+  package: open-webui
+version: 0.10.2

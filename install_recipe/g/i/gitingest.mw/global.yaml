@@ -1,0 +1,8 @@
+class: context
+description: Git repository ingestion and context extraction for AI tools
+name: gitingest
+post_install:
+- command: python3 -c "import gitingest; print(gitingest.__version__)"
+  shell: true
+pre_install: []
+timeout: 120
