@@ -1,34 +1,47 @@
-# Backups Docker (trop lourds pour git)
+# Ignorer tout ce qui est compilé, généré ou dépendances
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node.js
+node_modules/
+gui/installer/node_modules/
+gui/installer/dist/
+
+# Rust / Tauri
+# Tauri build output (binaire généré)
+gui/installer/src-tauri/target/
+gui/installer/src-tauri/Cargo.lock
+
+# Backups Docker
 docker-backup/
 
 # Cache et config générés à l'exécution
 .modelweaver/*
 !.modelweaver/fallback_preferences.yaml
-.modelweaver_config
-
-# Fichiers versionnés dans .modelweaver/ (exceptions)
 !.modelweaver/litellm_router_proxy.py
 !.modelweaver/opencode-wrapper.sh
+.modelweaver_config
 
 # Fichiers temporaires
 /tmp/
 *.tmp
-__pycache__/
-.venv/
 
-# Config personnelle OpenCode (pas versionnée)
+# Config personnelle OpenCode
 .opencode/
 opencode.json
 tui.json
 
-# Clés API (fichier utilisateur)
+# Clés API
 .env
 
 # Archives de backup
 *.tar
 *.zip
 
-# Liste des providers dont les clés sont commitées (à révoquer en V2)
-# Seulement ajouter, jamais supprimer
-.env.committed
-.modelweaver/routing_mode
+# Logs et rapports
+**/tauri_dev.log
+**/tauri_build.log
