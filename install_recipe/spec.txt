@@ -1,0 +1,245 @@
+MW RECIPE SPECIFICATION (.mw.yaml)
+====================================
+
+Filename convention: <ref>.mw.yaml
+Example: curl.mw.yaml, git.mw.yaml
+
+Place them in install_recipe/ directory at the project root.
+Downloaded/cached copies go in installed_recipe/ (gitignored).
+
+---
+
+1. FILE STRUCTURE (root keys)
+-----------------------------
+
+name:          string          # Display name of the tool
+description:   string          # Short description (one line)
+class:         string          # Category: runtime, language, dev-tool, ide,
+                               #   chat-llm, agent, engine, interface, router,
+                               #   context, system, other
+timeout:       integer         # Default timeout in seconds for the whole install
+pre_install:   [Command]       # Optional commands BEFORE the main install
+post_install:  [Command]       # Optional commands AFTER the main install
+post_uninstall: [Command]     # Optional commands AFTER uninstall (config cleanup, etc.)
+versions:      {VersionDict}   # REQUIRED: version definitions (see below)
+
+---
+
+2. Command
+----------
+A Command is a dict or a list of strings:
+
+Long form:
+  - command:  string          # The shell command to run
+    sudo:     boolean (opt)   # Run with sudo? Default: false
+    shell:    boolean (opt)   # Run via shell (bash -c)? Default: true
+    env:      {string:string} # Environment variables to set (optional)
+    cwd:      string          # Working directory (optional)
+    continue_on_error: boolean # Don't abort if this command fails. Default: false
+
+Short form (string only):
+  - "apt-get install -y curl"
+
+---
+
+3. Version block
+----------------
+
+versions:
+  default: string              # Recommended version string
+  "<version>":                 # Version string
+    <os>:                      # OS key: linux, macos, windows, or 'all'
+      <manager>: <ManagerBlock>  # Package manager (apt, brew, winget, binary, pip, etc.)
+
+Managers under one OS define a fallback chain: first success wins.
+
+---
+
+4. ManagerBlock
+---------------
+Each manager has:
+
+  package:     string          # Package name for the manager
+  sudo:        boolean         # Default: true for apt, false for others
+  auto_yes:    boolean         # Auto-confirm. Default: true for apt/choco
+  timeout:     integer         # Per-step timeout override (optional)
+  install:     [string|Command] # REQUIRED: install commands
+  uninstall:   [string|Command]  # REQUIRED: uninstall commands
+  pre_steps:  [Command]       # Steps before install (deps, mkdir, etc.)
+
+Manager-specific fields:
+
+  ### binary
+    url:           string        # Download URL
+    sha256:        string        # SHA-256 checksum (optional
+    extract:       boolean       # Is it an archive? Default: false
+    extract_to:   string        # Extract destination (default: /usr/local/bin)
+    strip_components: integer   # For tar --strip-components
+    download_name: string       # Override local filename
+
+  ### source
+    url:           string
+    sha256:        string
+    extract:      boolean       # Default: true
+    extract_to:   string        # Build directory
+
+  ### container
+    image:         string
+    tag:          string        # Default: latest
+    registry:     string
+
+  ### snap
+    classic:     boolean        # --classic flag? Default: false
+
+  ### npm
+    global:      boolean        # -g flag? Default: true
+
+---
+
+5. VARIABLES IN COMMANDS
+-------------------------
+Substituted at runtime:
+
+  {download_path}   = Full local path of the downloaded file
+  {archive}         = Alias for {download_path}
+  {extract_to}      = Extract destination directory
+  {tool_name}       = The tool's name
+  {version}         = The version being installed
+  {package}         = The package name
+  {os}              = Auto-detected OS (linux/macos/windows)
+  {home}            = User's home directory
+
+---
+
+6. FALLBACK BEHAVIOR
+---------------------
+Multiple managers under one OS define a fallback chain (first success wins):
+
+  linux:
+    apt:    { ... }    # Tried first
+    brew:   { ... }    # Tried if apt not available
+    binary: { ... }    # Tried if neither apt nor brew
+
+---
+
+7. INSTALL / UNINSTALL FLOW
+----------------------------
+
+Install flow:
+  1. pre_install (global hooks)
+  2. For the best available manager:
+     a. pre_steps (manager-specific)
+     b. install commands
+  3. post_install (global hooks)
+
+Uninstall flow:
+  1. Find the installed manager (by package name or install path)
+  2. Run that manager's uninstall commands
+  3. post_uninstall (global hooks, config cleanup)
+
+---
+
+8. INDEX FILE (index.mw.json)
+-----------------------------
+File: install_recipe/index.mw.json
+
+{
+  "ref_name": {
+    "file": "ref.mw.yaml",
+    "latest": "version_string",
+    "class": "category",
+    "description": "short desc"
+  },
+  ...
+}
+
+---
+
+9. FULL EXAMPLE
+----------------
+```yaml
+name: curl
+description: "Command-line tool for transferring data with URL syntax"
+class: network
+timeout: 120
+
+pre_install:
+  - command: echo "Starting curl install"
+
+post_install:
+  - command: curl --version
+
+post_uninstall:
+  - command: rm -rf {home}/.curlrc
+    shell: true
+
+versions:
+  default: "8.4.0"
+  "8.4.0":
+    linux:
+      apt:
+        package: curl
+        sudo: true
+        auto_yes: true
+        install:
+          - apt-get update -y
+          - apt-get install -y curl
+        uninstall:
+          - apt-get remove -y curl
+          - apt-get autoremove -y
+      brew:
+        package: curl
+        install:
+          - brew install curl
+        uninstall:
+          - brew uninstall curl
+      binary:
+        url: "https://curl.se/download/curl-8.4.0.tar.gz"
+        sha256: "abc123..."
+        extract: true
+        extract_to: /usr/local/bin
+        strip_components: 1
+        pre_steps:
+          - command: mkdir -p {extract_to}
+        install:
+          - "tar -xzf {archive} -C {extract_to} --strip-components={strip_components}"
+          - "chmod +x {extract_to}/curl"
+        uninstall:
+          - "rm -f {extract_to}/curl"
+          - "rm -rf {extract_to}"
+    macos:
+      brew:
+        package: curl
+        install:
+          - brew install curl
+        uninstall:
+          - brew uninstall curl
+    windows:
+      winget:
+        package: "curl.se"
+        install:
+          - winget install --id curl.se -e
+        uninstall:
+          - winget uninstall --id curl.se -e
+      binary:
+        url: "https://curl.se/windows/curl-8.4.0-win64.zip"
+        extract: true
+        extract_to: "%PROGRAMFILES%\\curl"
+        install:
+          - "unzip {archive} -d {extract_to}"
+        uninstall:
+          - "rmdir /s /q {extract_to}"
+  "9.0.0-experimental":
+    linux:
+      binary:
+        url: "https://curl.se/download/curl-9.0.0.tar.gz"
+        sha256: "def456..."
+        extract: true
+        extract_to: /usr/local/bin/experimental
+        install:
+          - "./configure --prefix={extract_to}"
+          - make
+          - make install
+        uninstall:
+          - "rm -rf {extract_to}"
+```

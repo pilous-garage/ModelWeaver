@@ -1,0 +1,56 @@
+{
+  "curl": {
+    "file": "curl.mw.yaml",
+    "latest": "8.4.0",
+    "class": "network",
+    "description": "Command-line tool for transferring data with URL syntax"
+  },
+  "git": {
+    "file": "git.mw.yaml",
+    "latest": "2.45.0",
+    "class": "dev",
+    "description": "Distributed version control system"
+  },
+  "gitingest": {
+    "file": "gitingest.mw.yaml",
+    "latest": "0.3.1",
+    "class": "context",
+    "description": "Project context analysis via gitingest"
+  },
+  "litellm": {
+    "file": "litellm.mw.yaml",
+    "latest": "1.91.0",
+    "class": "router",
+    "description": "Multi-provider LLM router (LiteLLM)"
+  },
+  "modelweaver": {
+    "file": "modelweaver.mw.yaml",
+    "latest": "0.5",
+    "class": "system",
+    "description": "ModelWeaver orchestrator"
+  },
+  "ollama": {
+    "file": "ollama.mw.yaml",
+    "latest": "0.31.1",
+    "class": "engine",
+    "description": "Local LLM engine (Ollama)"
+  },
+  "opencode": {
+    "file": "opencode.mw.yaml",
+    "latest": "1.17.15",
+    "class": "chat-llm",
+    "description": "AI agent in command line (OpenCode)"
+  },
+  "open-webui": {
+    "file": "open-webui.mw.yaml",
+    "latest": "0.10.2",
+    "class": "chat-llm",
+    "description": "Web UI for LLMs (Open WebUI)"
+  },
+  "python3": {
+    "file": "python3.mw.yaml",
+    "latest": "3.12.3",
+    "class": "language",
+    "description": "Python runtime"
+  }
+}

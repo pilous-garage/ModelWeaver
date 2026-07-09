@@ -346,6 +346,16 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 
 **Objectif** : Première interface graphique utilisable — installateur de ModelWeaver.
 
+### ⚠️ Blocage architectural (à résoudre avant fin V0.5)
+Les colonnes JSON dans `tools` (`allowed_platforms`, `allowed_arches`, `installer_params`, `fallback_chain`, `package_versions`) ne passent pas à l'échelle pour 10 000+ outils avec multiples versions/package-managers/plateformes.
+
+**Décision à prendre** :
+- Stocker les définitions complètes dans des fichiers YAML externes (recipe URL)
+- Tout gérer via BDD distante (versionne les recettes dans le serveur catalogue HTTP)
+- Mixte : BDD locale légère + sync distant, recettes en YAML versionné (git)
+
+→ Voir `V0.5.8` qui est consacré à cette résolution.
+
 ### Périmètre
 - Catalogue (browse, search, filtre)
 - Outils locaux (état, version)
@@ -375,43 +385,52 @@ Chaque étape consiste à développer un module et à le valider par des tests.
 - [ ] Rafraîchissement du catalogue depuis le serveur distant
 - [ ] Cache local des données catalogue
 
-**V0.5.2** — Vue outils locaux + installer
-- [ ] Scan des outils installés (version, chemin, statut)
-- [ ] Install/Uninstall depuis l'UI
-- [ ] Suivi de progression (barre de progression, logs étape par étape)
-- [ ] File d'attente d'installation multiple
-- [ ] Gestion des erreurs (timeout, échec, rollback)
+**V0.5.2** — Vue outils locaux + installer ✅
+- [x] Scan des outils installés (version, chemin, statut)
+- [x] Install/Uninstall depuis l'UI — install OK, uninstall OK
+- [x] Suivi de progression (barre de progression + logs temps réel via Tauri Events)
+- [x] File d'attente d'installation multiple (séquentiel via batch_install.py)
+- [x] Gestion des erreurs (timeout configurable par `--timeout=`)
 
-**V0.5.3** — Vue modèles (Ollama)
-- [ ] Liste des modèles Ollama installés
-- [ ] Bouton install/download d'un modèle (via Ollama pull ou block)
-- [ ] Statut de téléchargement (progression, vitesse)
-- [ ] Suppression de modèle
+**V0.5.3** — Vue modèles (Ollama) ✅
+- [x] Liste des modèles Ollama installés
+- [x] Bouton pull (streaming) + remove
+- [x] Statut de téléchargement (progression)
+- [x] Suppression de modèle
 
-**V0.5.4** — Catalogue enrichi : nouvel outil non installé
-- [ ] Créer un fichier JSON d'outil non présent sur la machine
-- [ ] L'ajouter au catalogue BDD
-- [ ] Vérifier qu'il apparaît dans l'UI avec bouton install actif
-
-**V0.5.5** — Détection gestionnaires de paquets OS
+**V0.5.4** — Détection gestionnaires de paquets OS
 - [ ] Détection automatique de tous les gestionnaires installés (apt, snap, brew, winget, choco, pacman, yay, dnf, yum, zypper, apk, emerge, nix, flatpak, pip, cargo, npm, go)
-- [ ] Table `package_managers` en BDD : nom, détecté, version, commande
-- [ ] Panel dédié dans l'UI listant les gestionnaires détectés
-- [ ] Enrichir les outils du catalogue avec `package_versions` (JSON) : versions alternatives par gestionnaire
-- [ ] UI : sélecteur de version quand plusieurs disponibles (gestionnaire + version)
-- [ ] Install/uninstall dispatché vers le bon gestionnaire de paquet
+- [ ] Table `package_managers` en BDD + seed
+- [ ] Panel UI listant les gestionnaires détectés
+- [ ] Enrichir les outils avec versions alternatives par gestionnaire
+- [ ] UI : sélecteur de version quand plusieurs disponibles
+- [ ] Dispatch install/uninstall vers le bon gestionnaire
 
-**V0.5.6** — Tests GUI automatisés
-- [ ] Tests unitaires des composants React (catalogue, system check, installer)
-- [ ] Tests d'intégration Rust → Python (chaque bridge script)
-- [ ] Test bout en bout : check → catalogue → install → vérification
+**V0.5.5** — Résolution du stockage des définitions d'outils ✅
+- [x] Décision : format YAML externe (`.mw.yaml`) dans `install_recipe/`
+- [x] Spec complète : `install_recipe/spec.txt` (manager blocks, install/uninstall, variables, fallback)
+- [x] 9 recettes créées (curl, git, gitingest, litellm, modelweaver, ollama, opencode, open-webui, python3)
+- [x] `index.mw.json` : index des recettes avec version recommandée
+- [x] `RecipeParser` : parse YAML + résolution OS/manager fallback + exécution install/uninstall
+- [x] BDD : migration `tools.recipe_path` (ALTER TABLE) + ToolRepository.save() mis à jour
+- [x] `Installer.install()` : utilise la recette en priorité si `recipe_path` présent, fallback legacy sinon
+- [x] `Installer.uninstall()` : idem
+- [ ] UI inchangée (backend uniquement)
 
-**V0.5.7** — Système de tags et filtres par tag
-- [ ] Ajouter une table `tool_tags` en BDD (tool_id, tag)
-- [ ] Tags pré-définis : web, mobile, ia, data, devops, security, database, testing, ci-cd, desktop, gaming, multimedia
-- [ ] Assigner des tags aux outils du catalogue existants
-- [ ] UI : filtres par tag (sélecteur multiple, cumulable avec classe et recherche)
-- [ ] Champ `tags` dans le JSON d'import d'outil
+**V0.5.6** — Catalogue enrichi : ajouter un nouvel outil
+- [ ] Formulaire UI pour créer un outil non présent
+- [ ] Sauvegarde en BDD (nouveau format de recette)
+- [ ] Apparition dans le catalogue avec bouton install actif
+
+**V0.5.7** — Vérification espace disque avant installation
+- [ ] Estimer la taille des outils/modèles
+- [ ] Vérifier l'espace disponible avant d'installer
+- [ ] Afficher un warning
+
+**V0.5.8** — Tests GUI automatisés (dépriorisé)
+- [ ] Tests unitaires composants React
+- [ ] Tests d'intégration Rust → Python
+- [ ] Test E2E check → catalogue → install → vérification
 
 ---
 

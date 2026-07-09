@@ -1,0 +1,32 @@
+name: modelweaver
+description: "ModelWeaver orchestrator - installs and coordinates AI tools"
+class: system
+timeout: 300
+pre_install:
+  - command: "which git || apt-get install -y git"
+    sudo: true
+  - command: "which curl || apt-get install -y curl"
+    sudo: true
+  - command: "which python3 || apt-get install -y python3"
+    sudo: true
+post_install:
+  - command: python3 modelweaver.py check
+    shell: true
+
+versions:
+  default: "0.5"
+  "0.5":
+    linux:
+      apt:
+        package: git
+        sudo: true
+        auto_yes: true
+        commands:
+          - apt-get update -y
+          - apt-get install -y git curl python3
+      source:
+        url: "https://github.com/PilousGarage/ModelWeaver.git"
+        extract: false
+        commands:
+          - git clone {url} /usr/local/share/modelweaver-{version}
+          - ln -sf /usr/local/share/modelweaver-{version}/modelweaver.py /usr/local/bin/modelweaver

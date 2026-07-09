@@ -1,0 +1,16 @@
+name: open-webui
+description: "Self-hosted LLM chat interface for private AI conversations"
+class: chat-llm
+timeout: 120
+post_install:
+  - command: python3 -c "import open_webui; print('ok')"
+    shell: true
+
+versions:
+  default: "0.10.2"
+  "0.10.2":
+    all:
+      pip:
+        package: open-webui
+        commands:
+          - pip install open-webui

@@ -1,0 +1,30 @@
+name: python3
+description: "Python programming language interpreter"
+class: language
+timeout: 120
+post_install:
+  - command: python3 --version
+    shell: true
+
+versions:
+  default: "3.12.3"
+  "3.12.3":
+    linux:
+      apt:
+        package: python3
+        sudo: true
+        auto_yes: true
+        commands:
+          - apt-get update -y
+          - apt-get install -y python3
+    macos:
+      brew:
+        package: python
+        commands:
+          - brew update
+          - brew install python
+    windows:
+      winget:
+        package: "Python.Python.3.12"
+        commands:
+          - winget install --id Python.Python.3.12 -e

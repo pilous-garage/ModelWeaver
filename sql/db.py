@@ -537,6 +537,7 @@ class ToolRepository:
                     ("tool_type", "tool_type"), ("install_method", "install_method"),
                     ("current_version", "current_version"),
                     ("default_download_url", "default_download_url"),
+                    ("recipe_path", "recipe_path"),
                     ("checksum_algorithm", "checksum_algorithm"),
                     ("is_core", "is_core"), ("class", "class"),
                     ("allowed_platforms", "allowed_platforms"),
@@ -553,21 +554,23 @@ class ToolRepository:
                         f"UPDATE tools SET {', '.join(cols)} WHERE id = ?", params)
                 return existing["id"]
 
-        cur = self.conn.execute("""
-            INSERT INTO tools (ref, name, description, tool_type, install_method,
-                current_version, default_download_url, checksum_algorithm,
+        cur = self.conn.execute(
+            """INSERT INTO tools (ref, name, description, tool_type, install_method,
+                current_version, default_download_url, recipe_path, checksum_algorithm,
                 is_core, class, allowed_platforms, allowed_arches,
                 installer_params, fallback_chain, catalogue_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            ref or _ref("tool"), data.get("name"), data.get("description"),
-            data.get("tool_type", "binary"), data.get("install_method", "direct-url"),
-            data.get("current_version"), data.get("default_download_url"),
-            data.get("checksum_algorithm", "sha256"),
-            data.get("is_core", 0), data.get("class", "other"),
-            data.get("allowed_platforms"), data.get("allowed_arches"),
-            data.get("installer_params"), data.get("fallback_chain"), data.get("catalogue_ref")
-        ))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ref or _ref("tool"), data.get("name"), data.get("description"),
+                data.get("tool_type", "binary"), data.get("install_method", "direct-url"),
+                data.get("current_version"), data.get("default_download_url"),
+                data.get("recipe_path"),
+                data.get("checksum_algorithm", "sha256"),
+                data.get("is_core", 0), data.get("class", "other"),
+                data.get("allowed_platforms"), data.get("allowed_arches"),
+                data.get("installer_params"), data.get("fallback_chain"), data.get("catalogue_ref"),
+            ),
+        )
         return cur.lastrowid
 
 
@@ -771,6 +774,12 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         schema = Path(__file__).resolve().parent / "modelweaver_schema.sql"
         if schema.exists():
             self.conn.executescript(schema.read_text())
+
+        # Migration: ajouter recipe_path si manquant
+        try:
+            self.conn.execute("ALTER TABLE tools ADD COLUMN recipe_path TEXT")
+        except Exception:
+            pass
 
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""

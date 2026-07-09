@@ -1,0 +1,87 @@
+name: curl
+description: "Command-line tool for transferring data with URL syntax"
+class: network
+timeout: 120
+
+pre_install:
+  - command: echo "Starting curl install"
+
+post_install:
+  - command: curl --version
+
+post_uninstall:
+  - command: rm -rf {home}/.curlrc
+
+versions:
+  default: "8.4.0"
+  "8.4.0":
+    linux:
+      apt:
+        package: curl
+        sudo: true
+        auto_yes: true
+        install:
+          - apt-get update -y
+          - apt-get install -y curl
+        uninstall:
+          - apt-get remove -y curl
+          - apt-get autoremove -y
+      brew:
+        package: curl
+        install:
+          - brew install curl
+        uninstall:
+          - brew uninstall curl
+      binary:
+        url: "https://curl.se/download/curl-8.4.0.tar.gz"
+        sha256: "abc123..."
+        extract: true
+        extract_to: /usr/local/bin
+        strip_components: 1
+        pre_steps:
+          - command: mkdir -p {extract_to}
+        install:
+          - "tar -xzf {archive} -C {extract_to} --strip-components={strip_components}"
+          - "chmod +x {extract_to}/curl"
+        uninstall:
+          - "rm -f {extract_to}/curl"
+    macos:
+      brew:
+        package: curl
+        install:
+          - brew install curl
+        uninstall:
+          - brew uninstall curl
+    windows:
+      winget:
+        package: "curl.se"
+        install:
+          - winget install --id curl.se -e
+        uninstall:
+          - winget uninstall --id curl.se -e
+      binary:
+        url: "https://curl.se/windows/curl-8.4.0-win64.zip"
+        extract: true
+        extract_to: "%PROGRAMFILES%\\curl"
+        install:
+          - expand-archive {archive} {extract_to}
+        uninstall:
+          - remove-item -recurse {extract_to}
+
+  "9.0.0-experimental":
+    linux:
+      binary:
+        url: "https://curl.se/download/curl-9.0.0.tar.gz"
+        sha256: "def456..."
+        extract: true
+        extract_to: /usr/local/bin/experimental
+        pre_steps:
+          - command: apt-get install -y build-essential cmake
+            sudo: true
+            auto_yes: true
+        install:
+          - "./configure --prefix={extract_to}"
+          - make
+          - make install
+        uninstall:
+          - "rm -rf {extract_to}"

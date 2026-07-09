@@ -26,6 +26,21 @@ interface InstalledTool {
   status: string;
 }
 
+interface OllamaModel {
+  name: string;
+  size: string;
+  modified: string;
+}
+
+interface PackageManager {
+  ref: string;
+  name: string;
+  detected: boolean;
+  version: string | null;
+  install_cmd: string;
+  os_family: string;
+}
+
 interface SystemInfo {
   system: any;
   hardware: HardwareInfo;
@@ -100,6 +115,8 @@ function App() {
   const [leftOpen, setLeftOpen] = useState<boolean | null>(null);
   const [catalogueOpen, setCatalogueOpen] = useState<boolean | null>(null);
   const [installProgress, setInstallProgress] = useState<{ percent: number; message: string } | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+  const [packageManagers, setPackageManagers] = useState<PackageManager[]>([]);
 
   useEffect(() => {
     const unlisten = listen<{ percent: number; message: string }>('install-progress', (event) => {
@@ -176,9 +193,98 @@ function App() {
     setInstallProgress(null);
   };
 
+  const uninstallTool = async (ref: string) => {
+    setLoading(true);
+    setInstallProgress({ percent: 0, message: `Désinstallation de ${ref}...` });
+    addLog(`🗑️ Uninstalling ${ref}...`);
+    try {
+      const res: any = await invoke('uninstall_tool', { toolRef: ref });
+      if (res.status === 'success') {
+        addLog(`✅ ${ref} uninstalled`);
+        await fetchCatalogue();
+        await runCheck();
+      } else {
+        addLog(`❌ ${ref} uninstall failed: ${res.error}`);
+      }
+    } catch (e) {
+      addLog(`❌ System error: ${e}`);
+    }
+    setLoading(false);
+    setInstallProgress(null);
+  };
+
+  const fetchOllamaModels = async () => {
+    try {
+      const res: any = await invoke('run_python_script', {
+        scriptPath: `${SCRIPTS_DIR}/ollama_models.py`,
+        args: ['list']
+      });
+      if (res.status === 'success' && res.data?.models) {
+        setOllamaModels(res.data.models);
+      }
+    } catch (e) {
+      /* ollama may not be installed */
+    }
+  };
+
+  const pullOllamaModel = async (name: string) => {
+    setLoading(true);
+    setInstallProgress({ percent: 0, message: `Pulling ${name}...` });
+    addLog(`📦 Pulling Ollama model ${name}...`);
+    try {
+      const res: any = await invoke('ollama_pull', { modelName: name });
+      if (res.status === 'success') {
+        addLog(`✅ ${name} pulled`);
+        await fetchOllamaModels();
+      } else {
+        addLog(`❌ ${name} pull failed: ${res.error}`);
+      }
+    } catch (e) {
+      addLog(`❌ System error: ${e}`);
+    }
+    setLoading(false);
+    setInstallProgress(null);
+  };
+
+  const fetchPackageManagers = async () => {
+    try {
+      const res: any = await invoke('run_python_script', {
+        scriptPath: `${SCRIPTS_DIR}/detect_pms.py`,
+        args: []
+      });
+      if (res.status === 'success' && res.data) {
+        setPackageManagers(res.data);
+      }
+    } catch (e) {
+      /* non-critical */
+    }
+  };
+
+  const removeOllamaModel = async (name: string) => {
+    setLoading(true);
+    addLog(`🗑️ Removing Ollama model ${name}...`);
+    try {
+      const res: any = await invoke('run_python_script', {
+        scriptPath: `${SCRIPTS_DIR}/ollama_models.py`,
+        args: ['rm', name]
+      });
+      if (res.status === 'success') {
+        addLog(`✅ ${name} removed`);
+        await fetchOllamaModels();
+      } else {
+        addLog(`❌ ${name} remove failed: ${res.error}`);
+      }
+    } catch (e) {
+      addLog(`❌ System error: ${e}`);
+    }
+    setLoading(false);
+  };
+
   useEffect(() => {
     runCheck();
     fetchCatalogue();
+    fetchOllamaModels();
+    fetchPackageManagers();
   }, []);
 
   return (
@@ -199,6 +305,13 @@ function App() {
             className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition"
           >
             Refresh Catalogue
+          </button>
+          <button
+            onClick={fetchOllamaModels}
+            disabled={loading}
+            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition"
+          >
+            Refresh Models
           </button>
         </div>
       </header>
@@ -275,8 +388,17 @@ function App() {
                         <CollapsibleSection key={clsRef} title={clsLabel} count={tools.length} defaultOpen={false} controlledOpen={leftOpen} onManualToggle={() => setLeftOpen(null)}>
                           {tools.map(tool => (
                             <div key={tool.tool_ref} className="flex items-center justify-between text-sm bg-slate-900 px-2 py-1 rounded mb-0.5">
-                              <span className="text-slate-300">{tool.tool_name}</span>
-                              <span className="text-xs text-slate-500">{tool.version}</span>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-slate-300 truncate">{tool.tool_name}</span>
+                                <span className="text-xs text-slate-500 shrink-0">{tool.version}</span>
+                              </div>
+                              <button
+                                onClick={() => uninstallTool(tool.tool_ref)}
+                                disabled={loading}
+                                className="shrink-0 ml-2 px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white text-xs rounded transition disabled:opacity-50"
+                              >
+                                Uninstall
+                              </button>
                             </div>
                           ))}
                         </CollapsibleSection>
@@ -385,9 +507,13 @@ function App() {
                             </div>
                             <div className="flex items-center gap-4 shrink-0 ml-4">
                               {isInstalled ? (
-                                <span className="text-xs bg-green-900 text-green-300 px-3 py-1.5 rounded-md font-medium border border-green-700">
-                                  ✓ Installed
-                                </span>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); uninstallTool(tool.ref); }}
+                                  disabled={loading}
+                                  className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-xs rounded-md transition disabled:opacity-50 font-medium"
+                                >
+                                  Uninstall
+                                </button>
                               ) : (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); installTool(tool.ref); }}
@@ -411,6 +537,90 @@ function App() {
           )}
         </section>
       </div>
+
+      {/* Package Managers */}
+      <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-slate-300">Package Managers</h2>
+          <button onClick={fetchPackageManagers} className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs transition">Refresh</button>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+          {packageManagers.map(pm => (
+            <div key={pm.ref} className={`p-2 rounded-lg border text-xs ${pm.detected ? 'bg-slate-900 border-green-700' : 'bg-slate-900/50 border-slate-700 opacity-50'}`}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-slate-200 font-medium">{pm.name}</span>
+                <span className={pm.detected ? 'text-green-400' : 'text-slate-600'}>{pm.detected ? '✓' : '✗'}</span>
+              </div>
+              {pm.detected && pm.version && (
+                <span className="text-slate-500 block truncate">{pm.version}</span>
+              )}
+              <span className="text-slate-600 block">{pm.install_cmd}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Ollama Models */}
+      <section className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-slate-300">Ollama Models ({ollamaModels.length})</h2>
+        </div>
+        {ollamaModels.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {ollamaModels.map(model => (
+              <div key={model.name} className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-slate-700">
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm text-white font-medium truncate block">{model.name}</span>
+                  <span className="text-xs text-slate-500">{model.size}</span>
+                </div>
+                <button
+                  onClick={() => removeOllamaModel(model.name)}
+                  disabled={loading}
+                  className="shrink-0 ml-2 px-2 py-1 bg-red-700 hover:bg-red-600 text-white text-xs rounded transition disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-slate-500 italic text-center py-4">
+            {systemState?.dependencies?.find(d => d.name === 'ollama')?.present
+              ? 'No models installed. Pull one below.'
+              : 'Ollama not detected on this system.'}
+          </div>
+        )}
+        <div className="mt-4 flex gap-2">
+          <input
+            id="ollama-pull-input"
+            type="text"
+            placeholder="Model name (e.g. llama3.2:1b)"
+            className="flex-1 px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const input = document.getElementById('ollama-pull-input') as HTMLInputElement;
+                if (input.value.trim()) {
+                  pullOllamaModel(input.value.trim());
+                  input.value = '';
+                }
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              const input = document.getElementById('ollama-pull-input') as HTMLInputElement;
+              if (input.value.trim()) {
+                pullOllamaModel(input.value.trim());
+                input.value = '';
+              }
+            }}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-md text-sm transition disabled:opacity-50"
+          >
+            Pull
+          </button>
+        </div>
+      </section>
 
       {/* Tool Detail Modal */}
       {selectedTool && (
@@ -458,7 +668,11 @@ function App() {
             </div>
             <div className="mt-6 flex justify-end gap-3">
               <button onClick={() => setSelectedTool(null)} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition">Close</button>
-              {!catalogue?.installed.some(it => it.tool_ref === selectedTool.ref) && (
+              {catalogue?.installed.some(it => it.tool_ref === selectedTool.ref) ? (
+                <button onClick={() => { uninstallTool(selectedTool.ref); setSelectedTool(null); }} disabled={loading} className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-md text-sm transition disabled:opacity-50">
+                  Uninstall
+                </button>
+              ) : (
                 <button onClick={() => { installTool(selectedTool.ref); setSelectedTool(null); }} disabled={loading} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-md text-sm transition disabled:opacity-50">
                   Install
                 </button>

@@ -1,0 +1,23 @@
+name: opencode
+description: "AI-powered coding assistant CLI"
+class: chat-llm
+timeout: 120
+post_install:
+  - command: opencode --version
+    shell: true
+
+versions:
+  default: "1.17.15"
+  "1.17.15":
+    linux:
+      binary:
+        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-linux-x64.tar.gz"
+        extract: true
+        extract_to: /usr/local/bin
+        download_name: opencode-linux-x64.tar.gz
+        pre_steps:
+          - command: "mkdir -p {extract_to}"
+            sudo: false
+        commands:
+          - "tar -xzf {archive} -C {extract_to}"
+          - "chmod +x {extract_to}/opencode"

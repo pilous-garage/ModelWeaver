@@ -9,9 +9,11 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .recipe_parser import RecipeParser
+
 
 class Installer:
-    """Installe un outil à partir d'une ligne du catalogue.
+    """Installe un outil à partir d'une ligne du catalogue ou d'une recette .mw.yaml.
 
     Usage:
         installer = Installer()
@@ -21,28 +23,83 @@ class Installer:
         installer.install(tool)
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Optional[Path] = None, project_root: Optional[Path] = None):
         self.os_type = platform.system()
         self.distro = self._get_distro()
         self.arch = self._normalize_arch(platform.machine())
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".modelweaver" / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.recipe_parser = RecipeParser(project_root=project_root)
 
     # ── API publique ──
 
-    def install(self, tool: Dict[str, Any], progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
-        """Installe un outil décrit par un dictionnaire catalogue.
+    def install(self, tool: Dict[str, Any],
+                progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
+        """Installe un outil.
 
-        Champs utilisés : ref, name, tool_type, install_method,
-        default_download_url, installer_params, allowed_platforms,
-        allowed_arches, current_version.
-
-        Si progress_callback est fourni, il est appelé avec (percent, message)
-        à chaque étape.
+        Si le tool a un recipe_path, utilise la recette .mw.yaml prioritairement.
+        Sinon, utilise le dispatch legacy par install_method.
         """
         ref = tool.get("ref") or tool.get("name", "?")
         if progress_callback:
             progress_callback(0, f"Vérification de {ref}...")
+
+        # Essayer la recette en priorité
+        recipe_path = tool.get("recipe_path")
+        if recipe_path:
+            recipe_dir = Path(__file__).resolve().parent.parent.parent / recipe_path
+            recipe = self.recipe_parser.load_recipe(ref)
+            if not recipe and recipe_dir.exists():
+                # Si recipe_path est un chemin direct, on peut le tenter
+                recipe = self.recipe_parser.load_recipe(ref)
+            if recipe:
+                if progress_callback:
+                    progress_callback(5, f"Utilisation de la recette {ref}")
+                ok = self.recipe_parser.execute_install(
+                    recipe, tool.get("current_version"), progress_callback)
+                if ok:
+                    print(f"  ✅ {ref} installé via recette")
+                return ok
+
+        # Fallback legacy
+        return self._install_legacy(tool, ref, progress_callback)
+
+    def uninstall(self, tool: Dict[str, Any], install_path: Optional[str] = None,
+                   progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
+        """Désinstalle un outil."""
+        ref = tool.get("ref") or tool.get("name", "?")
+        if progress_callback:
+            progress_callback(10, f"Désinstallation de {ref}...")
+
+        # Essayer la recette
+        recipe = self.recipe_parser.load_recipe(ref)
+        if recipe:
+            ok = self.recipe_parser.execute_uninstall(
+                recipe, tool.get("current_version"), progress_callback)
+            return ok
+
+        # Fallback legacy
+        return self._uninstall_legacy(tool, ref, install_path, progress_callback)
+
+    # ── Vérifications ──
+
+    def _compatible_platform(self, tool: Dict[str, Any]) -> bool:
+        allowed_platforms = tool.get("allowed_platforms")
+        if allowed_platforms:
+            platforms = [p.strip() for p in allowed_platforms.split(",")]
+            if self.os_type not in platforms and self.distro not in platforms:
+                return False
+        allowed_arches = tool.get("allowed_arches")
+        if allowed_arches:
+            arches = [a.strip() for a in allowed_arches.split(",")]
+            if self.arch not in arches:
+                return False
+        return True
+
+    # ── Fallback legacy ──
+
+    def _install_legacy(self, tool: Dict[str, Any], ref: str,
+                        progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
         if not self._compatible_platform(tool):
             if progress_callback:
                 progress_callback(100, f"{ref} : non compatible {self.os_type}/{self.arch}")
@@ -81,25 +138,47 @@ class Installer:
             print(f"  ❌ {ref} : échec")
         return ok
 
-    def uninstall(self, tool: Dict[str, Any]):
-        """Désinstallation — non implémentée."""
-        ref = tool.get("ref") or tool.get("name", "?")
-        print(f"  ⏸️  uninstall({ref}) pas encore implémentée")
+    def _uninstall_legacy(self, tool: Dict[str, Any], ref: str, install_path: Optional[str] = None,
+                          progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
+        method = tool.get("install_method", "direct-url")
+        ttype = tool.get("tool_type", "binary")
 
-    # ── Vérifications ──
+        if method == "pip" or ttype == "python-module":
+            pkg = tool.get("name", ref)
+            if progress_callback:
+                progress_callback(50, f"pip uninstall {pkg}...")
+            return self._run(["pip", "uninstall", "-y", pkg])
 
-    def _compatible_platform(self, tool: Dict[str, Any]) -> bool:
-        allowed_platforms = tool.get("allowed_platforms")
-        if allowed_platforms:
-            platforms = [p.strip() for p in allowed_platforms.split(",")]
-            if self.os_type not in platforms and self.distro not in platforms:
-                return False
-        allowed_arches = tool.get("allowed_arches")
-        if allowed_arches:
-            arches = [a.strip() for a in allowed_arches.split(",")]
-            if self.arch not in arches:
-                return False
-        return True
+        if method == "apt":
+            pkg = tool.get("name", ref)
+            if progress_callback:
+                progress_callback(50, f"apt remove {pkg}...")
+            return self._run_apt_remove(pkg)
+
+        if method == "brew":
+            pkg = tool.get("name", ref)
+            if progress_callback:
+                progress_callback(50, f"brew uninstall {pkg}...")
+            return self._run(["brew", "uninstall", pkg])
+
+        if install_path:
+            path = Path(install_path)
+            if path.exists():
+                if progress_callback:
+                    progress_callback(70, f"Suppression de {path}...")
+                path.unlink()
+                if progress_callback:
+                    progress_callback(100, f"{ref} désinstallé")
+                return True
+            if progress_callback:
+                progress_callback(100, f"{ref} : fichier introuvable")
+            print(f"  ⏭️  {ref} : fichier introuvable ({install_path})")
+            return True
+
+        if progress_callback:
+            progress_callback(100, f"{ref} : désinstall non supporté ({method})")
+        print(f"  ⏸️  uninstall({ref}) pas encore implémentée pour {method}")
+        return False
 
     # ── Handlers d'installation ──
 
@@ -196,6 +275,17 @@ class Installer:
             return True
         except subprocess.CalledProcessError as e:
             print(f"  ⚠️  apt install {pkg} : {e.stderr[:200] if e.stderr else e}")
+            return False
+
+    def _run_apt_remove(self, pkg: str) -> bool:
+        use_sudo = hasattr(os, "getuid") and os.getuid() != 0
+        prefix = ["sudo"] if use_sudo else []
+        try:
+            subprocess.run(prefix + ["apt-get", "remove", "-y", pkg],
+                           capture_output=True, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"  ⚠️  apt remove {pkg} : {e.stderr[:200] if e.stderr else e}")
             return False
 
     def _cached_download(self, url: str, name: str) -> Optional[Path]:

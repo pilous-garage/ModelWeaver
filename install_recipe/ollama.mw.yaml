@@ -1,0 +1,36 @@
+name: ollama
+description: "Local LLM runner — download and run large language models locally"
+class: engine
+timeout: 300
+pre_install:
+  - command: echo "Installing ollama..."
+    shell: true
+post_install:
+  - command: ollama --version
+    shell: true
+
+versions:
+  default: "0.31.1"
+  "0.31.1":
+    linux:
+      binary:
+        url: "https://ollama.com/download/ollama-linux-amd64.tar.zst"
+        extract: true
+        extract_to: /usr/local/bin
+        pre_steps:
+          - command: "mkdir -p {extract_to}"
+            sudo: false
+        commands:
+          - "tar --zstd -xf {archive} -C {extract_to}"
+          - "chmod +x {extract_to}/ollama"
+    macos:
+      binary:
+        url: "https://ollama.com/download/Ollama-darwin.zip"
+        extract: true
+        extract_to: /usr/local/bin
+        pre_steps:
+          - command: "mkdir -p {extract_to}"
+            sudo: false
+        commands:
+          - "unzip -o {archive} -d {extract_to}"
+          - "chmod +x {extract_to}/ollama"

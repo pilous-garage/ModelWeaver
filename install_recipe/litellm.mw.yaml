@@ -1,0 +1,20 @@
+name: litellm
+description: "LiteLLM - Unified API for 100+ LLM providers"
+class: router
+timeout: 120
+pre_install:
+  - command: "echo 'Installing litellm...'"
+    sudo: false
+    shell: true
+post_install:
+  - command: "python3 -c \"import litellm; print(litellm.__version__)\""
+    shell: true
+
+versions:
+  default: "1.91.0"
+  "1.91.0":
+    all:
+      pip:
+        package: litellm
+        commands:
+          - pip install litellm

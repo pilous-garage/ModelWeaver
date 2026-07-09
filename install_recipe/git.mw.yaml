@@ -1,0 +1,64 @@
+name: git
+description: "Distributed version control system"
+class: dev
+timeout: 120
+pre_install:
+  - command: echo "Installing git..."
+post_install:
+  - command: git --version
+
+versions:
+  default: "2.45.0"
+  "2.45.0":
+    linux:
+      apt:
+        package: git
+        sudo: true
+        auto_yes: true
+        commands:
+          - apt-get update -y
+          - apt-get install -y git
+      brew:
+        package: git
+        commands:
+          - brew install git
+      binary:
+        url: "https://github.com/git/git/archive/refs/tags/v2.45.0.tar.gz"
+        sha256: "..."
+        extract: true
+        extract_to: /usr/local/bin
+        pre_steps:
+          - command: "apt-get install -y build-essential libssl-dev libcurl4-gnutls-dev libexpat1-dev gettext"
+            sudo: true
+            auto_yes: true
+        commands:
+          - "make prefix=/usr/local all"
+          - "make prefix=/usr/local install"
+    macos:
+      brew:
+        package: git
+        commands:
+          - brew install git
+    windows:
+      winget:
+        package: "Git.Git"
+        commands:
+          - winget install --id Git.Git -e
+      choco:
+        package: git
+        commands:
+          - choco install git -y
+      binary:
+        url: "https://github.com/git-for-windows/git/releases/download/v2.45.0.windows.1/Git-2.45.0-64-bit.exe"
+        commands:
+          - "{download_path} /VERYSILENT /NORESTART"
+
+  "2.46.0-experimental":
+    linux:
+      apt:
+        package: git
+        sudo: true
+        auto_yes: true
+        commands:
+          - apt-get update -y
+          - apt-get install -y git

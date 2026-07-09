@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS tools (
     tool_type          TEXT NOT NULL CHECK(tool_type IN ('binary', 'python-module', 'archive', 'source', 'container')),
     install_method     TEXT NOT NULL CHECK(install_method IN ('direct-url', 'installer-script', 'package-manager', 'github-release', 'pip', 'apt', 'brew', 'winget')),
     current_version    TEXT,
+    recipe_path        TEXT,
     default_download_url TEXT,
     checksum_algorithm TEXT DEFAULT 'sha256',
     is_core            INTEGER DEFAULT 0,
@@ -116,7 +117,43 @@ CREATE TABLE IF NOT EXISTS tools (
 );
 
 -- ============================================================
--- 5.5. TOOL_CLASSES — Catégories d'outils
+-- 5.5. PACKAGE_MANAGERS — Gestionnaires de paquets OS détectés
+-- ============================================================
+CREATE TABLE IF NOT EXISTS package_managers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref             TEXT UNIQUE NOT NULL,
+    name            TEXT NOT NULL,
+    detected        INTEGER DEFAULT 0,
+    version         TEXT,
+    install_cmd     TEXT,
+    os_family       TEXT DEFAULT 'linux',
+    created_at      INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at      INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- Seed des gestionnaires connus
+INSERT OR IGNORE INTO package_managers (ref, name, install_cmd, os_family) VALUES
+    ('apt', 'APT', 'apt-get install -y', 'linux'),
+    ('snap', 'Snap', 'snap install', 'linux'),
+    ('brew', 'Homebrew', 'brew install', 'linux'),
+    ('pacman', 'Pacman', 'pacman -S --noconfirm', 'linux'),
+    ('yay', 'Yay', 'yay -S --noconfirm', 'linux'),
+    ('dnf', 'DNF', 'dnf install -y', 'linux'),
+    ('yum', 'YUM', 'yum install -y', 'linux'),
+    ('zypper', 'Zypper', 'zypper install -n', 'linux'),
+    ('apk', 'Alpine APK', 'apk add', 'linux'),
+    ('emerge', 'Gentoo Emerge', 'emerge', 'linux'),
+    ('nix', 'Nix', 'nix-env -iA', 'linux'),
+    ('flatpak', 'Flatpak', 'flatpak install', 'linux'),
+    ('pip', 'Pip', 'pip install', 'linux'),
+    ('cargo', 'Cargo', 'cargo install', 'linux'),
+    ('npm', 'NPM', 'npm install -g', 'linux'),
+    ('go', 'Go', 'go install', 'linux'),
+    ('winget', 'WinGet', 'winget install', 'windows'),
+    ('choco', 'Chocolatey', 'choco install -y', 'windows');
+
+-- ============================================================
+-- 5.6. TOOL_CLASSES — Catégories d'outils
 -- ============================================================
 CREATE TABLE IF NOT EXISTS tool_classes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
