@@ -34,7 +34,8 @@ class Installer:
     # ── API publique ──
 
     def install(self, tool: Dict[str, Any],
-                progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
+                progress_callback: Optional[Callable[[int, str], None]] = None,
+                keep_cache: bool = False) -> bool:
         """Installe un outil.
 
         Si le tool a un recipe_path, utilise la recette .mw.yaml prioritairement.

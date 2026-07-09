@@ -422,10 +422,13 @@ Les colonnes JSON dans `tools` (`allowed_platforms`, `allowed_arches`, `installe
 - [x] Sauvegarde en BDD via add_tool.py
 - [x] Apparition dans le catalogue avec bouton install actif
 
-**V0.5.7** — Vérification espace disque avant installation
-- [ ] Estimer la taille des outils/modèles
-- [ ] Vérifier l'espace disponible avant d'installer
-- [ ] Afficher un warning
+**V0.5.7** — Vérification espace disque avant installation ✅
+- [x] `bin/modelweaver-install` : CLI wrapper pour installer/désinstaller par ref ou --recipe
+- [x] `test_disk_space.py` : mesure size_download et size_disk dans Docker `mw-v0.5.7`
+- [x] Base `ubuntu:24.04`, `du -sb /` avant/après install + cleanup
+- [x] Met à jour le `.mw.yaml` avec `size_download` et `size_disk`
+- [x] `keep_cache` paramètre de l'Installer (CLI flag --keep-cache)
+- [ ] Afficher un warning dans le GUI si espace insuffisant (futures V0.5.x)
 
 **V0.5.8** — Tests GUI automatisés (dépriorisé)
 - [ ] Tests unitaires composants React
