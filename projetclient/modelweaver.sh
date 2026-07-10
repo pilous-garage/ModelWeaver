@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# ModelWeaver Bootstrap Installer
+# ModelWeaver Bootstrap Installer (Linux/macOS)
 # ==============================================================================
 
 # Couleurs pour le terminal
@@ -40,19 +40,38 @@ check_sqlite() {
 
 install_dependencies() {
     log_info "Installation des dépendances système (Python, SQLite...)"
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-pip sqlite3 curl git > /dev/null 2>&1
+    
+    # Détection de l'OS pour le gestionnaire de paquets
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y -qq python3 python3-pip sqlite3 curl git > /dev/null 2>&1
+        elif command -v brew >/dev/null 2>&1; then
+            brew install python3 sqlite curl git > /dev/null 2>&1
+        else
+            log_err "Gestionnaire de paquets non supporté. Veuillez installer python3 et sqlite3 manuellement."
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew >/dev/null 2>&1; then
+            brew install python3 sqlite curl git > /dev/null 2>&1
+        else
+            log_err "Homebrew n'est pas installé. Veuillez l'installer pour continuer."
+            exit 1
+        fi
+    fi
     
     log_info "Installation des bibliothèques Python..."
-    python3 -m pip install -q pyyaml libsql-client python-dotenv psutil requests keyring --break-system-packages || true
+    # Utilisation de pip3 explicitement
+    pip3 install -q pyyaml libsql-client python-dotenv psutil requests keyring --break-system-packages || pip3 install -q pyyaml libsql-client python-dotenv psutil requests keyring
 }
 
 download_project() {
     local target_dir=$1
     log_info "Téléchargement du projet depuis GitHub..."
     mkdir -p "$target_dir"
-    # Ici, on simule ou on utilise gh release download
-    git clone --depth 1 https://github.com/anomalyco/ModelWeaver.git "$target_dir" > /dev/null 2>&1
+    # On utilise git clone pour la simplicité du bootstrap
+    git clone --depth 1 https://github.com/pilous-garage/ModelWeaver.git "$target_dir" > /dev/null 2>&1
 }
 
 # --- Modes de lancement ---
@@ -62,11 +81,9 @@ run_interactive() {
     echo "   Welcome to $PROJECT_NAME Installer (Interactive)"
     echo "===================================================="
 
-    # 1. Chemin d'installation
     read -p "Où souhaitez-vous installer $PROJECT_NAME ? [$DEFAULT_INSTALL_DIR]: " install_path
     install_path=${install_path:-$DEFAULT_INSTALL_DIR}
-    
-    # 2. CGU
+
     echo -e "\n--- Conditions Générales d'Utilisation ---"
     echo "Le logiciel est fourni 'tel quel'. L'utilisateur est responsable de ses clés API."
     read -p "Acceptez-vous les CGU ? (y/n): " accept_tos
@@ -75,7 +92,6 @@ run_interactive() {
         exit 1
     fi
 
-    # 3. Dépendances
     if ! check_python || ! check_sqlite; then
         read -p "Certaines dépendances sont manquantes. Les installer maintenant ? (y/n): " install_deps
         if [[ "$install_deps" == "y" ]]; then
@@ -86,7 +102,6 @@ run_interactive() {
         fi
     fi
 
-    # 4. Téléchargement
     read -p "Télécharger le moteur ModelWeaver ? (y/n): " do_download
     if [[ "$do_download" == "y" ]]; then
         download_project "$install_path"

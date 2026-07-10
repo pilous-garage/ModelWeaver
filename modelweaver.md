@@ -82,6 +82,9 @@ Si aucune estimation n'est donnée, le premier point de contrôle est à 1 minut
 
 V0.1 terminée, V0.2 terminée. Voir [VERSIONS.md](VERSIONS.md).
 
+### Idées d'évolutions (Long Terme)
+- **Migration du Core** : Transition progressive du moteur Python vers Rust ou Go pour éliminer la dépendance à l'interpréteur et permettre un fonctionnement sur le hardware le plus limité (benchmark : tout PC capable de faire tourner un navigateur web).
+
 ### Session récente (2026-07-08)
 - V0.3.5 : catalogue distant HTTP + synchro depuis serveur (`sql/catalogue_server.py`)
 - V0.3.6 : Installer DB-driven, manifest.json v2.0 enrichi, migration enrichie
