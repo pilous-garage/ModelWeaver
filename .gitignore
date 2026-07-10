@@ -37,6 +37,11 @@ gh.tar.gz
 projetadmin/docker/
 projetadmin/docker-cli/
 
+# Logs de test
+projetadmin/log-test-*.log
+projetadmin/log-test-*.log.gui
+projetadmin/.last-test-*-time
+
 # Backups Docker
 docker-backup/
 

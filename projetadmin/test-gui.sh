@@ -1,53 +1,89 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOCKER_DIR="$SCRIPT_DIR/docker"
 MAIN_BIN="$SCRIPT_DIR/gui-main/src-tauri/target/release/modelweaver"
 HELPER="$SCRIPT_DIR/gui-main/gui_helper.py"
-CONTAINER="modelweaver-test"
-IMAGE="modelweaver-test"
+IMAGE="modelweaver-gui-test"
+CONTAINER="modelweaver-gui-test"
+LAST_FILE="$SCRIPT_DIR/.last-test-gui-time"
 
-# Options
-CLEAN=false
+TIMEOUT_DEFAULT=300
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+TAG=""
+
+ts() { date '+%H:%M:%S'; }
+log() { echo "[$(ts)] $*"; }
+
+# --- Parse arguments ---
 for arg in "$@"; do
-    [ "$arg" = "--clean" ] && CLEAN=true
+    case "$arg" in
+        --timeout=*) TIMEOUT="${arg#*=}" ;;
+    esac
 done
 
-container_exists() { docker ps -a --format "{{.Names}}" | grep -qx "$CONTAINER"; }
-container_running() { docker ps --format "{{.Names}}" | grep -qx "$CONTAINER"; }
+# --- Calcul du timeout ---
+if [ -z "${TIMEOUT:-}" ]; then
+    if [ -f "$LAST_FILE" ]; then
+        LAST=$(cat "$LAST_FILE")
+        TIMEOUT=$((LAST * 2))
+        [ "$TIMEOUT" -lt 60 ] && TIMEOUT=60
+        log "Timeout auto: ${LAST}s * 2 = ${TIMEOUT}s"
+    else
+        TIMEOUT=$TIMEOUT_DEFAULT
+        log "Timeout par défaut: ${TIMEOUT}s"
+    fi
+else
+    log "Timeout personnalisé: ${TIMEOUT}s"
+fi
 
-# --clean : supprimer et recréer
-if $CLEAN; then
-    echo "[INFO] Option --clean : suppression de l'ancien conteneur..."
+START=$(date +%s)
+LOG_FILE="$SCRIPT_DIR/log-test-gui-${TIMESTAMP}.log"
+
+{
+    echo "ModelWeaver — test-gui.sh"
+    echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Timeout: ${TIMEOUT}s"
+    echo ""
+} > "$LOG_FILE"
+
+trap cleanup EXIT
+docker rm -f "$CONTAINER" 2>/dev/null || true
+
+cleanup() {
+    local ec=$?
     docker rm -f "$CONTAINER" 2>/dev/null || true
+    [ -d "$DOCKER_DIR" ] && rm -rf "$DOCKER_DIR"
+    xhost -local: >/dev/null 2>&1 || true
+    return "$ec"
+}
+
+# Rediriger tout stdout vers le log + terminal
+exec 5>&1
+exec > >(tee -a "$LOG_FILE" >&5)
+
+# --- Vérifications préalables ---
+log "Vérification des prérequis..."
+[ -f "$MAIN_BIN" ] || { log "✗ Main introuvable: $MAIN_BIN"; log "  → Build : cd gui-main && npm run tauri build"; exit 1; }
+[ -f "$HELPER" ] || { log "✗ Helper introuvable: $HELPER"; exit 1; }
+log "  ✓ Binaire main: $(ls -lh "$MAIN_BIN" | awk '{print $5}')"
+log "  ✓ Helper: présent"
+log ""
+
+# --- X11 ---
+GUI_ONLY_BACKEND=true
+if [ -n "${DISPLAY:-}" ] && timeout 2 xdpyinfo >/dev/null 2>&1; then
+    GUI_ONLY_BACKEND=false
+    xhost +local: >/dev/null 2>&1 || log "⚠  xhost indisponible"
+    log "  ✓ X11 disponible ($DISPLAY)"
+else
+    log "⚠  DISPLAY indisponible — test du backend uniquement"
 fi
 
-# Vérifier l'état du conteneur
-if container_running; then
-    echo "[INFO] Le conteneur '$CONTAINER' est déjà en cours d'exécution."
-    echo "       Pour l'arrêter : docker stop $CONTAINER"
-    echo "       Pour recréer : $0 --clean"
-    exit 0
-fi
-
-if container_exists; then
-    echo "[INFO] Conteneur '$CONTAINER' existe mais est arrêté. Redémarrage..."
-    echo "[INFO] Pour récupérer les logs : ./projetadmin/get-log-docker-test.sh"
-    xhost +local: >/dev/null 2>&1 || true
-    docker start -ai "$CONTAINER"
-    exit $?
-fi
-
-# --- Créer un nouveau conteneur ---
-
+# --- Préparation Docker ---
+log "Préparation des fichiers..."
 mkdir -p "$DOCKER_DIR"
-
-echo "[INFO] Vérification des fichiers requis..."
-[ -f "$MAIN_BIN" ] || { echo "[ERROR] Main introuvable : $MAIN_BIN"; echo "       Lance d'abord : cd gui-main && npm run tauri build"; exit 1; }
-[ -f "$HELPER" ] || { echo "[ERROR] Helper introuvable : $HELPER"; exit 1; }
-
-echo "[INFO] Préparation des fichiers dans $DOCKER_DIR..."
 cp "$MAIN_BIN" "$DOCKER_DIR/modelweaver"
 cp "$HELPER" "$DOCKER_DIR/gui_helper.py"
 chmod +x "$DOCKER_DIR/modelweaver"
@@ -59,7 +95,6 @@ touch "$DOCKER_DIR/projetclient/sql/__init__.py"
 
 cat > "$DOCKER_DIR/Dockerfile" << 'DOCKERFILE'
 FROM ubuntu:24.04
-
 RUN apt-get update && apt-get install -y \
     libgtk-3-0 libgdk-pixbuf-2.0-0 libpango-1.0-0 \
     libcairo2 libatk1.0-0 \
@@ -69,14 +104,11 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-dri \
     dbus-x11 xdg-utils \
     && rm -rf /var/lib/apt/lists/*
-
 RUN mkdir -p /root/.modelweaver
 COPY modelweaver /root/.modelweaver/modelweaver
 COPY gui_helper.py /root/.modelweaver/gui_helper.py
 RUN chmod +x /root/.modelweaver/modelweaver
-
 COPY projetclient /root/.modelweaver/projetclient
-
 ENV HOME=/root
 ENV GDK_BACKEND=x11
 ENV GTK_MODULES=
@@ -86,20 +118,77 @@ WORKDIR /root/.modelweaver
 CMD ["/root/.modelweaver/modelweaver"]
 DOCKERFILE
 
-echo "[INFO] Build de l'image Docker..."
-docker build -t "$IMAGE" "$DOCKER_DIR" 2>&1 | tail -3
+log "Build image Docker..."
+docker build -t "$IMAGE" "$DOCKER_DIR" 2>&1
 
-echo "[INFO] Configuration X11..."
-xhost +local: >/dev/null 2>&1 || true
+# --- Lancement en mode détaché ---
+log "Lancement du conteneur (timeout ${TIMEOUT}s)..."
+log ""
 
-echo "[INFO] Lancement du nouveau conteneur '$CONTAINER'..."
-echo "[INFO] Pour arrêter : docker stop $CONTAINER"
-echo "[INFO] Pour relancer : $0"
-echo "[INFO] Pour recréer : $0 --clean"
-echo "[INFO] Pour récupérer les logs : ./projetadmin/get-log-docker-test.sh"
+set +e
+if $GUI_ONLY_BACKEND; then
+    docker run --name "$CONTAINER" -d "$IMAGE" \
+        /root/.modelweaver/modelweaver --help > /dev/null 2>&1
+else
+    docker run --name "$CONTAINER" -d \
+        -e DISPLAY="$DISPLAY" \
+        -v /tmp/.X11-unix:/tmp/.X11-unix \
+        "$IMAGE" > /dev/null 2>&1
+fi
 
-docker run -it \
-    --name "$CONTAINER" \
-    -e DISPLAY=$DISPLAY \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    "$IMAGE"
+# Timer de timeout en arrière-plan
+(sleep "$TIMEOUT" && echo "[TIMEOUT KILLER]" && docker kill "$CONTAINER" 2>/dev/null) &
+KILLER_PID=$!
+
+# Attendre la fin du conteneur
+docker wait "$CONTAINER" 2>/dev/null
+EXIT_CODE=$?
+DURATION=$(( $(date +%s) - START ))
+
+# Arrêter le timer si le conteneur s'est arrêté avant le timeout
+kill "$KILLER_PID" 2>/dev/null || true
+
+# Si le conteneur a été tué par le timer, transformer l'exit code en 124
+if [ "$DURATION" -ge "$TIMEOUT" ]; then
+    EXIT_CODE=124
+    TAG="timeout"
+    log "⏱  TIMEOUT après ${TIMEOUT}s"
+fi
+
+# Logs du conteneur
+log "Récupération des logs du conteneur..."
+docker logs "$CONTAINER" 2>&1 || true
+
+docker rm -f "$CONTAINER" 2>/dev/null || true
+
+# --- Prompt Y/N/U (seulement si pas de timeout) ---
+if [ "$EXIT_CODE" -eq 0 ] && [ -t 0 ] && [ "$TAG" != "timeout" ]; then
+    echo ""
+    echo -n "Test GUI réussi ? (Y/n/u) ➜ " >&5
+    read -r answer < /dev/tty
+    echo ""
+    case "${answer,,}" in
+        n|no|echec) TAG="echec" ;;
+        u|unknown)   TAG="unknown" ;;
+        *)           TAG="succes"; echo "$DURATION" > "$LAST_FILE" ;;
+    esac
+elif [ -z "$TAG" ]; then
+    [ "$EXIT_CODE" -eq 0 ] && TAG="unknown" || TAG="echec"
+fi
+
+[ "$EXIT_CODE" -eq 0 ] && echo "$DURATION" > "$LAST_FILE"
+
+# Finalisation
+echo ""
+echo "========================================"
+echo "  Test GUI terminé"
+echo "  Fin: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  Durée: ${DURATION}s"
+echo "  Code sortie: $EXIT_CODE"
+echo "========================================"
+
+NEW_LOG="$SCRIPT_DIR/log-test-gui-${TAG}-${TIMESTAMP}.log"
+mv "$LOG_FILE" "$NEW_LOG" 2>/dev/null || true
+echo "  Log: $NEW_LOG"
+
+exit "$EXIT_CODE"
