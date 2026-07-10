@@ -179,6 +179,11 @@ else
         "$IMAGE" > /dev/null 2>&1
 fi
 
+if ! $GUI_ONLY_BACKEND; then
+    log "✅ Fenêtre ${APP_LABEL} ouverte — fermez-la pour arrêter le test"
+    log ""
+fi
+
 # Timer de timeout en arrière-plan
 (sleep "$TIMEOUT" && echo "[TIMEOUT KILLER]" && docker kill "$CONTAINER" 2>/dev/null) &
 KILLER_PID=$!
