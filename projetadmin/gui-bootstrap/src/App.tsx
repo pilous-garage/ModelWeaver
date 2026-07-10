@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-type Step = 'INIT' | 'CHECK_UPDATE' | 'DOWNLOAD' | 'UNPACK' | 'LAUNCH' | 'DONE' | 'ERROR';
+type Step = 'INIT' | 'CHECK_UPDATE' | 'UPDATE_PROMPT' | 'DOWNLOAD' | 'UNPACK' | 'LAUNCH' | 'DONE' | 'ERROR';
 
 interface LogEntry {
   msg: string;
@@ -13,6 +13,7 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>('');
+  const [latestVersion, setLatestVersion] = useState<string>('');
 
   const addLog = (msg: string, type: LogEntry['type'] = 'info') => {
     setLogs(prev => [...prev, { msg, type }]);
@@ -22,6 +23,39 @@ function App() {
     if (step !== 'INIT') return;
     run();
   }, [step]);
+
+  const resumeDownload = async () => {
+    try {
+      const info: any = { os: platform.split('/')[0], arch: platform.split('/')[1] };
+      addLog('Téléchargement du release ModelWeaver...', 'info');
+      setStep('DOWNLOAD');
+      const archive = await invoke('download_release', {
+        url: `https://github.com/pilous-garage/ModelWeaver/releases/latest/download/modelweaver-main-${info.os}-${info.arch}.tar.gz`
+      });
+      addLog(`Téléchargé : ${archive}`, 'success');
+
+      setStep('UNPACK');
+      addLog("Extraction de l'archive...", 'info');
+      const dest = await invoke('unpack_release', { archivePath: archive });
+      addLog(`Dépaqueté dans : ${dest}`, 'success');
+
+      setStep('LAUNCH');
+      addLog('Lancement de ModelWeaver...', 'info');
+      await invoke('launch_main');
+      addLog('ModelWeaver est lancé !', 'success');
+      setStep('DONE');
+    } catch (e) {
+      addLog(`Erreur : ${e}`, 'error');
+      setError(`${e}`);
+      setStep('ERROR');
+    }
+  };
+
+  const cancelDownload = () => {
+    addLog('Mise à jour annulée par l\'utilisateur', 'error');
+    setError('Mise à jour annulée');
+    setStep('ERROR');
+  };
 
   const run = async () => {
     try {
@@ -34,28 +68,10 @@ function App() {
       setStep('CHECK_UPDATE');
       addLog('Vérification de la version du bootstrap...', 'info');
       const latest = await invoke('check_update');
-      addLog(`Dernière version disponible : ${latest}`, 'info');
-
-      // Download release
-      setStep('DOWNLOAD');
-      addLog('Téléchargement du release ModelWeaver...', 'info');
-      const archive = await invoke('download_release', {
-        url: `https://github.com/pilous-garage/ModelWeaver/releases/latest/download/modelweaver-main-${info.os}-${info.arch}.tar.gz`
-      });
-      addLog(`Téléchargé : ${archive}`, 'success');
-
-      // Unpack
-      setStep('UNPACK');
-      addLog('Extraction de l\'archive...', 'info');
-      const dest = await invoke('unpack_release', { archivePath: archive });
-      addLog(`Dépaqueté dans : ${dest}`, 'success');
-
-      // Launch main
-      setStep('LAUNCH');
-      addLog('Lancement de ModelWeaver...', 'info');
-      await invoke('launch_main');
-      addLog('ModelWeaver est lancé !', 'success');
-      setStep('DONE');
+      const tag = latest.split('-')[0];
+      setLatestVersion(tag);
+      addLog(`Dernière version disponible : ${tag}`, 'success');
+      setStep('UPDATE_PROMPT');
     } catch (e) {
       addLog(`Erreur : ${e}`, 'error');
       setError(`${e}`);
@@ -94,7 +110,33 @@ function App() {
             {log.msg}
           </div>
         ))}
-        {(step !== 'DONE' && step !== 'ERROR') && (
+        {step === 'UPDATE_PROMPT' && (
+          <div style={{
+            marginTop: '1rem', padding: '1rem', backgroundColor: '#1e3a5f',
+            borderRadius: '0.5rem', textAlign: 'center'
+          }}>
+            <p style={{ margin: '0 0 1rem', color: '#93c5fd', fontSize: '0.875rem' }}>
+              Nouvelle version disponible : {latestVersion}
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <button onClick={resumeDownload} style={{
+                padding: '0.5rem 1.5rem', backgroundColor: '#3b82f6',
+                color: 'white', border: 'none', borderRadius: '0.375rem',
+                cursor: 'pointer', fontSize: '0.8125rem'
+              }}>
+                Télécharger et installer
+              </button>
+              <button onClick={cancelDownload} style={{
+                padding: '0.5rem 1.5rem', backgroundColor: '#1e293b',
+                color: '#94a3b8', border: '1px solid #334155',
+                borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.8125rem'
+              }}>
+                Annuler
+              </button>
+            </div>
+          </div>
+        )}
+        {(step !== 'DONE' && step !== 'ERROR' && step !== 'UPDATE_PROMPT') && (
           <div style={{ color: '#64748b', marginTop: '0.5rem' }}>En cours...</div>
         )}
         {step === 'DONE' && (
