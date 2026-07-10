@@ -114,6 +114,7 @@ RUN apt-get update && apt-get install -y \
     libayatana-appindicator3-1 \
     libgl1-mesa-dri \
     dbus-x11 xdg-utils \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 COPY modelweaver /root/.modelweaver/modelweaver
 RUN chmod +x /root/.modelweaver/modelweaver
@@ -143,6 +144,7 @@ RUN apt-get update && apt-get install -y \
     libayatana-appindicator3-1 \
     libgl1-mesa-dri \
     dbus-x11 xdg-utils \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /root/.modelweaver
 COPY modelweaver /root/.modelweaver/modelweaver

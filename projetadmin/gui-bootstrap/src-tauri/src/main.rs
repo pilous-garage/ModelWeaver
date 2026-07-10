@@ -35,6 +35,43 @@ fn get_platform() -> PlatformInfo {
     }
 }
 
+fn run_http_get(url: &str) -> Result<std::process::Output, String> {
+    // Try curl first, then wget
+    let curl_check = Command::new("which").arg("curl").output();
+    if curl_check.map(|o| o.status.success()).unwrap_or(false) {
+        return Command::new("curl")
+            .args(["-s", "-H", "Accept: application/json", url])
+            .output()
+            .map_err(|e| format!("Erreur curl: {}", e));
+    }
+    let wget_check = Command::new("which").arg("wget").output();
+    if wget_check.map(|o| o.status.success()).unwrap_or(false) {
+        return Command::new("wget")
+            .args(["-q", "-O-", "--header=Accept: application/json", url])
+            .output()
+            .map_err(|e| format!("Erreur wget: {}", e));
+    }
+    Err("Ni curl ni wget n'est installé".to_string())
+}
+
+fn run_download(url: &str, dest: &str) -> Result<std::process::Output, String> {
+    let curl_check = Command::new("which").arg("curl").output();
+    if curl_check.map(|o| o.status.success()).unwrap_or(false) {
+        return Command::new("curl")
+            .args(["-L", "-o", dest, url])
+            .output()
+            .map_err(|e| format!("Erreur curl: {}", e));
+    }
+    let wget_check = Command::new("which").arg("wget").output();
+    if wget_check.map(|o| o.status.success()).unwrap_or(false) {
+        return Command::new("wget")
+            .args(["-q", "-O", dest, url])
+            .output()
+            .map_err(|e| format!("Erreur wget: {}", e));
+    }
+    Err("Ni curl ni wget n'est installé".to_string())
+}
+
 #[tauri::command]
 async fn check_update() -> Result<String, String> {
     let os = std::env::consts::OS;
@@ -43,10 +80,7 @@ async fn check_update() -> Result<String, String> {
         "https://api.github.com/repos/pilous-garage/ModelWeaver/releases/latest"
     );
 
-    let output = Command::new("curl")
-        .args(["-s", "-H", "Accept: application/json", &url])
-        .output()
-        .map_err(|e| format!("Erreur vérification mise à jour: {}", e))?;
+    let output = run_http_get(&url)?;
 
     if !output.status.success() {
         return Err("Impossible de contacter GitHub".to_string());
@@ -80,10 +114,7 @@ async fn self_update(dry_run: bool) -> Result<String, String> {
 
     // Téléchargement
     let tmp_path = get_home_dir().join(".modelweaver").join("bootstrap_update");
-    let output = Command::new("curl")
-        .args(["-L", "-o", tmp_path.to_str().unwrap(), &url])
-        .output()
-        .map_err(|e| format!("Erreur téléchargement mise à jour: {}", e))?;
+    let output = run_download(&url, tmp_path.to_str().unwrap())?;
 
     if !output.status.success() {
         return Err("Échec du téléchargement de la mise à jour".to_string());
@@ -105,10 +136,7 @@ async fn download_release(url: String) -> Result<String, String> {
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
 
     let archive_path = cache_dir.join("modelweaver.tar.gz");
-    let output = Command::new("curl")
-        .args(["-L", "-o", archive_path.to_str().unwrap(), &url])
-        .output()
-        .map_err(|e| format!("Erreur téléchargement: {}", e))?;
+    let output = run_download(&url, archive_path.to_str().unwrap())?;
 
     if !output.status.success() {
         return Err("Échec du téléchargement du release".to_string());
