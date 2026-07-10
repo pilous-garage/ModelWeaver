@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from sql.migrations import MigrationManager
 from dotenv import load_dotenv
-from modules.security.vault import vault
 
-load_dotenv()
 load_dotenv()
 
 
@@ -26,13 +24,7 @@ def _ref(prefix: str = "key") -> str:
 
 
 def _project_root() -> Path:
-    # On remonte jusqu'à trouver le dossier contenant .modelweaver
-    current = Path(__file__).resolve().parent
-    while current.parent is not None:
-        if (current / ".modelweaver").exists():
-            return current
-        current = current.parent
-    return Path.cwd()
+    return Path(__file__).resolve().parent.parent
 
 
 def _default_local_db() -> Path:
@@ -330,10 +322,7 @@ class KeyRepository:
             JOIN providers p ON p.id = ak.provider_id
             WHERE ak.ref = ?
         """, (ref,))
-        row = _row_to_dict(cur.fetchone())
-        if row and "key_value" in row:
-            row["key_value"] = vault.decrypt(row["key_value"])
-        return row
+        return _row_to_dict(cur.fetchone())
 
     def get_for_provider(self, provider_ref: str, identity: str = "default") -> Optional[Dict[str, Any]]:
         cur = self.conn.execute("""
@@ -348,17 +337,13 @@ class KeyRepository:
 
     def save(self, data: Dict[str, Any]) -> str:
         ref = data.get("ref") or _ref()
-        key_value = data.get("key_value")
-        if key_value:
-            key_value = vault.encrypt(key_value)
-            
         cur = self.conn.execute("""
             INSERT INTO api_keys (ref, identity, provider_id, key_value, tag, grade,
                 health_status, expiration_date, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ref, data.get("identity", "default"),
-            data["provider_id"], key_value,
+            data["provider_id"], data["key_value"],
             data.get("tag", "paid"), data.get("grade"),
             data.get("health_status", "unknown"),
             data.get("expiration_date"), data.get("metadata_json")

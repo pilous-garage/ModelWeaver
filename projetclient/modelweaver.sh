@@ -1,158 +1,113 @@
-#!/bin/sh
-# ModelWeaver — Bootstrap minimal
-# Usage: ./modelweaver.sh [--cache=/chemin/vers/cache]
+#!/bin/bash
 
-set -e
+# ==============================================================================
+# ModelWeaver Bootstrap Installer
+# ==============================================================================
 
-APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN_DIR="/bin/modelweaver"
-CACHE_ARG=""
+# Couleurs pour le terminal
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
 
-# ─── Bootstrap : Téléchargement du projet ────────────────
-if [ ! -f "$APP_DIR/modelweaver.py" ]; then
-    echo "📦 ModelWeaver non détecté localement. Téléchargement depuis GitHub..."
-    
-    ARCHIVE_URL="https://github.com/pilous-garage/ModelWeaver/releases/latest/download/modelweaver_client.tar.gz"
-    TMP_ARCHIVE="/tmp/modelweaver_client.tar.gz"
-    
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "❌ curl est requis pour le téléchargement. Veuillez l'installer."
-        exit 1
-    fi
-    
-    curl -L "$ARCHIVE_URL" -o "$TMP_ARCHIVE"
-    
-    echo "📦 Extraction du projet..."
-    mkdir -p "$APP_DIR"
-    tar -xzf "$TMP_ARCHIVE" -C "$APP_DIR"
-    
-    rm "$TMP_ARCHIVE"
-    echo "✅ Projet récupéré avec succès."
-fi
-for arg in "$@"; do
-    case "$arg" in
-        --cache=*) CACHE_ARG="${arg#--cache=}" ;;
-        --auto_install) AUTO_INSTALL=true ;;
-        --help|-h)
-            echo "Usage: $0 [--cache=/chemin/vers/cache] [--auto_install]"
-            exit 0
-            ;;
-    esac
-done
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_err() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Cache par défaut : dossier .modelweaver/cache/ du projet si --cache non fourni
-if [ -z "$CACHE_ARG" ]; then
-    CACHE_DIR="$APP_DIR/.modelweaver/cache"
-else
-    CACHE_DIR="$CACHE_ARG"
-fi
-mkdir -p "$CACHE_DIR"
+# --- Configuration par défaut ---
+DEFAULT_INSTALL_DIR="$HOME/.modelweaver"
+PROJECT_NAME="ModelWeaver"
 
-# ─── Vérification Python 3 ──────────────────────
-if ! command -v python3 >/dev/null 2>&1; then
-    echo ""
-    echo "⚠️  Python 3 n'est pas installé."
-    echo "   ModelWeaver a besoin de Python 3.10+ pour fonctionner."
-    echo "   Le programme va tenter de l'installer."
-    echo "   (annulez avec Ctrl+C si vous préférez le faire vous-même)"
-    echo ""
-    sleep 2
-    if command -v apt >/dev/null 2>&1; then
-        apt update -qq && apt install -y -qq python3 python3-pip python3-venv python3-yaml
-    elif command -v brew >/dev/null 2>&1; then
-        brew install python3
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y python3 python3-pip
-    elif command -v pacman >/dev/null 2>&1; then
-        pacman -Sy --noconfirm python python-pip
+# --- Fonctions de vérification ---
+
+check_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        return 0
     else
-        echo "❌ Aucun gestionnaire de paquets trouvé."
-        echo "   Installez Python 3.10+ manuellement puis relancez."
-        exit 1
+        return 1
     fi
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "❌ Échec de l'installation de Python."
-        exit 1
-    fi
-    echo "✅ Python 3 installé."
-fi
+}
 
-# ─── Vérification sqlite3 ───────────────────────
-if ! python3 -c "import sqlite3" 2>/dev/null; then
-    echo ""
-    echo "⚠️  Le module sqlite3 n'est pas disponible dans Python."
-    echo "   ModelWeaver a besoin de sqlite3 pour stocker ses données."
-    echo "   Le programme va tenter de l'installer."
-    echo ""
-    sleep 2
-    if command -v apt >/dev/null 2>&1; then
-        apt install -y -qq python3-pip python3-yaml  # sqlite3 vient avec python3 sur Ubuntu
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y python3-libs
-    elif command -v pacman >/dev/null 2>&1; then
-        pacman -Sy --noconfirm python
+check_sqlite() {
+    if command -v sqlite3 >/dev/null 2>&1; then
+        return 0
     else
-        echo "❌ sqlite3 introuvable. Installez python3-sqlite3 manuellement."
+        return 1
+    fi
+}
+
+# --- Logique d'installation ---
+
+install_dependencies() {
+    log_info "Installation des dépendances système (Python, SQLite...)"
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq python3 python3-pip sqlite3 curl git > /dev/null 2>&1
+    
+    log_info "Installation des bibliothèques Python..."
+    python3 -m pip install -q pyyaml libsql-client python-dotenv psutil requests keyring --break-system-packages || true
+}
+
+download_project() {
+    local target_dir=$1
+    log_info "Téléchargement du projet depuis GitHub..."
+    mkdir -p "$target_dir"
+    # Ici, on simule ou on utilise gh release download
+    git clone --depth 1 https://github.com/anomalyco/ModelWeaver.git "$target_dir" > /dev/null 2>&1
+}
+
+# --- Modes de lancement ---
+
+run_interactive() {
+    echo "===================================================="
+    echo "   Welcome to $PROJECT_NAME Installer (Interactive)"
+    echo "===================================================="
+
+    # 1. Chemin d'installation
+    read -p "Où souhaitez-vous installer $PROJECT_NAME ? [$DEFAULT_INSTALL_DIR]: " install_path
+    install_path=${install_path:-$DEFAULT_INSTALL_DIR}
+    
+    # 2. CGU
+    echo -e "\n--- Conditions Générales d'Utilisation ---"
+    echo "Le logiciel est fourni 'tel quel'. L'utilisateur est responsable de ses clés API."
+    read -p "Acceptez-vous les CGU ? (y/n): " accept_tos
+    if [[ "$accept_tos" != "y" ]]; then
+        log_err "Installation annulée. Vous devez accepter les CGU."
         exit 1
     fi
-    if ! python3 -c "import sqlite3" 2>/dev/null; then
-        echo "❌ Échec de l'installation de sqlite3."
-        exit 1
-    fi
-    echo "✅ sqlite3 disponible."
-fi
 
-# ─── Installation système ModelWeaver ──────────
-if [ -d "$BIN_DIR" ]; then
-    echo ""
-    echo "✅ ModelWeaver est déjà installé dans $BIN_DIR"
-    echo "   [K]  Utiliser la version existante  (par défaut)"
-    echo "   [R]  Réinitialiser (recopier les fichiers depuis le projet)"
-    printf "> "
-    read CHOICE </dev/tty 2>/dev/null || CHOICE="k"
-    case "$CHOICE" in
-        r|R) rm -rf "$BIN_DIR" && mkdir -p "$BIN_DIR" ;;
-        *)   echo "   → Version existante conservée" ;;
-    esac
-fi
-
-if [ ! -d "$BIN_DIR" ]; then
-    echo "📂 Installation de ModelWeaver dans $BIN_DIR..."
-    mkdir -p "$BIN_DIR"
-
-    # Copie des scripts nécessaires
-    cp "$APP_DIR/modelweaver.sh" "$BIN_DIR/modelweaver.sh"
-    cp "$APP_DIR/modelweaver.py" "$BIN_DIR/modelweaver.py" 2>/dev/null || true
-    cp -r "$APP_DIR/sql" "$BIN_DIR/sql" 2>/dev/null || true
-    cp -r "$APP_DIR/modules" "$BIN_DIR/modules" 2>/dev/null || true
-    cp "$APP_DIR/manifest.json" "$BIN_DIR/manifest.json" 2>/dev/null || true
-    cp -r "$APP_DIR/bin" "$BIN_DIR/" 2>/dev/null || true
-
-    chmod +x "$BIN_DIR/modelweaver.sh"
-    if [ -f "$BIN_DIR/modelweaver.py" ]; then
-        chmod +x "$BIN_DIR/modelweaver.py"
+    # 3. Dépendances
+    if ! check_python || ! check_sqlite; then
+        read -p "Certaines dépendances sont manquantes. Les installer maintenant ? (y/n): " install_deps
+        if [[ "$install_deps" == "y" ]]; then
+            install_dependencies
+        else
+            log_err "L'installation nécessite Python et SQLite. Arrêt."
+            exit 1
+        fi
     fi
 
-    echo "✅ ModelWeaver installé dans $BIN_DIR"
-fi
+    # 4. Téléchargement
+    read -p "Télécharger le moteur ModelWeaver ? (y/n): " do_download
+    if [[ "$do_download" == "y" ]]; then
+        download_project "$install_path"
+    fi
 
-# ─── Lancement ────────────────────────────────────
-echo ""
-if [ "$AUTO_INSTALL" = true ]; then
-    echo "🤖 Mode Auto-Install activé..."
-    echo "   Installation des outils légers (curl, git, gitingest)..."
-    echo ""
+    log_info "Installation terminée avec succès dans $install_path !"
+}
+
+run_autoinstall() {
+    log_info "Lancement de l'installation automatique..."
     
-    export PYTHONPATH="$BIN_DIR"
-    echo "   Préparation des dépendances Python..."
-    python3 -m pip install -q pyyaml libsql-client python-dotenv psutil requests --break-system-packages || true
-    python3 "$BIN_DIR/bin/mw_install.py" curl git gitingest opencode litellm
+    install_dependencies
+    download_project "$DEFAULT_INSTALL_DIR"
     
-    echo ""
-    echo "✅ Auto-installation terminée."
+    log_info "Installation automatique terminée dans $DEFAULT_INSTALL_DIR !"
+}
+
+# --- Entrée principale ---
+
+if [[ "$1" == "--autoinstall" ]]; then
+    run_autoinstall
 else
-    echo "🚀 Lancement de ModelWeaver..."
-    echo "   Cache : $CACHE_DIR"
-    echo ""
-    python3 "$BIN_DIR/modelweaver.py" --cache="$CACHE_DIR"
+    run_interactive
 fi

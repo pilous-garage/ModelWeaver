@@ -1,3 +1,4 @@
+
 # Ignorer tout ce qui est compilé, généré ou dépendances
 
 # Python
@@ -8,13 +9,13 @@ venv/
 
 # Node.js
 node_modules/
-gui/installer/node_modules/
-gui/installer/dist/
+projetadmin/gui/node_modules/
+projetadmin/gui/dist/
 
 # Rust / Tauri
 # Tauri build output (binaire généré)
-gui/installer/src-tauri/target/
-gui/installer/src-tauri/Cargo.lock
+projetadmin/gui/src-tauri/target/
+projetadmin/gui/src-tauri/Cargo.lock
 
 # Backups Docker
 docker-backup/
@@ -45,6 +46,14 @@ tui.json
 *.tar
 *.zip
 
+gui-defunct/
+gemini/
+gemma/
+mistral/
+
 # Logs et rapports
 **/tauri_dev.log
 **/tauri_build.log
+
+# GUI directory
+gui/
