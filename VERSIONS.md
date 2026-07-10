@@ -68,3 +68,40 @@ Intégration Docker :
 - Bootstrap : binaire 14 Mo, 3 bundles (.deb, .rpm, .AppImage).
 - Main : binaire 14 Mo, 3 bundles (.deb, .rpm, .AppImage).
 - Fenêtres : bootstrap 700×500, main 1000×700.
+- Release GitHub v0.5.7 publiée (8 assets).
+
+## V0.6 — Framework d'Agent (🔜 Prochaine)
+**Objectif** : Framework pour définir et orchestrer des agents.
+
+- Gestionnaire de clés (Key Vault) : chiffrement AES-256-GCM, stockage sécurisé
+- Abstraction LLM (LLM Bridge) : interface unifiée `BaseProvider` (chat, embed, list_models)
+- Adaptateurs : Ollama, LiteLLM, APIs natives
+- Hardening du système : sandboxing des commandes, logging structuré
+- Interface de configuration des rôles d'agents
+- Import/export de rôles
+
+## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
+**Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
+
+- Éditeur de rôles low-code (designer de prompt, mapping de capacités)
+- Factory d'agents (orchestrateur d'instances, health check)
+- Branchements visuels (chatrooms, todo-lists, inter-agents)
+- Déploiement et monitoring
+
+## V0.8 — Organisateur Global & Framework (📝 Planifié)
+**Objectif** : Dashboard central et tour de contrôle.
+
+- Vue graphique (topologie, éditeur de pipeline)
+- Monitoring temps réel (CPU/RAM, tokens, statut)
+- Contrôles Play/Stop/Restart
+- Logs en temps réel par agent/session
+- Gestion des dépendances entre agents
+
+## V1.0 — Release Stable (🎯 Objectif)
+**Objectif** : Version publique distribuable, stable et documentée.
+
+- Tests E2E complets
+- Portabilité Windows
+- Branding final
+- Documentation professionnelle
+- Campagne de lancement

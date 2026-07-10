@@ -25,6 +25,18 @@ dist/
 # Release assets (binaires trop lourds pour git)
 release-assets/
 
+# Binaires GitHub CLI (trop lourds)
+bin/
+share/
+gh.tar.gz
+
+# Archives générées
+*.tar.gz
+
+# Docker test context (généré par test-gui.sh)
+projetadmin/docker/
+projetadmin/docker-cli/
+
 # Backups Docker
 docker-backup/
 

@@ -9,14 +9,16 @@ import json
 import sqlite3
 import uuid
 import os
-import libsql_client as libsql
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from sql.migrations import MigrationManager
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def _ref(prefix: str = "key") -> str:
