@@ -70,6 +70,22 @@ Intégration Docker :
 - Fenêtres : bootstrap 700×500, main 1000×700.
 - Release GitHub v0.5.7 publiée (8 assets).
 
+### V0.5.8 — Nettoyage & Fix Docker (Terminée ✅)
+- Nettoyage git history (1.4G → 836K) via git-filter-repo
+- Fix path dans `gui_helper.py` (PROJECT_ROOT 2 dirname)
+- Fix `sql/db.py` (imports optionnels libsql_client, dotenv)
+- Première version des scripts de test CLI/GUI Docker
+
+### V0.5.9 — Tests CLI/GUI robustes (Terminée ✅)
+- `test-cli.sh` : rewrite avec `--docker`, `--timeout=N`, tag Y/N/U, log auto horodaté, auto-save durée
+- `test-gui.sh` : rewrite avec `--timeout=N`, tag Y/N/U, log auto, détection X11, docker run -d + timer
+- Fix timeout docker : utilisation de `docker run -d` + timer shell au lieu de `timeout` (évite D state)
+- Fix buffering : `exec > >(tee ...)` global au lieu de `| tee` dans les pipes
+- CLI test réussi en Docker vierge (85s, exit 0)
+- GUI test timeout fonctionnel (15s, exit 124, logs capturés)
+- `.gitignore` mis à jour (logs, .last-test-*-time)
+- Retrait des scripts obsolètes (get-log-docker-test.sh, Dockerfile.test)
+
 ## V0.6 — Framework d'Agent (🔜 Prochaine)
 **Objectif** : Framework pour définir et orchestrer des agents.
 
