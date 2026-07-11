@@ -220,6 +220,31 @@ def get_installed_tools():
     return {"tools": out, "count": len(out)}
 
 
+def watch_installed_tools(interval: float = 2.0):
+    """Service loop: scan les outils installés en boucle et écrit un JSON par
+    ligne sur stdout (une seule ligne = un état). Le superviseur lit stdout
+    et met en cache. Un seul processus, en pause (sleep) entre deux scans."""
+    import time
+    from sql.db import ModelWeaverDB
+    mw_path, _ = _db_paths()
+    while True:
+        try:
+            mw = ModelWeaverDB(mw_path)
+            rows = mw.local_tools.list_all()
+            out = [{
+                "ref": r.get("tool_ref") or r.get("ref"),
+                "name": r.get("tool_name") or r.get("name"),
+                "version": r.get("version"),
+                "status": r.get("status"),
+                "install_path": r.get("install_path"),
+            } for r in rows]
+            mw.close()
+            print(json.dumps({"tools": out, "count": len(out)}), flush=True)
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), flush=True)
+        time.sleep(interval)
+
+
 def save_system_state():
     from sql.db import ModelWeaverDB
     from modules.checker.checker import Checker
@@ -356,6 +381,8 @@ if __name__ == "__main__":
             result = get_catalogue_tools()
         elif command == "get_installed_tools":
             result = get_installed_tools()
+        elif command == "watch_installed_tools":
+            watch_installed_tools()
         elif command == "save_system_state":
             result = save_system_state()
         elif command == "sync_catalogue_remote":

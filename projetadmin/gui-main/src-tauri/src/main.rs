@@ -179,6 +179,16 @@ fn proc_set_pid(id: u64, pid: u32) {
     }
 }
 
+fn proc_set_status(id: u64, status: &str) {
+    let mut reg = proc_reg().lock().unwrap();
+    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
+        p.info.status = status.to_string();
+        if status != "running" {
+            p.info.ended_at = Some(now_secs());
+        }
+    }
+}
+
 /// Finalize a tracked process and flush its output to the on-disk log.
 fn proc_finish(id: u64, success: bool, sout: &str, serr: &str) {
     let mut reg = proc_reg().lock().unwrap();
@@ -369,6 +379,189 @@ fn mirror_processes_to_db(db_path: &PathBuf, snap: &[ProcInfo]) {
 
 #[cfg(not(unix))]
 fn mirror_processes_to_db(_db_path: &PathBuf, _snap: &[ProcInfo]) {}
+
+// ============================================================
+//  Service manager — long-lived named services with auto-restart.
+//  A "service" is a supervised child process. Loop services are
+//  restarted automatically if they exit/crash (max 10 retries).
+//  Each service is also registered in the process registry so it
+//  shows up in the Debug tree.
+// ============================================================
+
+#[derive(Clone, Serialize)]
+struct ServiceInfo {
+    name: String,
+    mode: String,            // loop | single-use
+    command: String,
+    args: Vec<String>,
+    status: String,          // running | stopped | crashed | restarting
+    pid: Option<u32>,
+    parent: Option<String>,
+    restart: bool,
+    restarts: u32,
+    last_exit: Option<i32>,
+    started_at: u64,
+    proc_id: u64,
+}
+
+struct ServiceEntry {
+    info: ServiceInfo,
+    child: Option<std::process::Child>,
+    watch: bool,             // if true, stdout lines are cached (WATCH_CACHE)
+}
+
+static SERVICES: OnceLock<Mutex<Vec<ServiceEntry>>> = OnceLock::new();
+static WATCH_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn services_reg() -> &'static Mutex<Vec<ServiceEntry>> {
+    SERVICES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn watch_cache() -> &'static Mutex<HashMap<String, String>> {
+    WATCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, parent: Option<String>, restart: bool, watch: bool) {
+    let mut reg = services_reg().lock().unwrap();
+    if reg.iter().any(|s| s.info.name == name) { return; }
+    let proc_id = proc_begin(name, None, &format!("{} {}", command, args.join(" ")));
+    reg.push(ServiceEntry {
+        info: ServiceInfo {
+            name: name.to_string(),
+            mode: mode.to_string(),
+            command: command.to_string(),
+            args,
+            status: "stopped".to_string(),
+            pid: None,
+            parent,
+            restart,
+            restarts: 0,
+            last_exit: None,
+            started_at: now_secs(),
+            proc_id,
+        },
+        child: None,
+        watch,
+    });
+}
+
+fn spawn_service_child(entry: &mut ServiceEntry) {
+    let mut cmd = Command::new(&entry.info.command);
+    cmd.args(&entry.info.args);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    if entry.watch {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+    } else {
+        let logp = logs_dir().join(format!("service-{}.log", safe_name(&entry.info.name)));
+        if let Ok(f) = OpenOptions::new().create(true).write(true).truncate(true).open(&logp) {
+            if let Ok(f2) = f.try_clone() { cmd.stdout(Stdio::from(f2)); cmd.stderr(Stdio::from(f)); }
+        }
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let pid = child.id();
+            entry.child = Some(child);
+            entry.info.pid = Some(pid);
+            entry.info.status = "running".to_string();
+            entry.info.started_at = now_secs();
+            proc_set_pid(entry.info.proc_id, pid);
+            proc_set_status(entry.info.proc_id, "running");
+            if entry.watch {
+                let name = entry.info.name.clone();
+                let mut out = entry.child.as_mut().unwrap().stdout.take();
+                let mut err = entry.child.as_mut().unwrap().stderr.take();
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    if let Some(o) = out.take() {
+                        let reader = std::io::BufReader::new(o);
+                        for line in reader.lines().map_while(Result::ok) {
+                            watch_cache().lock().unwrap().insert(name.clone(), line);
+                        }
+                    }
+                    let mut buf = Vec::new();
+                    if let Some(mut e) = err.take() { let _ = e.read_to_end(&mut buf); }
+                });
+            }
+        }
+        Err(e) => {
+            log_to_file("SERVICE", &format!("spawn error {}: {}", entry.info.name, e));
+            entry.info.status = "crashed".to_string();
+        }
+    }
+}
+
+fn start_service_supervisor() {
+    std::thread::spawn(move || loop {
+        {
+            let mut reg = services_reg().lock().unwrap();
+            for entry in reg.iter_mut() {
+                if entry.info.mode != "loop" { continue; }
+                let exited = match entry.child.as_mut() {
+                    Some(c) => match c.try_wait() {
+                        Ok(Some(code)) => { entry.info.last_exit = Some(code.code().unwrap_or(-1)); true }
+                        Ok(None) => false,
+                        Err(_) => { entry.info.last_exit = Some(-1); true }
+                    },
+                    None => true,
+                };
+                if exited {
+                    entry.child = None;
+                    proc_set_status(entry.info.proc_id, "stopped");
+                    if entry.info.restart && entry.info.restarts < 10 {
+                        entry.info.restarts += 1;
+                        entry.info.status = "restarting".to_string();
+                        spawn_service_child(entry);
+                    } else {
+                        entry.info.status = "stopped".to_string();
+                    }
+                }
+            }
+        }
+        mirror_services_to_db();
+        std::thread::sleep(Duration::from_millis(1000));
+    });
+}
+
+fn read_watch_cache(name: &str) -> Option<String> {
+    watch_cache().lock().unwrap().get(name).cloned()
+}
+
+#[cfg(unix)]
+fn mirror_services_to_db() {
+    use std::fmt::Write as _;
+    let reg = services_reg().lock().unwrap();
+    let mut sql = String::new();
+    let _ = writeln!(sql, "CREATE TABLE IF NOT EXISTS services (\n\
+        name TEXT PRIMARY KEY,\n\
+        mode TEXT,\n\
+        command TEXT,\n\
+        args TEXT,\n\
+        status TEXT,\n\
+        pid INTEGER,\n\
+        parent TEXT,\n\
+        restart INTEGER,\n\
+        restarts INTEGER DEFAULT 0,\n\
+        last_exit INTEGER,\n\
+        started_at INTEGER,\n\
+        updated_at INTEGER DEFAULT (strftime('%s','now'))\n\
+    );");
+    for s in reg.iter() {
+        let esc = |x: &str| x.replace('\'', "''");
+        let args = s.info.args.join("\u{1}").replace('\'', "''");
+        let pid = s.info.pid.map(|v| v as i64).unwrap_or(-1);
+        let parent = s.info.parent.clone().unwrap_or_default().replace('\'', "''");
+        let _ = writeln!(sql, "INSERT INTO services (name,mode,command,args,status,pid,parent,restart,restarts,last_exit,started_at) \
+            VALUES ('{}','{}','{}','{}','{}',{},'{}',{},{},{},{}) \
+            ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,updated_at=strftime('%s','now');",
+            esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64);
+    }
+    let home = get_home_dir().join(".modelweaver").join("modelweaver.db");
+    let _ = Command::new("sqlite3").arg(home).arg(sql).status();
+}
+#[cfg(not(unix))]
+fn mirror_services_to_db() {}
 
 fn find_helper_path() -> PathBuf {
     let home = get_home_dir();
@@ -764,6 +957,17 @@ fn process_log(id: u64) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn service_list() -> Result<Vec<ServiceInfo>, String> {
+    let reg = services_reg().lock().unwrap();
+    Ok(reg.iter().map(|s| s.info.clone()).collect())
+}
+
+#[tauri::command]
+fn watch_get(name: String) -> Result<String, String> {
+    Ok(read_watch_cache(&name).unwrap_or_default())
+}
+
+#[tauri::command]
 fn run_command(command: String, args: Vec<String>) -> Result<CommandOutput, String> {
     let full_cmd = format!("{} {}", command, args.join(" "));
     log_cmd(&format!("run_command({})", full_cmd));
@@ -978,14 +1182,24 @@ fn main() {
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
-    let manager = InstallManager::new(helper_path);
+    let manager = InstallManager::new(helper_path.clone());
     manager.spawn_worker();
 
     // Root of the process tree: the main calling process ("modelweaver-main").
     let root_pid = std::process::id();
     proc_register("modelweaver-main", None, Some(root_pid), "modelweaver", String::new(), "running");
     let db_path = get_home_dir().join(".modelweaver").join("modelweaver.db");
-    start_proc_monitor(db_path);
+    start_proc_monitor(db_path.clone());
+
+    // Supervised services (long-lived children, auto-restarted on crash).
+    let pc_dir = helper_path.parent().map(|p| p.join("projetclient")).unwrap_or_default();
+    let cat_server = pc_dir.join("sql").join("catalogue_server.py");
+    let cat_db = get_home_dir().join(".modelweaver").join("catalogue.remote.db");
+    define_service("watch:installed-tools", "loop", python_bin(),
+        vec![helper_path.display().to_string(), "watch_installed_tools".to_string()], None, true, true);
+    define_service("catalogue", "loop", python_bin(),
+        vec![cat_server.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
+    start_service_supervisor();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1017,6 +1231,8 @@ fn main() {
             install_queue_clear,
             process_list,
             process_log,
+            service_list,
+            watch_get,
             run_command,
             get_platform,
             check_dependencies_with_config,

@@ -69,6 +69,7 @@ function App() {
   const [procList, setProcList] = useState<{ id: number; name: string; pid: number | null; parent_id: number | null; status: string; command: string; log_path: string; cpu: number; rss_kb: number; started_at: number; ended_at: number | null }[]>([]);
   const [procLogId, setProcLogId] = useState<number | null>(null);
   const [procLogText, setProcLogText] = useState<string>('');
+  const [serviceList, setServiceList] = useState<{ name: string; mode: string; status: string; pid: number | null; restarts: number; last_exit: number | null; started_at: number }[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const setDebug = (v: boolean) => {
@@ -85,11 +86,13 @@ function App() {
     setProcLogId(id);
     invoke<string>('process_log', { id }).then(setProcLogText).catch(() => setProcLogText(''));
   };
+  const fetchServiceList = () => invoke<any[]>('service_list').then(setServiceList).catch(() => {});
 
   useEffect(() => {
     if (!showDebug) return;
     fetchProcList();
-    const t = setInterval(fetchProcList, 1000);
+    fetchServiceList();
+    const t = setInterval(() => { fetchProcList(); fetchServiceList(); }, 1000);
     return () => clearInterval(t);
   }, [showDebug]);
   const [installListOpen, setInstallListOpen] = useState(true);
@@ -356,6 +359,15 @@ function App() {
   // ── Logithèque ──
 
   const refreshInstalled = async () => {
+    try {
+      const cached = await invoke<string>('watch_get', { name: 'installed-tools' });
+      if (cached) {
+        const inst = JSON.parse(cached);
+        setInstalledTools(inst.tools || []);
+        installedRef.current = inst.tools || [];
+        return;
+      }
+    } catch { /* fallthrough */ }
     const inst = await invoke<any>('get_installed_tools');
     setInstalledTools(inst.tools || []);
     installedRef.current = inst.tools || [];
@@ -645,13 +657,13 @@ function App() {
             <div style={{ width: '360px', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflow: 'hidden', borderLeft: '1px solid #334155', paddingLeft: '1rem' }}>
               {/* Bandeau de panneaux supplémentaires */}
               <div style={{ display: 'flex', gap: '0.4rem' }}>
-                {(['process', 'logs', 'resources'] as const).map((tab) => (
+                {(['process', 'services', 'logs', 'resources'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setDebugTab(tab)}
                     style={{ flex: 1, padding: '0.35rem', fontSize: '0.7rem', borderRadius: '0.3rem', cursor: 'pointer', backgroundColor: debugTab === tab ? '#2563eb' : '#334155', color: '#e2e8f0', border: 'none' }}
                   >
-                    {tab === 'process' ? 'Processus' : tab === 'logs' ? 'Logs' : 'Ressources'}
+                    {tab === 'process' ? 'Processus' : tab === 'services' ? 'Services' : tab === 'logs' ? 'Logs' : 'Ressources'}
                   </button>
                 ))}
               </div>
@@ -683,6 +695,31 @@ function App() {
                             {procLogId === p.id && (
                               <pre style={{ marginTop: '0.3rem', maxHeight: '160px', overflowY: 'auto', backgroundColor: '#0f172a', color: '#a5b4fc', fontSize: '0.62rem', padding: '0.4rem', borderRadius: '0.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{procLogText || '(vide)'}</pre>
                             )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+                {debugTab === 'services' && (
+                  <>
+                    <div style={{ fontSize: '0.72rem', color: '#64748b', marginBottom: '0.5rem' }}>Services supervisés (auto-redémarrage si crash)</div>
+                    {serviceList.length === 0 ? (
+                      <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun service déclaré</div>
+                    ) : (
+                      serviceList.map((s) => {
+                        const stColor = s.status === 'running' ? '#6ee7b7' : s.status === 'restarting' ? '#fbbf24' : '#f87171';
+                        return (
+                          <div key={s.name} style={{ padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.72rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ fontWeight: '600', color: '#e2e8f0' }}>{s.name}</span>
+                              <span style={{ color: stColor }}>● {s.status}</span>
+                              {s.pid ? <span style={{ color: '#64748b' }}>pid {s.pid}</span> : null}
+                              <span style={{ color: '#64748b', marginLeft: 'auto' }}>↻ {s.restarts}</span>
+                            </div>
+                            <div style={{ color: '#64748b', fontSize: '0.65rem', marginTop: '0.1rem' }}>
+                              {s.mode}{s.last_exit != null ? ` · exit ${s.last_exit}` : ''} · démarré {new Date(s.started_at * 1000).toLocaleTimeString()}
+                            </div>
                           </div>
                         );
                       })

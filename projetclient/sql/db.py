@@ -929,6 +929,24 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
             )
         """)
 
+        # Table des services supervisés (long-lived, auto-redémarrage)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                name TEXT PRIMARY KEY,
+                mode TEXT,
+                command TEXT,
+                args TEXT,
+                status TEXT,
+                pid INTEGER,
+                parent TEXT,
+                restart INTEGER,
+                restarts INTEGER DEFAULT 0,
+                last_exit INTEGER,
+                started_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""
         count = self.tools.scan_installed(self.local_tools)
