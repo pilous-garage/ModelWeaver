@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
 use std::io::Write;
 use serde::{Serialize, Deserialize};
+use regex::Regex;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct PythonResponse {
@@ -336,6 +337,175 @@ fn install_queue_clear(state: tauri::State<'_, Arc<InstallManager>>) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+fn run_command(command: String, args: Vec<String>) -> Result<CommandOutput, String> {
+    let full_cmd = format!("{} {}", command, args.join(" "));
+    log_cmd(&format!("run_command({})", full_cmd));
+    let output = Command::new(&command)
+        .args(&args)
+        .output()
+        .map_err(|e| {
+            log_to_file("ERROR", &format!("run_command failed: {} - {}", full_cmd, e));
+            format!("Failed to run command: {}", e)
+        })?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let success = output.status.success();
+    
+    log_to_file("CMD_RESULT", &format!("command: {} | success: {} | stdout_len: {} | stderr_len: {}", full_cmd, success, stdout.len(), stderr.len()));
+    if !stdout.is_empty() {
+        log_to_file("CMD_STDOUT", &format!("{}: {}", full_cmd, stdout.trim()));
+    }
+    if !stderr.is_empty() {
+        log_to_file("CMD_STDERR", &format!("{}: {}", full_cmd, stderr.trim()));
+    }
+    
+    Ok(CommandOutput {
+        stdout,
+        stderr,
+        success,
+    })
+}
+
+#[derive(Serialize)]
+struct CommandOutput {
+    stdout: String,
+    stderr: String,
+    success: bool,
+}
+
+#[tauri::command]
+fn get_platform() -> String {
+    log_cmd("get_platform");
+    std::env::consts::OS.to_string()
+}
+
+#[tauri::command]
+fn read_debug_logs() -> Result<String, String> {
+    log_cmd("read_debug_logs");
+    let path = log_path();
+    std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read logs: {}", e))
+}
+
+#[tauri::command]
+fn close_splashscreen() {
+    std::process::exit(0);
+}
+
+#[tauri::command]
+async fn check_dependencies_with_config(config: serde_json::Value) -> Result<serde_json::Value, String> {
+    log_cmd("check_dependencies_with_config");
+    let mut results = serde_json::Map::new();
+    
+    // Check required dependencies
+    if let Some(required) = config.get("required").and_then(|r| r.as_array()) {
+        for dep in required {
+            let name = dep.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+            let check_command = dep.get("check_command").and_then(|c| c.as_str()).unwrap_or("");
+            let version_regex = dep.get("version_regex").and_then(|v| v.as_str()).unwrap_or("");
+            
+            log_to_file("DEBUG", &format!("Checking dependency: {}", name));
+            log_to_file("DEBUG", &format!("  Command: {}", check_command));
+            
+            let result = match run_command(
+                check_command.split(' ').next().unwrap_or("").to_string(),
+                check_command.split(' ').skip(1).map(String::from).collect(),
+            ) {
+                Ok(res) => res,
+                Err(e) => {
+                    log_to_file("DEBUG", &format!("  Command failed: {}", e));
+                    CommandOutput {
+                        stdout: String::new(),
+                        stderr: e.to_string(),
+                        success: false,
+                    }
+                }
+            };
+            
+            log_to_file("DEBUG", &format!("  Success: {}", result.success));
+            log_to_file("DEBUG", &format!("  Stdout: {}", result.stdout));
+            log_to_file("DEBUG", &format!("  Stderr: {}", result.stderr));
+            
+            let mut dep_result = serde_json::Map::new();
+            dep_result.insert("installed".to_string(), serde_json::Value::Bool(result.success));
+            
+            if result.success {
+                if let Ok(re) = regex::Regex::new(version_regex) {
+                    log_to_file("DEBUG", &format!("  Regex: {}", version_regex));
+                    if let Some(version_match) = re.captures(&result.stdout) {
+                        if let Some(version) = version_match.get(1) {
+                            log_to_file("DEBUG", &format!("  Version detected: {}", version.as_str()));
+                            dep_result.insert("version".to_string(), serde_json::Value::String(version.as_str().to_string()));
+                        } else {
+                            log_to_file("DEBUG", "  No version match found")
+                        }
+                    } else {
+                        log_to_file("DEBUG", "  Regex did not match stdout")
+                    }
+                } else {
+                    log_to_file("DEBUG", "  Invalid regex pattern")
+                }
+            } else {
+                dep_result.insert("error".to_string(), serde_json::Value::String(result.stderr));
+            }
+            
+            results.insert(name.to_string(), serde_json::Value::Object(dep_result));
+        }
+    }
+    
+    // Check package managers
+    if let Some(pms) = config.get("package_managers").and_then(|p| p.as_object()) {
+        let mut pm_results = serde_json::Map::new();
+        for (pm, pm_config) in pms {
+            let check_command = pm_config.get("check_command").and_then(|c| c.as_str()).unwrap_or("");
+            let result = run_command(
+                check_command.split(' ').next().unwrap_or("").to_string(),
+                check_command.split(' ').skip(1).map(String::from).collect(),
+            )?;
+            
+            let mut pm_result = serde_json::Map::new();
+            pm_result.insert("available".to_string(), serde_json::Value::Bool(result.success));
+            pm_result.insert("description".to_string(), pm_config.get("description").unwrap_or(&serde_json::Value::Null).clone());
+            pm_results.insert(pm.clone(), serde_json::Value::Object(pm_result));
+        }
+        results.insert("package_managers".to_string(), serde_json::Value::Object(pm_results));
+    }
+    
+    // Check Python package managers (only if Python is installed)
+    if results.get("python3").and_then(|p| p.get("installed")).and_then(|i| i.as_bool()) == Some(true) {
+        if let Some(python_pms) = config.get("python_package_managers").and_then(|p| p.as_object()) {
+            let mut python_pm_results = serde_json::Map::new();
+            for (pm, pm_config) in python_pms {
+                let check_command = pm_config.get("check_command").and_then(|c| c.as_str()).unwrap_or("");
+            let result = match run_command(
+                check_command.split(' ').next().unwrap_or("").to_string(),
+                check_command.split(' ').skip(1).map(String::from).collect(),
+            ) {
+                Ok(res) => res,
+                Err(_) => CommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    success: false,
+                },
+            };
+                
+                let mut pm_result = serde_json::Map::new();
+                pm_result.insert("available".to_string(), serde_json::Value::Bool(result.success));
+                pm_result.insert("description".to_string(), pm_config.get("description").unwrap_or(&serde_json::Value::Null).clone());
+                if result.success {
+                    pm_result.insert("version".to_string(), serde_json::Value::String(result.stdout));
+                }
+                python_pm_results.insert(pm.clone(), serde_json::Value::Object(pm_result));
+            }
+            results.insert("python_package_managers".to_string(), serde_json::Value::Object(python_pm_results));
+        }
+    }
+    
+    Ok(serde_json::Value::Object(results))
+}
+
 fn main() {
     let helper_path = find_helper_path();
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
@@ -359,6 +529,11 @@ fn main() {
             install_queue_add,
             install_queue_status,
             install_queue_clear,
+            run_command,
+            get_platform,
+            check_dependencies_with_config,
+            read_debug_logs,
+            close_splashscreen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

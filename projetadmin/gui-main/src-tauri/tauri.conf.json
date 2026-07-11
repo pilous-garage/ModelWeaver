@@ -15,10 +15,7 @@
         "width": 1000,
         "height": 700
       }
-    ],
-    "security": {
-      "csp": null
-    }
+    ]
   },
   "bundle": {
     "active": true,
