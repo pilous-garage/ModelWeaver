@@ -2,6 +2,6 @@ version: latest
 block:
   package: keyring
   install:
-    - "pip install keyring --break-system-packages"
+    - "pip install keyring --break-system-packages --ignore-installed"
   uninstall:
     - "pip uninstall -y keyring --break-system-packages"
