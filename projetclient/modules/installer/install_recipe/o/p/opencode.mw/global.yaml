@@ -1,0 +1,8 @@
+name: OpenCode
+_ref: opencode
+versions:
+  default:
+    linux:
+      binary: {}
+    all:
+      binary: {}

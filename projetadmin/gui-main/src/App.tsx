@@ -349,6 +349,18 @@ function App() {
     }
   };
 
+  const handleUninstallTool = async (ref: string, name: string) => {
+    addLog(`Désinstallation de ${name} (${ref})...`);
+    try {
+      const res = await invoke<any>('uninstall_tool', { ref });
+      addLog(`  ${name}: ${JSON.stringify(res).substring(0, 300)}`);
+    } catch (err: any) {
+      addLog(`  ${name}: ERREUR ${err}`);
+    } finally {
+      await refreshInstalled();
+    }
+  };
+
   const handleAddToInstallList = (ref: string, name: string) => {
     if (installQueueRef.current.some(q => q.ref === ref)) {
       addLog(`${name} déjà dans la file`);
@@ -439,9 +451,14 @@ function App() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                   {installedTools.map((t: any) => (
-                    <div key={t.ref} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', borderBottom: '1px solid #334155', paddingBottom: '0.3rem' }}>
-                      <span style={{ fontWeight: '500' }}>{t.name || t.ref}</span>
-                      <span style={{ color: '#6ee7b7' }}>{t.version || ''}</span>
+                    <div key={t.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', borderBottom: '1px solid #334155', paddingBottom: '0.3rem' }}>
+                      <span style={{ fontWeight: '500' }}>{t.name || t.ref} <span style={{ color: '#6ee7b7' }}>{t.version || ''}</span></span>
+                      <button
+                        onClick={async () => await handleUninstallTool(t.ref, t.name || t.ref)}
+                        style={{ backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.25rem', padding: '0.1rem 0.5rem', fontSize: '0.7rem', cursor: 'pointer' }}
+                      >
+                        Uninstall
+                      </button>
                     </div>
                   ))}
                 </div>

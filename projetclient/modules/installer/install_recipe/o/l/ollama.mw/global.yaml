@@ -1,0 +1,8 @@
+name: Ollama
+_ref: ollama
+versions:
+  default:
+    linux:
+      binary: {}
+    all:
+      binary: {}

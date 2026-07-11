@@ -1,0 +1,8 @@
+name: Open WebUI
+_ref: open-webui
+versions:
+  default:
+    linux:
+      pip: {}
+    all:
+      pip: {}

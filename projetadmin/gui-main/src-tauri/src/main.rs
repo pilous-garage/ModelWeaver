@@ -363,6 +363,12 @@ fn install_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) -> R
 }
 
 #[tauri::command]
+fn uninstall_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) -> Result<serde_json::Value, String> {
+    log_cmd(&format!("uninstall_tool({})", ref_));
+    run_python_helper(&state.helper_path, &["uninstall_tool", &ref_])
+}
+
+#[tauri::command]
 fn install_queue_add(state: tauri::State<'_, Arc<InstallManager>>, name: String, job_type: String) -> Result<u64, String> {
     log_cmd(&format!("install_queue_add({}, {})", name, job_type));
     Ok(state.add_job(name, job_type))
@@ -621,6 +627,7 @@ fn main() {
             save_system_state,
             sync_catalogue,
             install_tool,
+            uninstall_tool,
             install_queue_add,
             install_queue_status,
             install_queue_clear,

@@ -486,11 +486,11 @@ class ToolRepository:
         self.conn.execute("""
             INSERT INTO tool_variants (tool_id, os, architecture, version, manager, size_download, size_disk, trust_score)
             VALUES (?, 'all', 'all', ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                version=excluded.version, manager=excluded.manager, 
+            ON CONFLICT(tool_id, os, architecture, manager) DO UPDATE SET
+                version=excluded.version, manager=excluded.manager,
                 size_download=excluded.size_download, size_disk=excluded.size_disk,
                 trust_score=excluded.trust_score
-        """, (tool_id, data.get("current_version"), data.get("install_method"), 
+        """, (tool_id, data.get("current_version"), data.get("install_method"),
               data.get("size_download", 0), data.get("size_disk", 0), data.get("trust_score", 1.0)))
         
         return tool_id
@@ -506,7 +506,7 @@ class ToolRepository:
         self.conn.execute("""
             INSERT INTO tool_variants (tool_id, os, architecture, manager, size_download, size_disk)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
+            ON CONFLICT(tool_id, os, architecture, manager) DO UPDATE SET
                 size_download=excluded.size_download, size_disk=excluded.size_disk
         """, (tool_id, os, arch, manager, size_dl, size_dk))
         

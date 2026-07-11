@@ -1,0 +1,8 @@
+version: latest
+block:
+  package: opencode
+  install:
+    - "curl -fsSL -o /tmp/opencode.tar.gz https://github.com/opencode-ai/opencode/releases/latest/download/opencode_linux_amd64.tar.gz"
+    - "tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin"
+  uninstall:
+    - "rm -f /usr/local/bin/opencode"

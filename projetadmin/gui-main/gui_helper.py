@@ -10,10 +10,15 @@ HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
 prod_path = os.path.join(HELPER_DIR, "projetclient")
 if os.path.isdir(prod_path):
     sys.path.insert(0, prod_path)
+    PROJETCLIENT_DIR = prod_path
 else:
     # Développement : helper dans projetadmin/gui-main/, projetclient à la racine du repo
     repo_root = os.path.dirname(os.path.dirname(HELPER_DIR))
     sys.path.insert(0, os.path.join(repo_root, "projetclient"))
+    PROJETCLIENT_DIR = os.path.join(repo_root, "projetclient")
+
+# RecipeParser.join("install_recipe") -> on vise projetclient/modules/installer
+RECIPE_BASE = os.path.join(PROJETCLIENT_DIR, "modules", "installer")
 
 
 def _db_paths() -> tuple[Path, Path]:
@@ -269,11 +274,55 @@ def install_tool(ref):
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    installer = Installer()
+    installer = Installer(project_root=RECIPE_BASE)
     with _quiet_stdout():
         ok = installer.install(tool, progress_callback=progress)
     if ok:
         mw = ModelWeaverDB(_db_paths()[0])
+        mw.scan_installed_tools()
+        mw.close()
+    return {
+        "status": "ok" if ok else "error",
+        "ref": ref,
+        "log": "\n".join(log_lines),
+    }
+
+
+def uninstall_tool(ref):
+    from sql.db import CatalogueDB, ModelWeaverDB
+    from modules.installer.installer import Installer
+
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    cur = cat.conn.execute(
+        "SELECT ref, name, description, tool_type, install_method, current_version, "
+        "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
+        (ref,))
+    row = cur.fetchone()
+    cat.close()
+    if not row:
+        return {"status": "error", "log": f"Outil inconnu: {ref}"}
+    cols = ["ref", "name", "description", "tool_type", "install_method", "current_version",
+            "default_download_url", "allowed_platforms", "allowed_arches"]
+    tool = dict(zip(cols, row))
+
+    log_path = os.path.join(HELPER_DIR, f"uninstall_{ref}.log")
+    log_lines = []
+    def progress(pct, msg):
+        line = f"[{pct}%] {msg}"
+        log_lines.append(line)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    installer = Installer(project_root=RECIPE_BASE)
+    with _quiet_stdout():
+        ok = installer.uninstall(tool, progress_callback=progress)
+    if ok:
+        mw = ModelWeaverDB(_db_paths()[0])
+        mw.conn.execute(
+            "DELETE FROM local_tools WHERE tool_id = (SELECT id FROM tool_definitions WHERE ref = ?)",
+            (ref,))
+        mw.commit()
         mw.scan_installed_tools()
         mw.close()
     return {
@@ -313,6 +362,8 @@ if __name__ == "__main__":
             result = sync_catalogue_remote(sys.argv[2] if len(sys.argv) > 2 else None)
         elif command == "install_tool" and len(sys.argv) > 2:
             result = install_tool(sys.argv[2])
+        elif command == "uninstall_tool" and len(sys.argv) > 2:
+            result = uninstall_tool(sys.argv[2])
         else:
             result = {"error": f"Unknown command: {command}"}
         print(json.dumps(result))

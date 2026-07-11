@@ -1,0 +1,8 @@
+name: LiteLLM
+_ref: litellm
+versions:
+  default:
+    linux:
+      pip: {}
+    all:
+      pip: {}
