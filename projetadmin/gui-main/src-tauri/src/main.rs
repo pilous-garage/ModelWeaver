@@ -1,15 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Write, Read};
 use serde::{Serialize, Deserialize};
 use tauri::Manager;
 use regex::Regex;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct PythonResponse {
@@ -36,6 +39,7 @@ struct SystemInfo {
 #[derive(Serialize, Clone)]
 struct InstallJob {
     id: u64,
+    ref_: String,
     name: String,
     job_type: String,
     status: String,
@@ -119,6 +123,7 @@ fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json:
 
 struct InstallManager {
     queue: Mutex<VecDeque<InstallJob>>,
+    running: Mutex<HashMap<u64, u32>>,
     next_id: AtomicU64,
     helper_path: PathBuf,
 }
@@ -127,17 +132,24 @@ impl InstallManager {
     fn new(helper_path: PathBuf) -> Arc<Self> {
         Arc::new(Self {
             queue: Mutex::new(VecDeque::new()),
+            running: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             helper_path,
         })
     }
 
-    fn add_job(&self, name: String, job_type: String) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        log_to_file("QUEUE", &format!("add_job #{} {} ({})", id, name, job_type));
+    fn add_job(&self, ref_: String, name: String, job_type: String) -> u64 {
         let mut q = self.queue.lock().unwrap();
+        // Pas de doublon actif pour le même ref
+        if q.iter().any(|j| j.ref_ == ref_ && (j.status == "queued" || j.status == "running")) {
+            log_to_file("QUEUE", &format!("add_job doublon ignoré: {}", ref_));
+            return 0;
+        }
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        log_to_file("QUEUE", &format!("add_job #{} {} ({})", id, ref_, job_type));
         q.push_back(InstallJob {
             id,
+            ref_,
             name,
             job_type,
             status: "queued".to_string(),
@@ -151,6 +163,31 @@ impl InstallManager {
         q.iter().cloned().collect()
     }
 
+    fn cancel_job(&self, id: u64) {
+        log_to_file("QUEUE", &format!("cancel_job #{}", id));
+        let mut q = self.queue.lock().unwrap();
+        if let Some(job) = q.iter_mut().find(|j| j.id == id) {
+            if job.status == "queued" {
+                job.status = "cancelled".to_string();
+            } else if job.status == "running" {
+                job.status = "cancelled".to_string();
+                let mut run = self.running.lock().unwrap();
+                if let Some(pid) = run.remove(&id) {
+                    drop(run);
+                    #[cfg(unix)]
+                    {
+                        let neg = format!("-{}", pid);
+                        let _ = Command::new("kill").args(["-9", &neg]).status();
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = Command::new("kill").arg(pid.to_string()).status();
+                    }
+                }
+            }
+        }
+    }
+
     fn clear_completed(&self) {
         log_to_file("QUEUE", "clear_completed");
         let mut q = self.queue.lock().unwrap();
@@ -162,40 +199,59 @@ impl InstallManager {
         log_to_file("WORKER", "background worker started");
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(500));
-            let job_id = {
+            let picked = {
                 let mut q = m.queue.lock().unwrap();
                 if let Some(job) = q.iter_mut().find(|j| j.status == "queued") {
                     job.status = "running".to_string();
-                    Some((job.id, job.name.clone(), job.job_type.clone()))
+                    Some((job.id, job.ref_.clone(), job.name.clone(), job.job_type.clone()))
                 } else {
                     None
                 }
             };
-            if let Some((job_id, name, job_type)) = job_id {
-                log_to_file("WORKER", &format!("processing job #{} {} ({})", job_id, name, job_type));
-                let output = Command::new("python3")
-                    .args([m.helper_path.to_str().unwrap_or(""), "install_pip", &name])
-                    .output();
+            if let Some((job_id, ref_, _name, job_type)) = picked {
+                log_to_file("WORKER", &format!("processing job #{} {} ({})", job_id, ref_, job_type));
+                let action = if job_type == "uninstall" { "uninstall_tool" } else { "install_tool" };
+                let mut cmd = Command::new(python_bin());
+                cmd.arg(&m.helper_path).arg(action).arg(&ref_)
+                    .stdout(Stdio::piped()).stderr(Stdio::piped());
+                #[cfg(unix)]
+                cmd.process_group(0);
+                let mut child = match cmd.spawn() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log_to_file("WORKER", &format!("spawn error #{}: {}", job_id, e));
+                        let mut q = m.queue.lock().unwrap();
+                        if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
+                            if job.status != "cancelled" {
+                                job.status = "failed".to_string();
+                                job.log = format!("spawn error: {}", e);
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let pid = child.id();
+                m.running.lock().unwrap().insert(job_id, pid);
+                let res = child.wait().ok();
+                let mut sout = String::new();
+                let mut serr = String::new();
+                if let Some(mut o) = child.stdout.take() { let _ = o.read_to_string(&mut sout); }
+                if let Some(mut e) = child.stderr.take() { let _ = e.read_to_string(&mut serr); }
+                m.running.lock().unwrap().remove(&job_id);
+                let success = res.map(|s| s.success()).unwrap_or(false);
                 let mut q = m.queue.lock().unwrap();
                 if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
-                    match output {
-                        Ok(out) if out.status.success() => {
-                            job.status = "completed".to_string();
-                            job.log = String::from_utf8_lossy(&out.stdout).to_string();
-                            log_to_file("WORKER", &format!("job #{} completed", job_id));
-                        }
-                        Ok(out) => {
+                    if job.status != "cancelled" {
+                        if success {
+                            job.status = if job_type == "uninstall" { "removed".to_string() } else { "installed".to_string() };
+                            job.log = sout;
+                        } else {
                             job.status = "failed".to_string();
-                            job.log = String::from_utf8_lossy(&out.stderr).to_string();
-                            log_to_file("WORKER", &format!("job #{} failed: {}", job_id, job.log));
-                        }
-                        Err(e) => {
-                            job.status = "failed".to_string();
-                            job.log = format!("Process error: {}", e);
-                            log_to_file("WORKER", &format!("job #{} error: {}", job_id, e));
+                            job.log = format!("{}\n{}", sout, serr);
                         }
                     }
                 }
+                log_to_file("WORKER", &format!("job #{} -> {}", job_id, if success { "ok" } else { "fail" }));
             }
         });
     }
@@ -369,9 +425,16 @@ fn uninstall_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) ->
 }
 
 #[tauri::command]
-fn install_queue_add(state: tauri::State<'_, Arc<InstallManager>>, name: String, job_type: String) -> Result<u64, String> {
-    log_cmd(&format!("install_queue_add({}, {})", name, job_type));
-    Ok(state.add_job(name, job_type))
+fn install_queue_add(state: tauri::State<'_, Arc<InstallManager>>, ref_: String, name: String, job_type: String) -> Result<u64, String> {
+    log_cmd(&format!("install_queue_add({}, {}, {})", ref_, name, job_type));
+    Ok(state.add_job(ref_, name, job_type))
+}
+
+#[tauri::command]
+fn install_queue_cancel(state: tauri::State<'_, Arc<InstallManager>>, id: u64) -> Result<(), String> {
+    log_cmd(&format!("install_queue_cancel({})", id));
+    state.cancel_job(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -628,6 +691,8 @@ fn main() {
             sync_catalogue,
             install_tool,
             uninstall_tool,
+            install_queue_add,
+            install_queue_cancel,
             install_queue_add,
             install_queue_status,
             install_queue_clear,

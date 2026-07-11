@@ -60,11 +60,12 @@ function App() {
   const [installedTools, setInstalledTools] = useState<any[]>([]);
   const [logithequeLoading, setLogithequeLoading] = useState(false);
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
-  const [installQueue, setInstallQueue] = useState<{ ref: string; name: string; status: string; timer: number | null }[]>([]);
+  const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
   const [installListOpen, setInstallListOpen] = useState(true);
 
   const installedRef = useRef<any[]>([]);
-  const installQueueRef = useRef<{ ref: string; name: string; status: string; timer: number | null }[]>([]);
+  const installQueueRef = useRef<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
+  const prevStatusRef = useRef<Record<number, string>>({});
   const CATALOGUE_URL = 'http://localhost:8765/api';
 
   // Refs for fresh data inside async callbacks (setState is async, setTimeout closures go stale)
@@ -90,8 +91,39 @@ function App() {
       loadLogitheque();
     }
     return () => {
-      installQueueRef.current.forEach(q => { if (q.timer) clearTimeout(q.timer); });
+      installQueueRef.current = [];
     };
+  }, [showDashboard]);
+
+  // Polling de la file d'installation (thread Rust dédié) : non bloquant pour le reste de la GUI
+  useEffect(() => {
+    if (!showDashboard) return;
+    const poll = async () => {
+      try {
+        const status = await invoke<any[]>('install_queue_status');
+        setInstallQueue(status);
+        installQueueRef.current = status;
+        await refreshInstalled();
+        // Détecter les transitions vers un état terminal pour rafraîchir le catalogue
+        let changed = false;
+        for (const j of status) {
+          const prev = prevStatusRef.current[j.id];
+          if (prev && prev !== j.status && (j.status === 'installed' || j.status === 'failed' || j.status === 'removed' || j.status === 'cancelled')) {
+            changed = true;
+          }
+          prevStatusRef.current[j.id] = j.status;
+        }
+        if (changed) {
+          const cat = await invoke<any>('get_catalogue_tools');
+          setCatalogueTools(cat.tools || []);
+        }
+      } catch (e) {
+        // worker indisponible : on ignore
+      }
+    };
+    const h = setInterval(poll, 1000);
+    poll();
+    return () => clearInterval(h);
   }, [showDashboard]);
 
   const checkDependencies = async () => {
@@ -330,25 +362,6 @@ function App() {
     }
   };
 
-  const doInstall = async (ref: string, name: string) => {
-    const setQ = (status: string) => {
-      setInstallQueue(prev => prev.map(q => q.ref === ref ? { ...q, status } : q));
-      installQueueRef.current = installQueueRef.current.map(q => q.ref === ref ? { ...q, status } : q);
-    };
-    setQ('installing');
-    addLog(`Installation de ${name} (${ref})...`);
-    try {
-      const res = await invoke<any>('install_tool', { ref });
-      addLog(`  ${name}: ${JSON.stringify(res).substring(0, 300)}`);
-      setQ(res.status === 'ok' ? 'success' : 'failed');
-    } catch (err: any) {
-      addLog(`  ${name}: ERREUR ${err}`);
-      setQ('failed');
-    } finally {
-      await refreshInstalled();
-    }
-  };
-
   const handleUninstallTool = async (ref: string, name: string) => {
     addLog(`Désinstallation de ${name} (${ref})...`);
     try {
@@ -362,24 +375,32 @@ function App() {
   };
 
   const handleAddToInstallList = (ref: string, name: string) => {
-    if (installQueueRef.current.some(q => q.ref === ref)) {
+    const deja = installQueueRef.current.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
+    if (deja) {
       addLog(`${name} déjà dans la file`);
       return;
     }
-    // Timer différent par position pour pouvoir observer les installs séquentiellement
-    const delay = 4000 + installQueueRef.current.length * 3500;
-    addLog(`Ajout de ${name} à la file (déclenchement auto dans ${delay / 1000}s)`);
-    const timer = setTimeout(() => doInstall(ref, name), delay);
-    const entry = { ref, name, status: 'queued', timer: timer as unknown as number };
-    setInstallQueue(prev => [...prev, entry]);
-    installQueueRef.current = [...installQueueRef.current, entry];
+    addLog(`Ajout de ${name} à la file d'installation (séquentielle, thread dédié)`);
+    invoke<number>('install_queue_add', { ref, name, jobType: 'install' })
+      .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
+      .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+  };
+
+  const handleCancelInstall = (id: number, name: string) => {
+    addLog(`Annulation de ${name} (job #${id})`);
+    invoke('install_queue_cancel', { id }).catch((e: any) => addLog(`  cancel ERREUR ${e}`));
+  };
+
+  const handleClearQueue = () => {
+    invoke('install_queue_clear').catch(() => {});
   };
 
   const allRequiredInstalled = requiredDeps.every(dep => dep.installed);
 
   if (showDashboard) {
     const isInstalled = (ref: string) => installedRef.current.some(t => t.ref === ref);
-    const isQueued = (ref: string) => installQueueRef.current.some(q => q.ref === ref);
+    const queueJob = (ref: string) => installQueueRef.current.find(q => q.ref === ref);
+    const isQueued = (ref: string) => { const j = queueJob(ref); return !!j && (j.status === 'queued' || j.status === 'running'); };
     const fmtGb = (v: any) => (v == null ? 'n/a' : `${v} Go`);
 
     return (
@@ -490,16 +511,29 @@ function App() {
                         <div>
                           {inst ? (
                             <span style={{ color: '#6ee7b7', fontSize: '0.75rem', fontWeight: '600' }}>✓ Installé</span>
-                          ) : queued ? (
-                            <span style={{ color: '#fbbf24', fontSize: '0.75rem' }}>⏳ En file</span>
-                          ) : (
-                            <button
-                              onClick={() => handleAddToInstallList(t.ref, t.name)}
-                              style={{ padding: '0.4rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '500' }}
-                            >
-                              + Add to install list
-                            </button>
-                          )}
+                          ) : (() => {
+                            const j = queueJob(t.ref);
+                            if (j && (j.status === 'queued' || j.status === 'running')) {
+                              const label = j.status === 'running' ? '⏳ En cours' : '🕓 En attente';
+                              return (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                                  <span style={{ color: '#fbbf24', fontSize: '0.75rem' }}>{label}</span>
+                                  <button
+                                    onClick={() => handleCancelInstall(j.id, t.name)}
+                                    style={{ padding: '0.25rem 0.55rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}
+                                  >Annuler</button>
+                                </span>
+                              );
+                            }
+                            return (
+                              <button
+                                onClick={() => handleAddToInstallList(t.ref, t.name)}
+                                style={{ padding: '0.4rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '500' }}
+                              >
+                                + Add to install list
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
@@ -514,27 +548,43 @@ function App() {
                 onClick={() => setInstallListOpen(!installListOpen)}
                 style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 1rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: 'none', cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600' }}
               >
-                <span>File d'installation ({installQueue.filter(q => q.status === 'success').length}/{installQueue.length})</span>
+                <span>File d'installation ({installQueue.filter(q => q.status === 'installed' || q.status === 'removed').length}/{installQueue.length})</span>
                 <span style={{ transform: installListOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▾</span>
               </button>
               {installListOpen && (
                 <div style={{ padding: '0 1rem 0.75rem' }}>
                   {installQueue.length === 0 ? (
-                    <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun outil en attente</div>
+                    <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun outil en attente — ajoutez des outils du catalogue</div>
                   ) : (
-                    installQueue.map((q) => {
-                      const badge = q.status === 'installing' ? { t: '⏳', c: '#fbbf24' }
-                        : q.status === 'success' ? { t: '✓', c: '#6ee7b7' }
-                        : q.status === 'failed' ? { t: '✗', c: '#f87171' }
-                        : { t: '•', c: '#94a3b8' };
-                      return (
-                        <div key={q.ref} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.75rem' }}>
-                          <span style={{ color: badge.c, fontWeight: '700', width: '1rem' }}>{badge.t}</span>
-                          <span style={{ fontWeight: '500' }}>{q.name}</span>
-                          <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{q.status}</span>
-                        </div>
-                      );
-                    })
+                    <>
+                      {installQueue.map((q) => {
+                        const badge = q.status === 'running' ? { t: '⏳', c: '#fbbf24', l: 'En cours' }
+                          : q.status === 'queued' ? { t: '🕓', c: '#93c5fd', l: 'En attente' }
+                          : q.status === 'installed' ? { t: '✓', c: '#6ee7b7', l: 'Installé' }
+                          : q.status === 'removed' ? { t: '✓', c: '#6ee7b7', l: 'Retiré' }
+                          : q.status === 'failed' ? { t: '✗', c: '#f87171', l: 'Échec' }
+                          : q.status === 'cancelled' ? { t: '⊘', c: '#fbbf24', l: 'Annulé' }
+                          : { t: '•', c: '#94a3b8', l: q.status };
+                        const canCancel = q.status === 'queued' || q.status === 'running';
+                        return (
+                          <div key={q.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.75rem' }}>
+                            <span style={{ color: badge.c, fontWeight: '700', width: '1.2rem' }}>{badge.t}</span>
+                            <span style={{ fontWeight: '500' }}>{q.name}</span>
+                            <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{badge.l}</span>
+                            {canCancel && (
+                              <button
+                                onClick={() => handleCancelInstall(q.id, q.name)}
+                                style={{ marginLeft: 'auto', padding: '0.15rem 0.5rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.68rem' }}
+                              >Annuler</button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <button
+                        onClick={handleClearQueue}
+                        style={{ marginTop: '0.5rem', padding: '0.25rem 0.6rem', backgroundColor: '#334155', color: '#cbd5e1', border: '1px solid #475569', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}
+                      >Vider la file (terminés)</button>
+                    </>
                   )}
                 </div>
               )}

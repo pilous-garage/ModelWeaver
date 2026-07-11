@@ -487,7 +487,7 @@ class RecipeParser:
             if shell:
                 print(f"DEBUG: Executing shell command: {cmd_str}")
                 result = subprocess.run(cmd_str, shell=True, capture_output=True,
-                                        text=True, timeout=120)
+                                        text=True, timeout=1800)
             else:
                 print(f"DEBUG: Executing list command: {cmd_str.split()}")
                 result = subprocess.run(cmd_str.split(), capture_output=True,

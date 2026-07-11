@@ -2,7 +2,7 @@ version: latest
 block:
   package: ollama
   install:
-    - "curl -fsSL https://ollama.com/install.sh | sh"
+    - "curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh && sh /tmp/ollama_install.sh; ollama --version"
   uninstall:
     - "rm -f /usr/local/bin/ollama"
     - "rm -rf /usr/local/share/ollama /etc/ollama /var/lib/ollama"
