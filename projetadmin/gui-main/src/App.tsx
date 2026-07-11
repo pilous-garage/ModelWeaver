@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 interface Dependency {
   name: string;
@@ -61,6 +62,36 @@ function App() {
   const [logithequeLoading, setLogithequeLoading] = useState(false);
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
   const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
+
+  // Debug / process manager panel
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugTab, setDebugTab] = useState<'process' | 'logs' | 'resources'>('process');
+  const [procList, setProcList] = useState<{ id: number; name: string; pid: number | null; parent_id: number | null; status: string; command: string; log_path: string; cpu: number; rss_kb: number; started_at: number; ended_at: number | null }[]>([]);
+  const [procLogId, setProcLogId] = useState<number | null>(null);
+  const [procLogText, setProcLogText] = useState<string>('');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const setDebug = (v: boolean) => {
+    setShowDebug(v);
+    getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
+  };
+
+  const toggleFullscreen = () => {
+    getCurrentWindow().setFullscreen(!isFullscreen).then(() => setIsFullscreen(!isFullscreen)).catch(() => {});
+  };
+
+  const fetchProcList = () => invoke<any[]>('process_list').then(setProcList).catch(() => {});
+  const fetchProcLog = (id: number) => {
+    setProcLogId(id);
+    invoke<string>('process_log', { id }).then(setProcLogText).catch(() => setProcLogText(''));
+  };
+
+  useEffect(() => {
+    if (!showDebug) return;
+    fetchProcList();
+    const t = setInterval(fetchProcList, 1000);
+    return () => clearInterval(t);
+  }, [showDebug]);
   const [installListOpen, setInstallListOpen] = useState(true);
 
   const installedRef = useRef<any[]>([]);
@@ -362,16 +393,11 @@ function App() {
     }
   };
 
-  const handleUninstallTool = async (ref: string, name: string) => {
-    addLog(`Désinstallation de ${name} (${ref})...`);
-    try {
-      const res = await invoke<any>('uninstall_tool', { ref });
-      addLog(`  ${name}: ${JSON.stringify(res).substring(0, 300)}`);
-    } catch (err: any) {
-      addLog(`  ${name}: ERREUR ${err}`);
-    } finally {
-      await refreshInstalled();
-    }
+  const handleUninstallTool = (ref: string, name: string) => {
+    addLog(`File: demande de désinstallation de ${name} (${ref})`);
+    invoke('install_queue_add', { ref, name, jobType: 'uninstall' })
+      .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
+      .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
   };
 
   const handleAddToInstallList = (ref: string, name: string) => {
@@ -432,6 +458,19 @@ function App() {
             style={{ padding: '0.4rem 0.8rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
           >
             ↻ Rafraîchir
+          </button>
+          <button
+            onClick={() => setDebug(!showDebug)}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: showDebug ? '#2563eb' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
+          >
+            🐞 Debug
+          </button>
+          <button
+            onClick={toggleFullscreen}
+            style={{ padding: '0.4rem 0.6rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
+            title="Plein écran"
+          >
+            {isFullscreen ? '🗗' : '⛶'}
           </button>
         </div>
 
@@ -602,6 +641,63 @@ function App() {
               )}
             </div>
           </div>
+          {showDebug && (
+            <div style={{ width: '360px', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflow: 'hidden', borderLeft: '1px solid #334155', paddingLeft: '1rem' }}>
+              {/* Bandeau de panneaux supplémentaires */}
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                {(['process', 'logs', 'resources'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setDebugTab(tab)}
+                    style={{ flex: 1, padding: '0.35rem', fontSize: '0.7rem', borderRadius: '0.3rem', cursor: 'pointer', backgroundColor: debugTab === tab ? '#2563eb' : '#334155', color: '#e2e8f0', border: 'none' }}
+                  >
+                    {tab === 'process' ? 'Processus' : tab === 'logs' ? 'Logs' : 'Ressources'}
+                  </button>
+                ))}
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155', padding: '0.6rem' }}>
+                {debugTab === 'process' && (
+                  <>
+                    <div style={{ fontSize: '0.72rem', color: '#64748b', marginBottom: '0.5rem' }}>Arbre des processus (tick 1 Hz)</div>
+                    {procList.length === 0 ? (
+                      <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun processus suivi</div>
+                    ) : (
+                      procList.map((p) => {
+                        const byId: any = {};
+                        procList.forEach((x) => { byId[x.id] = x; });
+                        let d = 0; let cur = p.parent_id;
+                        while (cur && byId[cur]) { d++; cur = byId[cur].parent_id; }
+                        const stColor = p.status === 'running' ? '#6ee7b7' : p.status === 'failed' ? '#f87171' : p.status === 'cancelled' ? '#fbbf24' : '#94a3b8';
+                        return (
+                          <div key={p.id} style={{ marginLeft: d * 14, padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.72rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ fontWeight: '600', color: '#e2e8f0' }}>{p.name}</span>
+                              <span style={{ color: stColor }}>● {p.status}</span>
+                              {p.pid ? <span style={{ color: '#64748b' }}>pid {p.pid}</span> : null}
+                              <span style={{ color: '#64748b', marginLeft: 'auto' }}>{p.cpu.toFixed(1)}% · {(p.rss_kb / 1024).toFixed(0)} Mo</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.15rem' }}>
+                              <span style={{ color: '#64748b', fontSize: '0.65rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{p.command}</span>
+                              <button onClick={() => fetchProcLog(p.id)} style={{ marginLeft: 'auto', fontSize: '0.62rem', padding: '0.1rem 0.4rem', backgroundColor: '#334155', color: '#cbd5e1', border: '1px solid #475569', borderRadius: '0.25rem', cursor: 'pointer' }}>logs</button>
+                            </div>
+                            {procLogId === p.id && (
+                              <pre style={{ marginTop: '0.3rem', maxHeight: '160px', overflowY: 'auto', backgroundColor: '#0f172a', color: '#a5b4fc', fontSize: '0.62rem', padding: '0.4rem', borderRadius: '0.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{procLogText || '(vide)'}</pre>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+                {debugTab === 'logs' && (
+                  <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Cliquez sur « logs » d'un processus de l'onglet Processus pour voir sa sortie disque.</div>
+                )}
+                {debugTab === 'resources' && (
+                  <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Vue ressources globale (CPU/RAM/bande passante agrégée) — à venir.</div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );

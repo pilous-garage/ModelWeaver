@@ -911,6 +911,24 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
             )
         """)
 
+        # Table des processus enfants suivis par le gestionnaire de ressources
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS processes (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                pid INTEGER,
+                parent_id INTEGER,
+                status TEXT,
+                command TEXT,
+                log_path TEXT,
+                cpu REAL,
+                rss_kb INTEGER,
+                started_at INTEGER,
+                ended_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""
         count = self.tools.scan_installed(self.local_tools)

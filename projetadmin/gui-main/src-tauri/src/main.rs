@@ -2,7 +2,7 @@
 
 use std::process::{Command, Stdio};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
 use std::collections::{VecDeque, HashMap};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
@@ -82,6 +82,294 @@ fn python_bin() -> &'static str {
     if std::env::consts::OS == "windows" { "python" } else { "python3" }
 }
 
+// ============================================================
+//  Process registry — global named child-process manager
+//  Every client-side child process goes through this registry
+//  so a human can see a call tree, statuses and on-disk logs.
+// ============================================================
+
+#[derive(Clone, Serialize)]
+struct ProcInfo {
+    id: u64,
+    name: String,
+    pid: Option<u32>,
+    parent_id: Option<u64>,
+    status: String,            // running | done | failed | cancelled
+    command: String,
+    log_path: String,
+    started_at: u64,
+    ended_at: Option<u64>,
+    cpu: f64,                  // % CPU (per-core scaled)
+    rss_kb: u64,
+}
+
+struct TrackedProcess {
+    info: ProcInfo,
+    child: Option<std::process::Child>,
+    prev_utime: u64,
+    prev_stime: u64,
+    prev_ts: u64,
+}
+
+struct ProcessRegistry {
+    procs: Vec<TrackedProcess>,
+    next_id: u64,
+}
+
+static PROC_REG: OnceLock<Mutex<ProcessRegistry>> = OnceLock::new();
+
+fn proc_reg() -> &'static Mutex<ProcessRegistry> {
+    PROC_REG.get_or_init(|| Mutex::new(ProcessRegistry { procs: Vec::new(), next_id: 1 }))
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn logs_dir() -> PathBuf {
+    let dir = get_home_dir().join(".modelweaver").join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn safe_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ':' { c } else { '_' })
+        .collect()
+}
+
+/// Register a process entry (status already set) and return its id.
+fn proc_register(name: &str, parent_id: Option<u64>, pid: Option<u32>, command: &str, log_path: String, status: &str) -> u64 {
+    let mut reg = proc_reg().lock().unwrap();
+    let id = reg.next_id;
+    reg.next_id += 1;
+    reg.procs.push(TrackedProcess {
+        info: ProcInfo {
+            id,
+            name: name.to_string(),
+            pid,
+            parent_id,
+            status: status.to_string(),
+            command: command.to_string(),
+            log_path,
+            started_at: now_secs(),
+            ended_at: None,
+            cpu: 0.0,
+            rss_kb: 0,
+        },
+        child: None,
+        prev_utime: 0,
+        prev_stime: 0,
+        prev_ts: now_secs(),
+    });
+    id
+}
+
+/// Begin a tracked process (registered as "running"); returns its id.
+fn proc_begin(name: &str, parent_id: Option<u64>, command: &str) -> u64 {
+    let id = { proc_reg().lock().unwrap().next_id };
+    let logp = logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)));
+    proc_register(name, parent_id, None, command, logp.to_string_lossy().to_string(), "running")
+}
+
+fn proc_set_pid(id: u64, pid: u32) {
+    let mut reg = proc_reg().lock().unwrap();
+    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
+        p.info.pid = Some(pid);
+    }
+}
+
+/// Finalize a tracked process and flush its output to the on-disk log.
+fn proc_finish(id: u64, success: bool, sout: &str, serr: &str) {
+    let mut reg = proc_reg().lock().unwrap();
+    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
+        p.info.status = if success { "done".to_string() } else { "failed".to_string() };
+        p.info.ended_at = Some(now_secs());
+        p.child = None;
+        let _ = OpenOptions::new().create(true).write(true).truncate(true).open(&p.info.log_path)
+            .and_then(|mut f| writeln!(f, "=== STDOUT ===\n{}\n=== STDERR ===\n{}", sout, serr));
+    }
+}
+
+fn proc_cancel(id: u64) {
+    let mut reg = proc_reg().lock().unwrap();
+    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
+        if p.info.status == "running" {
+            p.info.status = "cancelled".to_string();
+            p.info.ended_at = Some(now_secs());
+        }
+    }
+}
+
+/// Fire-and-forget tracked child: stdout+stderr go to an on-disk log.
+fn track_process(name: &str, parent_id: Option<u64>, command: &str, args: &[&str]) -> u64 {
+    let id = { proc_reg().lock().unwrap().next_id };
+    let logp = logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)));
+    let log_path = logp.to_string_lossy().to_string();
+    let cmdstr = format!("{} {}", command, args.join(" "));
+    let file = OpenOptions::new().create(true).write(true).truncate(true).open(&logp);
+    let mut cmd = Command::new(command);
+    cmd.args(args);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    if let Ok(f) = file {
+        if let Ok(f2) = f.try_clone() {
+            cmd.stdout(Stdio::from(f2));
+            cmd.stderr(Stdio::from(f));
+        }
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let pid = child.id();
+            let reg_id = proc_register(name, parent_id, Some(pid), &cmdstr, log_path, "running");
+            let mut reg = proc_reg().lock().unwrap();
+            if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == reg_id) {
+                p.child = Some(child);
+            }
+            reg_id
+        }
+        Err(e) => {
+            log_to_file("PROC", &format!("spawn error {}: {}", name, e));
+            proc_register(name, parent_id, None, &cmdstr, log_path, "failed")
+        }
+    }
+}
+
+/// Return a snapshot of all tracked processes for the UI.
+fn proc_snapshot() -> Vec<ProcInfo> {
+    let reg = proc_reg().lock().unwrap();
+    reg.procs.iter().map(|p| p.info.clone()).collect()
+}
+
+/// Read the last `lines` lines of a process on-disk log.
+fn proc_log_tail(id: u64, lines: usize) -> String {
+    let path = {
+        let reg = proc_reg().lock().unwrap();
+        reg.procs.iter().find(|p| p.info.id == id).map(|p| p.info.log_path.clone())
+    };
+    if let Some(path) = path {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let all: Vec<&str> = content.lines().collect();
+            let start = all.len().saturating_sub(lines);
+            return all[start..].join("\n");
+        }
+    }
+    String::new()
+}
+
+/// 1 Hz monitor: reap finished children, sample CPU/RSS, mirror to DB.
+fn start_proc_monitor(db_path: PathBuf) {
+    std::thread::spawn(move || loop {
+        let start = SystemTime::now();
+        {
+            let mut reg = proc_reg().lock().unwrap();
+            for p in reg.procs.iter_mut() {
+                if p.info.status != "running" { continue; }
+                // reap if we own the child handle
+                if let Some(child) = p.child.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(code)) => {
+                            p.info.status = if code.success() { "done".to_string() } else { "failed".to_string() };
+                            p.info.ended_at = Some(now_secs());
+                            p.child = None;
+                        }
+                        Ok(None) => {}
+                        Err(_) => { p.child = None; }
+                    }
+                }
+                // sample resources for still-running processes (unix /proc)
+                #[cfg(unix)]
+                if p.info.status == "running" {
+                    if let Some(pid) = p.info.pid {
+                        if let Some((utime, stime, rss_pages)) = read_proc_stat(pid) {
+                            let ts = now_secs();
+                            let dclk = (utime.saturating_sub(p.prev_utime) + stime.saturating_sub(p.prev_stime)) as f64;
+                            let dts = (ts.saturating_sub(p.prev_ts)) as f64;
+                            if dts > 0.0 && p.prev_ts > 0 {
+                                let clk = 100.0; // USER_HZ
+                                let ncpu = num_cpus_procfs() as f64;
+                                p.info.cpu = (dclk / dts) * (1000.0 / clk) / ncpu;
+                            }
+                            p.info.rss_kb = (rss_pages as u64) * 4; // 4 KiB pages
+                            p.prev_utime = utime;
+                            p.prev_stime = stime;
+                            p.prev_ts = ts;
+                        }
+                    }
+                }
+            }
+        }
+        // mirror snapshot to local DB (best-effort)
+        mirror_processes_to_db(&db_path, &proc_snapshot());
+        // keep the tick under 1 second
+        if let Ok(elapsed) = start.elapsed() {
+            let ms = elapsed.as_millis() as u64;
+            if ms < 900 {
+                std::thread::sleep(Duration::from_millis(900 - ms));
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(900));
+        }
+    });
+}
+
+#[cfg(unix)]
+fn read_proc_stat(pid: u32) -> Option<(u64, u64, u64)> {
+    let content = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let closing = content.rfind(')')?;
+    let rest = &content[closing + 1..];
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    // state, ppid, pgrp, session, tty, tpgid, flags, minflt, cminflt, majflt, cmajflt,
+    // utime(14), stime(15), cutime, cstime, ..., rss(24)
+    let utime = parts.get(12)?.parse::<u64>().ok()?;   // index 12 -> field 14
+    let stime = parts.get(13)?.parse::<u64>().ok()?;   // index 13 -> field 15
+    let rss = parts.get(22)?.parse::<u64>().ok()?;     // index 22 -> field 24
+    Some((utime, stime, rss))
+}
+
+#[cfg(unix)]
+fn num_cpus_procfs() -> usize {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|s| s.lines().filter(|l| l.starts_with("processor")).count().into())
+        .unwrap_or(1)
+        .max(1)
+}
+
+#[cfg(unix)]
+fn mirror_processes_to_db(db_path: &PathBuf, snap: &[ProcInfo]) {
+    use std::fmt::Write as _;
+    let mut sql = String::new();
+    let _ = writeln!(sql, "CREATE TABLE IF NOT EXISTS processes (\n\
+        id INTEGER PRIMARY KEY,\n\
+        name TEXT NOT NULL,\n\
+        pid INTEGER,\n\
+        parent_id INTEGER,\n\
+        status TEXT,\n\
+        command TEXT,\n\
+        log_path TEXT,\n\
+        cpu REAL,\n\
+        rss_kb INTEGER,\n\
+        started_at INTEGER,\n\
+        ended_at INTEGER,\n\
+        updated_at INTEGER DEFAULT (strftime('%s','now'))\n\
+    );");
+    for p in snap {
+        let esc = |s: &str| s.replace('\'', "''");
+        let ended = p.ended_at.map(|v| v as i64).unwrap_or(-1);
+        let pid = p.pid.map(|v| v as i64).unwrap_or(-1);
+        let parent = p.parent_id.map(|v| v as i64).unwrap_or(-1);
+        let _ = writeln!(sql, "INSERT INTO processes (id,name,pid,parent_id,status,command,log_path,cpu,rss_kb,started_at,ended_at) \
+            VALUES ({},'{}',{},{},'{}','{}','{}',{},{},{},{}) \
+            ON CONFLICT(id) DO UPDATE SET pid=excluded.pid,status=excluded.status,command=excluded.command,log_path=excluded.log_path,cpu=excluded.cpu,rss_kb=excluded.rss_kb,ended_at=excluded.ended_at,updated_at=strftime('%s','now');",
+            p.id, esc(&p.name), pid, parent, esc(&p.status), esc(&p.command), esc(&p.log_path), p.cpu, p.rss_kb, p.started_at as i64, ended);
+    }
+    let _ = Command::new("sqlite3").arg(db_path).arg(sql).status();
+}
+
+#[cfg(not(unix))]
+fn mirror_processes_to_db(_db_path: &PathBuf, _snap: &[ProcInfo]) {}
+
 fn find_helper_path() -> PathBuf {
     let home = get_home_dir();
     let production = home.join(".modelweaver").join("gui_helper.py");
@@ -103,21 +391,32 @@ fn find_helper_path() -> PathBuf {
 }
 
 fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json::Value, String> {
+    let name = args.first().copied().unwrap_or("python");
     let cmd_str = format!("python3 {} {}", helper_path.display(), args.join(" "));
     log_to_file("PYTHON", &cmd_str);
+    let logp = {
+        let id = { proc_reg().lock().unwrap().next_id };
+        logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)))
+    };
+    let log_path = logp.to_string_lossy().to_string();
     let output = Command::new(python_bin())
         .arg(helper_path)
         .args(args)
         .output()
         .map_err(|e| { log_to_file("ERROR", &format!("python helper error: {}", e)); format!("Erreur exécution helper: {}", e) })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&logp) {
+        let _ = writeln!(f, "=== STDOUT ===\n{}\n=== STDERR ===\n{}", stdout, stderr);
+    }
+    let status = if output.status.success() { "done" } else { "failed" };
+    proc_register(name, None, None, &cmd_str, log_path, status);
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
         serde_json::from_str(&stdout)
             .map_err(|e| format!("Erreur parse JSON: {}", e))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         log_to_file("ERROR", &format!("python helper stderr: {}", stderr));
-        Err(stderr.to_string())
+        Err(stderr)
     }
 }
 
@@ -211,6 +510,8 @@ impl InstallManager {
             if let Some((job_id, ref_, _name, job_type)) = picked {
                 log_to_file("WORKER", &format!("processing job #{} {} ({})", job_id, ref_, job_type));
                 let action = if job_type == "uninstall" { "uninstall_tool" } else { "install_tool" };
+                let proc_name = format!("{}:{}", if job_type == "uninstall" { "uninstall" } else { "install" }, ref_);
+                let proc_id = proc_begin(&proc_name, None, &format!("python3 {} {} {}", m.helper_path.display(), action, ref_));
                 let mut cmd = Command::new(python_bin());
                 cmd.arg(&m.helper_path).arg(action).arg(&ref_)
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -220,6 +521,7 @@ impl InstallManager {
                     Ok(c) => c,
                     Err(e) => {
                         log_to_file("WORKER", &format!("spawn error #{}: {}", job_id, e));
+                        proc_finish(proc_id, false, "", &format!("spawn error: {}", e));
                         let mut q = m.queue.lock().unwrap();
                         if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
                             if job.status != "cancelled" {
@@ -231,6 +533,7 @@ impl InstallManager {
                     }
                 };
                 let pid = child.id();
+                proc_set_pid(proc_id, pid);
                 m.running.lock().unwrap().insert(job_id, pid);
                 let res = child.wait().ok();
                 let mut sout = String::new();
@@ -239,6 +542,7 @@ impl InstallManager {
                 if let Some(mut e) = child.stderr.take() { let _ = e.read_to_string(&mut serr); }
                 m.running.lock().unwrap().remove(&job_id);
                 let success = res.map(|s| s.success()).unwrap_or(false);
+                proc_finish(proc_id, success, &sout, &serr);
                 let mut q = m.queue.lock().unwrap();
                 if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
                     if job.status != "cancelled" {
@@ -447,6 +751,16 @@ fn install_queue_clear(state: tauri::State<'_, Arc<InstallManager>>) -> Result<(
     log_cmd("install_queue_clear");
     state.clear_completed();
     Ok(())
+}
+
+#[tauri::command]
+fn process_list() -> Result<Vec<ProcInfo>, String> {
+    Ok(proc_snapshot())
+}
+
+#[tauri::command]
+fn process_log(id: u64) -> Result<String, String> {
+    Ok(proc_log_tail(id, 200))
 }
 
 #[tauri::command]
@@ -667,6 +981,12 @@ fn main() {
     let manager = InstallManager::new(helper_path);
     manager.spawn_worker();
 
+    // Root of the process tree: the main calling process ("modelweaver-main").
+    let root_pid = std::process::id();
+    proc_register("modelweaver-main", None, Some(root_pid), "modelweaver", String::new(), "running");
+    let db_path = get_home_dir().join(".modelweaver").join("modelweaver.db");
+    start_proc_monitor(db_path);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -693,9 +1013,10 @@ fn main() {
             uninstall_tool,
             install_queue_add,
             install_queue_cancel,
-            install_queue_add,
             install_queue_status,
             install_queue_clear,
+            process_list,
+            process_log,
             run_command,
             get_platform,
             check_dependencies_with_config,
