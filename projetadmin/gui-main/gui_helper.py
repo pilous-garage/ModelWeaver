@@ -362,10 +362,15 @@ if __name__ == "__main__":
             result = sync_catalogue_remote(sys.argv[2] if len(sys.argv) > 2 else None)
         elif command == "install_tool" and len(sys.argv) > 2:
             result = install_tool(sys.argv[2])
+            print(json.dumps(result))
+            sys.exit(0 if result.get("status") == "ok" else 1)
         elif command == "uninstall_tool" and len(sys.argv) > 2:
             result = uninstall_tool(sys.argv[2])
+            print(json.dumps(result))
+            sys.exit(0 if result.get("status") == "ok" else 1)
         else:
             result = {"error": f"Unknown command: {command}"}
         print(json.dumps(result))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
+        sys.exit(1)

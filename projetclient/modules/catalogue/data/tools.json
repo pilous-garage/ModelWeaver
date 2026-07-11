@@ -6,7 +6,7 @@
     "tool_type": "binary",
     "install_method": "github-release",
     "current_version": "0.1.0",
-    "default_download_url": "https://github.com/opencode-ai/opencode/releases/latest/download/opencode_linux_amd64.tar.gz",
+    "default_download_url": "",
     "allowed_platforms": "Linux,Darwin",
     "allowed_arches": "x86_64,aarch64"
   },

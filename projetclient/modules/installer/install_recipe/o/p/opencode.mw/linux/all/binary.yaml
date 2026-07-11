@@ -2,7 +2,8 @@ version: latest
 block:
   package: opencode
   install:
-    - "curl -fsSL -o /tmp/opencode.tar.gz https://github.com/opencode-ai/opencode/releases/latest/download/opencode_linux_amd64.tar.gz"
-    - "tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin"
+    - "curl -fsSL https://api.github.com/repos/opencode-ai/opencode/releases/latest | grep -o 'https://[^\"]*opencode-linux-amd64.deb' | head -1 > /tmp/oc_url"
+    - "curl -fsSL -o /tmp/opencode.deb $(cat /tmp/oc_url)"
+    - "dpkg -i /tmp/opencode.deb || apt-get install -f -y"
   uninstall:
-    - "rm -f /usr/local/bin/opencode"
+    - "dpkg -r opencode || rm -f /usr/bin/opencode /usr/local/bin/opencode"

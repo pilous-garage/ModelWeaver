@@ -525,6 +525,12 @@ function App() {
                                 </span>
                               );
                             }
+                            if (j && (j.status === 'installed' || j.status === 'removed')) {
+                              const txt = j.status === 'removed' ? '✓ Retiré' : '✓ Installé';
+                              return (
+                                <span style={{ color: '#6ee7b7', fontSize: '0.75rem', fontWeight: '600' }}>{txt}</span>
+                              );
+                            }
                             return (
                               <button
                                 onClick={() => handleAddToInstallList(t.ref, t.name)}
@@ -576,6 +582,12 @@ function App() {
                                 onClick={() => handleCancelInstall(q.id, q.name)}
                                 style={{ marginLeft: 'auto', padding: '0.15rem 0.5rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.68rem' }}
                               >Annuler</button>
+                            )}
+                            {!canCancel && q.log && (q.status === 'failed') && (
+                              <span
+                                title={q.log}
+                                style={{ marginLeft: 'auto', fontSize: '0.62rem', color: '#fca5a5', maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                              >{q.log.replace(/\\n/g, ' ').slice(0, 80)}</span>
                             )}
                           </div>
                         );
