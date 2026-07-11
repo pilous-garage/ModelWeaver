@@ -592,6 +592,11 @@ fn start_service_supervisor() {
                 if exited {
                     entry.child = None;
                     proc_set_status(entry.info.proc_id, "stopped");
+                    // Réinitialise le compteur si le service a tourné longtemps
+                    // (>60s) : on ne pénalise que les crash-loops rapides.
+                    if now_secs().saturating_sub(entry.info.started_at) > 60 {
+                        entry.info.restarts = 0;
+                    }
                     if entry.info.restart && entry.info.restarts < 10 {
                         entry.info.restarts += 1;
                         entry.info.status = "restarting".to_string();

@@ -16,6 +16,7 @@ import json
 import sqlite3
 import argparse
 import time
+import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, List
@@ -23,6 +24,24 @@ from typing import Any, Dict, List
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _seed_catalogue_db(db_path: Path):
+    """Crée le schéma de la catalogue DB et la seed depuis tools.json (offline)."""
+    import json as _json
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    root = _project_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from sql.db import CatalogueDB
+    cat = CatalogueDB(db_path)  # crée le schéma si absent
+    data_path = root / "modules" / "catalogue" / "data" / "tools.json"
+    if data_path.exists():
+        with open(data_path) as f:
+            rows = _json.load(f)
+        cat.sync_tools(rows)
+        cat.conn.commit()
+    cat.close()
 
 
 class CatalogueAPIHandler(BaseHTTPRequestHandler):
@@ -95,9 +114,13 @@ def main():
 
     db_path = Path(args.db)
     if not db_path.exists():
-        print(f"❌ Catalogue DB introuvable : {db_path}")
-        print(f"   Lance d'abord : python sql/migrate_to_sqlite.py")
-        return 1
+        print(f"⚠️  Catalogue DB absente : {db_path} — création + seed depuis tools.json")
+        try:
+            _seed_catalogue_db(db_path)
+            print(f"✅ Catalogue DB seedée : {db_path}")
+        except Exception as e:
+            print(f"❌ Échec du seed de la catalogue DB : {e}")
+            return 1
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
