@@ -608,6 +608,29 @@ fn start_service_supervisor() {
     });
 }
 
+/// Écrit un fichier résumé clair de l'interface des services (comment chaque
+/// service est ouvert/lancé) dans ~/.modelweaver/services-summary.txt.
+fn write_services_summary() {
+    let reg = services_reg().lock().unwrap();
+    let mut out = String::new();
+    out.push_str("=== ModelWeaver — Interface des services ===\n\n");
+    out.push_str("Chaque service est ouvert (lancé) par le superviseur Rust.\n");
+    out.push_str("Services légers = threads Rust (pas d'enfant Python).\n");
+    out.push_str("Services complexes = enfants Python supervisés (auto-redémarrage).\n\n");
+    for s in reg.iter() {
+        out.push_str(&format!("● {}  [mode: {}]\n", s.info.name, s.info.mode));
+        out.push_str(&format!("    ouvert par : {} {}\n", s.info.command, s.info.args.join(" ")));
+        out.push_str(&format!("    auto-redémarrage : {} | enfant managé : {} | cache watch : {}\n",
+            s.info.restart, s.managed, s.watch));
+        out.push('\n');
+    }
+    let path = get_home_dir().join(".modelweaver").join("services-summary.txt");
+    if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+        let _ = f.write_all(out.as_bytes());
+    }
+    log_to_file("INIT", &format!("services summary written: {}", path.display()));
+}
+
 fn read_watch_cache(name: &str) -> Option<String> {
     watch_cache().lock().unwrap().get(name).cloned()
 }
@@ -1232,7 +1255,10 @@ fn main() {
         vec![cat_server.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
     define_service("installer", "loop", python_bin(),
         vec![helper_path.display().to_string(), "run_installer_service".to_string()], None, true, false);
+    define_service("tester", "loop", python_bin(),
+        vec![helper_path.display().to_string(), "run_tester_service".to_string()], None, true, false);
     start_service_supervisor();
+    write_services_summary();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

@@ -364,6 +364,109 @@ def run_installer_service():
             time.sleep(1)
 
 
+def _enqueue_job(ref, job_type):
+    """Enfile un job dans install_jobs (idempotent: skip si déjà actif pour ce ref).
+    Retourne l'id du job créé, ou 0 si doublon."""
+    import sqlite3
+    mw_path, _ = _db_paths()
+    con = sqlite3.connect(mw_path)
+    con.execute("PRAGMA busy_timeout=5000")
+    cur = con.execute(
+        "SELECT COUNT(*) FROM install_jobs WHERE ref=? AND status IN ('queued','running')", (ref,))
+    if cur.fetchone()[0] > 0:
+        con.close()
+        return 0
+    con.execute(
+        "INSERT INTO install_jobs (ref,name,job_type,status,created_at,updated_at) "
+        "VALUES (?,?,?,?,strftime('%s','now'),strftime('%s','now'))",
+        (ref, ref, job_type, "queued"))
+    jid = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+    con.commit()
+    con.close()
+    return jid
+
+
+def _job_status(jid):
+    import sqlite3
+    mw_path, _ = _db_paths()
+    con = sqlite3.connect(mw_path)
+    con.execute("PRAGMA busy_timeout=5000")
+    cur = con.execute("SELECT status, log FROM install_jobs WHERE id=?", (jid,))
+    row = cur.fetchone()
+    con.close()
+    return (row[0] if row else None, row[1] if row else "")
+
+
+def run_tester_service(script_path=None):
+    """Service testeur (supervisé par Rust) : lit un fichier script (.txt) listant
+    des actions (install <ref> / uninstall <ref>) et les enfile dans install_jobs.
+    Le worker installer (run_installer_service) consomme la file séquentiellement.
+    Rapport écrit dans ~/.modelweaver/tests/test-report.txt puis le script est
+    archivé en .done.txt pour éviter les rejeux."""
+    import time
+    from pathlib import Path
+    log_to_file("TESTER", "tester service started")
+    tests_dir = _db_paths()[0].parent / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    script = Path(script_path) if script_path else (tests_dir / "test-script.txt")
+    while True:
+        try:
+            if script.exists():
+                log_to_file("TESTER", f"script found: {script}")
+                actions = []
+                for ln in script.read_text().splitlines():
+                    s = ln.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    parts = s.split()
+                    cmd = parts[0].lower()
+                    if cmd in ("install", "uninstall", "remove") and len(parts) >= 2:
+                        ref = parts[1]
+                        jt = "uninstall" if cmd in ("uninstall", "remove") else "install"
+                        actions.append((jt, ref))
+                log_to_file("TESTER", f"{len(actions)} actions parsed")
+                report = [
+                    "=== ModelWeaver — Test Report ===",
+                    f"script : {script}",
+                    f"date   : {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                    "",
+                ]
+                # Traitement SÉQUENTIEL : une action à la fois (attendre la fin
+                # avant d'enfiler la suivante) pour gérer install→uninstall d'un même ref.
+                for jt, ref in actions:
+                    jid = _enqueue_job(ref, jt)
+                    if not jid:
+                        report.append(f"[SKIP ] {jt} {ref} (déjà actif)")
+                        log_to_file("TESTER", f"skip {jt} {ref}")
+                        continue
+                    report.append(f"[QUEUE] {jt} {ref} -> job #{jid}")
+                    log_to_file("TESTER", f"queued {jt} {ref} -> {jid}")
+                    waited = 0
+                    final = None
+                    while waited < 900:
+                        time.sleep(3)
+                        waited += 3
+                        st, _ = _job_status(jid)
+                        if st in (None, "installed", "removed", "failed", "cancelled"):
+                            final = st
+                            break
+                    report.append(f"[DONE ] {jt} {ref} -> {final}")
+                    log_to_file("TESTER", f"done {jt} {ref} -> {final}")
+                # Archiver le script
+                try:
+                    done = script.with_name(script.stem + ".done" + script.suffix)
+                    script.rename(done)
+                    report.append(f"\nscript archivé: {done}")
+                except Exception as e:
+                    report.append(f"\n(archivage échoué: {e})")
+                report_path = tests_dir / "test-report.txt"
+                report_path.write_text("\n".join(report) + "\n")
+                log_to_file("TESTER", f"report written: {report_path}")
+        except Exception as e:
+            log_to_file("TESTER", f"error: {e}")
+        time.sleep(3)
+
+
 def sync_catalogue_remote(url=None):
     from sql.db import CatalogueDB
     if not url:
@@ -495,6 +598,8 @@ if __name__ == "__main__":
             watch_system_state()
         elif command == "run_installer_service":
             run_installer_service()
+        elif command == "run_tester_service":
+            run_tester_service()
         elif command == "save_system_state":
             result = save_system_state()
         elif command == "sync_catalogue_remote":
