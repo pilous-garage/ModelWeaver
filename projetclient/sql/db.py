@@ -9,6 +9,7 @@ import json
 import sqlite3
 import uuid
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -540,7 +541,9 @@ class ToolRepository:
                 local_repo.save({"tool_id": tool[0], "version": version or "unknown", "install_path": path, "status": "installed"})
                 count += 1
         
-        pip_tools = {"litellm": "litellm", "open-webui": "open_webui", "gitingest": "gitingest"}
+        pip_tools = {"litellm": "litellm", "open-webui": "open_webui", "gitingest": "gitingest",
+                      "keyring": "keyring", "requests": "requests", "psutil": "psutil",
+                      "cryptography": "cryptography"}
         try:
             r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
@@ -858,7 +861,7 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         try:
             self.remote_catalogue = TursoCatalogueDB()
         except Exception as e:
-            print(f"⚠️  Mode catalogue distant désactivé: {e}")
+            print(f"⚠️  Mode catalogue distant désactivé: {e}", file=sys.stderr)
             self.remote_catalogue = None
 
         # Appliquer les migrations SQL

@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
 use std::io::Write;
 use serde::{Serialize, Deserialize};
+use tauri::Manager;
 use regex::Regex;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -320,6 +321,48 @@ fn check_python_deps(state: tauri::State<'_, Arc<InstallManager>>) -> Result<ser
 }
 
 #[tauri::command]
+fn get_system_state(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+    log_cmd("get_system_state");
+    run_python_helper(&state.helper_path, &["get_system_state"])
+}
+
+#[tauri::command]
+fn seed_catalogue(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+    log_cmd("seed_catalogue");
+    run_python_helper(&state.helper_path, &["seed_catalogue"])
+}
+
+#[tauri::command]
+fn get_catalogue_tools(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+    log_cmd("get_catalogue_tools");
+    run_python_helper(&state.helper_path, &["get_catalogue_tools"])
+}
+
+#[tauri::command]
+fn get_installed_tools(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+    log_cmd("get_installed_tools");
+    run_python_helper(&state.helper_path, &["get_installed_tools"])
+}
+
+#[tauri::command]
+fn save_system_state(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+    log_cmd("save_system_state");
+    run_python_helper(&state.helper_path, &["save_system_state"])
+}
+
+#[tauri::command]
+fn sync_catalogue(state: tauri::State<'_, Arc<InstallManager>>, url: String) -> Result<serde_json::Value, String> {
+    log_cmd(&format!("sync_catalogue({})", url));
+    run_python_helper(&state.helper_path, &["sync_catalogue_remote", &url])
+}
+
+#[tauri::command]
+fn install_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) -> Result<serde_json::Value, String> {
+    log_cmd(&format!("install_tool({})", ref_));
+    run_python_helper(&state.helper_path, &["install_tool", &ref_])
+}
+
+#[tauri::command]
 fn install_queue_add(state: tauri::State<'_, Arc<InstallManager>>, name: String, job_type: String) -> Result<u64, String> {
     log_cmd(&format!("install_queue_add({}, {})", name, job_type));
     Ok(state.add_job(name, job_type))
@@ -392,6 +435,47 @@ fn read_debug_logs() -> Result<String, String> {
 #[tauri::command]
 fn close_splashscreen() {
     std::process::exit(0);
+}
+
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            let _ = std::fs::copy(&path, &target);
+        }
+    }
+    Ok(())
+}
+
+/// Copie gui_helper.py + projetclient depuis le dossier de ressources Tauri vers
+/// ~/.modelweaver afin que le helper Python puisse importer sql.db / modules.* .
+fn ensure_bundled_resources(app: &tauri::App) {
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let home = get_home_dir();
+        let dest = home.join(".modelweaver");
+        let _ = std::fs::create_dir_all(&dest);
+
+        let src_helper = res_dir.join("gui_helper.py");
+        if src_helper.exists() {
+            let _ = std::fs::copy(&src_helper, dest.join("gui_helper.py"));
+        }
+
+        let src_pc = res_dir.join("projetclient");
+        let dst_pc = dest.join("projetclient");
+        if src_pc.exists() && !dst_pc.exists() {
+            let _ = copy_dir_recursive(&src_pc, &dst_pc);
+            log_to_file("INIT", &format!("copied projetclient from {}", res_dir.display()));
+        } else if src_pc.exists() {
+            log_to_file("INIT", "projetclient already present, skip copy");
+        }
+    } else {
+        log_to_file("INIT", "resource_dir unavailable, skip bundled resources");
+    }
 }
 
 #[tauri::command]
@@ -516,6 +600,10 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            ensure_bundled_resources(app);
+            Ok(())
+        })
         .manage(manager)
         .invoke_handler(tauri::generate_handler![
             log_message,
@@ -526,6 +614,13 @@ fn main() {
             check_databases,
             init_databases,
             check_python_deps,
+            get_system_state,
+            seed_catalogue,
+            get_catalogue_tools,
+            get_installed_tools,
+            save_system_state,
+            sync_catalogue,
+            install_tool,
             install_queue_add,
             install_queue_status,
             install_queue_clear,
