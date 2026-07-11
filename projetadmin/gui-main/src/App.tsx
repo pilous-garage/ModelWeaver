@@ -69,19 +69,33 @@ function App() {
 
   const check = async () => {
     await log('INFO', 'check() started');
+    const entries: string[] = [];
     try {
       setMode('CHECKING');
+      entries.push('Vérification de l\'environnement...');
+      setLog(entries);
+      entries.push('→ check_dependencies (python3 --version, sqlite3 --version)');
+      entries.push('→ get_system_info');
+      setLog(entries);
       const [result, info]: [DepStatus[], SysInfo] = await Promise.all([
         invoke('check_dependencies'),
         invoke('get_system_info'),
       ]);
       setDeps(result);
       setSysInfo(info);
+      for (const d of result) {
+        entries.push(`${d.installed ? '✓' : '✗'} ${d.name}${d.version ? ' ' + d.version : ''}`);
+      }
+      entries.push(`✓ système: ${info.os} (${info.arch})`);
       const missing = result.filter(d => !d.installed);
       const next = missing.length === 0 ? 'DASHBOARD' : 'INSTALLING';
+      entries.push(next === 'DASHBOARD' ? '✓ Toutes les dépendances sont présentes' : `⚠ ${missing.length} dépendance(s) manquante(s)`);
+      setLog(entries);
       await log('INFO', `check() done: ${result.length} deps, ${missing.length} missing, mode=${next}`);
       setMode(next);
     } catch (e) {
+      entries.push(`✗ Erreur: ${e}`);
+      setLog(entries);
       await log('ERROR', `check() failed: ${e}`);
       setError(`${e}`);
       setMode('ERROR');
@@ -219,14 +233,17 @@ function App() {
     }}>
       <div style={{ maxWidth: '700px', width: '100%', margin: '0 auto' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1.5rem' }}>
-          ModelWeaver
+          ModelWeaver — Application
         </h1>
 
         {/* CHECKING */}
         {mode === 'CHECKING' && (
-          <div style={{ textAlign: 'center', padding: '3rem' }}>
-            <Spinner />
-            <p style={{ color: '#94a3b8' }}>Vérification de l'environnement...</p>
+          <div>
+            <div style={{ textAlign: 'center', padding: '3rem 3rem 1rem' }}>
+              <Spinner />
+              <p style={{ color: '#94a3b8', marginBottom: '0.5rem' }}>Vérification de l'environnement...</p>
+            </div>
+            {log.length > 0 && <LogPanel log={log} />}
           </div>
         )}
 
@@ -260,14 +277,7 @@ function App() {
               </div>
             ))}
             {log.length > 0 && (
-              <div style={{
-                backgroundColor: '#0f172a', borderRadius: '0.5rem',
-                border: '1px solid #334155', padding: '0.75rem 1rem',
-                maxHeight: '150px', overflowY: 'auto', marginTop: '1rem',
-                fontSize: '0.75rem', fontFamily: 'monospace'
-              }}>
-                {log.map((l, i) => <div key={i} style={{ color: l.startsWith('✗') ? '#fca5a5' : l.startsWith('✓') ? '#6ee7b7' : '#94a3b8' }}>{l}</div>)}
-              </div>
+              <LogPanel log={log} />
             )}
             <button onClick={check} style={{
               marginTop: '1rem', padding: '0.5rem 1.5rem',
@@ -404,18 +414,7 @@ function App() {
 
             {/* Log */}
             {log.length > 0 && (
-              <div style={{
-                backgroundColor: '#0f172a', borderRadius: '0.5rem',
-                border: '1px solid #334155', padding: '0.75rem 1rem',
-                maxHeight: '150px', overflowY: 'auto', marginBottom: '1.5rem',
-                fontSize: '0.75rem', fontFamily: 'monospace'
-              }}>
-                {log.map((l, i) => (
-                  <div key={i} style={{ color: l.startsWith('✗') ? '#fca5a5' : l.startsWith('✓') ? '#6ee7b7' : '#94a3b8' }}>
-                    {l}
-                  </div>
-                ))}
-              </div>
+              <LogPanel log={log} />
             )}
 
             <button onClick={check} style={{
@@ -436,18 +435,7 @@ function App() {
           }}>
             <p style={{ fontWeight: 'bold', marginBottom: '0.5rem' }}>Erreur</p>
             <p style={{ fontSize: '0.875rem' }}>{error}</p>
-            {log.length > 0 && (
-              <div style={{
-                backgroundColor: '#0f172a', borderRadius: '0.5rem',
-                border: '1px solid #334155', padding: '0.75rem 1rem',
-                maxHeight: '150px', overflowY: 'auto', marginTop: '1rem',
-                fontSize: '0.75rem', fontFamily: 'monospace'
-              }}>
-                {log.map((l, i) => (
-                  <div key={i} style={{ color: l.startsWith('✗') ? '#fca5a5' : l.startsWith('✓') ? '#6ee7b7' : '#94a3b8' }}>{l}</div>
-                ))}
-              </div>
-            )}
+            {log.length > 0 && <LogPanel log={log} />}
             <button onClick={() => { setError(null); check(); }}
               style={{
                 marginTop: '0.75rem', padding: '0.5rem 1rem',
@@ -470,6 +458,28 @@ function Row({ label, value, color }: { label: string; value: string; color?: st
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
       <span style={{ color: '#64748b' }}>{label}</span>
       <span style={{ color: color || '#e2e8f0' }}>{value}</span>
+    </div>
+  );
+}
+
+function LogPanel({ log }: { log: string[] }) {
+  return (
+    <div style={{
+      backgroundColor: '#0f172a', borderRadius: '0.5rem',
+      border: '1px solid #334155', padding: '0.75rem 1rem',
+      maxHeight: '300px', minHeight: '100px', overflowY: 'auto',
+      marginBottom: '1rem', textAlign: 'left',
+      fontSize: '0.75rem', fontFamily: 'ui-monospace, SFMono-Regular, monospace'
+    }}>
+      {log.map((l, i) => (
+        <div key={i} style={{
+          color: l.startsWith('✗') ? '#fca5a5' : l.startsWith('✓') ? '#6ee7b7' : '#94a3b8',
+          whiteSpace: 'pre-wrap',
+          lineHeight: '1.4'
+        }}>
+          {l}
+        </div>
+      ))}
     </div>
   );
 }

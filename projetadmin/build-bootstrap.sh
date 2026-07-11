@@ -6,6 +6,16 @@ APP1_DIR="gui-bootstrap"
 APP2_DIR="gui-main"
 APP1_BIN="modelweaver-bootstrap"
 APP2_BIN="modelweaver"
+BINARY_ONLY=false
+
+# Parse arguments
+for arg in "$@"; do
+    case "$arg" in
+        --binary-only) BINARY_ONLY=true ;;
+        --auto-release) AUTO_RELEASE=true ;;
+    esac
+done
+
 VERSION=$(grep '"version":' $APP1_DIR/package.json | cut -d '"' -f 4)
 TAG="v$VERSION"
 
@@ -31,7 +41,14 @@ build_app() {
 
     log "Build de $name..."
     (cd $dir && npm install)
-    (cd $dir && export PATH="$HOME/.cargo/bin:$PATH" && npm run tauri build)
+    # Always build frontend assets
+    (cd $dir && npm run build)
+    if [ "$BINARY_ONLY" = true ]; then
+        log "Build binaire uniquement (release)..."
+        (cd $dir/src-tauri && export PATH="$HOME/.cargo/bin:$PATH" && cargo build --release)
+    else
+        (cd $dir && export PATH="$HOME/.cargo/bin:$PATH" && npm run tauri build)
+    fi
 
     # Localisation du binaire
     local bin_path=$(find $dir/src-tauri/target/release -maxdepth 1 -name "$name" -type f | head -n 1)
@@ -53,7 +70,7 @@ log "${GREEN}Les deux binaires sont prêts dans target/release/ :${NC}"
 ls -lh target/release/$APP1_BIN target/release/$APP2_BIN
 
 # 3. Gestion de la Release
-if [[ "$1" == "--auto-release" ]]; then
+if [[ "$AUTO_RELEASE" == true ]]; then
     log "Lancement de la release automatique vers GitHub..."
 
     if ! command -v gh >/dev/null 2>&1; then

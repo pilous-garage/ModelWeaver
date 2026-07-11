@@ -8,7 +8,7 @@ IMAGE="modelweaver-cli-test"
 CONTAINER="modelweaver-cli-test"
 LAST_FILE="$SCRIPT_DIR/.last-test-cli-time"
 
-TIMEOUT_DEFAULT=180
+TIMEOUT_DEFAULT=30
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 TAG=""
 

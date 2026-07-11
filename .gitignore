@@ -13,6 +13,7 @@ dist/
 # Rust / Tauri build artifacts
 **/src-tauri/target/
 **/src-tauri/Cargo.lock
+projetadmin/target/
 
 # Tauri generated schemas
 **/src-tauri/gen/schemas/

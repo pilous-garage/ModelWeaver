@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOCKER_DIR="$SCRIPT_DIR/docker"
 APP="main"
-TIMEOUT_DEFAULT=300
+TIMEOUT_DEFAULT=60
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 TAG=""
 
