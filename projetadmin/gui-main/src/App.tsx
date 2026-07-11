@@ -373,6 +373,14 @@ function App() {
     installedRef.current = inst.tools || [];
   };
 
+  const refreshSysState = async () => {
+    try {
+      const cached = await invoke<string>('watch_get', { name: 'sys-state' });
+      if (cached) { setSystemState(JSON.parse(cached)); return; }
+    } catch { /* fallthrough */ }
+    setSystemState(await invoke<any>('get_system_state'));
+  };
+
   const loadLogitheque = async () => {
     setLogithequeLoading(true);
     setLogithequeError(null);
@@ -381,8 +389,7 @@ function App() {
       await invoke('init_databases'); addLog('[LOGITH] init_databases ok');
       await invoke('seed_catalogue'); addLog('[LOGITH] seed_catalogue ok');
       await invoke('save_system_state'); addLog('[LOGITH] save_system_state ok');
-      const sys = await invoke<any>('get_system_state'); addLog('[LOGITH] get_system_state ok');
-      setSystemState(sys);
+      await refreshSysState(); addLog('[LOGITH] refreshSysState ok');
       const cat = await invoke<any>('get_catalogue_tools'); addLog('[LOGITH] get_catalogue_tools ok');
       setCatalogueTools(cat.tools || []);
       await refreshInstalled(); addLog('[LOGITH] refreshInstalled ok');

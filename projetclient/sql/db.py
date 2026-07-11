@@ -855,6 +855,7 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
         
         # Ajout du catalogue distant
@@ -986,6 +987,8 @@ class CatalogueDB:
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
 
     def _ensure_schema(self):

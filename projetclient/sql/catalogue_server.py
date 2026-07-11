@@ -15,6 +15,7 @@ Endpoints:
 import json
 import sqlite3
 import argparse
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, List
@@ -100,8 +101,19 @@ def main():
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
 
-    server = CatalogueServer(("0.0.0.0", args.port), CatalogueAPIHandler)
+    server = None
+    for attempt in range(10):
+        try:
+            server = CatalogueServer(("0.0.0.0", args.port), CatalogueAPIHandler)
+            break
+        except OSError as e:
+            if attempt < 9:
+                print(f"⚠️  Bind {args.port} échoué ({e}), retry {attempt+1}/10...")
+                time.sleep(1)
+            else:
+                raise
     server.db_path = db_path
     server.conn = conn
 

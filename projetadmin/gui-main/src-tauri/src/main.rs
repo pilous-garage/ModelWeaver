@@ -2,14 +2,13 @@
 
 use std::process::{Command, Stdio};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}};
-use std::collections::{VecDeque, HashMap};
+use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
 use std::io::{Write, Read};
 use serde::{Serialize, Deserialize};
 use tauri::Manager;
-use regex::Regex;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -308,9 +307,21 @@ fn start_proc_monitor(db_path: PathBuf) {
                     }
                 }
             }
+            // prune transient single-use processes (forget when done > 10s)
+            let nowp = now_secs();
+            reg.procs.retain(|p| {
+                if p.info.status != "done" { return true; }
+                if p.info.name == "modelweaver-main" || p.info.name.starts_with("watch:")
+                    || p.info.name == "catalogue" || p.info.name == "installer"
+                    || p.info.name.starts_with("install:") || p.info.name.starts_with("uninstall:") {
+                    return true;
+                }
+                if let Some(e) = p.info.ended_at { if nowp.saturating_sub(e) <= 10 { return true; } }
+                false
+            });
         }
-        // mirror snapshot to local DB (best-effort)
-        mirror_processes_to_db(&db_path, &proc_snapshot());
+            // mirror snapshot to local DB (best-effort)
+            mirror_processes_to_db(&db_path, &proc_snapshot());
         // keep the tick under 1 second
         if let Ok(elapsed) = start.elapsed() {
             let ms = elapsed.as_millis() as u64;
@@ -408,6 +419,7 @@ struct ServiceEntry {
     info: ServiceInfo,
     child: Option<std::process::Child>,
     watch: bool,             // if true, stdout lines are cached (WATCH_CACHE)
+    managed: bool,           // if true, supervisor spawns/restarts the child
 }
 
 static SERVICES: OnceLock<Mutex<Vec<ServiceEntry>>> = OnceLock::new();
@@ -442,10 +454,80 @@ fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, pare
         },
         child: None,
         watch,
+        managed: true,
+    });
+}
+
+/// Register a service implemented as a Rust thread (not a spawned child).
+/// The supervisor only mirrors it; it does not spawn/restart it.
+fn register_thread_service(name: &str) -> u64 {
+    let proc_id = proc_begin(name, None, name);
+    proc_set_status(proc_id, "running");
+    let mut reg = services_reg().lock().unwrap();
+    if reg.iter().any(|s| s.info.name == name) { return proc_id; }
+    reg.push(ServiceEntry {
+        info: ServiceInfo {
+            name: name.to_string(),
+            mode: "loop".to_string(),
+            command: String::new(),
+            args: vec![],
+            status: "running".to_string(),
+            pid: Some(std::process::id()),
+            parent: None,
+            restart: false,
+            restarts: 0,
+            last_exit: None,
+            started_at: now_secs(),
+            proc_id,
+        },
+        child: None,
+        watch: false,
+        managed: false,
+    });
+    proc_id
+}
+
+fn set_watch_cache(name: &str, value: &str) {
+    watch_cache().lock().unwrap().insert(name.to_string(), value.to_string());
+}
+
+/// Service Rust léger : lit local_tools depuis la DB et met en cache le JSON.
+fn watch_installed_tools_rust(interval: f64) {
+    let db = get_home_dir().join(".modelweaver").join("modelweaver.db");
+    std::thread::spawn(move || loop {
+        let sql = "SELECT lt.version, lt.status, lt.install_path, d.ref AS tool_ref, d.name AS tool_name \
+            FROM local_tools lt JOIN tool_definitions d ON d.id = lt.tool_id;";
+        let rows = db_query_json(&db, sql);
+        let tools: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
+            "ref": r.get("tool_ref").and_then(|x| x.as_str()).unwrap_or(""),
+            "name": r.get("tool_name").and_then(|x| x.as_str()).unwrap_or(""),
+            "version": r.get("version").and_then(|x| x.as_str()).unwrap_or(""),
+            "status": r.get("status").and_then(|x| x.as_str()).unwrap_or(""),
+            "install_path": r.get("install_path").and_then(|x| x.as_str()).unwrap_or(""),
+        })).collect();
+        let out = serde_json::json!({ "tools": tools, "count": tools.len() });
+        set_watch_cache("installed-tools", &out.to_string());
+        std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64));
+    });
+}
+
+/// Service Rust (wrapper) : orchestre la collecte complexe en Python et cache le résultat.
+fn watch_sys_state_rust(helper: PathBuf, interval: f64) {
+    std::thread::spawn(move || loop {
+        if let Ok(o) = Command::new(python_bin()).arg(&helper).arg("get_system_state").output() {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout);
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                    set_watch_cache("sys-state", &v.to_string());
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64));
     });
 }
 
 fn spawn_service_child(entry: &mut ServiceEntry) {
+    log_to_file("SUPERVISOR", &format!("spawn {}", entry.info.name));
     let mut cmd = Command::new(&entry.info.command);
     cmd.args(&entry.info.args);
     #[cfg(unix)]
@@ -497,6 +579,7 @@ fn start_service_supervisor() {
         {
             let mut reg = services_reg().lock().unwrap();
             for entry in reg.iter_mut() {
+                if !entry.managed { continue; }
                 if entry.info.mode != "loop" { continue; }
                 let exited = match entry.child.as_mut() {
                     Some(c) => match c.try_wait() {
@@ -512,6 +595,7 @@ fn start_service_supervisor() {
                     if entry.info.restart && entry.info.restarts < 10 {
                         entry.info.restarts += 1;
                         entry.info.status = "restarting".to_string();
+                        log_to_file("SUPERVISOR", &format!("restart {} (attempt {})", entry.info.name, entry.info.restarts));
                         spawn_service_child(entry);
                     } else {
                         entry.info.status = "stopped".to_string();
@@ -613,146 +697,53 @@ fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json:
     }
 }
 
-struct InstallManager {
-    queue: Mutex<VecDeque<InstallJob>>,
-    running: Mutex<HashMap<u64, u32>>,
-    next_id: AtomicU64,
-    helper_path: PathBuf,
+fn sql_esc(s: &str) -> String { s.replace('\'', "''") }
+
+fn db_run(db: &PathBuf, sql: &str) {
+    let _ = Command::new("sqlite3")
+        .arg(db)
+        .arg("-cmd").arg(".timeout 5000")
+        .arg(sql)
+        .status();
 }
 
-impl InstallManager {
-    fn new(helper_path: PathBuf) -> Arc<Self> {
-        Arc::new(Self {
-            queue: Mutex::new(VecDeque::new()),
-            running: Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-            helper_path,
-        })
-    }
-
-    fn add_job(&self, ref_: String, name: String, job_type: String) -> u64 {
-        let mut q = self.queue.lock().unwrap();
-        // Pas de doublon actif pour le même ref
-        if q.iter().any(|j| j.ref_ == ref_ && (j.status == "queued" || j.status == "running")) {
-            log_to_file("QUEUE", &format!("add_job doublon ignoré: {}", ref_));
-            return 0;
-        }
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        log_to_file("QUEUE", &format!("add_job #{} {} ({})", id, ref_, job_type));
-        q.push_back(InstallJob {
-            id,
-            ref_,
-            name,
-            job_type,
-            status: "queued".to_string(),
-            log: String::new(),
-        });
-        id
-    }
-
-    fn get_status(&self) -> Vec<InstallJob> {
-        let q = self.queue.lock().unwrap();
-        q.iter().cloned().collect()
-    }
-
-    fn cancel_job(&self, id: u64) {
-        log_to_file("QUEUE", &format!("cancel_job #{}", id));
-        let mut q = self.queue.lock().unwrap();
-        if let Some(job) = q.iter_mut().find(|j| j.id == id) {
-            if job.status == "queued" {
-                job.status = "cancelled".to_string();
-            } else if job.status == "running" {
-                job.status = "cancelled".to_string();
-                let mut run = self.running.lock().unwrap();
-                if let Some(pid) = run.remove(&id) {
-                    drop(run);
-                    #[cfg(unix)]
-                    {
-                        let neg = format!("-{}", pid);
-                        let _ = Command::new("kill").args(["-9", &neg]).status();
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = Command::new("kill").arg(pid.to_string()).status();
-                    }
-                }
-            }
-        }
-    }
-
-    fn clear_completed(&self) {
-        log_to_file("QUEUE", "clear_completed");
-        let mut q = self.queue.lock().unwrap();
-        q.retain(|j| j.status == "queued" || j.status == "running");
-    }
-
-    fn spawn_worker(self: &Arc<Self>) {
-        let m = self.clone();
-        log_to_file("WORKER", "background worker started");
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(500));
-            let picked = {
-                let mut q = m.queue.lock().unwrap();
-                if let Some(job) = q.iter_mut().find(|j| j.status == "queued") {
-                    job.status = "running".to_string();
-                    Some((job.id, job.ref_.clone(), job.name.clone(), job.job_type.clone()))
-                } else {
-                    None
-                }
-            };
-            if let Some((job_id, ref_, _name, job_type)) = picked {
-                log_to_file("WORKER", &format!("processing job #{} {} ({})", job_id, ref_, job_type));
-                let action = if job_type == "uninstall" { "uninstall_tool" } else { "install_tool" };
-                let proc_name = format!("{}:{}", if job_type == "uninstall" { "uninstall" } else { "install" }, ref_);
-                let proc_id = proc_begin(&proc_name, None, &format!("python3 {} {} {}", m.helper_path.display(), action, ref_));
-                let mut cmd = Command::new(python_bin());
-                cmd.arg(&m.helper_path).arg(action).arg(&ref_)
-                    .stdout(Stdio::piped()).stderr(Stdio::piped());
-                #[cfg(unix)]
-                cmd.process_group(0);
-                let mut child = match cmd.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log_to_file("WORKER", &format!("spawn error #{}: {}", job_id, e));
-                        proc_finish(proc_id, false, "", &format!("spawn error: {}", e));
-                        let mut q = m.queue.lock().unwrap();
-                        if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
-                            if job.status != "cancelled" {
-                                job.status = "failed".to_string();
-                                job.log = format!("spawn error: {}", e);
-                            }
-                        }
-                        continue;
-                    }
-                };
-                let pid = child.id();
-                proc_set_pid(proc_id, pid);
-                m.running.lock().unwrap().insert(job_id, pid);
-                let res = child.wait().ok();
-                let mut sout = String::new();
-                let mut serr = String::new();
-                if let Some(mut o) = child.stdout.take() { let _ = o.read_to_string(&mut sout); }
-                if let Some(mut e) = child.stderr.take() { let _ = e.read_to_string(&mut serr); }
-                m.running.lock().unwrap().remove(&job_id);
-                let success = res.map(|s| s.success()).unwrap_or(false);
-                proc_finish(proc_id, success, &sout, &serr);
-                let mut q = m.queue.lock().unwrap();
-                if let Some(job) = q.iter_mut().find(|j| j.id == job_id) {
-                    if job.status != "cancelled" {
-                        if success {
-                            job.status = if job_type == "uninstall" { "removed".to_string() } else { "installed".to_string() };
-                            job.log = sout;
-                        } else {
-                            job.status = "failed".to_string();
-                            job.log = format!("{}\n{}", sout, serr);
-                        }
-                    }
-                }
-                log_to_file("WORKER", &format!("job #{} -> {}", job_id, if success { "ok" } else { "fail" }));
-            }
-        });
+fn db_query_json(db: &PathBuf, sql: &str) -> Vec<serde_json::Value> {
+    match Command::new("sqlite3")
+        .arg("-json")
+        .arg(db)
+        .arg("-cmd").arg(".timeout 5000")
+        .arg(sql)
+        .output() {
+        Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout).unwrap_or_default(),
+        _ => vec![],
     }
 }
+
+fn db_scalar_u64(db: &PathBuf, sql: &str) -> u64 {
+    if let Some(obj) = db_query_json(db, sql).first().and_then(|v| v.as_object()) {
+        for (_, v) in obj.iter() {
+            if let Some(n) = v.as_u64() { return n; }
+        }
+    }
+    0
+}
+
+fn ensure_install_jobs(db: &PathBuf) {
+    db_run(db, "CREATE TABLE IF NOT EXISTS install_jobs (\n\
+        id INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+        ref TEXT NOT NULL,\n\
+        name TEXT,\n\
+        job_type TEXT,\n\
+        status TEXT,\n\
+        log TEXT,\n\
+        pid INTEGER,\n\
+        created_at INTEGER,\n\
+        updated_at INTEGER DEFAULT (strftime('%s','now'))\n\
+    );");
+}
+
+// install_jobs est consommé par le worker Python (run_installer_service).
+// Les commandes UI ci-dessous opèrent directement sur la table.
 
 #[tauri::command]
 fn log_message(level: String, message: String) -> Result<(), String> {
@@ -856,93 +847,129 @@ fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonRes
 }
 
 #[tauri::command]
-fn check_databases(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn check_databases() -> Result<serde_json::Value, String> {
     log_cmd("check_databases");
-    run_python_helper(&state.helper_path, &["check_databases"])
+    run_python_helper(&find_helper_path(), &["check_databases"])
 }
 
 #[tauri::command]
-fn init_databases(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn init_databases() -> Result<serde_json::Value, String> {
     log_cmd("init_databases");
-    run_python_helper(&state.helper_path, &["init_databases"])
+    run_python_helper(&find_helper_path(), &["init_databases"])
 }
 
 #[tauri::command]
-fn check_python_deps(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn check_python_deps() -> Result<serde_json::Value, String> {
     log_cmd("check_python_deps");
-    run_python_helper(&state.helper_path, &["check_python_deps"])
+    run_python_helper(&find_helper_path(), &["check_python_deps"])
 }
 
 #[tauri::command]
-fn get_system_state(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn get_system_state() -> Result<serde_json::Value, String> {
     log_cmd("get_system_state");
-    run_python_helper(&state.helper_path, &["get_system_state"])
+    run_python_helper(&find_helper_path(), &["get_system_state"])
 }
 
 #[tauri::command]
-fn seed_catalogue(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn seed_catalogue() -> Result<serde_json::Value, String> {
     log_cmd("seed_catalogue");
-    run_python_helper(&state.helper_path, &["seed_catalogue"])
+    run_python_helper(&find_helper_path(), &["seed_catalogue"])
 }
 
 #[tauri::command]
-fn get_catalogue_tools(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn get_catalogue_tools() -> Result<serde_json::Value, String> {
     log_cmd("get_catalogue_tools");
-    run_python_helper(&state.helper_path, &["get_catalogue_tools"])
+    run_python_helper(&find_helper_path(), &["get_catalogue_tools"])
 }
 
 #[tauri::command]
-fn get_installed_tools(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn get_installed_tools() -> Result<serde_json::Value, String> {
     log_cmd("get_installed_tools");
-    run_python_helper(&state.helper_path, &["get_installed_tools"])
+    run_python_helper(&find_helper_path(), &["get_installed_tools"])
 }
 
 #[tauri::command]
-fn save_system_state(state: tauri::State<'_, Arc<InstallManager>>) -> Result<serde_json::Value, String> {
+fn save_system_state() -> Result<serde_json::Value, String> {
     log_cmd("save_system_state");
-    run_python_helper(&state.helper_path, &["save_system_state"])
+    run_python_helper(&find_helper_path(), &["save_system_state"])
 }
 
 #[tauri::command]
-fn sync_catalogue(state: tauri::State<'_, Arc<InstallManager>>, url: String) -> Result<serde_json::Value, String> {
+fn sync_catalogue(url: String) -> Result<serde_json::Value, String> {
     log_cmd(&format!("sync_catalogue({})", url));
-    run_python_helper(&state.helper_path, &["sync_catalogue_remote", &url])
+    run_python_helper(&find_helper_path(), &["sync_catalogue_remote", &url])
 }
 
 #[tauri::command]
-fn install_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) -> Result<serde_json::Value, String> {
+fn install_tool(ref_: String) -> Result<serde_json::Value, String> {
     log_cmd(&format!("install_tool({})", ref_));
-    run_python_helper(&state.helper_path, &["install_tool", &ref_])
+    run_python_helper(&find_helper_path(), &["install_tool", &ref_])
 }
 
 #[tauri::command]
-fn uninstall_tool(state: tauri::State<'_, Arc<InstallManager>>, ref_: String) -> Result<serde_json::Value, String> {
+fn uninstall_tool(ref_: String) -> Result<serde_json::Value, String> {
     log_cmd(&format!("uninstall_tool({})", ref_));
-    run_python_helper(&state.helper_path, &["uninstall_tool", &ref_])
+    run_python_helper(&find_helper_path(), &["uninstall_tool", &ref_])
+}
+
+fn install_db_path() -> PathBuf {
+    get_home_dir().join(".modelweaver").join("modelweaver.db")
 }
 
 #[tauri::command]
-fn install_queue_add(state: tauri::State<'_, Arc<InstallManager>>, ref_: String, name: String, job_type: String) -> Result<u64, String> {
+fn install_queue_add(ref_: String, name: String, job_type: String) -> Result<u64, String> {
     log_cmd(&format!("install_queue_add({}, {}, {})", ref_, name, job_type));
-    Ok(state.add_job(ref_, name, job_type))
+    let db = install_db_path();
+    ensure_install_jobs(&db);
+    let chk = format!("SELECT COUNT(*) FROM install_jobs WHERE ref='{}' AND status IN ('queued','running');", sql_esc(&ref_));
+    if db_scalar_u64(&db, &chk) > 0 {
+        log_to_file("QUEUE", &format!("add_job doublon ignoré: {}", ref_));
+        return Ok(0);
+    }
+    let now = now_secs() as i64;
+    db_run(&db, &format!("INSERT INTO install_jobs (ref,name,job_type,status,created_at,updated_at) VALUES ('{}','{}','{}','queued',{},{});", sql_esc(&ref_), sql_esc(&name), sql_esc(&job_type), now, now));
+    let id = db_scalar_u64(&db, "SELECT last_insert_rowid();");
+    log_to_file("QUEUE", &format!("add_job #{} {} ({})", id, ref_, job_type));
+    Ok(id)
 }
 
 #[tauri::command]
-fn install_queue_cancel(state: tauri::State<'_, Arc<InstallManager>>, id: u64) -> Result<(), String> {
+fn install_queue_cancel(id: u64) -> Result<(), String> {
     log_cmd(&format!("install_queue_cancel({})", id));
-    state.cancel_job(id);
+    let db = install_db_path();
+    log_to_file("QUEUE", &format!("cancel_job #{}", id));
+    let rows = db_query_json(&db, &format!("SELECT pid FROM install_jobs WHERE id={} AND status='running';", id));
+    if let Some(pid) = rows.first().and_then(|r| r.get("pid")).and_then(|x| x.as_u64()) {
+        let pid = pid as u32;
+        #[cfg(unix)]
+        { let neg = format!("-{}", pid); let _ = Command::new("kill").args(["-9", &neg]).status(); }
+        #[cfg(not(unix))]
+        { let _ = Command::new("kill").arg(pid.to_string()).status(); }
+    }
+    db_run(&db, &format!("UPDATE install_jobs SET status='cancelled', updated_at={} WHERE id={} AND status IN ('queued','running');", now_secs(), id));
     Ok(())
 }
 
 #[tauri::command]
-fn install_queue_status(state: tauri::State<'_, Arc<InstallManager>>) -> Result<Vec<InstallJob>, String> {
-    Ok(state.get_status())
+fn install_queue_status() -> Result<Vec<InstallJob>, String> {
+    let db = install_db_path();
+    let rows = db_query_json(&db, "SELECT id,ref,name,job_type,status,log FROM install_jobs ORDER BY id;");
+    Ok(rows.iter().map(|r| InstallJob {
+        id: r.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
+        ref_: r.get("ref").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        name: r.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        job_type: r.get("job_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        status: r.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        log: r.get("log").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+    }).collect())
 }
 
 #[tauri::command]
-fn install_queue_clear(state: tauri::State<'_, Arc<InstallManager>>) -> Result<(), String> {
+fn install_queue_clear() -> Result<(), String> {
     log_cmd("install_queue_clear");
-    state.clear_completed();
+    let db = install_db_path();
+    log_to_file("QUEUE", "clear_completed");
+    db_run(&db, "DELETE FROM install_jobs WHERE status IN ('installed','removed','failed','cancelled');");
     Ok(())
 }
 
@@ -1179,26 +1206,32 @@ async fn check_dependencies_with_config(config: serde_json::Value) -> Result<ser
 
 fn main() {
     let helper_path = find_helper_path();
+    let db_path = get_home_dir().join(".modelweaver").join("modelweaver.db");
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
-    let manager = InstallManager::new(helper_path.clone());
-    manager.spawn_worker();
+    ensure_install_jobs(&db_path);
 
     // Root of the process tree: the main calling process ("modelweaver-main").
     let root_pid = std::process::id();
     proc_register("modelweaver-main", None, Some(root_pid), "modelweaver", String::new(), "running");
-    let db_path = get_home_dir().join(".modelweaver").join("modelweaver.db");
     start_proc_monitor(db_path.clone());
+    register_thread_service("proc-monitor");
 
-    // Supervised services (long-lived children, auto-restarted on crash).
+    // Services légers codés en Rust (watch/cache).
+    watch_installed_tools_rust(2.0);
+    register_thread_service("watch:installed-tools");
+    watch_sys_state_rust(helper_path.clone(), 2.0);
+    register_thread_service("watch:sys-state");
+
+    // Services complexes/distants : enfants Python supervisés (auto-restart).
     let pc_dir = helper_path.parent().map(|p| p.join("projetclient")).unwrap_or_default();
     let cat_server = pc_dir.join("sql").join("catalogue_server.py");
     let cat_db = get_home_dir().join(".modelweaver").join("catalogue.remote.db");
-    define_service("watch:installed-tools", "loop", python_bin(),
-        vec![helper_path.display().to_string(), "watch_installed_tools".to_string()], None, true, true);
     define_service("catalogue", "loop", python_bin(),
         vec![cat_server.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
+    define_service("installer", "loop", python_bin(),
+        vec![helper_path.display().to_string(), "run_installer_service".to_string()], None, true, false);
     start_service_supervisor();
 
     tauri::Builder::default()
@@ -1207,7 +1240,6 @@ fn main() {
             ensure_bundled_resources(app);
             Ok(())
         })
-        .manage(manager)
         .invoke_handler(tauri::generate_handler![
             log_message,
             get_system_info,

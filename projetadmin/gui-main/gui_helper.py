@@ -256,6 +256,114 @@ def save_system_state():
     return {"status": "ok"}
 
 
+def watch_system_state(interval: float = 2.0):
+    """Service loop: met à jour system_state puis écrit l'état courant en JSON
+    sur stdout (une ligne = un état). Un seul processus, en pause entre scans."""
+    import time
+    while True:
+        try:
+            save_system_state()
+            state = get_system_state()
+            print(json.dumps(state), flush=True)
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), flush=True)
+        time.sleep(interval)
+
+
+def log_to_file(level, message):
+    try:
+        from datetime import datetime
+        log_dir = _db_paths()[0].parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "installer.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} [{level}] {message}\n")
+    except Exception:
+        pass
+
+
+def ensure_install_jobs():
+    import sqlite3
+    mw_path, _ = _db_paths()
+    con = sqlite3.connect(mw_path)
+    con.execute("PRAGMA busy_timeout=5000")
+    con.execute("""CREATE TABLE IF NOT EXISTS install_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ref TEXT NOT NULL,
+        name TEXT,
+        job_type TEXT,
+        status TEXT,
+        log TEXT,
+        pid INTEGER,
+        created_at INTEGER,
+        updated_at INTEGER DEFAULT (strftime('%s','now'))
+    );""")
+    con.commit()
+    con.close()
+
+
+def _set_job(job_id, status, log=None, pid=None):
+    import sqlite3
+    mw_path, _ = _db_paths()
+    con = sqlite3.connect(mw_path)
+    con.execute("PRAGMA busy_timeout=5000")
+    if pid is not None:
+        con.execute("UPDATE install_jobs SET status=?, log=?, pid=?, updated_at=strftime('%s','now') WHERE id=?", (status, log, pid, job_id))
+    elif log is not None:
+        con.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?", (status, log, job_id))
+    else:
+        con.execute("UPDATE install_jobs SET status=?, updated_at=strftime('%s','now') WHERE id=?", (status, job_id))
+    con.commit()
+    con.close()
+
+
+def run_installer_service():
+    """Worker Python (supervisé par Rust) : consomme la table install_jobs et
+    exécute install_tool/uninstall_tool (recettes). Un seul processus, en pause
+    entre deux jobs."""
+    import time, sqlite3
+    log_to_file("WORKER", "installer service started")
+    ensure_install_jobs()
+    while True:
+        try:
+            mw_path, _ = _db_paths()
+            con = sqlite3.connect(mw_path)
+            con.row_factory = sqlite3.Row
+            cur = con.execute("SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
+            row = cur.fetchone()
+            con.close()
+            if not row:
+                time.sleep(0.5)
+                continue
+            job_id, ref_, name, job_type = row["id"], row["ref"], row["name"], row["job_type"]
+            _set_job(job_id, "running")
+            log_to_file("WORKER", f"processing job #{job_id} {ref_} ({job_type})")
+
+            # Pré-check séquentiel (informatif, jamais bloquant)
+            try:
+                pre = check_python_deps()
+                missing = [d["name"] for d in pre.get("deps", []) if not d.get("installed")]
+                if missing:
+                    log_to_file("PRECHECK", f"deps manquantes: {missing}")
+            except Exception as e:
+                log_to_file("PRECHECK", f"erreur: {e}")
+
+            action = "uninstall_tool" if job_type == "uninstall" else "install_tool"
+            proc = subprocess.Popen([sys.executable, __file__, action, ref_],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _set_job(job_id, "running", pid=proc.pid)
+            sout, serr = proc.communicate()
+            success = proc.returncode == 0
+            log = sout.decode(errors="replace")
+            if not success:
+                log = log + "\n" + serr.decode(errors="replace")
+            final = "removed" if (success and job_type == "uninstall") else ("installed" if success else "failed")
+            _set_job(job_id, final, log=log)
+            log_to_file("WORKER", f"job #{job_id} -> {'ok' if success else 'fail'}")
+        except Exception as e:
+            log_to_file("WORKER", f"error: {e}")
+            time.sleep(1)
+
+
 def sync_catalogue_remote(url=None):
     from sql.db import CatalogueDB
     if not url:
@@ -383,6 +491,10 @@ if __name__ == "__main__":
             result = get_installed_tools()
         elif command == "watch_installed_tools":
             watch_installed_tools()
+        elif command == "watch_system_state":
+            watch_system_state()
+        elif command == "run_installer_service":
+            run_installer_service()
         elif command == "save_system_state":
             result = save_system_state()
         elif command == "sync_catalogue_remote":
