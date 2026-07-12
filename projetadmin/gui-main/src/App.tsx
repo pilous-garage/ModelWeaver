@@ -245,10 +245,11 @@ function App() {
       await Promise.race([
         (async () => {
       // Dépendances : depuis le manifeste (paquet dispo par cible).
-      const manifest = await invoke<{
-        target: string;
-        dependencies: Dependency[];
+      // daemon_post renvoie { ok, route, result: { target, dependencies } }.
+      const resp = await invoke<{
+        result: { target: string; dependencies: Dependency[] };
       }>('check_dependencies_manifest');
+      const manifest = resp.result;
       setOs(manifest.target);
 
       // Requis = safe + light + non-optionnelles ; le reste = optionnelles.
