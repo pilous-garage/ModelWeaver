@@ -1087,7 +1087,9 @@ function App() {
               fontWeight: '500',
             }}
           >
-            {installing ? 'Installing...' : allRequiredInstalled ? 'All dependencies installed' : 'Install Selected'}
+            {installing
+              ? `Installing... (${installProgress.filter(p => p.status === 'success').length}/${installProgress.length})`
+              : allRequiredInstalled ? 'All dependencies installed' : 'Install Selected'}
           </button>
           <button
             onClick={handleQuit}
@@ -1131,7 +1133,9 @@ function App() {
               }}
             >
               <span>
-                {installing ? '⏳ Installation en cours...' : '✓ Installation terminée'}
+                {installing
+                  ? `⏳ Installation... (${installProgress.filter(p => p.status === 'success').length}/${installProgress.length})`
+                  : '✓ Installation terminée'}
                 {' '}({installProgress.filter(p => p.status === 'success').length}/{installProgress.length})
               </span>
               <span style={{ transition: 'transform 0.2s', transform: installPanelOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▾</span>
