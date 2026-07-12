@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+BASE_IMAGE="docker-minimal"
+CONTAINER="docker-test-gui-minimal"
+BOOTSTRAP_BIN="$REPO_ROOT/projetadmin/gui-bootstrap/src-tauri/target/release/modelweaver-bootstrap"
+
+info() { echo -e "\033[1;34m[INFO]\033[0m $*"; }
+err()  { echo -e "\033[0;31m[ERR]\033[0m $*"; exit 1; }
+
+# Clean & Run
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+docker run -d --name "$CONTAINER" -p 5900:5900 -p 6080:6080 -p 8770:8770 "$BASE_IMAGE"
+docker cp "$BOOTSTRAP_BIN" "$CONTAINER:/opt/modelweaver-bootstrap"
+docker exec "$CONTAINER" chmod +x /opt/modelweaver-bootstrap
+info "Lancement bootstrap UI (interactif)..."
+docker exec -d "$CONTAINER" bash -c 'export DISPLAY=:99 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11; /opt/modelweaver-bootstrap > /tmp/bootstrap.log 2>&1'
+echo "Connecte-toi sur http://localhost:6080/vnc.html?autoconnect=true"

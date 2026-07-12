@@ -943,10 +943,10 @@ fn install_dependency(name: String) -> Result<String, String> {
     log_cmd(&format!("install_dependency({})", name));
     let cmd = match name.as_str() {
         "python" | "python3" => {
-            "which apt && apt install -y python3 python3-pip 2>&1 || which brew && brew install python3 2>&1 || echo 'Non supporté'"
+            "apt-get update && apt-get install -y python3 python3-pip 2>&1 || which brew && brew install python3 2>&1 || echo 'Non supporté'"
         }
         "sqlite3" | "sqlite" => {
-            "which apt && apt install -y sqlite3 2>&1 || which brew && brew install sqlite3 2>&1 || echo 'Non supporté'"
+            "apt-get update && apt-get install -y sqlite3 2>&1 || which brew && brew install sqlite3 2>&1 || echo 'Non supporté'"
         }
         _ => return Err(format!("Dépendance inconnue: {}", name)),
     };
