@@ -228,7 +228,7 @@ fn track_process(name: &str, parent_id: Option<u64>, command: &str, args: &[&str
         }
     }
     match cmd.spawn() {
-        Ok(mut child) => {
+        Ok(child) => {
             let pid = child.id();
             let reg_id = proc_register(name, parent_id, Some(pid), &cmdstr, log_path, "running");
             let mut reg = proc_reg().lock().unwrap();
@@ -542,7 +542,7 @@ fn spawn_service_child(entry: &mut ServiceEntry) {
         }
     }
     match cmd.spawn() {
-        Ok(mut child) => {
+        Ok(child) => {
             let pid = child.id();
             entry.child = Some(child);
             entry.info.pid = Some(pid);
@@ -716,7 +716,7 @@ fn find_repo_root() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(p) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
             if p.join("services").is_dir() {
-                return p;
+                return p.to_path_buf();
             }
         }
     }
@@ -1190,8 +1190,8 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Copie gui_helper.py + projetclient depuis le dossier de ressources Tauri vers
-/// ~/.modelweaver afin que le helper Python puisse importer sql.db / modules.* .
+/// Copie gui_helper.py depuis le dossier de ressources Tauri vers
+/// ~/.modelweaver afin que le helper Python puisse importer modules.* .
 fn ensure_bundled_resources(app: &tauri::App) {
     if let Ok(res_dir) = app.path().resource_dir() {
         let home = get_home_dir();
@@ -1201,15 +1201,6 @@ fn ensure_bundled_resources(app: &tauri::App) {
         let src_helper = res_dir.join("gui_helper.py");
         if src_helper.exists() {
             let _ = std::fs::copy(&src_helper, dest.join("gui_helper.py"));
-        }
-
-        let src_pc = res_dir.join("projetclient");
-        let dst_pc = dest.join("projetclient");
-        if src_pc.exists() && !dst_pc.exists() {
-            let _ = copy_dir_recursive(&src_pc, &dst_pc);
-            log_to_file("INIT", &format!("copied projetclient from {}", res_dir.display()));
-        } else if src_pc.exists() {
-            log_to_file("INIT", "projetclient already present, skip copy");
         }
     } else {
         log_to_file("INIT", "resource_dir unavailable, skip bundled resources");

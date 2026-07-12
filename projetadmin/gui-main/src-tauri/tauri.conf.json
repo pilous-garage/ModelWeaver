@@ -21,8 +21,7 @@
     "active": true,
     "targets": ["deb"],
     "resources": {
-      "../gui_helper.py": "gui_helper.py",
-      "../../../projetclient": "projetclient"
+      "../gui_helper.py": "gui_helper.py"
     },
     "icon": [
       "icons/32x32.png",

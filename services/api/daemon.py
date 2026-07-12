@@ -207,6 +207,72 @@ def update_tools_table():
     return {"status": "ok", "updated": count}
 
 
+def op_tools_install_all(_params):
+    """Queue tous les outils du catalogue non encore installés."""
+    from modules.checker.checker import Checker
+    mw_path, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    cur = cat.conn.execute("SELECT ref, name FROM catalogue_tools")
+    all_tools = cur.fetchall()
+    cat.close()
+    mw = ModelWeaverDB(mw_path)
+    installed = {t.get("tool_ref") or t.get("ref") for t in mw.local_tools.list_all()}
+    mw.close()
+    jobs.ensure_install_jobs()
+    queued = []
+    for ref, name in all_tools:
+        if ref not in installed:
+            jid = jobs.enqueue_job(ref, "install")
+            queued.append({"ref": ref, "name": name, "job_id": jid})
+    return {"status": "ok", "queued": len(queued), "tools": queued}
+
+
+def _process_install_jobs():
+    """Process one queued install job (blocking). Called by the background thread."""
+    mw_path, _ = _db_paths()
+    con = ModelWeaverDB(mw_path).conn
+    cur = con.execute(
+        "SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        con.close()
+        return
+    jid, ref, name, job_type = row
+    con.execute("UPDATE install_jobs SET status='running', updated_at=strftime('%s','now') WHERE id=?",
+                (jid,))
+    con.commit()
+    try:
+        if job_type == "install":
+            result = jobs.install_tool(ref)
+        elif job_type == "uninstall":
+            result = jobs.uninstall_tool(ref)
+        else:
+            result = {"status": "error", "error": f"unknown job_type: {job_type}"}
+        status = "installed" if result.get("status") == "ok" else "failed"
+        log = json.dumps(result)
+        con.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?",
+                    (status, log[:500], jid))
+    except Exception as e:
+        con.execute("UPDATE install_jobs SET status='failed', log=?, updated_at=strftime('%s','now') WHERE id=?",
+                    (str(e)[:500], jid))
+    con.commit()
+    con.close()
+
+
+def _job_processor_loop(interval: float = 5.0):
+    """Background thread : consume la queue install_jobs."""
+    import threading
+    def _loop():
+        while True:
+            try:
+                _process_install_jobs()
+            except Exception:
+                pass
+            time.sleep(interval)
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+
 def op_jobs_list(_params):
     jobs.ensure_install_jobs()
     return jobs.list_jobs()
@@ -292,6 +358,7 @@ ROUTES = {
     "tools/installed/list":   _wrap(get_installed_tools),
     "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref")),
     "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref")),
+    "tools/install/all":      lambda p: _quiet(op_tools_install_all, p),
     # E. File de jobs (asynchrone)
     "jobs/add":               op_jobs_add,
     # F. Dépendances (modules/services)
@@ -395,6 +462,9 @@ def serve(port: int = 8770) -> None:
 
     server.token = token
     (mw / "api.port").write_text(str(port))
+
+    # Démarre le processeur de jobs en arrière-plan (consomme install_jobs).
+    _job_processor_loop(interval=3.0)
 
     print(f"✅ ModelWeaver daemon — http://127.0.0.1:{port}  (api {API_VERSION})", file=sys.stderr)
     print(f"   token : {token_file}", file=sys.stderr)

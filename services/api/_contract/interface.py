@@ -35,6 +35,7 @@ EXPOSES = {
     "tools/installed/list": [],
     "tools/install": ["ref"],
     "tools/uninstall": ["ref"],
+    "tools/install/all": [],
     # F. Dépendances (modules/services)
     "deps/check": [],
     # E. File de jobs (asynchrone)

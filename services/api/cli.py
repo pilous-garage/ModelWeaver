@@ -33,6 +33,7 @@ COMMANDS = {
     ("catalogue", "sync"):          ("catalogue/sync", ["url"]),
     ("tools", "installed", "list"): ("tools/installed/list", []),
     ("tools", "install"):           ("tools/install", ["ref"]),
+    ("tools", "install", "all"):    ("tools/install/all", []),
     ("tools", "uninstall"):         ("tools/uninstall", ["ref"]),
     ("jobs", "add"):                ("jobs/add", ["ref", "job_type"]),
     ("jobs", "list"):               ("jobs/list", []),
