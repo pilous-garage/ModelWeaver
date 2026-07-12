@@ -199,7 +199,10 @@ struct UpdateInfo {
     latest_tag: String,
     current_tag: String,
     bootstrap_version: String,
+    // Self-update du bootstrap (bootstrap vs latest) — pilote UPDATE_PROMPT.
     needs_update: bool,
+    // MAJ/installation du main (main installé vs latest).
+    main_needs_update: bool,
     assets: Vec<serde_json::Value>,
 }
 
@@ -240,10 +243,14 @@ async fn check_update() -> Result<UpdateInfo, String> {
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
 
     let latest_tag = json["tag_name"].as_str().unwrap_or("v0.0.0").to_string();
-    // needs_update compare le main installé au latest — gère un nombre
-    // arbitraire de segments (vX.Y.Z.W...), robuste jusqu'à 6+ points.
-    let needs_update = is_newer_tag(&latest_tag, &current_tag);
-    logger("INFO", &format!("check_update: latest={}, current={}, needs_update={}", latest_tag, current_tag, needs_update));
+    // needs_update = SELF-UPDATE du bootstrap (bootstrap vs latest). C'est lui
+    // qui pilote UPDATE_PROMPT (self_update ne met à jour QUE le bootstrap).
+    // Sinon, rien n'installait le main : le bootstrap se self-updatait en
+    // boucle sans jamais poser l'app. Gère un nombre arbitraire de segments.
+    let needs_update = is_newer_tag(&latest_tag, &bootstrap_version);
+    // main_needs_update = le main installé est-il à jour/présent ?
+    let main_needs_update = is_newer_tag(&latest_tag, &current_tag);
+    logger("INFO", &format!("check_update: latest={}, bootstrap={}, installed_main={}, bootstrap_needs_update={}, main_needs_update={}", latest_tag, bootstrap_version, current_tag, needs_update, main_needs_update));
     let assets = json["assets"].as_array().cloned().unwrap_or_default();
 
     Ok(UpdateInfo {
@@ -251,6 +258,7 @@ async fn check_update() -> Result<UpdateInfo, String> {
         current_tag,
         bootstrap_version,
         needs_update,
+        main_needs_update,
         assets,
     })
 }
