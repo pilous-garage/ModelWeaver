@@ -597,7 +597,13 @@ fn start_service_supervisor() {
                     if now_secs().saturating_sub(entry.info.started_at) > 60 {
                         entry.info.restarts = 0;
                     }
-                    if entry.info.restart && entry.info.restarts < 10 {
+                    // Single-instance : si un verrou d'instance est déjà pris
+                    // (processus vivant), on ne (re)spawn pas — un seul service
+                    // de ce type doit tourner.
+                    if instance_lock_taken(&entry.info.name) {
+                        entry.info.status = "stopped".to_string();
+                        log_to_file("SUPERVISOR", &format!("skip restart {} (instance déjà en cours)", entry.info.name));
+                    } else if entry.info.restart && entry.info.restarts < 10 {
                         entry.info.restarts += 1;
                         entry.info.status = "restarting".to_string();
                         log_to_file("SUPERVISOR", &format!("restart {} (attempt {})", entry.info.name, entry.info.restarts));
@@ -693,6 +699,96 @@ fn find_helper_path() -> PathBuf {
         }
     }
     production
+}
+
+/// Racine du dépôt : on remonte depuis l'exécutable jusqu'à trouver `services/`,
+/// repli sur le parent de gui_helper, puis le dossier courant.
+fn find_repo_root() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            if d.join("services").is_dir() {
+                return d.to_path_buf();
+            }
+            dir = d.parent();
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if p.join("services").is_dir() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(".")
+}
+
+/// Chemin de l'entrypoint d'un service : <repo>/services/<name>/service.py
+fn service_entry(repo: &PathBuf, name: &str) -> PathBuf {
+    repo.join("services").join(name).join("service.py")
+}
+
+/// Chemin du verrou d'instance unique : ~/.modelweaver/run/<name>.pid
+fn lock_path(name: &str) -> PathBuf {
+    get_home_dir().join(".modelweaver").join("run").join(format!("{}.pid", name))
+}
+
+/// Vrai si un lock valide (PID vivant) existe déjà pour `name`.
+fn instance_lock_taken(name: &str) -> bool {
+    let p = lock_path(name);
+    if let Ok(s) = std::fs::read_to_string(&p) {
+        if let Ok(pid) = s.trim().parse::<i32>() {
+            if pid > 0 && process_alive(pid) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Acquiert le verrou d'instance unique pour `name`. Retourne false si déjà pris.
+/// Nettoie un éventuel lock périmé (PID mort).
+fn acquire_instance_lock(name: &str) -> bool {
+    let p = lock_path(name);
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if instance_lock_taken(name) {
+        return false;
+    }
+    if p.exists() {
+        let _ = std::fs::remove_file(&p);
+    }
+    if let Ok(mut f) = std::fs::File::create(&p) {
+        let _ = f.write_all(std::process::id().to_string().as_bytes());
+        return true;
+    }
+    false
+}
+
+/// Quitte le processus si un autre superviseur tourne déjà (single-instance).
+fn ensure_single_supervisor() {
+    if instance_lock_taken("supervisor") {
+        eprintln!("ModelWeaver: un superviseur tourne déjà (supervisor.lock). Arrêt.");
+        std::process::exit(2);
+    }
+    if !acquire_instance_lock("supervisor") {
+        eprintln!("ModelWeaver: impossible d'acquérir supervisor.lock. Arrêt.");
+        std::process::exit(2);
+    }
+}
+
+/// Vrai si le PID existe (kill -0, portable Unix).
+fn process_alive(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill").arg("-0").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json::Value, String> {
@@ -1238,6 +1334,9 @@ fn main() {
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
+    // Un seul superviseur à la fois (single-instance, y compris le superviseur).
+    ensure_single_supervisor();
+
     ensure_install_jobs(&db_path);
 
     // Root of the process tree: the main calling process ("modelweaver-main").
@@ -1253,15 +1352,21 @@ fn main() {
     register_thread_service("watch:sys-state");
 
     // Services complexes/distants : enfants Python supervisés (auto-restart).
-    let pc_dir = helper_path.parent().map(|p| p.join("projetclient")).unwrap_or_default();
-    let cat_server = pc_dir.join("sql").join("catalogue_server.py");
+    // Chaque service est un seul processus à la fois (verrou d'instance unique
+    // posé côté Python via services._common.acquire_instance_lock ; le
+    // superviseur vérifie aussi le lock avant de (re)spawn).
+    let repo_root = helper_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| find_repo_root());
+    let cat_entry = service_entry(&repo_root, "catalogue");
     let cat_db = get_home_dir().join(".modelweaver").join("catalogue.remote.db");
     define_service("catalogue", "loop", python_bin(),
-        vec![cat_server.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
+        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
     define_service("installer", "loop", python_bin(),
-        vec![helper_path.display().to_string(), "run_installer_service".to_string()], None, true, false);
+        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false);
     define_service("tester", "loop", python_bin(),
-        vec![helper_path.display().to_string(), "run_tester_service".to_string()], None, true, false);
+        vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false);
+    // Daemon API (backend unique, consommé par toute interface).
+    define_service("api", "loop", python_bin(),
+        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false);
     start_service_supervisor();
     write_services_summary();
 

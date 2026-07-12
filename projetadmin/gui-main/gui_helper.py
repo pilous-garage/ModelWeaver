@@ -1,63 +1,36 @@
 #!/usr/bin/env python3
-"""GUI helper: called by the Tauri Rust backend for DB init, pip checks, and installs."""
-import sys, json, os, subprocess
+"""Compat shim Tauri -> services/modules.
+
+Le métier a été décomposé dans services/* et modules/*. Ce fichier ne fait plus
+que déléguer les commandes historiques (invoke Tauri) vers les bons modules, afin
+de ne pas casser les handlers Rust existants. Les nouvelles interfaces passent
+par le daemon API (services/api), et le superviseur lance services/*/service.py.
+"""
+import sys
+import os
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Production (bundle/dist) : gui_helper.py est déployé avec modules/, services/, sql/
-# dans le même dossier racine. Développement : helper dans projetadmin/gui-main/.
-# On détecte le mode via la présence de `modules/` (exclusivement à la racine du repo).
-if os.path.isdir(os.path.join(HELPER_DIR, "modules")):
-    REPO_ROOT = HELPER_DIR
-else:
-    REPO_ROOT = os.path.dirname(os.path.dirname(HELPER_DIR))
-
-# La racine du repo (modules/, services/, sql/, hardcheck/) est sur sys.path.
+REPO_ROOT = os.path.dirname(os.path.dirname(HELPER_DIR))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# RecipeParser.join("install_recipe") -> modules/installer (migré à la racine)
-RECIPE_BASE = os.path.join(REPO_ROOT, "modules", "installer")
-
-
-def _db_paths() -> tuple[Path, Path]:
-    """Chemins DB stables sous ~/.modelweaver (indépendants du CWD)."""
-    home = Path.home()
-    mw_dir = home / ".modelweaver"
-    mw_dir.mkdir(parents=True, exist_ok=True)
-    return mw_dir / "modelweaver.db", mw_dir / "catalogue.db"
-
-
-import contextlib
-import io
-
-@contextlib.contextmanager
-def _quiet_stdout():
-    """Redirige stdout vers stderr le temps d'un appel qui print (sync/install)."""
-    old = sys.stdout
-    sys.stdout = sys.stderr
-    try:
-        yield
-    finally:
-        sys.stdout = old
+from services._common import _db_paths, _quiet_stdout, log_to_file
+from services.installer_worker import jobs
+from services.watch_sysstate import service as sysstate
+from modules.sql.db import ModelWeaverDB, CatalogueDB
+from modules.checker.checker import Checker
 
 
 def init_databases():
-    from modules.sql.db import ModelWeaverDB, CatalogueDB
     mw_path, cat_path = _db_paths()
-    mw = ModelWeaverDB(mw_path)
-    mw._ensure_schema()
-    mw.commit()
-    cat = CatalogueDB(cat_path)
-    cat._ensure_schema()
-    cat.conn.commit()
+    mw = ModelWeaverDB(mw_path); mw._ensure_schema(); mw.commit()
+    cat = CatalogueDB(cat_path); cat._ensure_schema(); cat.conn.commit()
     return {"status": "ok", "mw_db": str(mw.db_path), "cat_db": str(cat.db_path)}
 
 
 def check_databases():
-    from modules.sql.db import ModelWeaverDB, CatalogueDB, _default_local_db, _default_catalogue_db
     mw_path, cat_path = _db_paths()
     result = {
         "modelweaver_db": {"path": str(mw_path), "exists": mw_path.exists()},
@@ -66,16 +39,15 @@ def check_databases():
     if result["modelweaver_db"]["exists"]:
         try:
             mw = ModelWeaverDB(mw_path)
-            count = mw.tools.list_all()
-            result["modelweaver_db"]["tool_count"] = len(count)
+            result["modelweaver_db"]["tool_count"] = len(mw.tools.list_all())
             mw.close()
         except Exception as e:
             result["modelweaver_db"]["error"] = str(e)
     if result["catalogue_db"]["exists"]:
         try:
             cat = CatalogueDB(cat_path)
-            cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_providers")
-            result["catalogue_db"]["provider_count"] = cur.fetchone()[0]
+            result["catalogue_db"]["provider_count"] = cat.conn.execute(
+                "SELECT COUNT(*) FROM catalogue_providers").fetchone()[0]
             cat.close()
         except Exception as e:
             result["catalogue_db"]["error"] = str(e)
@@ -83,7 +55,7 @@ def check_databases():
 
 
 def check_python_deps():
-    import subprocess, sys, json as _json
+    import subprocess, json as _json
     required = [
         {"name": "litellm", "module": "litellm", "type": "pip"},
         {"name": "open-webui", "module": "open_webui", "type": "pip"},
@@ -94,109 +66,58 @@ def check_python_deps():
     ]
     try:
         r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],
-                            capture_output=True, text=True, timeout=15)
-        if r.returncode == 0:
-            installed = {p["name"].lower().replace("-", "_"): p["version"] for p in _json.loads(r.stdout)}
-        else:
-            installed = {}
+                           capture_output=True, text=True, timeout=15)
+        installed = {p["name"].lower().replace("-", "_"): p["version"]
+                     for p in _json.loads(r.stdout)} if r.returncode == 0 else {}
     except Exception:
         installed = {}
-
     for dep in required:
-        key = dep["module"].lower().replace("-", "_")
-        dep["installed"] = key in installed
-        dep["version"] = installed.get(key)
-        dep["min_version"] = {"litellm": "1.0", "open-webui": "0.1", "keyring": "23.0",
-                              "cryptography": "35.0", "requests": "2.0", "psutil": "5.0"}.get(dep["name"])
+        dep["installed"] = dep["module"].lower().replace("-", "_") in installed
+        dep["version"] = installed.get(dep["module"].lower().replace("-", "_"))
     return {"deps": required}
 
 
 def install_pip(package_name):
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", package_name, "--break-system-packages"],
-        capture_output=True, text=True, timeout=120
-    )
+        capture_output=True, text=True, timeout=120)
     if result.returncode == 0:
-        from modules.sql.db import ModelWeaverDB
-        mw = ModelWeaverDB(_db_paths()[0])
-        mw.scan_installed_tools()
-        mw.close()
+        mw = ModelWeaverDB(_db_paths()[0]); mw.scan_installed_tools(); mw.close()
         return {"status": "ok", "log": result.stdout}
-    else:
-        return {"status": "error", "log": result.stderr}
+    return {"status": "error", "log": result.stderr}
 
 
 def update_tools_table():
-    from modules.sql.db import ModelWeaverDB
-    mw = ModelWeaverDB(_db_paths()[0])
-    count = mw.scan_installed_tools()
-    mw.close()
-    return {"status": "ok", "updated": count}
-
-
-# ── Logithèque ──
-
-def _ensure_psutil():
-    try:
-        import psutil  # noqa: F401
-        return True
-    except Exception:
-        try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "psutil",
-                             "--break-system-packages"], capture_output=True, text=True, timeout=120)
-            import psutil  # noqa: F401
-            return True
-        except Exception:
-            return False
+    mw = ModelWeaverDB(_db_paths()[0]); c = mw.scan_installed_tools(); mw.close()
+    return {"status": "ok", "updated": c}
 
 
 def get_system_state():
-    from modules.checker.checker import Checker
-    checker = Checker()
-    info = checker.get_system_info()
-    managers = checker.get_detected_managers()
-    state = {
-        "os": info.get("os"),
-        "os_version": info.get("os_version"),
-        "architecture": info.get("architecture"),
-        "processor": info.get("processor"),
-        "detected_managers": managers,
-    }
-    if _ensure_psutil():
-        hw = checker.get_hardware_info()
-        state.update(hw)
-    else:
-        state.update({
-            "ram_total_gb": None, "ram_available_gb": None,
-            "disk_total_gb": None, "disk_free_gb": None,
-        })
-    return state
+    return sysstate.get_system_state()
 
 
 def seed_catalogue():
-    from modules.sql.db import CatalogueDB
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
-    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
-    if cur.fetchone()[0] > 0:
-        cat.close()
-        return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] > 0:
+        cat.close(); return {"status": "ok", "seeded": False, "note": "déjà peuplé"}
     data_path = os.path.join(REPO_ROOT, "modules", "catalogue", "data", "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
-    count = cat.sync_tools(rows)
-    cat.conn.commit()
-    cat.close()
+    count = cat.sync_tools(rows); cat.conn.commit(); cat.close()
     return {"status": "ok", "seeded": True, "count": count}
 
 
 def get_catalogue_tools():
-    from modules.sql.db import CatalogueDB
+    return _catalogue_tools()
+
+
+def _catalogue_tools():
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
     cur = cat.conn.execute(
-        "SELECT ref, name, description, tool_type, install_method, current_version, allowed_platforms, allowed_arches "
-        "FROM catalogue_tools ORDER BY name")
+        "SELECT ref, name, description, tool_type, install_method, current_version, "
+        "allowed_platforms, allowed_arches FROM catalogue_tools ORDER BY name")
     cols = [d[0] for d in cur.description]
     tools = [dict(zip(cols, row)) for row in cur.fetchall()]
     cat.close()
@@ -204,279 +125,28 @@ def get_catalogue_tools():
 
 
 def get_installed_tools():
-    from modules.sql.db import ModelWeaverDB
     mw_path, _ = _db_paths()
     mw = ModelWeaverDB(mw_path)
     rows = mw.local_tools.list_all()
-    out = []
-    for r in rows:
-        out.append({
-            "ref": r.get("tool_ref") or r.get("ref"),
-            "name": r.get("tool_name") or r.get("name"),
-            "version": r.get("version"),
-            "status": r.get("status"),
-            "install_path": r.get("install_path"),
-        })
+    out = [{"ref": r.get("tool_ref") or r.get("ref"), "name": r.get("tool_name") or r.get("name"),
+            "version": r.get("version"), "status": r.get("status"),
+            "install_path": r.get("install_path")} for r in rows]
     mw.close()
     return {"tools": out, "count": len(out)}
 
 
-def watch_installed_tools(interval: float = 2.0):
-    """Service loop: scan les outils installés en boucle et écrit un JSON par
-    ligne sur stdout (une seule ligne = un état). Le superviseur lit stdout
-    et met en cache. Un seul processus, en pause (sleep) entre deux scans."""
-    import time
-    from modules.sql.db import ModelWeaverDB
-    mw_path, _ = _db_paths()
-    while True:
-        try:
-            mw = ModelWeaverDB(mw_path)
-            rows = mw.local_tools.list_all()
-            out = [{
-                "ref": r.get("tool_ref") or r.get("ref"),
-                "name": r.get("tool_name") or r.get("name"),
-                "version": r.get("version"),
-                "status": r.get("status"),
-                "install_path": r.get("install_path"),
-            } for r in rows]
-            mw.close()
-            print(json.dumps({"tools": out, "count": len(out)}), flush=True)
-        except Exception as e:
-            print(json.dumps({"error": str(e)}), flush=True)
-        time.sleep(interval)
-
-
 def save_system_state():
-    from modules.sql.db import ModelWeaverDB
-    from modules.checker.checker import Checker
     mw_path, _ = _db_paths()
-    mw = ModelWeaverDB(mw_path)
-    Checker().update_local_db(mw)
-    mw.commit()
-    mw.close()
+    mw = ModelWeaverDB(mw_path); Checker().update_local_db(mw); mw.commit(); mw.close()
     return {"status": "ok"}
 
 
-def watch_system_state(interval: float = 2.0):
-    """Service loop: met à jour system_state puis écrit l'état courant en JSON
-    sur stdout (une ligne = un état). Un seul processus, en pause entre scans."""
-    import time
-    while True:
-        try:
-            save_system_state()
-            state = get_system_state()
-            print(json.dumps(state), flush=True)
-        except Exception as e:
-            print(json.dumps({"error": str(e)}), flush=True)
-        time.sleep(interval)
-
-
-def log_to_file(level, message):
-    try:
-        from datetime import datetime
-        log_dir = _db_paths()[0].parent / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with open(log_dir / "installer.log", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat()} [{level}] {message}\n")
-    except Exception:
-        pass
-
-
-def ensure_install_jobs():
-    import sqlite3
-    mw_path, _ = _db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    con.execute("""CREATE TABLE IF NOT EXISTS install_jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ref TEXT NOT NULL,
-        name TEXT,
-        job_type TEXT,
-        status TEXT,
-        log TEXT,
-        pid INTEGER,
-        created_at INTEGER,
-        updated_at INTEGER DEFAULT (strftime('%s','now'))
-    );""")
-    con.commit()
-    con.close()
-
-
-def _set_job(job_id, status, log=None, pid=None):
-    import sqlite3
-    mw_path, _ = _db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    if pid is not None:
-        con.execute("UPDATE install_jobs SET status=?, log=?, pid=?, updated_at=strftime('%s','now') WHERE id=?", (status, log, pid, job_id))
-    elif log is not None:
-        con.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?", (status, log, job_id))
-    else:
-        con.execute("UPDATE install_jobs SET status=?, updated_at=strftime('%s','now') WHERE id=?", (status, job_id))
-    con.commit()
-    con.close()
-
-
-def run_installer_service():
-    """Worker Python (supervisé par Rust) : consomme la table install_jobs et
-    exécute install_tool/uninstall_tool (recettes). Un seul processus, en pause
-    entre deux jobs."""
-    import time, sqlite3
-    log_to_file("WORKER", "installer service started")
-    ensure_install_jobs()
-    while True:
-        try:
-            mw_path, _ = _db_paths()
-            con = sqlite3.connect(mw_path)
-            con.row_factory = sqlite3.Row
-            cur = con.execute("SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
-            row = cur.fetchone()
-            con.close()
-            if not row:
-                time.sleep(0.5)
-                continue
-            job_id, ref_, name, job_type = row["id"], row["ref"], row["name"], row["job_type"]
-            _set_job(job_id, "running")
-            log_to_file("WORKER", f"processing job #{job_id} {ref_} ({job_type})")
-
-            # Pré-check séquentiel (informatif, jamais bloquant)
-            try:
-                pre = check_python_deps()
-                missing = [d["name"] for d in pre.get("deps", []) if not d.get("installed")]
-                if missing:
-                    log_to_file("PRECHECK", f"deps manquantes: {missing}")
-            except Exception as e:
-                log_to_file("PRECHECK", f"erreur: {e}")
-
-            action = "uninstall_tool" if job_type == "uninstall" else "install_tool"
-            proc = subprocess.Popen([sys.executable, __file__, action, ref_],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            _set_job(job_id, "running", pid=proc.pid)
-            sout, serr = proc.communicate()
-            success = proc.returncode == 0
-            log = sout.decode(errors="replace")
-            if not success:
-                log = log + "\n" + serr.decode(errors="replace")
-            final = "removed" if (success and job_type == "uninstall") else ("installed" if success else "failed")
-            _set_job(job_id, final, log=log)
-            log_to_file("WORKER", f"job #{job_id} -> {'ok' if success else 'fail'}")
-        except Exception as e:
-            log_to_file("WORKER", f"error: {e}")
-            time.sleep(1)
-
-
-def _enqueue_job(ref, job_type):
-    """Enfile un job dans install_jobs (idempotent: skip si déjà actif pour ce ref).
-    Retourne l'id du job créé, ou 0 si doublon."""
-    import sqlite3
-    mw_path, _ = _db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    cur = con.execute(
-        "SELECT COUNT(*) FROM install_jobs WHERE ref=? AND status IN ('queued','running')", (ref,))
-    if cur.fetchone()[0] > 0:
-        con.close()
-        return 0
-    con.execute(
-        "INSERT INTO install_jobs (ref,name,job_type,status,created_at,updated_at) "
-        "VALUES (?,?,?,?,strftime('%s','now'),strftime('%s','now'))",
-        (ref, ref, job_type, "queued"))
-    jid = con.execute("SELECT last_insert_rowid()").fetchone()[0]
-    con.commit()
-    con.close()
-    return jid
-
-
-def _job_status(jid):
-    import sqlite3
-    mw_path, _ = _db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    cur = con.execute("SELECT status, log FROM install_jobs WHERE id=?", (jid,))
-    row = cur.fetchone()
-    con.close()
-    return (row[0] if row else None, row[1] if row else "")
-
-
-def run_tester_service(script_path=None):
-    """Service testeur (supervisé par Rust) : lit un fichier script (.txt) listant
-    des actions (install <ref> / uninstall <ref>) et les enfile dans install_jobs.
-    Le worker installer (run_installer_service) consomme la file séquentiellement.
-    Rapport écrit dans ~/.modelweaver/tests/test-report.txt puis le script est
-    archivé en .done.txt pour éviter les rejeux."""
-    import time
-    from pathlib import Path
-    log_to_file("TESTER", "tester service started")
-    tests_dir = _db_paths()[0].parent / "tests"
-    tests_dir.mkdir(parents=True, exist_ok=True)
-    script = Path(script_path) if script_path else (tests_dir / "test-script.txt")
-    while True:
-        try:
-            if script.exists():
-                log_to_file("TESTER", f"script found: {script}")
-                actions = []
-                for ln in script.read_text().splitlines():
-                    s = ln.strip()
-                    if not s or s.startswith("#"):
-                        continue
-                    parts = s.split()
-                    cmd = parts[0].lower()
-                    if cmd in ("install", "uninstall", "remove") and len(parts) >= 2:
-                        ref = parts[1]
-                        jt = "uninstall" if cmd in ("uninstall", "remove") else "install"
-                        actions.append((jt, ref))
-                log_to_file("TESTER", f"{len(actions)} actions parsed")
-                report = [
-                    "=== ModelWeaver — Test Report ===",
-                    f"script : {script}",
-                    f"date   : {time.strftime('%Y-%m-%d %H:%M:%S')}",
-                    "",
-                ]
-                # Traitement SÉQUENTIEL : une action à la fois (attendre la fin
-                # avant d'enfiler la suivante) pour gérer install→uninstall d'un même ref.
-                for jt, ref in actions:
-                    jid = _enqueue_job(ref, jt)
-                    if not jid:
-                        report.append(f"[SKIP ] {jt} {ref} (déjà actif)")
-                        log_to_file("TESTER", f"skip {jt} {ref}")
-                        continue
-                    report.append(f"[QUEUE] {jt} {ref} -> job #{jid}")
-                    log_to_file("TESTER", f"queued {jt} {ref} -> {jid}")
-                    waited = 0
-                    final = None
-                    while waited < 900:
-                        time.sleep(3)
-                        waited += 3
-                        st, _ = _job_status(jid)
-                        if st in (None, "installed", "removed", "failed", "cancelled"):
-                            final = st
-                            break
-                    report.append(f"[DONE ] {jt} {ref} -> {final}")
-                    log_to_file("TESTER", f"done {jt} {ref} -> {final}")
-                # Archiver le script
-                try:
-                    done = script.with_name(script.stem + ".done" + script.suffix)
-                    script.rename(done)
-                    report.append(f"\nscript archivé: {done}")
-                except Exception as e:
-                    report.append(f"\n(archivage échoué: {e})")
-                report_path = tests_dir / "test-report.txt"
-                report_path.write_text("\n".join(report) + "\n")
-                log_to_file("TESTER", f"report written: {report_path}")
-        except Exception as e:
-            log_to_file("TESTER", f"error: {e}")
-        time.sleep(3)
-
-
 def sync_catalogue_remote(url=None):
-    from modules.sql.db import CatalogueDB
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
-    # S'assurer qu'un catalogue de base existe (offline)
-    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
-    if cur.fetchone()[0] == 0:
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] == 0:
         with _quiet_stdout():
             seed_catalogue()
     with _quiet_stdout():
@@ -486,93 +156,36 @@ def sync_catalogue_remote(url=None):
 
 
 def install_tool(ref):
-    from modules.sql.db import CatalogueDB, ModelWeaverDB
-    from modules.installer.installer import Installer
-
-    _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
-    cur = cat.conn.execute(
-        "SELECT ref, name, description, tool_type, install_method, current_version, "
-        "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-        (ref,))
-    row = cur.fetchone()
-    cat.close()
-    if not row:
-        return {"status": "error", "log": f"Outil inconnu: {ref}"}
-    cols = ["ref", "name", "description", "tool_type", "install_method", "current_version",
-            "default_download_url", "allowed_platforms", "allowed_arches"]
-    tool = dict(zip(cols, row))
-
-    log_path = os.path.join(HELPER_DIR, f"install_{ref}.log")
-    log_lines = []
-    def progress(pct, msg):
-        line = f"[{pct}%] {msg}"
-        log_lines.append(line)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-
-    installer = Installer(project_root=RECIPE_BASE)
-    with _quiet_stdout():
-        ok = installer.install(tool, progress_callback=progress)
-    if ok:
-        mw = ModelWeaverDB(_db_paths()[0])
-        mw.scan_installed_tools()
-        mw.close()
-    return {
-        "status": "ok" if ok else "error",
-        "ref": ref,
-        "log": "\n".join(log_lines),
-    }
+    return jobs.install_tool(ref)
 
 
 def uninstall_tool(ref):
-    from modules.sql.db import CatalogueDB, ModelWeaverDB
-    from modules.installer.installer import Installer
+    return jobs.uninstall_tool(ref)
 
-    _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
-    cur = cat.conn.execute(
-        "SELECT ref, name, description, tool_type, install_method, current_version, "
-        "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-        (ref,))
-    row = cur.fetchone()
-    cat.close()
-    if not row:
-        return {"status": "error", "log": f"Outil inconnu: {ref}"}
-    cols = ["ref", "name", "description", "tool_type", "install_method", "current_version",
-            "default_download_url", "allowed_platforms", "allowed_arches"]
-    tool = dict(zip(cols, row))
 
-    log_path = os.path.join(HELPER_DIR, f"uninstall_{ref}.log")
-    log_lines = []
-    def progress(pct, msg):
-        line = f"[{pct}%] {msg}"
-        log_lines.append(line)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+def run_installer_service():
+    from services.installer_worker.service import run_installer_service as _run
+    _run()
 
-    installer = Installer(project_root=RECIPE_BASE)
-    with _quiet_stdout():
-        ok = installer.uninstall(tool, progress_callback=progress)
-    if ok:
-        mw = ModelWeaverDB(_db_paths()[0])
-        mw.conn.execute(
-            "DELETE FROM local_tools WHERE tool_id = (SELECT id FROM tool_definitions WHERE ref = ?)",
-            (ref,))
-        mw.commit()
-        mw.scan_installed_tools()
-        mw.close()
-    return {
-        "status": "ok" if ok else "error",
-        "ref": ref,
-        "log": "\n".join(log_lines),
-    }
+
+def run_tester_service(script_path=None):
+    from services.tester.service import run_tester_service as _run
+    _run(script_path)
+
+
+def watch_installed_tools(interval=2.0):
+    from services.watch_installed.service import watch_installed_tools as _run
+    _run(interval)
+
+
+def watch_system_state(interval=2.0):
+    from services.watch_sysstate.service import watch_system_state as _run
+    _run(interval)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No command"}))
-        sys.exit(1)
+        print(json.dumps({"error": "No command"})); sys.exit(1)
     command = sys.argv[1]
     try:
         if command == "init_databases":
@@ -594,28 +207,25 @@ if __name__ == "__main__":
         elif command == "get_installed_tools":
             result = get_installed_tools()
         elif command == "watch_installed_tools":
-            watch_installed_tools()
+            watch_installed_tools(); sys.exit(0)
         elif command == "watch_system_state":
-            watch_system_state()
+            watch_system_state(); sys.exit(0)
         elif command == "run_installer_service":
-            run_installer_service()
+            run_installer_service(); sys.exit(0)
         elif command == "run_tester_service":
-            run_tester_service()
+            run_tester_service(); sys.exit(0)
         elif command == "save_system_state":
             result = save_system_state()
         elif command == "sync_catalogue_remote":
             result = sync_catalogue_remote(sys.argv[2] if len(sys.argv) > 2 else None)
         elif command == "install_tool" and len(sys.argv) > 2:
-            result = install_tool(sys.argv[2])
-            print(json.dumps(result))
+            result = install_tool(sys.argv[2]); print(json.dumps(result))
             sys.exit(0 if result.get("status") == "ok" else 1)
         elif command == "uninstall_tool" and len(sys.argv) > 2:
-            result = uninstall_tool(sys.argv[2])
-            print(json.dumps(result))
+            result = uninstall_tool(sys.argv[2]); print(json.dumps(result))
             sys.exit(0 if result.get("status") == "ok" else 1)
         else:
             result = {"error": f"Unknown command: {command}"}
         print(json.dumps(result))
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
-        sys.exit(1)
+        print(json.dumps({"error": str(e)})); sys.exit(1)

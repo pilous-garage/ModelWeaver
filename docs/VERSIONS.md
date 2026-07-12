@@ -100,6 +100,20 @@ Intégration Docker :
 - Bump version 0.5.18.
 
 ### V0.5.19 — Réorganisation workspace + data-layer en module ✅
+
+### V0.5.20 — Décomposition gui_helper + superviseur single-instance ✅
+- Décomposition du monolithe `gui_helper` : logique métier extraite dans `services/*`
+  (installer_worker : file install_jobs + install/uninstall ; tester ; watch_installed ;
+  watch_sysstate ; catalogue) et `modules/*` (catalogue, checker, sql).
+- `services/_common.py` : `_db_paths`, `_quiet_stdout`, `log_to_file`, `acquire_instance_lock`
+  (single-instance par service via lockfile `~/.modelweaver/run/<name>.pid`).
+- Daemon API (`services/api/daemon.py`) ne dépend plus de `gui_helper` : consomme
+  directement `modules.*` + `services.installer_worker.jobs`.
+- `gui_helper.py` réduit à un shim fin (compat Tauri) déléguant aux modules/services.
+- Superviseur Rust : `define_service` repointés sur `services/*/service.py` + daemon API
+  (`serve`); **anti-double-instance** : un seul processus par service (et le superviseur
+  lui-même) via verrous `kill -0`. Bump 0.5.20.
+
 - Réorganisation racine : `docs/` (docs suivies), `docker/`, `autoanalyse/`, `oldcode/` (gitignorés, archives).
 - Retrait de `projetclient/` : pont `sys.path` démonté (`gui_helper`, `hardcheck`), `legal/TOS.md` → `projetadmin/legal`, reste archivé.
 - `sql/` promu module normal : `modules/sql/` (imports `modules.sql.*`), contrats mis à jour.

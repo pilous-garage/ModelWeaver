@@ -1,5 +1,7 @@
-"""Contrat des DEPENDANCES du service `watch_sysstate`."""
+"""Dépendances du service `watch_sysstate`."""
+from modules.checker.checker import Checker
 
 CONSUMES = {
-    'gui_helper': ['watch_system_state'],
+    "modules.checker.checker": ["Checker"],
+    "services._common": ["acquire_instance_lock"],
 }

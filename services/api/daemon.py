@@ -25,21 +25,21 @@ import time
 import secrets
 import argparse
 import platform
-import sqlite3
 import contextlib
-import io
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# La logique riche vit (pour l'instant) dans projetadmin/gui-main/gui_helper.py.
-# Dépendance déclarée dans _contract/dependencies.py (CONSUMES["gui_helper"]).
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_GUI_MAIN = os.path.join(_REPO_ROOT, "projetadmin", "gui-main")
-sys.path.insert(0, _GUI_MAIN)
-import gui_helper as gh  # noqa: E402
+# Le daemon est le backend unique et indépendant de toute GUI. Il consomme
+# directement les modules (source de vérité) et le service installer_worker
+# (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
+from services.installer_worker import jobs
+from services.watch_sysstate import service as sysstate
+from modules.sql.db import ModelWeaverDB, CatalogueDB
+from modules.checker.checker import Checker
+from services._common import _db_paths, _quiet_stdout, log_to_file
 
 API_VERSION = "v1"
-MW_VERSION = "0.5.17"
+MW_VERSION = "0.5.20"
 
 
 def _mw_dir() -> Path:
@@ -48,8 +48,7 @@ def _mw_dir() -> Path:
     return d
 
 
-# ── Opérations « métier » supplémentaires (jobs list/cancel/clear, system.info) ──
-# La logique lourde vit déjà dans gui_helper ; ici on ne fait qu'exposer.
+# ── Opérations « métier » : implémentées ici en consommant modules/services ──
 
 def op_system_info(_params):
     return {
@@ -61,16 +60,146 @@ def op_system_info(_params):
     }
 
 
+def check_python_deps():
+    """Vérifie les dépendances pip requises (extrait de l'ancien gui_helper)."""
+    import subprocess
+    import json as _json
+    required = [
+        {"name": "litellm", "module": "litellm", "type": "pip"},
+        {"name": "open-webui", "module": "open_webui", "type": "pip"},
+        {"name": "keyring", "module": "keyring", "type": "pip"},
+        {"name": "cryptography", "module": "cryptography", "type": "pip"},
+        {"name": "requests", "module": "requests", "type": "pip"},
+        {"name": "psutil", "module": "psutil", "type": "pip"},
+    ]
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],
+                           capture_output=True, text=True, timeout=15)
+        installed = {p["name"].lower().replace("-", "_"): p["version"]
+                     for p in _json.loads(r.stdout)} if r.returncode == 0 else {}
+    except Exception:
+        installed = {}
+    for dep in required:
+        key = dep["module"].lower().replace("-", "_")
+        dep["installed"] = key in installed
+        dep["version"] = installed.get(key)
+        dep["min_version"] = {"litellm": "1.0", "open-webui": "0.1", "keyring": "23.0",
+                              "cryptography": "35.0", "requests": "2.0", "psutil": "5.0"}.get(dep["name"])
+    return {"deps": required}
+
+
+def init_databases():
+    mw_path, cat_path = _db_paths()
+    mw = ModelWeaverDB(mw_path)
+    mw._ensure_schema()
+    mw.commit()
+    cat = CatalogueDB(cat_path)
+    cat._ensure_schema()
+    cat.conn.commit()
+    return {"status": "ok", "mw_db": str(mw.db_path), "cat_db": str(cat.db_path)}
+
+
+def check_databases():
+    mw_path, cat_path = _db_paths()
+    result = {
+        "modelweaver_db": {"path": str(mw_path), "exists": mw_path.exists()},
+        "catalogue_db": {"path": str(cat_path), "exists": cat_path.exists()},
+    }
+    if result["modelweaver_db"]["exists"]:
+        try:
+            mw = ModelWeaverDB(mw_path)
+            result["modelweaver_db"]["tool_count"] = len(mw.tools.list_all())
+            mw.close()
+        except Exception as e:
+            result["modelweaver_db"]["error"] = str(e)
+    if result["catalogue_db"]["exists"]:
+        try:
+            cat = CatalogueDB(cat_path)
+            cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_providers")
+            result["catalogue_db"]["provider_count"] = cur.fetchone()[0]
+            cat.close()
+        except Exception as e:
+            result["catalogue_db"]["error"] = str(e)
+    return result
+
+
+def seed_catalogue():
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
+    if cur.fetchone()[0] > 0:
+        cat.close()
+        return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
+    data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "modules", "catalogue", "data", "tools.json")
+    with open(data_path) as f:
+        rows = json.load(f)
+    count = cat.sync_tools(rows)
+    cat.conn.commit()
+    cat.close()
+    return {"status": "ok", "seeded": True, "count": count}
+
+
+def get_catalogue_tools():
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    cur = cat.conn.execute(
+        "SELECT ref, name, description, tool_type, install_method, current_version, "
+        "allowed_platforms, allowed_arches FROM catalogue_tools ORDER BY name")
+    cols = [d[0] for d in cur.description]
+    tools = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cat.close()
+    return {"tools": tools, "count": len(tools)}
+
+
+def get_installed_tools():
+    mw_path, _ = _db_paths()
+    mw = ModelWeaverDB(mw_path)
+    rows = mw.local_tools.list_all()
+    out = [{
+        "ref": r.get("tool_ref") or r.get("ref"),
+        "name": r.get("tool_name") or r.get("name"),
+        "version": r.get("version"),
+        "status": r.get("status"),
+        "install_path": r.get("install_path"),
+    } for r in rows]
+    mw.close()
+    return {"tools": out, "count": len(out)}
+
+
+def save_system_state():
+    mw_path, _ = _db_paths()
+    mw = ModelWeaverDB(mw_path)
+    Checker().update_local_db(mw)
+    mw.commit()
+    mw.close()
+    return {"status": "ok"}
+
+
+def sync_catalogue_remote(url=None):
+    if not url:
+        url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] == 0:
+        with _quiet_stdout():
+            seed_catalogue()
+    with _quiet_stdout():
+        results = cat.sync_from_url(url)
+    cat.close()
+    return {"status": "ok", "url": url, "results": results}
+
+
+def update_tools_table():
+    mw_path, _ = _db_paths()
+    mw = ModelWeaverDB(mw_path)
+    count = mw.scan_installed_tools()
+    mw.close()
+    return {"status": "ok", "updated": count}
+
+
 def op_jobs_list(_params):
-    gh.ensure_install_jobs()
-    mw_path, _ = gh._db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    con.row_factory = sqlite3.Row
-    rows = con.execute(
-        "SELECT id,ref,name,job_type,status,log FROM install_jobs ORDER BY id").fetchall()
-    con.close()
-    return {"jobs": [dict(r) for r in rows], "count": len(rows)}
+    return jobs.list_jobs()
 
 
 def op_jobs_add(params):
@@ -78,7 +207,7 @@ def op_jobs_add(params):
     job_type = params.get("job_type", "install")
     if not ref:
         return {"status": "error", "error": "missing 'ref'"}
-    jid = gh._enqueue_job(ref, job_type)
+    jid = jobs.enqueue_job(ref, job_type)
     return {"status": "ok", "job_id": jid, "duplicate": jid == 0}
 
 
@@ -86,7 +215,7 @@ def op_jobs_status(params):
     jid = params.get("id")
     if jid is None:
         return {"status": "error", "error": "missing 'id'"}
-    st, log = gh._job_status(int(jid))
+    st, log = jobs.job_status(int(jid))
     return {"status": "ok", "job_status": st, "log": log}
 
 
@@ -94,36 +223,12 @@ def op_jobs_cancel(params):
     jid = params.get("id")
     if jid is None:
         return {"status": "error", "error": "missing 'id'"}
-    jid = int(jid)
-    mw_path, _ = gh._db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    row = con.execute(
-        "SELECT pid FROM install_jobs WHERE id=? AND status='running'", (jid,)).fetchone()
-    if row and row[0]:
-        try:
-            os.killpg(int(row[0]), 9)
-        except Exception:
-            try:
-                os.kill(int(row[0]), 9)
-            except Exception:
-                pass
-    con.execute(
-        "UPDATE install_jobs SET status='cancelled', updated_at=strftime('%s','now') "
-        "WHERE id=? AND status IN ('queued','running')", (jid,))
-    con.commit()
-    con.close()
+    jobs.cancel_job(int(jid))
     return {"status": "ok"}
 
 
 def op_jobs_clear(_params):
-    mw_path, _ = gh._db_paths()
-    con = sqlite3.connect(mw_path)
-    con.execute("PRAGMA busy_timeout=5000")
-    con.execute(
-        "DELETE FROM install_jobs WHERE status IN ('installed','removed','failed','cancelled')")
-    con.commit()
-    con.close()
+    jobs.clear_jobs()
     return {"status": "ok"}
 
 
@@ -136,13 +241,13 @@ def op_logs_read(_params):
 
 
 def op_logs_write(params):
-    gh.log_to_file(params.get("level", "INFO"), params.get("message", ""))
+    log_to_file(params.get("level", "INFO"), params.get("message", ""))
     return {"status": "ok"}
 
 
 def _wrap(fn):
-    """Adapte une fonction gui_helper sans args en handler(params)->dict, en
-    silencant tout print intempestif vers stderr."""
+    """Adapte une fonction sans args en handler(params)->dict, en silençant
+    tout print intempestif vers stderr."""
     def handler(_params):
         with contextlib.redirect_stdout(sys.stderr):
             return fn()
@@ -153,21 +258,21 @@ def _wrap(fn):
 ROUTES = {
     # A. Système & environnement
     "system/info":            op_system_info,
-    "system/deps/check":      _wrap(gh.check_python_deps),
-    "system/state/get":       _wrap(gh.get_system_state),
-    "system/state/save":      _wrap(gh.save_system_state),
+    "system/deps/check":      _wrap(check_python_deps),
+    "system/state/get":       _wrap(sysstate.get_system_state),
+    "system/state/save":      _wrap(save_system_state),
     # B. Bases
-    "db/init":                _wrap(gh.init_databases),
-    "db/check":               _wrap(gh.check_databases),
+    "db/init":                _wrap(init_databases),
+    "db/check":               _wrap(check_databases),
     # C. Catalogue
-    "catalogue/tools/list":   _wrap(gh.get_catalogue_tools),
-    "catalogue/seed":         _wrap(gh.seed_catalogue),
-    "catalogue/sync":         lambda p: _quiet(gh.sync_catalogue_remote, p.get("url")),
-    "catalogue/tools_table/update": _wrap(gh.update_tools_table),
+    "catalogue/tools/list":   _wrap(get_catalogue_tools),
+    "catalogue/seed":         _wrap(seed_catalogue),
+    "catalogue/sync":         lambda p: _quiet(sync_catalogue_remote, p.get("url")),
+    "catalogue/tools_table/update": _wrap(update_tools_table),
     # D. Outils installés (synchrone)
-    "tools/installed/list":   _wrap(gh.get_installed_tools),
-    "tools/install":          lambda p: _quiet(gh.install_tool, p.get("ref")),
-    "tools/uninstall":        lambda p: _quiet(gh.uninstall_tool, p.get("ref")),
+    "tools/installed/list":   _wrap(get_installed_tools),
+    "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref")),
+    "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref")),
     # E. File de jobs (asynchrone)
     "jobs/add":               op_jobs_add,
     "jobs/list":              op_jobs_list,
@@ -241,10 +346,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
                              "trace": traceback.format_exc()})
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8770)
-    args = parser.parse_args()
+def serve(port: int = 8770) -> None:
+    """Point d'entrée du service `api` (supervisé). Un seul daemon à la fois."""
+    from services._common import acquire_instance_lock
+    if not acquire_instance_lock("api"):
+        print("❌ daemon déjà en cours (lock api)", file=sys.stderr)
+        sys.exit(1)
 
     mw = _mw_dir()
     token = secrets.token_hex(32)
@@ -254,7 +361,6 @@ def main():
 
     # bind avec retry (port occupé au boot)
     server = None
-    port = args.port
     for attempt in range(10):
         try:
             server = HTTPServer(("127.0.0.1", port), MWAPIHandler)
@@ -276,6 +382,13 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("arrêt du daemon", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8770)
+    args = parser.parse_args()
+    serve(args.port)
 
 
 if __name__ == "__main__":

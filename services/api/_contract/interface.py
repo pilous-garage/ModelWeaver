@@ -10,6 +10,9 @@ NAME = "api"
 # Table de routes réellement servie, désignée par "module:attribut".
 ROUTES_SOURCE = "daemon:ROUTES"
 
+# Point d'entrée du service (supervisé). Un seul daemon à la fois (lock api).
+RUNS = "serve"
+
 # Routes exposées -> paramètres attendus ([] si aucun ; params optionnels tolérés).
 EXPOSES = {
     # A. Système & environnement

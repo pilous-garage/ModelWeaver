@@ -1,5 +1,7 @@
-"""Contrat des DEPENDANCES du service `watch_installed`."""
+"""Dépendances du service `watch_installed`."""
+from modules.sql.db import ModelWeaverDB
 
 CONSUMES = {
-    'gui_helper': ['watch_installed_tools'],
+    "modules.sql.db": ["ModelWeaverDB"],
+    "services._common": ["acquire_instance_lock", "_db_paths"],
 }
