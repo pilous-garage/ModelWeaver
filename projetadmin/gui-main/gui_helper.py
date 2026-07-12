@@ -6,19 +6,24 @@ from typing import Any, Dict, List, Optional
 
 HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Production (Docker) : helper + projetclient/ dans le même dossier
+# Production (Docker) : helper + projetclient/ (+ modules/, sql/ migrés) dans le même dossier.
+# Développement : helper dans projetadmin/gui-main/, racine du repo 2 niveaux au-dessus.
 prod_path = os.path.join(HELPER_DIR, "projetclient")
 if os.path.isdir(prod_path):
-    sys.path.insert(0, prod_path)
+    REPO_ROOT = HELPER_DIR
     PROJETCLIENT_DIR = prod_path
 else:
-    # Développement : helper dans projetadmin/gui-main/, projetclient à la racine du repo
-    repo_root = os.path.dirname(os.path.dirname(HELPER_DIR))
-    sys.path.insert(0, os.path.join(repo_root, "projetclient"))
-    PROJETCLIENT_DIR = os.path.join(repo_root, "projetclient")
+    REPO_ROOT = os.path.dirname(os.path.dirname(HELPER_DIR))
+    PROJETCLIENT_DIR = os.path.join(REPO_ROOT, "projetclient")
 
-# RecipeParser.join("install_recipe") -> on vise projetclient/modules/installer
-RECIPE_BASE = os.path.join(PROJETCLIENT_DIR, "modules", "installer")
+# Pont de migration : la racine (nouveaux modules/, sql/) ET projetclient (legacy)
+# sont sur sys.path. `modules` est un namespace package fusionné entre les deux.
+for _p in (PROJETCLIENT_DIR, REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# RecipeParser.join("install_recipe") -> modules/installer (migré à la racine)
+RECIPE_BASE = os.path.join(REPO_ROOT, "modules", "installer")
 
 
 def _db_paths() -> tuple[Path, Path]:
@@ -180,7 +185,7 @@ def seed_catalogue():
     if cur.fetchone()[0] > 0:
         cat.close()
         return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
-    data_path = os.path.join(PROJETCLIENT_DIR, "modules", "catalogue", "data", "tools.json")
+    data_path = os.path.join(REPO_ROOT, "modules", "catalogue", "data", "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
     count = cat.sync_tools(rows)

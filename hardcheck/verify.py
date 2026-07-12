@@ -84,8 +84,10 @@ def check_unit(unit_dir: Path, rep: Report):
     sys.path.insert(0, str(unit_dir))
     try:
         # ── 1. EXPOSES/EXPORTS résolvent ──
-        if kind == "service":
+        if kind == "service" and getattr(iface, "ROUTES_SOURCE", None):
             _check_service_routes(rel, unit_dir, iface, rep)
+        elif kind == "service":
+            _check_service_entrypoint(rel, unit_dir, iface, rep)
         else:
             _check_module_exports(rel, iface, rep)
 
@@ -95,6 +97,21 @@ def check_unit(unit_dir: Path, rep: Report):
     finally:
         if str(unit_dir) in sys.path:
             sys.path.remove(str(unit_dir))
+
+
+def _check_service_entrypoint(rel, unit_dir, iface, rep):
+    """Service runnable (worker/watcher) : vérifie que le fichier entrypoint se
+    charge sans erreur. La fonction lancée (RUNS) est vérifiée via CONSUMES."""
+    entry = getattr(iface, "ENTRYPOINT", "service.py")
+    path = unit_dir / entry
+    if not path.exists():
+        rep.fail(rel, f"entrypoint introuvable: {entry}")
+        return
+    try:
+        _load_py(path, f"_svc_{unit_dir.name}_{path.stem}")
+        rep.ok(rel, f"entrypoint '{entry}' se charge sans erreur")
+    except Exception as e:
+        rep.fail(rel, f"entrypoint '{entry}' échoue à l'import: {e}")
 
 
 def _check_service_routes(rel, unit_dir, iface, rep):
@@ -125,19 +142,22 @@ def _check_service_routes(rel, unit_dir, iface, rep):
 
 def _check_module_exports(rel, iface, rep):
     exports = getattr(iface, "EXPORTS", [])
-    pkg_name = getattr(iface, "NAME", None)
-    try:
-        pkg = importlib.import_module(pkg_name) if pkg_name else None
-    except Exception as e:
-        rep.fail(rel, f"import du package '{pkg_name}' impossible: {e}")
+    target = getattr(iface, "MODULE", None) or getattr(iface, "NAME", None)
+    if not target:
+        rep.fail(rel, "module sans MODULE/NAME dans interface")
         return
-    for sym in exports:
-        if pkg is not None and hasattr(pkg, sym):
-            continue
-        rep.fail(rel, f"export déclaré introuvable: {sym}")
+    try:
+        mod = importlib.import_module(target)
+    except Exception as e:
+        rep.fail(rel, f"import du module '{target}' impossible: {e}")
+        return
+    missing = [sym for sym in exports if not hasattr(mod, sym)]
+    if missing:
+        rep.fail(rel, f"exports déclarés introuvables dans '{target}': {missing}")
+    elif exports:
+        rep.ok(rel, f"{len(exports)} export(s) résolu(s) depuis '{target}'")
     else:
-        if exports:
-            rep.ok(rel, f"{len(exports)} exports résolus")
+        rep.ok(rel, f"module '{target}' importable (aucun export déclaré)")
 
 
 def _collect_alias_usages(unit_dir: Path, source_names):
@@ -169,8 +189,31 @@ def _collect_alias_usages(unit_dir: Path, source_names):
     return used
 
 
+def _project_imports(unit_dir: Path, self_prefix: str):
+    """Tous les imports vers des unités-projet (modules./sql./services.), hors
+    soi-même. Retourne dict module_path -> set(symboles) ('*' si module entier)."""
+    prefixes = ("modules.", "sql.", "services.")
+    found = {}
+    for py in unit_dir.rglob("*.py"):
+        if "_contract" in py.parts:
+            continue
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                if node.module.startswith(prefixes):
+                    found.setdefault(node.module, set()).update(a.name for a in node.names)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.startswith(prefixes):
+                        found.setdefault(a.name, set()).add("*")
+    return {m: s for m, s in found.items()
+            if not (m == self_prefix or m.startswith(self_prefix + "."))}
+
+
 def _check_dependencies(rel, unit_dir, deps, rep):
     consumes = getattr(deps, "CONSUMES", {})
+    declared_keys = set(consumes.keys())
+
     # 2. les symboles déclarés existent dans l'unité source
     for src_name, symbols in consumes.items():
         try:
@@ -182,13 +225,21 @@ def _check_dependencies(rel, unit_dir, deps, rep):
         if missing:
             rep.fail(rel, f"symboles déclarés absents de '{src_name}': {missing}")
         else:
-            rep.ok(rel, f"dépendance '{src_name}': {len(symbols)} symboles vérifiés")
+            rep.ok(rel, f"dépendance '{src_name}': {len(symbols)} symbole(s) vérifié(s)")
 
-    # 3. tout symbole réellement utilisé est déclaré (pas d'usage « sauvage »)
-    used = _collect_alias_usages(unit_dir, set(consumes.keys()))
+    # 3a. tout import vers une unité-projet doit être déclaré dans CONSUMES
+    self_prefix = ".".join(unit_dir.relative_to(REPO_ROOT).parts)
+    proj = _project_imports(unit_dir, self_prefix)
+    wild_mods = [m for m in proj if m not in declared_keys]
+    if wild_mods:
+        rep.fail(rel, f"import projet NON déclaré: {sorted(wild_mods)} (ajouter à CONSUMES)")
+    elif proj:
+        rep.ok(rel, f"imports projet ({len(proj)}) tous déclarés")
+
+    # 3b. pour les sources déclarées : usage réel conforme (pas de symbole sauvage)
+    used = _collect_alias_usages(unit_dir, declared_keys)
     for src_name, used_syms in used.items():
         declared = set(consumes.get(src_name, []))
-        # on ignore les dunders/attributs privés de bas niveau non pertinents
         wild = {s for s in used_syms if not s.startswith("__")} - declared
         if wild:
             rep.fail(rel, f"usage NON déclaré de '{src_name}': {sorted(wild)} "
@@ -202,7 +253,10 @@ def main():
     parser.add_argument("--unit", help="vérifier une seule unité (ex. services/api)")
     args = parser.parse_args()
 
-    sys.path.insert(0, str(REPO_ROOT))
+    # Pont de migration : racine (nouveaux modules/, sql/) + projetclient (legacy).
+    for p in (str(REPO_ROOT / "projetclient"), str(REPO_ROOT)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
 
     units = discover_units()
     if args.unit:

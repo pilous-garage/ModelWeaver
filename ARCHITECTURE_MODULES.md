@@ -88,11 +88,24 @@ Sortie : rapport `PASS/FAIL` par unité + code de sortie non nul si échec.
 
 ## 4. Migration (incrémentale)
 
-1. ✅ Convention + `hardcheck` + **1ʳᵉ unité prouvée** = `services/api/`.
-2. Migrer les modules purs un par un (`checker`, `installer`, `catalogue`…),
-   en consolidant `projetclient/modules/*` vers `modules/*` (même chemin d'import
-   `modules.X` → churn minimal).
-3. Migrer les services (`catalogue`, `installer-worker`, `tester`, watchers) vers
-   `services/*`, pilotés par le superviseur.
-4. Brancher le hard-check en pré-commit + CI.
-5. Générer le SDK TS depuis les `EXPOSES` (contrat multi-langage).
+1. ✅ Convention + `hardcheck` + 1ʳᵉ unité prouvée = `services/api/`.
+2. ✅ **11 modules migrés** `projetclient/modules/*` → `modules/*` avec `_contract/`
+   (catalogue, checker, container_manager, dashboard, installer, key_manager,
+   organiser, plumber, security, test_runner, utils). Pont **namespace package**
+   (racine + `projetclient` sur `sys.path`) → churn d'imports minimal, `modules.X`
+   inchangé.
+3. ✅ **6 services** sous `services/*` avec `_contract/` : `api`, `catalogue`,
+   `installer_worker`, `tester`, `watch_installed`, `watch_sysstate`. Les 5
+   derniers sont des **wrappers runnable** (logique encore dans `gui_helper` /
+   `sql.catalogue_server`, dépendance déclarée) — additifs et non-cassants.
+4. ⏳ **Reste à faire (au prochain build de release, de façon coordonnée)** :
+   - repointer le **superviseur Rust** vers `services/*/service.py` ;
+   - mettre à jour le **bundling Tauri** (`tauri.conf.json`) pour embarquer
+     `modules/` + `sql/` (+ `services/`) en plus de `projetclient/` ;
+   - décomposer `gui_helper.py` : déplacer les corps des fonctions dans les
+     services/modules concernés (retirer les wrappers).
+5. Brancher `hardcheck/verify.py` en **pre-commit + CI**.
+6. Générer le SDK TS depuis les `EXPOSES` (contrat multi-langage).
+
+### Statut hard-check
+`python hardcheck/verify.py` → **17 unités, 54 vérifications, PASS**.
