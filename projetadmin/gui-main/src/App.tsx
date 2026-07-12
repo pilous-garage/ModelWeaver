@@ -5,13 +5,20 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 interface Dependency {
   name: string;
   description: string;
-  check_command: string;
-  version_regex: string;
-  min_version: string;
+  check_command?: string;
+  version_regex?: string;
+  min_version?: string;
   install_commands?: Record<string, string>;
   installed?: boolean;
   version?: string;
   error?: string;
+  // Champs issu du manifeste de dépendances
+  language?: string;
+  safe?: boolean;
+  weight?: string;
+  optional?: boolean;
+  required?: boolean;
+  target_pkg?: string;
 }
 
 interface PackageManager {
@@ -237,75 +244,31 @@ function App() {
       
       await Promise.race([
         (async () => {
-      // Get system info (OS)
-      const systemOs: string = await invoke('get_platform');
-      setOs(systemOs);
-      
-      // Load platform-specific dependencies
-      let dependenciesData;
-      if (systemOs === 'linux') {
-        dependenciesData = await import('./dependencies/dependencies_linux.json');
-      } else {
-        throw new Error(`Unsupported OS: ${systemOs}`);
-      }
-      
-      // Check dependencies using Rust backend
-      const result = await invoke<{
-        [key: string]: {
-          installed?: boolean;
-          version?: string;
-          error?: string;
-        };
-        package_managers?: Record<string, PackageManager>;
-        python_package_managers?: Record<string, PythonPackageManager>;
-      }>('check_dependencies_with_config', { config: dependenciesData });
-      
-      // Update required dependencies
-      const requiredDepsList: Dependency[] = dependenciesData.required.map((dep: any) => ({
-        ...dep,
-        ...result[dep.name],
-      }));
+      // Dépendances : depuis le manifeste (paquet dispo par cible).
+      const manifest = await invoke<{
+        target: string;
+        dependencies: Dependency[];
+      }>('check_dependencies_manifest');
+      setOs(manifest.target);
+
+      // Requis = safe + light + non-optionnelles ; le reste = optionnelles.
+      const requiredDepsList: Dependency[] = manifest.dependencies.filter((d: any) => d.required);
+      const recommendedDepsList: Dependency[] = manifest.dependencies.filter((d: any) => !d.required);
       setRequiredDeps(requiredDepsList);
       requiredDepsRef.current = requiredDepsList;
-      
-      // Update recommended dependencies
-      const recommendedDepsList: Dependency[] = dependenciesData.recommended.map((dep: any) => ({
-        ...dep,
-        ...result[dep.name],
-      }));
       setRecommendedDeps(recommendedDepsList);
       recommendedDepsRef.current = recommendedDepsList;
-      
-      // Initialize selected recommended (all checked by default)
+
+      // Optionnelles pré-cochées = light & safe (ex: git) ; pas les heavy/unsafe
+      // (litellm, docker) qui restent un choix explicite de l'utilisateur.
       const initialSelectedRecommended: Record<string, boolean> = {};
-      dependenciesData.recommended.forEach((dep: any) => {
-        initialSelectedRecommended[dep.name] = true;
+      recommendedDepsList.forEach((dep: any) => {
+        initialSelectedRecommended[dep.name] = !(dep.weight === 'heavy' || dep.safe === false);
       });
       setSelectedRecommended(initialSelectedRecommended);
       selectedRecommendedRef.current = initialSelectedRecommended;
       
-      // Initialize selected package managers (default to first available)
-      const pmAvailable = result.package_managers || {};
-      const initialSelectedPms: Record<string, string> = {};
-      requiredDepsList.concat(recommendedDepsList).forEach(dep => {
-        if (!dep.installed && dep.install_commands) {
-          const availablePms = Object.keys(dep.install_commands).filter(pm => pmAvailable[pm]?.available);
-          if (availablePms.length > 0) {
-            initialSelectedPms[dep.name] = availablePms[0];
-          }
-        }
-      });
-      setSelectedPms(initialSelectedPms);
-      selectedPmsRef.current = initialSelectedPms;
-      
-      if (result.package_managers) {
-        setPackageManagers(result.package_managers);
-      }
-      
-      if (result.python_package_managers) {
-        setPythonPackageManagers(result.python_package_managers);
-      }
-      
+
       // Show dashboard if all required dependencies are installed
       if (requiredDepsList.every(dep => dep.installed)) {
         setShowDashboard(true);
@@ -379,6 +342,9 @@ function App() {
     for (const dep of recs) {
       if (!dep.installed && selRec[dep.name]) plan.push({ dep, required: false });
     }
+    // Si une optionnelle (heavy/unsafe) est cochée -> le script cible installe
+    // aussi les deps optionnelles (--include-optional).
+    const includeOptional = plan.some(p => !p.required);
 
     try {
       addLog(`Installing ${plan.length} dependencies via manifest target script...`);
@@ -386,7 +352,7 @@ function App() {
       for (const { dep } of plan) updateProgress(dep.name, 'installing', 'via target script...');
 
       try {
-        const result = await invoke<string>('install_all_dependencies');
+        const result = await invoke<string>('install_all_dependencies', { include_optional: includeOptional });
         addLog(`  target install: SUCCESS (${result})`);
       } catch (err: any) {
         addLog(`  target install: FAILED - ${err}`);
@@ -957,28 +923,9 @@ function App() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   {dep.installed ? (
-                    <span style={{ color: '#6ee7b7' }}>✓ {dep.version}</span>
+                    <span style={{ color: '#6ee7b7' }}>✓ Installé</span>
                   ) : (
-                    <>
-                      {dep.install_commands && Object.keys(dep.install_commands).length > 0 && (
-                          <select
-                            value={selectedPms[dep.name] || ''}
-                            onChange={(e) => handlePmChange(dep.name, e.target.value)}
-                            style={{ ...selectStyles, padding: '0.25rem 0.5rem' }}
-                          >
-                            {Object.entries(dep.install_commands).map(([pm, _]) => (
-                              packageManagers[pm]?.available && (
-                                <option key={pm} value={pm}>{pm}</option>
-                              )
-                            ))}
-                          </select>
-                      )}
-                      <span style={{ color: dep.install_commands ? '#f59e0b' : '#fca5a5' }}>
-                        {dep.install_commands ? '⚠ To install' : '✗ Missing'}
-                      </span>
-                      {dep.error && dep.install_commands && <span style={{ fontSize: '0.75rem', color: '#f59e0b' }}> (Will be installed)</span>}
-                      {dep.error && !dep.install_commands && <span style={{ fontSize: '0.75rem', color: '#fca5a5' }}> ({dep.error})</span>}
-                    </>
+                    <span style={{ color: '#f59e0b' }} title={dep.target_pkg}>⚠ Sera installé</span>
                   )}
                 </div>
               </div>
@@ -1017,25 +964,9 @@ function App() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     {dep.installed ? (
-                      <span style={{ color: '#6ee7b7' }}>✓ {dep.version}</span>
+                      <span style={{ color: '#6ee7b7' }}>✓ Installé</span>
                     ) : (
-                      <>
-                      {dep.install_commands && Object.keys(dep.install_commands).length > 0 && (
-                          <select
-                            value={selectedPms[dep.name] || ''}
-                            onChange={(e) => handlePmChange(dep.name, e.target.value)}
-                            style={{ ...selectStyles, padding: '0.25rem 0.5rem' }}
-                          >
-                            {Object.entries(dep.install_commands).map(([pm, _]) => (
-                              packageManagers[pm]?.available && (
-                                <option key={pm} value={pm}>{pm}</option>
-                              )
-                            ))}
-                          </select>
-                        )}
-                        <span style={{ color: '#f59e0b' }}>⚠ Optional</span>
-                        {dep.error && <span style={{ fontSize: '0.75rem', color: '#f59e0b' }}> ({dep.error})</span>}
-                      </>
+                      <span style={{ color: '#f59e0b' }} title={dep.target_pkg}>⚠ Optionnel</span>
                     )}
                   </div>
                 </div>
@@ -1043,36 +974,6 @@ function App() {
             </div>
           )}
         </div>
-
-        {/* Package managers */}
-        <div style={{ marginBottom: '1.5rem' }}>
-          <h4 style={{ fontSize: '0.875rem', fontWeight: '600', color: '#94a3b8', marginBottom: '0.75rem' }}>Package Managers Detected</h4>
-          {Object.entries(packageManagers).length > 0 ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-              {Object.entries(packageManagers).map(([pm, data]) => (
-                data.available && (
-                  <div key={pm} style={{ fontSize: '0.75rem', color: '#6ee7b7' }}>✓ {data.description}</div>
-                )
-              ))}
-            </div>
-          ) : (
-            <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>No package managers detected</p>
-          )}
-        </div>
-
-        {/* Python package managers (if Python is installed) */}
-        {Object.values(pythonPackageManagers).some(pm => pm.available) && (
-          <div style={{ marginBottom: '1.5rem' }}>
-            <h4 style={{ fontSize: '0.875rem', fontWeight: '600', color: '#94a3b8', marginBottom: '0.75rem' }}>Python Package Managers</h4>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-              {Object.entries(pythonPackageManagers).map(([pm, data]) => (
-                data.available && (
-                  <div key={pm} style={{ fontSize: '0.75rem', color: '#6ee7b7' }}>✓ {data.description} ({data.version})</div>
-                )
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>

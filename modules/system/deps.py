@@ -76,6 +76,25 @@ def resolve_target_script(target: str) -> Path:
     return script_path
 
 
+def is_dependency_installed(language: str, pkg: str) -> bool:
+    """Vérifie si une dépendance est installée, selon son langage/cible.
+
+    - python : `python3 -m pip show -q <pkg>` (0 = installé)
+    - system (dpkg) : `dpkg-query -W -f=${Status}` contient 'install ok installed'
+    """
+    try:
+        if language == "python":
+            r = subprocess.run([sys.executable, "-m", "pip", "show", "-q", pkg],
+                               capture_output=True)
+            return r.returncode == 0
+        # system (deb/ubuntu par défaut)
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg],
+                           capture_output=True, text=True)
+        return "install ok installed" in r.stdout
+    except Exception:
+        return False
+
+
 def install_target_dependencies(target: str = "", include_optional: bool = False) -> dict:
     """Installe les dépendances requises de la cible via le script compilé.
 

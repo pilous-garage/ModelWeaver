@@ -387,6 +387,43 @@ def op_deps_install_target(params):
     return install_target_dependencies(target=target, include_optional=include_optional)
 
 
+def op_deps_check_manifest(params):
+    """Liste les dépendances du manifeste pour la cible, avec statut installé.
+
+    Utilise le paquet DISPONIBLE pour la cible (targets.<target>) et vérifie
+    selon le langage (system -> dpkg, python -> pip show).
+    """
+    from modules.system import deps as deps_mod
+    target = params.get("target", "") or ""
+    try:
+        if not target:
+            target = deps_mod.detect_target()
+        if not target:
+            return {"status": "error", "error": "cible non détectée"}
+        m = deps_mod.load_manifest()
+        out = []
+        for dep in m.get("dependencies", []):
+            pkg = dep.get("targets", {}).get(target)
+            if not pkg:
+                continue  # pas de paquet disponible pour cette cible
+            installed = deps_mod.is_dependency_installed(dep.get("language", "system"), pkg)
+            required = (not dep.get("optional")) and dep.get("safe") and dep.get("weight") == "light"
+            out.append({
+                "name": dep["name"],
+                "description": dep.get("description", ""),
+                "language": dep.get("language", "system"),
+                "safe": dep.get("safe"),
+                "weight": dep.get("weight"),
+                "optional": dep.get("optional", False),
+                "required": required,
+                "target_pkg": pkg,
+                "installed": installed,
+            })
+        return {"target": target, "dependencies": out}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # ── Key Manager ────────────────────────────────────────────────
 
 def op_keys_set(params):
@@ -536,6 +573,7 @@ ROUTES = {
     "deps/check":             op_deps_check,
     "deps/install":           op_deps_install,
     "deps/install_target":    op_deps_install_target,
+    "deps/check_manifest":    op_deps_check_manifest,
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,

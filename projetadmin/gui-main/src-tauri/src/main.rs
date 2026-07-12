@@ -955,11 +955,13 @@ fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn install_all_dependencies() -> Result<String, String> {
+fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
     // (manifeste + install-dependencies-<target>.sh). Délégation au daemon.
-    log_cmd("install_all_dependencies");
-    let resp = daemon_post("deps/install_target", "{}")?;
+    // include_optional -> installe aussi les deps heavy/unsafe (litellm, docker).
+    log_cmd(&format!("install_all_dependencies(include_optional={})", include_optional));
+    let body = format!("{{\"include_optional\":{}}}", include_optional);
+    let resp = daemon_post("deps/install_target", &body)?;
     match resp.get("status").and_then(|s| s.as_str()) {
         Some("ok") => Ok("dépendances installées".to_string()),
         _ => {
@@ -968,6 +970,13 @@ fn install_all_dependencies() -> Result<String, String> {
             Err(err.to_string())
         }
     }
+}
+
+#[tauri::command]
+fn check_dependencies_manifest() -> Result<serde_json::Value, String> {
+    // Liste les deps du manifeste pour la cible courante (statut installé).
+    log_cmd("check_dependencies_manifest");
+    daemon_post("deps/check_manifest", "{}")
 }
 
 #[tauri::command]
@@ -1480,6 +1489,7 @@ fn main() {
             log_message,
             get_system_info,
             check_dependencies,
+            check_dependencies_manifest,
             install_all_dependencies,
             install_dependency,
             run_python_script,

@@ -11,6 +11,7 @@
   "dependencies": [
     {
       "name": "python3",
+      "description": "Python 3.10+ (runtime core)",
       "language": "system",
       "safe": true,
       "weight": "light",
@@ -19,6 +20,7 @@
     },
     {
       "name": "python3-pip",
+      "description": "pip (gestionnaire de paquets Python)",
       "language": "system",
       "safe": true,
       "weight": "light",
@@ -27,6 +29,7 @@
     },
     {
       "name": "keyring",
+      "description": "Keyring (stockage sécurisé des identifiants)",
       "language": "python",
       "safe": true,
       "weight": "light",
@@ -35,6 +38,7 @@
     },
     {
       "name": "psutil",
+      "description": "psutil (monitoring système, requis par le service catalogue)",
       "language": "python",
       "safe": true,
       "weight": "light",
@@ -43,6 +47,7 @@
     },
     {
       "name": "sqlite3",
+      "description": "SQLite 3.30+ (base de données)",
       "language": "system",
       "safe": true,
       "weight": "light",
@@ -51,6 +56,7 @@
     },
     {
       "name": "git",
+      "description": "Git (gestion de versions)",
       "language": "system",
       "safe": true,
       "weight": "light",
@@ -59,6 +65,7 @@
     },
     {
       "name": "litellm",
+      "description": "litellm (abstraction LLM, lourd)",
       "language": "python",
       "safe": false,
       "weight": "heavy",
@@ -67,6 +74,7 @@
     },
     {
       "name": "docker",
+      "description": "Docker (conteneurisation, lourd)",
       "language": "system",
       "safe": false,
       "weight": "heavy",
