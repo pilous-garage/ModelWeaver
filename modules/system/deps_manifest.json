@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "description": "Manifeste de dépendances ModelWeaver. Source de vérité unique des deps par cible. Les scripts install-dependencies-<target>.sh sont les ARTEFACTS COMPILÉS (générés depuis ce manifeste) — si le script d'une cible est absent, l'install échoue explicitement (fichier *** absent).",
+  "targets": {
+    "ubuntu24": {
+      "os_id": "ubuntu",
+      "os_version": "24.04",
+      "script": "install-dependencies-ubuntu24.sh"
+    }
+  },
+  "dependencies": [
+    {
+      "name": "python3",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "python3" }
+    },
+    {
+      "name": "python3-pip",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "python3-pip" }
+    },
+    {
+      "name": "keyring",
+      "language": "python",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "keyring" }
+    },
+    {
+      "name": "psutil",
+      "language": "python",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "psutil" }
+    },
+    {
+      "name": "sqlite3",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "sqlite3" }
+    },
+    {
+      "name": "git",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": true,
+      "targets": { "ubuntu24": "git" }
+    },
+    {
+      "name": "litellm",
+      "language": "python",
+      "safe": false,
+      "weight": "heavy",
+      "optional": true,
+      "targets": { "ubuntu24": "litellm" }
+    },
+    {
+      "name": "docker",
+      "language": "system",
+      "safe": false,
+      "weight": "heavy",
+      "optional": true,
+      "targets": { "ubuntu24": "docker.io" }
+    }
+  ]
+}

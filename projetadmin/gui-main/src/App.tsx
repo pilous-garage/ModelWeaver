@@ -365,39 +365,41 @@ function App() {
     setInstallPanelOpen(true);
     if (autoInstallTimer) { clearTimeout(autoInstallTimer); setAutoInstallTimer(null); }
     setInstallProgress([]);
-    addLog('=== Starting installation ===');
+    addLog('=== Starting installation (target script) ===');
 
     const reqs = requiredDepsRef.current;
     const recs = recommendedDepsRef.current;
-    const selPms = selectedPmsRef.current;
     const selRec = selectedRecommendedRef.current;
 
+    // Plan d'affichage : deps requises manquantes + recommandées cochées.
     const plan: { dep: Dependency; required: boolean }[] = [];
     for (const dep of reqs) {
-      if (!dep.installed && dep.install_commands) plan.push({ dep, required: true });
-      else if (!dep.installed) addLog(`Skipping ${dep.name} (no install_commands)`);
+      if (!dep.installed) plan.push({ dep, required: true });
     }
     for (const dep of recs) {
-      if (!dep.installed && selRec[dep.name] && dep.install_commands) plan.push({ dep, required: false });
+      if (!dep.installed && selRec[dep.name]) plan.push({ dep, required: false });
     }
 
     try {
-      addLog(`Installing ${plan.length} dependencies...`);
-      for (const { dep, required } of plan) {
-        updateProgress(dep.name, 'installing', 'via daemon...');
-        addLog(`Installing ${dep.name}${required ? '' : ' (recommended)'} via daemon API`);
-        try {
-          const result = await invoke<string>('install_dependency', { name: dep.name });
-          updateProgress(dep.name, 'success', result.trim().substring(0, 200) || 'OK');
-          addLog(`  ${dep.name}: SUCCESS`);
-        } catch (err: any) {
-          updateProgress(dep.name, 'failed', String(err).substring(0, 200));
-          addLog(`  ${dep.name}: FAILED - ${err}`);
-        }
+      addLog(`Installing ${plan.length} dependencies via manifest target script...`);
+      // Marque tout le plan en 'installing' (le script cible installe en une passe).
+      for (const { dep } of plan) updateProgress(dep.name, 'installing', 'via target script...');
+
+      try {
+        const result = await invoke<string>('install_all_dependencies');
+        addLog(`  target install: SUCCESS (${result})`);
+      } catch (err: any) {
+        addLog(`  target install: FAILED - ${err}`);
+        for (const { dep } of plan) updateProgress(dep.name, 'failed', String(err).substring(0, 200));
+        throw err;
       }
 
-      addLog('=== Installation complete, re-checking dependencies ===');
+      // Re-vérifie : les deps requises OK passent en success.
       await checkDependencies();
+      for (const { dep } of plan) {
+        if (dep.installed) updateProgress(dep.name, 'success', 'OK');
+      }
+      addLog('=== Installation complete, re-checking dependencies ===');
     } catch (err) {
       addLog(`Installation error: ${err}`);
       setError(`Failed to install dependencies: ${err}`);

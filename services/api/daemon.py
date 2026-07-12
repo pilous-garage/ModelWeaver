@@ -39,7 +39,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from services._common import mw_home
-from modules.system.deps import install_system_package
+from modules.system.deps import install_system_package, install_target_dependencies
 
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
 # directement les modules (source de vérité) et le service installer_worker
@@ -377,6 +377,16 @@ def op_deps_install(params):
     return install_system_package(package)
 
 
+def op_deps_install_target(params):
+    """Installe les dépendances requises de la cible via le script compilé.
+
+    target vide -> auto-détecté. Script absent -> erreur 'fichier *** absent'.
+    """
+    target = params.get("target", "") or ""
+    include_optional = bool(params.get("include_optional", False))
+    return install_target_dependencies(target=target, include_optional=include_optional)
+
+
 # ── Key Manager ────────────────────────────────────────────────
 
 def op_keys_set(params):
@@ -525,6 +535,7 @@ ROUTES = {
     # F. Dépendances (modules/services)
     "deps/check":             op_deps_check,
     "deps/install":           op_deps_install,
+    "deps/install_target":    op_deps_install_target,
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,

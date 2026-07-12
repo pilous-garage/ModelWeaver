@@ -955,6 +955,22 @@ fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn install_all_dependencies() -> Result<String, String> {
+    // Installe les dépendances requises de la cible via le script compilé
+    // (manifeste + install-dependencies-<target>.sh). Délégation au daemon.
+    log_cmd("install_all_dependencies");
+    let resp = daemon_post("deps/install_target", "{}")?;
+    match resp.get("status").and_then(|s| s.as_str()) {
+        Some("ok") => Ok("dépendances installées".to_string()),
+        _ => {
+            let err = resp.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+            log_to_file("ERROR", &format!("deps install_target failed: {}", err));
+            Err(err.to_string())
+        }
+    }
+}
+
+#[tauri::command]
 fn install_dependency(name: String) -> Result<String, String> {
     log_cmd(&format!("install_dependency({})", name));
     // Délégation au daemon API (backend unique, root en container, sudo/pkexec sinon).
@@ -1464,6 +1480,7 @@ fn main() {
             log_message,
             get_system_info,
             check_dependencies,
+            install_all_dependencies,
             install_dependency,
             run_python_script,
             check_databases,
