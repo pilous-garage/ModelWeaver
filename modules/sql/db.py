@@ -13,7 +13,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from sql.migrations import MigrationManager
+from modules.sql.migrations import MigrationManager
 
 try:
     from dotenv import load_dotenv
@@ -27,7 +27,11 @@ def _ref(prefix: str = "key") -> str:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    # `sql/` est à la racine du repo. Les chemins DB par défaut (appels
+    # ModelWeaverDB()/CatalogueDB() sans argument) pointent sur le répertoire
+    # utilisateur ~/.modelweaver — même emplacement que le flux GUI (gui_helper
+    # passe des chemins explicites sous ~/.modelweaver) et que les vraies bases.
+    return Path.home()
 
 
 def _default_local_db() -> Path:
@@ -810,7 +814,7 @@ class AgentDBMixin:
     """Agent OS repositories (importés séparément pour éviter les dépendances circulaires)."""
 
     def _init_agent_repos(self):
-        from sql.agent_repository import (
+        from modules.sql.agent_repository import (
             AgentRepository, AgentMessageRepository,
             ModelProviderRepository, SessionRepository, WakeupCallRepository,
         )
@@ -825,7 +829,7 @@ class OrchestrationDBMixin:
     """Orchestration repositories (queue, chatroom, todo, watchers)."""
 
     def _init_orchestration_repos(self):
-        from sql.orchestration_repository import (
+        from modules.sql.orchestration_repository import (
             AgentQueueRepository, ChatroomRepository,
             SharedTaskRepository, WatcherRepository, ConnectionRepository,
         )
@@ -882,7 +886,7 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         self.commands = CommandRepository(self.conn)
         self._init_agent_repos()
         self._init_orchestration_repos()
-        from sql.agent_repository import ScheduledJobRepository
+        from modules.sql.agent_repository import ScheduledJobRepository
         self.scheduled_jobs = ScheduledJobRepository(self.conn)
 
     def _ensure_schema(self):

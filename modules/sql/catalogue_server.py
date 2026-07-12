@@ -33,7 +33,7 @@ def _seed_catalogue_db(db_path: Path):
     root = _project_root()
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from sql.db import CatalogueDB
+    from modules.sql.db import CatalogueDB
     cat = CatalogueDB(db_path)  # crée le schéma si absent
     data_path = root / "modules" / "catalogue" / "data" / "tools.json"
     if data_path.exists():

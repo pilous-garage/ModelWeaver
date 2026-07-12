@@ -9,7 +9,7 @@ import os
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "projetclient"))
-from sql.catalogue_server import main
+from modules.sql.catalogue_server import main
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from sql.db import ModelWeaverDB
+from modules.sql.db import ModelWeaverDB
 
 CLASSES = {
     "language":  {"label": "Languages",       "sort_order": 10},

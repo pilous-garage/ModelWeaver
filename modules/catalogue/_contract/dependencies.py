@@ -1,5 +1,5 @@
 """Contrat des DEPENDANCES du module `catalogue`."""
 
 CONSUMES = {
-    'sql.db': ['ModelWeaverDB', 'CatalogueDB'],
+    'modules.sql.db': ['ModelWeaverDB', 'CatalogueDB'],
 }

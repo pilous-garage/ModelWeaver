@@ -1,14 +1,14 @@
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from sql.db import ModelWeaverDB, CatalogueDB
+from modules.sql.db import ModelWeaverDB, CatalogueDB
 from .fetcher import Fetcher
 
 
 class Catalogue:
     """Catalogue des fournisseurs, modèles et outils.
 
-    Utilise sql.db en interne — aucun SQL ni JSON visible ici.
+    Utilise modules.sql.db en interne — aucun SQL ni JSON visible ici.
     """
 
     def __init__(self, db: Optional[ModelWeaverDB] = None):

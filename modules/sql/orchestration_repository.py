@@ -7,7 +7,7 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from sql.agent_repository import _now_iso, _row_to_dict, _rows_to_list
+from modules.sql.agent_repository import _now_iso, _row_to_dict, _rows_to_list
 
 
 class AgentQueueRepository:

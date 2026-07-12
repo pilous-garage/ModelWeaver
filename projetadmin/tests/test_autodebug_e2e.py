@@ -12,7 +12,7 @@ import time
 import threading
 import logging
 import json
-from sql.db import ModelWeaverDB
+from modules.sql.db import ModelWeaverDB
 from agents.ticker import AsyncTicker
 from agents.factory import AgentFactory
 from agents.provisioning import ProvisioningService

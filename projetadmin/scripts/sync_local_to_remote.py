@@ -2,7 +2,7 @@ import os
 import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
-from sql.db import ModelWeaverDB, TursoCatalogueDB
+from modules.sql.db import ModelWeaverDB, TursoCatalogueDB
 
 load_dotenv()
 

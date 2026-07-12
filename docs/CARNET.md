@@ -192,5 +192,11 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 ### Idées V0.2+
 - **gitingest intelligent** : adapter la taille du contexte injecté par modèle (Gemini peut recevoir ~2M chars, Mistral/OpenAI ~400K). Implémenté dans `litellm_router_proxy.py` via `try_deployments` avec troncature par budget. À améliorer : fenêtres préférées configurables par modèle/groupe, priorisation des fichiers les plus pertinents plutôt que simple troncature FIFO.
 - **Plugin OpenCode sudo** : Créer un plugin pour OpenCode permettant de gérer les requêtes `sudo` de manière élégante (demander la préférence de l'utilisateur ou gérer l'authentification via un canal sécurisé) pour éviter les blocages en CLI.
+- **Permissions d'écriture par table (single-writer / RBAC data-layer)** : déclarer, dans un fichier de contrat dédié, *quels* modules/services ont le droit d'écrire dans *quelle* table locale, puis un hard-check statique qui vérifie qu'aucune unité ne sort de son périmètre (« on ne se mélange pas »). Prévoir **4 niveaux de permission** par couple (unité × table) :
+  1. **Lecture seule** — SELECT uniquement.
+  2. **Ajout de ligne** — SELECT + INSERT.
+  3. **Modification limitée** — SELECT + INSERT + UPDATE d'un nombre borné de lignes (système d'autorisation/quota par opération).
+  4. **Écriture complète** — SELECT + INSERT + UPDATE + DELETE sans restriction.
+  Complémentaire de l'idée *single-writer* (un seul rédacteur par table pour éviter la contention). Jugé **trop lourd à mettre en place maintenant** : pour l'instant on s'appuie sur la gestion de concurrence de SQLite (WAL + `busy_timeout`), **tous les modules et services accèdent à toutes les tables locales**. À reconsidérer quand le nombre d'écrivains concurrents ou les besoins d'isolation le justifieront (candidat naturel : un `_contract/data_access.py` par unité + `hardcheck` dédié).
 
 Détail des versions dans `VERSIONS.md`.

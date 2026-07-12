@@ -65,6 +65,11 @@ installed_recipe/
 opencode.json
 tui.json
 
+# Cache de test (généré)
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+
 # Clés API
 .env
 
@@ -77,6 +82,11 @@ gui/
 gemini/
 gemma/
 mistral/
+
+# Rangement workspace : archives / tooling (sur disque, hors git)
+oldcode/
+autoanalyse/
+docker/
 
 # Logs et rapports
 **/tauri_dev.log

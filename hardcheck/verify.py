@@ -67,6 +67,11 @@ def discover_units():
         for unit_dir in sorted(base_dir.iterdir()):
             if (unit_dir / "_contract" / "interface.py").exists():
                 units.append(unit_dir)
+    # Unités foundation à la racine (nom d'import historique préservé, ex. `sql`).
+    for top in ("sql",):
+        unit_dir = REPO_ROOT / top
+        if (unit_dir / "_contract" / "interface.py").exists():
+            units.append(unit_dir)
     return units
 
 
@@ -253,8 +258,8 @@ def main():
     parser.add_argument("--unit", help="vérifier une seule unité (ex. services/api)")
     args = parser.parse_args()
 
-    # Pont de migration : racine (nouveaux modules/, sql/) + projetclient (legacy).
-    for p in (str(REPO_ROOT / "projetclient"), str(REPO_ROOT)):
+    # Pont de migration : racine (nouveaux modules/, sql/).
+    for p in (str(REPO_ROOT),):
         if p not in sys.path:
             sys.path.insert(0, p)
 

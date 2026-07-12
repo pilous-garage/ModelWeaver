@@ -86,6 +86,27 @@ Intégration Docker :
 - `.gitignore` mis à jour (logs, .last-test-*-time)
 - Retrait des scripts obsolètes (get-log-docker-test.sh, Dockerfile.test)
 
+### V0.5.17 — Service testeur E2E ✅
+- Service `tester` : lit `~/.modelweaver/tests/test-script.txt`, exécute install/uninstall/reinstall, génère `test-report.txt`.
+- Résumé de l'interface services (catalogue, installer_worker, tester, watch_installed, watch_sysstate).
+- Bump version 0.5.17.
+
+### V0.5.18 — API locale decouplée ✅
+- Découlpage UI ↔ backend via daemon HTTP/JSON local (127.0.0.1, token `~/.modelweaver/api.token`).
+- `services/api/` : `daemon.py` (20 routes), `client.py` (SDK Python), `cli.py`.
+- `ARCHITECTURE_API.md` : contrat, sécurité, design SDK.
+- Hard-check des contrats (`hardcheck/verify.py`) : routes interface↔impl, déps, frontières AST.
+- Migration de 11 modules + 6 services vers `modules/`/`services/` avec `_contract/`.
+- Bump version 0.5.18.
+
+### V0.5.19 — Réorganisation workspace + data-layer en module ✅
+- Réorganisation racine : `docs/` (docs suivies), `docker/`, `autoanalyse/`, `oldcode/` (gitignorés, archives).
+- Retrait de `projetclient/` : pont `sys.path` démonté (`gui_helper`, `hardcheck`), `legal/TOS.md` → `projetadmin/legal`, reste archivé.
+- `sql/` promu module normal : `modules/sql/` (imports `modules.sql.*`), contrats mis à jour.
+- `~/.modelweaver` comme emplacement unique des DB (no-arg et GUI alignés).
+- `.gitignore` renforcé (`.pytest_cache`, etc.) ; dépôt clône < 3 Mo.
+- Bump version 0.5.19.
+
 ## V0.6 — Framework d'Agent (🔜 Prochaine)
 **Objectif** : Framework pour définir et orchestrer des agents.
 

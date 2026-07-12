@@ -1,12 +1,12 @@
 from typing import Dict, Any, Optional, List
 
-from sql.db import ModelWeaverDB
+from modules.sql.db import ModelWeaverDB
 
 
 class KeyManager:
     """Gestionnaire de clés API.
 
-    Les clés sont stockées via sql.db — aucun fichier JSON manipulé ici.
+    Les clés sont stockées via modules.sql.db — aucun fichier JSON manipulé ici.
     """
 
     def __init__(self, db: Optional[ModelWeaverDB] = None):

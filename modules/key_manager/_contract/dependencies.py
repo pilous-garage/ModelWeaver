@@ -1,5 +1,5 @@
 """Contrat des DEPENDANCES du module `key_manager`."""
 
 CONSUMES = {
-    'sql.db': ['ModelWeaverDB'],
+    'modules.sql.db': ['ModelWeaverDB'],
 }

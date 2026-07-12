@@ -6,21 +6,17 @@ from typing import Any, Dict, List, Optional
 
 HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Production (Docker) : helper + projetclient/ (+ modules/, sql/ migrés) dans le même dossier.
-# Développement : helper dans projetadmin/gui-main/, racine du repo 2 niveaux au-dessus.
-prod_path = os.path.join(HELPER_DIR, "projetclient")
-if os.path.isdir(prod_path):
+# Production (bundle/dist) : gui_helper.py est déployé avec modules/, services/, sql/
+# dans le même dossier racine. Développement : helper dans projetadmin/gui-main/.
+# On détecte le mode via la présence de `modules/` (exclusivement à la racine du repo).
+if os.path.isdir(os.path.join(HELPER_DIR, "modules")):
     REPO_ROOT = HELPER_DIR
-    PROJETCLIENT_DIR = prod_path
 else:
     REPO_ROOT = os.path.dirname(os.path.dirname(HELPER_DIR))
-    PROJETCLIENT_DIR = os.path.join(REPO_ROOT, "projetclient")
 
-# Pont de migration : la racine (nouveaux modules/, sql/) ET projetclient (legacy)
-# sont sur sys.path. `modules` est un namespace package fusionné entre les deux.
-for _p in (PROJETCLIENT_DIR, REPO_ROOT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# La racine du repo (modules/, services/, sql/, hardcheck/) est sur sys.path.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 # RecipeParser.join("install_recipe") -> modules/installer (migré à la racine)
 RECIPE_BASE = os.path.join(REPO_ROOT, "modules", "installer")
@@ -49,7 +45,7 @@ def _quiet_stdout():
 
 
 def init_databases():
-    from sql.db import ModelWeaverDB, CatalogueDB
+    from modules.sql.db import ModelWeaverDB, CatalogueDB
     mw_path, cat_path = _db_paths()
     mw = ModelWeaverDB(mw_path)
     mw._ensure_schema()
@@ -61,7 +57,7 @@ def init_databases():
 
 
 def check_databases():
-    from sql.db import ModelWeaverDB, CatalogueDB, _default_local_db, _default_catalogue_db
+    from modules.sql.db import ModelWeaverDB, CatalogueDB, _default_local_db, _default_catalogue_db
     mw_path, cat_path = _db_paths()
     result = {
         "modelweaver_db": {"path": str(mw_path), "exists": mw_path.exists()},
@@ -121,7 +117,7 @@ def install_pip(package_name):
         capture_output=True, text=True, timeout=120
     )
     if result.returncode == 0:
-        from sql.db import ModelWeaverDB
+        from modules.sql.db import ModelWeaverDB
         mw = ModelWeaverDB(_db_paths()[0])
         mw.scan_installed_tools()
         mw.close()
@@ -131,7 +127,7 @@ def install_pip(package_name):
 
 
 def update_tools_table():
-    from sql.db import ModelWeaverDB
+    from modules.sql.db import ModelWeaverDB
     mw = ModelWeaverDB(_db_paths()[0])
     count = mw.scan_installed_tools()
     mw.close()
@@ -178,7 +174,7 @@ def get_system_state():
 
 
 def seed_catalogue():
-    from sql.db import CatalogueDB
+    from modules.sql.db import CatalogueDB
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
     cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
@@ -195,7 +191,7 @@ def seed_catalogue():
 
 
 def get_catalogue_tools():
-    from sql.db import CatalogueDB
+    from modules.sql.db import CatalogueDB
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
     cur = cat.conn.execute(
@@ -208,7 +204,7 @@ def get_catalogue_tools():
 
 
 def get_installed_tools():
-    from sql.db import ModelWeaverDB
+    from modules.sql.db import ModelWeaverDB
     mw_path, _ = _db_paths()
     mw = ModelWeaverDB(mw_path)
     rows = mw.local_tools.list_all()
@@ -230,7 +226,7 @@ def watch_installed_tools(interval: float = 2.0):
     ligne sur stdout (une seule ligne = un état). Le superviseur lit stdout
     et met en cache. Un seul processus, en pause (sleep) entre deux scans."""
     import time
-    from sql.db import ModelWeaverDB
+    from modules.sql.db import ModelWeaverDB
     mw_path, _ = _db_paths()
     while True:
         try:
@@ -251,7 +247,7 @@ def watch_installed_tools(interval: float = 2.0):
 
 
 def save_system_state():
-    from sql.db import ModelWeaverDB
+    from modules.sql.db import ModelWeaverDB
     from modules.checker.checker import Checker
     mw_path, _ = _db_paths()
     mw = ModelWeaverDB(mw_path)
@@ -473,7 +469,7 @@ def run_tester_service(script_path=None):
 
 
 def sync_catalogue_remote(url=None):
-    from sql.db import CatalogueDB
+    from modules.sql.db import CatalogueDB
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
     _, cat_path = _db_paths()
@@ -490,7 +486,7 @@ def sync_catalogue_remote(url=None):
 
 
 def install_tool(ref):
-    from sql.db import CatalogueDB, ModelWeaverDB
+    from modules.sql.db import CatalogueDB, ModelWeaverDB
     from modules.installer.installer import Installer
 
     _, cat_path = _db_paths()
@@ -530,7 +526,7 @@ def install_tool(ref):
 
 
 def uninstall_tool(ref):
-    from sql.db import CatalogueDB, ModelWeaverDB
+    from modules.sql.db import CatalogueDB, ModelWeaverDB
     from modules.installer.installer import Installer
 
     _, cat_path = _db_paths()
