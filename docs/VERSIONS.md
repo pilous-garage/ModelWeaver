@@ -130,15 +130,50 @@ Intégration Docker :
 - Nettoyage Docker : suppression image obsolète `modelweaver-gui:latest` (14.3GB).
 - Bump version 0.5.21.
 
-## V0.6 — Framework d'Agent (🔜 Prochaine)
-**Objectif** : Framework pour définir et orchestrer des agents.
+### V0.5.22 — Auto-install Rust + DB singleton ✅
+- Auto-install Rust au démarrage du daemon (thread différé) : `POST /v1/tools/install/all`
+  indépendamment du webview Tauri. Les 3 outils (opencode, litellm, keyring) sont mis en file.
+- DB connection management : singletons partagés (`_get_mw()`, `_get_cat()`) avec
+  double-checked locking thread-safe — élimine la majorité des conflits de verrouillage.
+- Background processor : job atomique (lock → SELECT+UPDATE → unlock), lock relâché
+  pendant l'install longue ; correction double-release bug.
+- Bump version 0.5.22.
 
-- Gestionnaire de clés (Key Vault) : chiffrement AES-256-GCM, stockage sécurisé
-- Abstraction LLM (LLM Bridge) : interface unifiée `BaseProvider` (chat, embed, list_models)
-- Adaptateurs : Ollama, LiteLLM, APIs natives
-- Hardening du système : sandboxing des commandes, logging structuré
-- Interface de configuration des rôles d'agents
-- Import/export de rôles
+## V0.6 — Framework d'Agent (🔄 En cours → 0.6.0)
+
+**Objectif** : poser les briques de sécurisation des clés et du catalogue LLM avant
+d'orchestrer les agents.
+
+### V0.6.0 — Key Manager : keyring + verrouillage manuel ✅
+- **Stockage keyring OS** : clés jamais en clair sur le disque. Le trousseau système
+  (GNOME Keyring / macOS Keychain / Windows Credential Manager) détient une entrée
+  unique `modelweaver / keys_table` = JSON `{ref: api_key}`, chiffrée au repos et liée
+  à la session. Fallback headless : fichier Fernet dérivé du `machine-id`.
+- **DB = métadonnées pures** : `api_keys` ne contient plus que provider, tag, grade,
+  santé, timestamps + `ref` (UUID unique non réécrivable). `key_display` dérivé EN
+  MÉMOIRE (jamais stocké).
+- **Verrou manuel par clé** : `locked` persisté ; `get_key()` lève `KeyLockedError`
+  si verrouillée. Le masque + les métadonnées restent visibles (list_keys). Route
+  `keys/set_lock`. Slider lock/unlock dans la GUI.
+- **Chargement en mémoire** : `load()` peuplé le cache après validation du keyring
+  (appelé au démarrage du daemon).
+- Routes API : `keys/set`, `keys/get`, `keys/list`, `keys/delete`, `keys/set_lock`,
+  `keys/onboard`. Hard-check des contrats vert (103 vérifications).
+- Suppression de l'ancien module `modules/security/vault.py` (Vault/Fernet) ; migration
+  one-shot `migrate_to_sqlite.py` archivée dans `oldcode/`.
+
+> ⚠️ **Palier avant de continuer** : avant d'attaquer le LLM Bridge / les adaptateurs /
+> les rôles d'agents (V0.6.x suivants), un **test complet + paufinage visuel** de V0.6.0
+> est requis (GUI clés : slider, badge 🔒, masque ; démonstration end-to-end du
+> verrouillage refusant bien l'accès plaintext aux agents).
+
+### V0.6.x — LLM Bridge + adaptateurs + rôles (📝 Planifié, après le palier test/UI)
+- **Abstraction LLM (LLM Bridge)** : interface unifiée `BaseProvider` (chat, embed,
+  list_models) — catalogue LLM (`modules/llm_manager/`) déjà en place (12 providers,
+  22 modèles, 36 associations, recommandation use_case × technical_level).
+- **Adaptateurs** : Ollama, LiteLLM, APIs natives (tous consomment `KeyManager.get_key`).
+- **Hardening** : sandboxing des commandes, logging structuré.
+- **Interface config rôles d'agents** + import/export de rôles.
 
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.

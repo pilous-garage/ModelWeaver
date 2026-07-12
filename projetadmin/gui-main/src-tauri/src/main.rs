@@ -1098,6 +1098,23 @@ fn install_queue_clear() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn install_all_tools() -> Result<serde_json::Value, String> {
+    log_cmd("install_all_tools");
+    let token_path = get_home_dir().join(".modelweaver").join("api.token");
+    let port_path = get_home_dir().join(".modelweaver").join("api.port");
+    let token = std::fs::read_to_string(&token_path).map_err(|_| "daemon token not found".to_string())?;
+    let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".to_string());
+    let port = port.trim();
+    let url = format!("http://127.0.0.1:{}/v1/tools/install/all", port);
+    let output = Command::new("curl")
+        .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", "{}", &url])
+        .output()
+        .map_err(|e| format!("curl failed: {}", e))?;
+    let body = String::from_utf8_lossy(&output.stdout).to_string();
+    serde_json::from_str(&body).map_err(|e| format!("parse error: {} — body: {}", e, body))
+}
+
+#[tauri::command]
 fn process_list() -> Result<Vec<ProcInfo>, String> {
     Ok(proc_snapshot())
 }
@@ -1361,6 +1378,34 @@ fn main() {
     start_service_supervisor();
     write_services_summary();
 
+    // Auto-install tous les outils dès que le daemon est prêt (même sans webview).
+    {
+        let _db = db_path.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            let home = get_home_dir();
+            let token_path = home.join(".modelweaver").join("api.token");
+            let port_path = home.join(".modelweaver").join("api.port");
+            let token = match std::fs::read_to_string(&token_path) {
+                Ok(t) => t,
+                Err(e) => { log_to_file("AUTO_INSTALL", &format!("token not found: {}", e)); return; }
+            };
+            let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".into());
+            let port = port.trim();
+            let url = format!("http://127.0.0.1:{}/v1/tools/install/all", port);
+            log_to_file("AUTO_INSTALL", &format!("calling POST {}", url));
+            let output = match std::process::Command::new("curl")
+                .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", "{}", &url])
+                .output()
+            {
+                Ok(o) => o,
+                Err(e) => { log_to_file("AUTO_INSTALL", &format!("curl failed: {}", e)); return; }
+            };
+            let body = String::from_utf8_lossy(&output.stdout).to_string();
+            log_to_file("AUTO_INSTALL", &format!("result: {}", body));
+        });
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -1390,6 +1435,7 @@ fn main() {
             install_queue_clear,
             process_list,
             process_log,
+            install_all_tools,
             service_list,
             watch_get,
             run_command,

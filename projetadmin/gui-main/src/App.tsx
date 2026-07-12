@@ -65,6 +65,11 @@ function App() {
 
   // Debug / process manager panel
   const [showDebug, setShowDebug] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
+  const [keysList, setKeysList] = useState<any[]>([]);
+  const [keysNewProvider, setKeysNewProvider] = useState('');
+  const [keysNewValue, setKeysNewValue] = useState('');
+  const [keysNewTag, setKeysNewTag] = useState<'free' | 'paid'>('free');
   const [debugTab, setDebugTab] = useState<'process' | 'logs' | 'resources'>('process');
   const [procList, setProcList] = useState<{ id: number; name: string; pid: number | null; parent_id: number | null; status: string; command: string; log_path: string; cpu: number; rss_kb: number; started_at: number; ended_at: number | null }[]>([]);
   const [procLogId, setProcLogId] = useState<number | null>(null);
@@ -75,6 +80,58 @@ function App() {
   const setDebug = (v: boolean) => {
     setShowDebug(v);
     getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
+  };
+
+  const maskKey = (k: string) => k.length > 4 ? k.slice(0, 2) + '****' + k.slice(-2) : '****';
+
+  const fetchKeys = async () => {
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      if (!token) return;
+      const res = await fetch('http://127.0.0.1:8770/v1/keys/list', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}'
+      });
+      const data = await res.json();
+      if (data.ok) setKeysList(data.result.keys || []);
+    } catch { /* daemon pas encore prêt */ }
+  };
+
+  const handleSetKey = async () => {
+    if (!keysNewProvider || !keysNewValue) return;
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      if (!token) return;
+      await fetch('http://127.0.0.1:8770/v1/keys/set', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_ref: keysNewProvider, api_key: keysNewValue, tag: keysNewTag })
+      });
+      setKeysNewProvider(''); setKeysNewValue(''); setKeysNewTag('free');
+      await fetchKeys();
+    } catch { /* ignore */ }
+  };
+
+  const handleDeleteKey = async (providerRef: string) => {
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      if (!token) return;
+      await fetch('http://127.0.0.1:8770/v1/keys/delete', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_ref: providerRef })
+      });
+      await fetchKeys();
+    } catch { /* ignore */ }
+  };
+
+  const handleToggleLock = async (ref: string, locked: boolean) => {
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      if (!token) return;
+      await fetch('http://127.0.0.1:8770/v1/keys/set_lock', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref, locked: !locked })
+      });
+      await fetchKeys();
+    } catch { /* ignore */ }
   };
 
   const toggleFullscreen = () => {
@@ -100,6 +157,7 @@ function App() {
   const installedRef = useRef<any[]>([]);
   const installQueueRef = useRef<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
   const prevStatusRef = useRef<Record<number, string>>({});
+  const autoInstalledRef = useRef(false);
   const CATALOGUE_URL = 'http://localhost:8765/api';
 
   // Refs for fresh data inside async callbacks (setState is async, setTimeout closures go stale)
@@ -394,6 +452,14 @@ function App() {
       setCatalogueTools(cat.tools || []);
       await refreshInstalled(); addLog('[LOGITH] refreshInstalled ok');
       addLog('Logithèque chargée (catalogue local)');
+      // Auto-install tous les outils non installés (une seule fois au premier chargement)
+      if (!autoInstalledRef.current) {
+        autoInstalledRef.current = true;
+        addLog('Déclenchement auto-install de tous les outils...');
+        invoke<any>('install_all_tools')
+          .then((r: any) => addLog(`Auto-install résultat: ${JSON.stringify(r)}`))
+          .catch((e: any) => addLog(`Auto-install erreur: ${e}`));
+      }
       // Sync distante ASYNCHRONE : ne bloque pas l'UI
       invoke<any>('sync_catalogue', { url: CATALOGUE_URL })
         .then(async (r: any) => {
@@ -479,10 +545,25 @@ function App() {
             ↻ Rafraîchir
           </button>
           <button
+            onClick={async () => {
+              addLog('Installation automatique de tous les outils...');
+              try { const r = await invoke<any>('install_all_tools'); addLog(`Résultat: ${JSON.stringify(r)}`); } catch (e) { addLog(`Erreur install all: ${e}`); }
+            }}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: '#059669', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
+          >
+            ⚡ Tout installer
+          </button>
+          <button
             onClick={() => setDebug(!showDebug)}
             style={{ padding: '0.4rem 0.8rem', backgroundColor: showDebug ? '#2563eb' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
           >
             🐞 Debug
+          </button>
+          <button
+            onClick={() => { setShowKeys(!showKeys); if (!showKeys) fetchKeys(); }}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: showKeys ? '#7c3aed' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
+          >
+            🔑 Clés
           </button>
           <button
             onClick={toggleFullscreen}
@@ -660,6 +741,74 @@ function App() {
               )}
             </div>
           </div>
+          {showKeys && (
+            <div style={{ width: '340px', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflow: 'hidden', borderLeft: '1px solid #334155', paddingLeft: '1rem' }}>
+              <h3 style={{ fontSize: '0.9rem', fontWeight: '600' }}>🔑 Clés API ({keysList.length})</h3>
+              <div style={{ flex: 1, overflowY: 'auto', backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155', padding: '0.6rem' }}>
+                {/* Ajout d'une clé */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '0.75rem', padding: '0.5rem', backgroundColor: '#0f172a', borderRadius: '0.375rem' }}>
+                  <input
+                    placeholder="Provider (ex: openai)"
+                    value={keysNewProvider}
+                    onChange={e => setKeysNewProvider(e.target.value)}
+                    style={{ padding: '0.3rem 0.5rem', fontSize: '0.72rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                  />
+                  <input
+                    placeholder="Clé API"
+                    value={keysNewValue}
+                    onChange={e => setKeysNewValue(e.target.value)}
+                    style={{ padding: '0.3rem 0.5rem', fontSize: '0.72rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                  />
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                    <select
+                      value={keysNewTag}
+                      onChange={e => setKeysNewTag(e.target.value as 'free' | 'paid')}
+                      style={{ flex: 1, ...selectStyles, fontSize: '0.72rem', padding: '0.3rem' }}
+                    >
+                      <option value="free">Free</option>
+                      <option value="paid">Paid</option>
+                    </select>
+                    <button
+                      onClick={handleSetKey}
+                      style={{ padding: '0.3rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '600' }}
+                    >+</button>
+                  </div>
+                </div>
+                {/* Liste des clés */}
+                {keysList.length === 0 ? (
+                  <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucune clé enregistrée</div>
+                ) : (
+                  keysList.map((k: any) => (
+                    <div key={k.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0', borderBottom: '1px solid #334155', fontSize: '0.72rem', opacity: k.locked ? 0.55 : 1 }}>
+                      <div style={{ overflow: 'hidden' }}>
+                        <div style={{ fontWeight: '600', fontSize: '0.75rem' }}>{k.provider_ref || k.provider_name}</div>
+                        <div style={{ color: '#94a3b8', fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                          {k.key_display || maskKey(k.api_key || '')}
+                          <span style={{ marginLeft: '0.4rem', fontSize: '0.6rem', backgroundColor: k.tag === 'free' ? '#065f46' : '#7c2d12', borderRadius: '0.2rem', padding: '0.05rem 0.3rem', color: k.tag === 'free' ? '#6ee7b7' : '#fdba74' }}>{k.tag}</span>
+                          {k.locked && <span style={{ marginLeft: '0.4rem', fontSize: '0.6rem', backgroundColor: '#7c2d12', borderRadius: '0.2rem', padding: '0.05rem 0.3rem', color: '#fdba74' }}>🔒 verrouillée</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        {/* Slider lock / unlock */}
+                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }} title={k.locked ? 'Déverrouiller' : 'Verrouiller'}>
+                          <input
+                            type="checkbox"
+                            checked={!k.locked}
+                            onChange={() => handleToggleLock(k.ref, k.locked)}
+                            style={{ cursor: 'pointer', width: '0.9rem', height: '0.9rem', accentColor: '#3b82f6' }}
+                          />
+                        </label>
+                        <button
+                          onClick={() => handleDeleteKey(k.provider_ref)}
+                          style={{ padding: '0.15rem 0.4rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.25rem', cursor: 'pointer', fontSize: '0.65rem' }}
+                          >✕</button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
           {showDebug && (
             <div style={{ width: '360px', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflow: 'hidden', borderLeft: '1px solid #334155', paddingLeft: '1rem' }}>
               {/* Bandeau de panneaux supplémentaires */}

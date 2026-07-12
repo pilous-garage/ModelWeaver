@@ -181,22 +181,22 @@ Repris de `ModelWeaver.md` — règles d'or inchangées :
 
 ## 9. Roadmap
 
-| Version | Périmètre | Statut |
-|---------|-----------|--------|
-| V0.1 | Socle : install, audit, composants, fallback, CLI, GUI | ✅ Terminée |
-| V0.2 | Split en 9 modules (3 couches) | ✅ Terminée |
-| V0.3 | Agent Factory (Génération d'agents via config personnalisée) | 🔜 Prochaine |
-| V1.0 | Version publique distribuable (cible de stabilité) | 🎯 Objectif |
-| Vn+ | Univers, jeux, mascotte, monétisation | 📝 Idées |
+> ⚠️ **Section historique — source de vérité = `docs/VERSIONS.md`.**
+> La table ci-dessous était stale (V0.3 = Agent Factory, saut de V0.4→V0.8) et a été
+> remplacée par une référence vers `VERSIONS.md`, seul document de roadmap tenu à jour
+> et consommé par `programming_rules.md`.
+>
+> **État courant (résumé)** : V0.5.x terminée (jusqu'à V0.5.22 — auto-install Rust +
+> DB singleton). **V0.6.0 en cours** : Key Manager (keyring OS + verrou manuel par clé).
+> Palier **test + paufinage visuel** requis avant d'attaquer le LLM Bridge / les
+> adaptateurs / les rôles d'agents (V0.6.x). Puis V0.7 (Sandbox création), V0.8
+> (Organisateur global), V1.0 (Release stable).
+>
+> → Voir `docs/VERSIONS.md` pour le détail complet et à jour.
 
-### Idées V0.2+
-- **gitingest intelligent** : adapter la taille du contexte injecté par modèle (Gemini peut recevoir ~2M chars, Mistral/OpenAI ~400K). Implémenté dans `litellm_router_proxy.py` via `try_deployments` avec troncature par budget. À améliorer : fenêtres préférées configurables par modèle/groupe, priorisation des fichiers les plus pertinents plutôt que simple troncature FIFO.
-- **Plugin OpenCode sudo** : Créer un plugin pour OpenCode permettant de gérer les requêtes `sudo` de manière élégante (demander la préférence de l'utilisateur ou gérer l'authentification via un canal sécurisé) pour éviter les blocages en CLI.
-- **Permissions d'écriture par table (single-writer / RBAC data-layer)** : déclarer, dans un fichier de contrat dédié, *quels* modules/services ont le droit d'écrire dans *quelle* table locale, puis un hard-check statique qui vérifie qu'aucune unité ne sort de son périmètre (« on ne se mélange pas »). Prévoir **4 niveaux de permission** par couple (unité × table) :
-  1. **Lecture seule** — SELECT uniquement.
-  2. **Ajout de ligne** — SELECT + INSERT.
-  3. **Modification limitée** — SELECT + INSERT + UPDATE d'un nombre borné de lignes (système d'autorisation/quota par opération).
-  4. **Écriture complète** — SELECT + INSERT + UPDATE + DELETE sans restriction.
-  Complémentaire de l'idée *single-writer* (un seul rédacteur par table pour éviter la contention). Jugé **trop lourd à mettre en place maintenant** : pour l'instant on s'appuie sur la gestion de concurrence de SQLite (WAL + `busy_timeout`), **tous les modules et services accèdent à toutes les tables locales**. À reconsidérer quand le nombre d'écrivains concurrents ou les besoins d'isolation le justifieront (candidat naturel : un `_contract/data_access.py` par unité + `hardcheck` dédié).
+### Idées / réflexions ouvertes (non planifiées)
+- **gitingest intelligent** : adapter la taille du contexte injecté par modèle (Gemini ~2M chars, Mistral/OpenAI ~400K). Implémenté dans `litellm_router_proxy.py` via `try_deployments` avec troncature par budget. À améliorer : fenêtres préférées configurables par modèle/groupe, priorisation des fichiers pertinents plutôt que troncature FIFO.
+- **Plugin OpenCode sudo** : gérer les requêtes `sudo` via un canal sécurisé pour éviter les blocages CLI.
+- **Permissions d'écriture par table (RBAC data-layer)** : 4 niveaux (lecture / ajout / modif limitée / écriture complète) par couple (unité × table), vérifiés par hard-check. Jugé trop lourd pour l'instant (on s'appuie sur WAL + `busy_timeout`) ; candidat naturel : `_contract/data_access.py` par unité + `hardcheck` dédié quand le besoin d'isolation émergera.
 
-Détail des versions dans `VERSIONS.md`.
+

@@ -47,7 +47,7 @@ if __name__ == "__main__":
     # Quick test
     from pathlib import Path
     cat = Catalogue(data_dir=Path("test_cat_data"))
-    km = KeyManager(vault_path=Path("test_km_vault.json"))
+    km = KeyManager()
     organiser = Organiser(cat, km)
     # We don't want to actually start an interactive menu in a test, 
     # so we'll just call one of the methods.

@@ -48,7 +48,7 @@ from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file
 
 API_VERSION = "v1"
-MW_VERSION = "0.5.21"
+MW_VERSION = "0.6.0"
 
 
 def _mw_dir() -> Path:
@@ -98,12 +98,11 @@ def check_python_deps():
 
 
 def init_databases():
-    mw_path, cat_path = _db_paths()
     jobs.ensure_install_jobs()
-    mw = ModelWeaverDB(mw_path)
+    mw = _get_mw()
     mw._ensure_schema()
     mw.commit()
-    cat = CatalogueDB(cat_path)
+    cat = _get_cat()
     cat._ensure_schema()
     cat.conn.commit()
     return {"status": "ok", "mw_db": str(mw.db_path), "cat_db": str(cat.db_path)}
@@ -117,53 +116,53 @@ def check_databases():
     }
     if result["modelweaver_db"]["exists"]:
         try:
-            mw = ModelWeaverDB(mw_path)
-            result["modelweaver_db"]["tool_count"] = len(mw.tools.list_all())
-            mw.close()
+            result["modelweaver_db"]["tool_count"] = len(_get_mw().tools.list_all())
         except Exception as e:
             result["modelweaver_db"]["error"] = str(e)
     if result["catalogue_db"]["exists"]:
         try:
-            cat = CatalogueDB(cat_path)
-            cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_providers")
+            cur = _get_cat().conn.execute("SELECT COUNT(*) FROM catalogue_providers")
             result["catalogue_db"]["provider_count"] = cur.fetchone()[0]
-            cat.close()
         except Exception as e:
             result["catalogue_db"]["error"] = str(e)
     return result
 
 
 def seed_catalogue():
-    _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
+    cat = _get_cat()
     cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
     if cur.fetchone()[0] > 0:
-        cat.close()
         return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
+    # Tools
     data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
-    count = cat.sync_tools(rows)
+    count_tools = cat.sync_tools(rows)
+    # LLM Providers
+    from modules.llm_manager.llm_manager import seed_providers, seed_models, seed_provider_models
+    count_providers = seed_providers(cat)
+    count_models = seed_models(cat)
+    count_pm = seed_provider_models(cat)
     cat.conn.commit()
-    cat.close()
-    return {"status": "ok", "seeded": True, "count": count}
+    return {
+        "status": "ok", "seeded": True,
+        "tools": count_tools, "providers": count_providers,
+        "models": count_models, "provider_models": count_pm,
+    }
 
 
 def get_catalogue_tools():
-    _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
+    cat = _get_cat()
     cur = cat.conn.execute(
         "SELECT ref, name, description, tool_type, install_method, current_version, "
         "allowed_platforms, allowed_arches FROM catalogue_tools ORDER BY name")
     cols = [d[0] for d in cur.description]
     tools = [dict(zip(cols, row)) for row in cur.fetchall()]
-    cat.close()
     return {"tools": tools, "count": len(tools)}
 
 
 def get_installed_tools():
-    mw_path, _ = _db_paths()
-    mw = ModelWeaverDB(mw_path)
+    mw = _get_mw()
     rows = mw.local_tools.list_all()
     out = [{
         "ref": r.get("tool_ref") or r.get("ref"),
@@ -172,52 +171,42 @@ def get_installed_tools():
         "status": r.get("status"),
         "install_path": r.get("install_path"),
     } for r in rows]
-    mw.close()
     return {"tools": out, "count": len(out)}
 
 
 def save_system_state():
-    mw_path, _ = _db_paths()
-    mw = ModelWeaverDB(mw_path)
+    mw = _get_mw()
     Checker().update_local_db(mw)
     mw.commit()
-    mw.close()
     return {"status": "ok"}
 
 
 def sync_catalogue_remote(url=None):
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
-    _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
+    cat = _get_cat()
     if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] == 0:
         with _quiet_stdout():
             seed_catalogue()
     with _quiet_stdout():
         results = cat.sync_from_url(url)
-    cat.close()
     return {"status": "ok", "url": url, "results": results}
 
 
 def update_tools_table():
-    mw_path, _ = _db_paths()
-    mw = ModelWeaverDB(mw_path)
+    mw = _get_mw()
     count = mw.scan_installed_tools()
-    mw.close()
     return {"status": "ok", "updated": count}
 
 
 def op_tools_install_all(_params):
     """Queue tous les outils du catalogue non encore installés."""
     from modules.checker.checker import Checker
-    mw_path, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
+    cat = _get_cat()
     cur = cat.conn.execute("SELECT ref, name FROM catalogue_tools")
     all_tools = cur.fetchall()
-    cat.close()
-    mw = ModelWeaverDB(mw_path)
+    mw = _get_mw()
     installed = {t.get("tool_ref") or t.get("ref") for t in mw.local_tools.list_all()}
-    mw.close()
     jobs.ensure_install_jobs()
     queued = []
     for ref, name in all_tools:
@@ -227,41 +216,89 @@ def op_tools_install_all(_params):
     return {"status": "ok", "queued": len(queued), "tools": queued}
 
 
+import threading
+_DB_LOCK = threading.Lock()
+_MW_INSTANCE = None
+_CAT_INSTANCE = None
+_KM_INSTANCE = None
+_LLM_INSTANCE = None
+
+def _get_mw():
+    global _MW_INSTANCE
+    if _MW_INSTANCE is None:
+        with _DB_LOCK:
+            if _MW_INSTANCE is None:
+                mw_path, _ = _db_paths()
+                _MW_INSTANCE = ModelWeaverDB(mw_path)
+    return _MW_INSTANCE
+
+def _get_cat():
+    global _CAT_INSTANCE
+    if _CAT_INSTANCE is None:
+        with _DB_LOCK:
+            if _CAT_INSTANCE is None:
+                _, cat_path = _db_paths()
+                _CAT_INSTANCE = CatalogueDB(cat_path)
+    return _CAT_INSTANCE
+
+def _get_km():
+    from modules.key_manager.key_manager import KeyManager
+    global _KM_INSTANCE
+    if _KM_INSTANCE is None:
+        _KM_INSTANCE = KeyManager(db=_get_mw())
+    return _KM_INSTANCE
+
+def _get_llm():
+    from modules.llm_manager.llm_manager import LLMManager
+    global _LLM_INSTANCE
+    if _LLM_INSTANCE is None:
+        _LLM_INSTANCE = LLMManager(cat=_get_cat())
+    return _LLM_INSTANCE
+
 def _process_install_jobs():
     """Process one queued install job (blocking). Called by the background thread."""
-    mw_path, _ = _db_paths()
-    con = ModelWeaverDB(mw_path).conn
-    cur = con.execute(
-        "SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
-    row = cur.fetchone()
-    if not row:
-        con.close()
-        return
-    jid, ref, name, job_type = row
-    con.execute("UPDATE install_jobs SET status='running', updated_at=strftime('%s','now') WHERE id=?",
-                (jid,))
-    con.commit()
+    mw = _get_mw()
+    # Phase 1: pick a job and mark running (atomically under lock)
+    _DB_LOCK.acquire()
+    try:
+        cur = mw.conn.execute(
+            "SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            return
+        jid, ref, name, job_type = row
+        mw.conn.execute("UPDATE install_jobs SET status='running', updated_at=strftime('%s','now') WHERE id=?",
+                    (jid,))
+        mw.conn.commit()
+    finally:
+        _DB_LOCK.release()
+    cat_singleton = _get_cat()
+    # Phase 2: run the install (no lock — may take minutes)
     try:
         if job_type == "install":
-            result = jobs.install_tool(ref)
+            result = jobs.install_tool(ref, mw_shared=mw, cat_shared=cat_singleton)
         elif job_type == "uninstall":
-            result = jobs.uninstall_tool(ref)
+            result = jobs.uninstall_tool(ref, mw_shared=mw, cat_shared=cat_singleton)
         else:
             result = {"status": "error", "error": f"unknown job_type: {job_type}"}
         status = "installed" if result.get("status") == "ok" else "failed"
         log = json.dumps(result)
-        con.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?",
-                    (status, log[:500], jid))
     except Exception as e:
-        con.execute("UPDATE install_jobs SET status='failed', log=?, updated_at=strftime('%s','now') WHERE id=?",
-                    (str(e)[:500], jid))
-    con.commit()
-    con.close()
+        result = {"status": "error", "error": str(e)}
+        status = "failed"
+        log = str(e)[:500]
+    # Phase 3: update job status (brief lock)
+    _DB_LOCK.acquire()
+    try:
+        mw.conn.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?",
+                    (status, log[:500], jid))
+        mw.conn.commit()
+    finally:
+        _DB_LOCK.release()
 
 
 def _job_processor_loop(interval: float = 5.0):
     """Background thread : consume la queue install_jobs."""
-    import threading
     def _loop():
         while True:
             try:
@@ -330,6 +367,120 @@ def op_deps_check(_params):
     return check_all_units(_REPO_ROOT)
 
 
+# ── Key Manager ────────────────────────────────────────────────
+
+def op_keys_set(params):
+    provider_ref = params.get("provider_ref")
+    api_key = params.get("api_key")
+    if not provider_ref or not api_key:
+        return {"status": "error", "error": "missing 'provider_ref' or 'api_key'"}
+    km = _get_km()
+    ref = km.set_key(
+        provider_ref=provider_ref,
+        api_key=api_key,
+        api_base=params.get("api_base"),
+        identity=params.get("identity", "default"),
+        tag=params.get("tag", "paid"),
+        grade=params.get("grade"),
+    )
+    return {"status": "ok", "ref": ref}
+
+
+def op_keys_get(params):
+    km = _get_km()
+    try:
+        key = km.get_key(
+            provider_ref=params["provider_ref"],
+            identity=params.get("identity", "default"),
+        )
+    except Exception as e:
+        from modules.key_manager.key_manager import KeyLockedError
+        if isinstance(e, KeyLockedError):
+            return {"status": "locked"}
+        raise
+    if not key:
+        return {"status": "not_found"}
+    return {"status": "ok", "key": key}
+
+
+def op_keys_set_lock(params):
+    ref = params.get("ref")
+    if not ref:
+        return {"status": "error", "error": "missing 'ref'"}
+    locked = bool(params.get("locked", True))
+    km = _get_km()
+    ok = km.set_lock(ref, locked)
+    return {"status": "ok" if ok else "error", "ref": ref, "locked": locked}
+
+
+def op_keys_list(_params):
+    km = _get_km()
+    safe = km.list_keys()  # déjà sans key_value
+    for k in safe:
+        if not k.get("key_display"):
+            k["key_display"] = "****"
+    return {"keys": safe, "count": len(safe)}
+
+
+def op_keys_delete(params):
+    km = _get_km()
+    ref = params.get("ref")
+    provider_ref = params.get("provider_ref")
+    if ref:
+        ok = km.delete_key(ref)
+        return {"status": "ok" if ok else "error", "deleted": ok}
+    if provider_ref:
+        keys = km.list_keys()
+        deleted = 0
+        for k in keys:
+            if k.get("provider_ref") == provider_ref:
+                if km.delete_key(k["ref"]):
+                    deleted += 1
+        return {"status": "ok", "deleted": deleted}
+    return {"status": "error", "error": "missing 'ref' or 'provider_ref'"}
+
+
+def op_keys_onboard(params):
+    from modules.key_manager.onboarder import Onboarder
+    km = _get_km()
+    onboarder = Onboarder(km)
+    env_path = params.get("env_path", str(_REPO_ROOT / ".env"))
+    count = onboarder.onboard_from_env(Path(env_path))
+    return {"status": "ok", "imported": count}
+
+
+def op_providers_list(_params):
+    from modules.sql.db import CatalogueDB
+    cat = _get_cat()
+    cur = cat.conn.execute(
+        "SELECT ref, name, provider_type, api_type, website, is_free_tier_provider "
+        "FROM catalogue_providers ORDER BY name")
+    cols = [d[0] for d in cur.description]
+    providers = [dict(zip(cols, row)) for row in cur.fetchall()]
+    return {"providers": providers, "count": len(providers)}
+
+
+# ── LLM Manager ───────────────────────────────────────────────
+
+def op_llm_models_list(params):
+    llm = _get_llm()
+    models = llm.list_models(provider_ref=params.get("provider_ref"))
+    return {"models": models, "count": len(models)}
+
+
+def op_llm_recommend(params):
+    llm = _get_llm()
+    use_case = params.get("use_case", "chat")
+    technical_level = params.get("technical_level", "free")
+    valid_use_cases = ("chat", "coding", "analysis", "writing")
+    valid_levels = ("free", "paid", "local")
+    if use_case not in valid_use_cases:
+        return {"status": "error", "error": f"use_case must be one of {valid_use_cases}"}
+    if technical_level not in valid_levels:
+        return {"status": "error", "error": f"technical_level must be one of {valid_levels}"}
+    return llm.recommend(use_case=use_case, technical_level=technical_level)
+
+
 def _wrap(fn):
     """Adapte une fonction sans args en handler(params)->dict, en silençant
     tout print intempestif vers stderr."""
@@ -356,8 +507,8 @@ ROUTES = {
     "catalogue/tools_table/update": _wrap(update_tools_table),
     # D. Outils installés (synchrone)
     "tools/installed/list":   _wrap(get_installed_tools),
-    "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref")),
-    "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref")),
+    "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref"), None, _get_cat()),
+    "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref"), None, _get_cat()),
     "tools/install/all":      lambda p: _quiet(op_tools_install_all, p),
     # E. File de jobs (asynchrone)
     "jobs/add":               op_jobs_add,
@@ -367,7 +518,19 @@ ROUTES = {
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,
     "jobs/clear":             op_jobs_clear,
-    # H. Logs
+    # G. Key Manager
+    "keys/set":               op_keys_set,
+    "keys/get":               op_keys_get,
+    "keys/list":              op_keys_list,
+    "keys/delete":            op_keys_delete,
+    "keys/set_lock":          op_keys_set_lock,
+    "keys/onboard":           op_keys_onboard,
+    # H. Providers (catalogue)
+    "providers/list":         op_providers_list,
+    # I. LLM Manager
+    "llm/models/list":        op_llm_models_list,
+    "llm/recommend":          op_llm_recommend,
+    # J. Logs
     "logs/read":              op_logs_read,
     "logs/write":             op_logs_write,
 }
@@ -462,6 +625,20 @@ def serve(port: int = 8770) -> None:
 
     server.token = token
     (mw / "api.port").write_text(str(port))
+
+    # Initialiser les connexions partagées AVANT le processeur de jobs.
+    mw_singleton = _get_mw()
+    cat_singleton = _get_cat()
+    # Charger les clés en mémoire (après validation keyring OS).
+    try:
+        _get_km().load()
+    except Exception as e:
+        print(f"⚠️  Keyring indisponible (clés non chargées) : {e}", file=sys.stderr)
+    # busy_timeout 30s pour les opérations concurrentes en arrière-plan
+    mw_singleton.conn.execute("PRAGMA busy_timeout = 30000")
+
+    # Injecter la connexion partagée dans le module jobs (évite les locks).
+    jobs.set_shared_conn(mw_singleton.conn)
 
     # Démarre le processeur de jobs en arrière-plan (consomme install_jobs).
     _job_processor_loop(interval=3.0)

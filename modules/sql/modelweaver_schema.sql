@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     identity        TEXT DEFAULT 'default',
     provider_id     INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     key_value       TEXT NOT NULL,
+    key_display     TEXT,
+    locked          INTEGER DEFAULT 0,
     tag             TEXT NOT NULL CHECK(tag IN ('free', 'paid')),
     grade           TEXT,
     health_status   TEXT DEFAULT 'unknown' CHECK(health_status IN ('unknown', 'ok', 'degraded', 'suspicious', 'dead', 'user_disabled')),

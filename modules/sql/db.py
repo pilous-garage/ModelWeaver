@@ -336,7 +336,19 @@ class KeyRepository:
             SELECT ak.* FROM api_keys ak
             JOIN providers p ON p.id = ak.provider_id
             WHERE p.ref = ? AND ak.identity = ?
+            AND ak.locked = 0
             AND ak.health_status IN ('unknown', 'ok', 'degraded')
+            ORDER BY ak.health_status = 'ok' DESC, ak.health_status = 'unknown' DESC
+            LIMIT 1
+        """, (provider_ref, identity))
+        return _row_to_dict(cur.fetchone())
+
+    def get_any_for_provider(self, provider_ref: str, identity: str = "default") -> Optional[Dict[str, Any]]:
+        """Comme get_for_provider mais ignore le verrou (détecte l'existence)."""
+        cur = self.conn.execute("""
+            SELECT ak.* FROM api_keys ak
+            JOIN providers p ON p.id = ak.provider_id
+            WHERE p.ref = ? AND ak.identity = ?
             ORDER BY ak.health_status = 'ok' DESC, ak.health_status = 'unknown' DESC
             LIMIT 1
         """, (provider_ref, identity))
@@ -345,12 +357,13 @@ class KeyRepository:
     def save(self, data: Dict[str, Any]) -> str:
         ref = data.get("ref") or _ref()
         cur = self.conn.execute("""
-            INSERT INTO api_keys (ref, identity, provider_id, key_value, tag, grade,
+            INSERT INTO api_keys (ref, identity, provider_id, key_value, key_display, tag, grade,
                 health_status, expiration_date, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ref, data.get("identity", "default"),
             data["provider_id"], data["key_value"],
+            data.get("key_display"),
             data.get("tag", "paid"), data.get("grade"),
             data.get("health_status", "unknown"),
             data.get("expiration_date"), data.get("metadata_json")
@@ -366,8 +379,31 @@ class KeyRepository:
             WHERE ref=?
         """, (status, error, error, ref))
 
+    def update(self, ref: str, tag: Optional[str] = None,
+               grade: Optional[str] = None,
+               metadata_json: Optional[str] = None) -> None:
+        fields, params = [], []
+        if tag is not None:
+            fields.append("tag = ?"); params.append(tag)
+        if grade is not None:
+            fields.append("grade = ?"); params.append(grade)
+        if metadata_json is not None:
+            fields.append("metadata_json = ?"); params.append(metadata_json)
+        if not fields:
+            return
+        fields.append("updated_at = strftime('%s','now')")
+        params.append(ref)
+        self.conn.execute(
+            f"UPDATE api_keys SET {', '.join(fields)} WHERE ref = ?", params)
+
     def delete(self, ref: str) -> bool:
         cur = self.conn.execute("DELETE FROM api_keys WHERE ref = ?", (ref,))
+        return cur.rowcount > 0
+
+    def set_lock(self, ref: str, locked: bool) -> bool:
+        cur = self.conn.execute(
+            "UPDATE api_keys SET locked = ?, updated_at = strftime('%s','now') WHERE ref = ?",
+            (1 if locked else 0, ref))
         return cur.rowcount > 0
 
 
@@ -904,6 +940,18 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         except Exception:
             pass
 
+        # Migration: ajouter key_display à api_keys
+        try:
+            self.conn.execute("ALTER TABLE api_keys ADD COLUMN key_display TEXT")
+        except Exception:
+            pass
+
+        # Migration: ajouter locked à api_keys
+        try:
+            self.conn.execute("ALTER TABLE api_keys ADD COLUMN locked INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
         # Table d'état système
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS system_state (
@@ -988,7 +1036,7 @@ class CatalogueDB:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_catalogue_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
@@ -1004,6 +1052,26 @@ class CatalogueDB:
             schema = Path(__file__).resolve().parent / "catalogue_schema.sql"
             if schema.exists():
                 self.conn.executescript(schema.read_text())
+        else:
+            # Migration: ajoute provider_models si manquant
+            try:
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS provider_models (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider_id INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+                        model_id INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                        provider_model_name TEXT NOT NULL,
+                        context_window_tokens INTEGER,
+                        max_output_tokens INTEGER,
+                        cost_per_input_token TEXT,
+                        cost_per_output_token TEXT,
+                        status TEXT DEFAULT 'active' CHECK(status IN ('active','deprecated','experimental')),
+                        created_at INTEGER DEFAULT (strftime('%s','now')),
+                        updated_at INTEGER DEFAULT (strftime('%s','now')),
+                        UNIQUE(provider_id, model_id))
+                """)
+            except Exception:
+                pass
 
     @contextmanager
     def transaction(self):

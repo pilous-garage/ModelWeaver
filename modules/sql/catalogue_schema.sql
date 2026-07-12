@@ -70,6 +70,24 @@ CREATE TABLE IF NOT EXISTS catalogue_commands (
 );
 
 -- ============================================================
+-- 5. PROVIDER_MODELS — Jointure entre providers et modèles
+-- ============================================================
+CREATE TABLE IF NOT EXISTS provider_models (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id         INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+    model_id            INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+    provider_model_name TEXT NOT NULL,
+    context_window_tokens INTEGER,
+    max_output_tokens   INTEGER,
+    cost_per_input_token  TEXT,
+    cost_per_output_token TEXT,
+    status              TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'experimental')),
+    created_at          INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at          INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(provider_id, model_id)
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);
@@ -78,3 +96,5 @@ CREATE INDEX IF NOT EXISTS idx_cat_models_developer ON catalogue_models(develope
 CREATE INDEX IF NOT EXISTS idx_cat_tools_ref ON catalogue_tools(ref);
 CREATE INDEX IF NOT EXISTS idx_cat_tools_platform ON catalogue_tools(allowed_platforms);
 CREATE INDEX IF NOT EXISTS idx_cat_commands_ref ON catalogue_commands(ref);
+CREATE INDEX IF NOT EXISTS idx_cat_provider_models_provider ON provider_models(provider_id);
+CREATE INDEX IF NOT EXISTS idx_cat_provider_models_model ON provider_models(model_id);

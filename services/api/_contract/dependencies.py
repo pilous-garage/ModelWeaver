@@ -9,6 +9,11 @@ from services.installer_worker.jobs import (
 )
 from modules.sql.db import ModelWeaverDB, CatalogueDB
 from modules.checker.checker import Checker
+from modules.key_manager.key_manager import KeyManager, KeyLockedError
+from modules.key_manager.onboarder import Onboarder
+from modules.llm_manager.llm_manager import (
+    LLMManager, seed_providers, seed_models, seed_provider_models,
+)
 
 CONSUMES = {
     # File d'installation + install/uninstall réels.
@@ -23,6 +28,13 @@ CONSUMES = {
     "modules.sql.db": ["ModelWeaverDB", "CatalogueDB"],
     # Inspection système.
     "modules.checker.checker": ["Checker"],
+    # Gestionnaire de clés (stockage keyring + verrou).
+    "modules.key_manager.key_manager": ["KeyManager", "KeyLockedError"],
+    "modules.key_manager.onboarder": ["Onboarder"],
+    # Catalogue LLM (providers / modèles / recommandation).
+    "modules.llm_manager.llm_manager": [
+        "LLMManager", "seed_providers", "seed_models", "seed_provider_models",
+    ],
     # Helpers partagés.
     "services._common": ["_db_paths", "_quiet_stdout", "log_to_file", "acquire_instance_lock"],
     # Vérification des dépendances.

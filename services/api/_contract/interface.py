@@ -44,7 +44,19 @@ EXPOSES = {
     "jobs/status": ["id"],
     "jobs/cancel": ["id"],
     "jobs/clear": [],
-    # H. Logs
+    # G. Key Manager
+    "keys/set": ["provider_ref", "api_key", "api_base", "identity", "tag", "grade"],
+    "keys/get": ["provider_ref", "identity"],
+    "keys/list": [],
+    "keys/delete": ["ref"],
+    "keys/set_lock": ["ref", "locked"],
+    "keys/onboard": ["env_path"],
+    # H. Providers (catalogue)
+    "providers/list": [],
+    # I. LLM Manager
+    "llm/models/list": ["provider_ref"],
+    "llm/recommend": ["use_case", "technical_level"],
+    # J. Logs
     "logs/read": [],
     "logs/write": ["level", "message"],
 }
