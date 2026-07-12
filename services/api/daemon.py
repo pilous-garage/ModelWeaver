@@ -39,6 +39,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from services._common import mw_home
+from modules.system.deps import install_system_package
 
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
 # directement les modules (source de vérité) et le service installer_worker
@@ -369,6 +370,13 @@ def op_deps_check(_params):
     return check_all_units(_REPO_ROOT)
 
 
+def op_deps_install(params):
+    package = params.get("package")
+    if not package:
+        return {"status": "error", "error": "missing 'package'"}
+    return install_system_package(package)
+
+
 # ── Key Manager ────────────────────────────────────────────────
 
 def op_keys_set(params):
@@ -516,6 +524,7 @@ ROUTES = {
     "jobs/add":               op_jobs_add,
     # F. Dépendances (modules/services)
     "deps/check":             op_deps_check,
+    "deps/install":           _wrap(op_deps_install),
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,

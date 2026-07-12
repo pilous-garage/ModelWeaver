@@ -384,28 +384,15 @@ function App() {
     try {
       addLog(`Installing ${plan.length} dependencies...`);
       for (const { dep, required } of plan) {
-        const pm = selPms[dep.name] || 'apt';
-        const cmd = dep.install_commands?.[pm];
-        if (!cmd) { addLog(`No install command for ${dep.name}`); continue; }
-        // Strip "sudo " prefix if running as root in Docker
-        const actualCmd = cmd.replace(/^sudo\s+/, '');
-        updateProgress(dep.name, 'installing', `via ${pm}...`);
-        addLog(`Installing ${dep.name}${required ? '' : ' (recommended)'} via ${pm}: ${actualCmd}`);
+        updateProgress(dep.name, 'installing', 'via daemon...');
+        addLog(`Installing ${dep.name}${required ? '' : ' (recommended)'} via daemon API`);
         try {
-          const result = await invoke<{ stdout: string; stderr: string; success: boolean }>('run_command', {
-            command: 'bash',
-            args: ['-c', actualCmd],
-          });
-          if (result.success) {
-            updateProgress(dep.name, 'success', result.stdout.trim().substring(0, 200) || 'OK');
-            addLog(`  ${dep.name}: SUCCESS`);
-          } else {
-            updateProgress(dep.name, 'failed', (result.stderr || '').trim().substring(0, 200) || 'FAILED');
-            addLog(`  ${dep.name}: FAILED`);
-          }
+          const result = await invoke<string>('install_dependency', { name: dep.name });
+          updateProgress(dep.name, 'success', result.trim().substring(0, 200) || 'OK');
+          addLog(`  ${dep.name}: SUCCESS`);
         } catch (err: any) {
           updateProgress(dep.name, 'failed', String(err).substring(0, 200));
-          addLog(`  ${dep.name}: ERROR - ${err}`);
+          addLog(`  ${dep.name}: FAILED - ${err}`);
         }
       }
 

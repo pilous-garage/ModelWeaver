@@ -939,30 +939,44 @@ fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
 }
 
 #[tauri::command]
+fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
+    let token = std::fs::read_to_string(mw_home().join("api.token"))
+        .map_err(|_| "daemon token not found".to_string())?;
+    let port = std::fs::read_to_string(mw_home().join("api.port"))
+        .unwrap_or_else(|_| "8770".to_string());
+    let port = port.trim();
+    let url = format!("http://127.0.0.1:{}/v1/{}", port, route);
+    let output = Command::new("curl")
+        .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", body, &url])
+        .output()
+        .map_err(|e| format!("curl failed: {}", e))?;
+    let resp = String::from_utf8_lossy(&output.stdout).to_string();
+    serde_json::from_str(&resp).map_err(|e| format!("parse error: {} — body: {}", e, resp))
+}
+
+#[tauri::command]
 fn install_dependency(name: String) -> Result<String, String> {
     log_cmd(&format!("install_dependency({})", name));
-    let cmd = match name.as_str() {
-        "python" | "python3" => {
-            "apt-get update && apt-get install -y python3 python3-pip 2>&1 || which brew && brew install python3 2>&1 || echo 'Non supporté'"
-        }
-        "sqlite3" | "sqlite" => {
-            "apt-get update && apt-get install -y sqlite3 2>&1 || which brew && brew install sqlite3 2>&1 || echo 'Non supporté'"
-        }
-        _ => return Err(format!("Dépendance inconnue: {}", name)),
+    // Délégation au daemon API (backend unique, root en container, sudo/pkexec sinon).
+    // Mappe le nom de dépendance logique vers le(s) paquet(s) apt.
+    let pkg = match name.as_str() {
+        "python3" | "python" => "python3 python3-pip",
+        "sqlite3" | "sqlite" => "sqlite3",
+        "git" => "git",
+        other => other,
     };
-    log_to_file("INSTALL", &format!("running: {}", cmd));
-    let out = Command::new("bash")
-        .args(["-c", cmd])
-        .output()
-        .map_err(|e| { log_to_file("ERROR", &format!("install error: {}", e)); format!("Erreur: {}", e) })?;
-    let _stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if out.status.success() {
-        log_to_file("INSTALL", &format!("{} installed OK", name));
-        Ok(format!("{} installé", name))
-    } else {
-        log_to_file("ERROR", &format!("{} install failed: {}", name, stderr));
-        Err(stderr.to_string())
+    let body = format!("{{\"package\":\"{}\"}}", pkg);
+    let resp = daemon_post("deps/install", &body)?;
+    match resp.get("status").and_then(|s| s.as_str()) {
+        Some("ok") => {
+            log_to_file("INSTALL", &format!("{} installed OK via daemon", name));
+            Ok(format!("{} installé", name))
+        }
+        _ => {
+            let err = resp.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+            log_to_file("ERROR", &format!("{} install failed: {}", name, err));
+            Err(err.to_string())
+        }
     }
 }
 
@@ -1125,18 +1139,7 @@ fn install_queue_clear() -> Result<(), String> {
 #[tauri::command]
 fn install_all_tools() -> Result<serde_json::Value, String> {
     log_cmd("install_all_tools");
-    let token_path = mw_home().join("api.token");
-    let port_path = mw_home().join("api.port");
-    let token = std::fs::read_to_string(&token_path).map_err(|_| "daemon token not found".to_string())?;
-    let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".to_string());
-    let port = port.trim();
-    let url = format!("http://127.0.0.1:{}/v1/tools/install/all", port);
-    let output = Command::new("curl")
-        .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", "{}", &url])
-        .output()
-        .map_err(|e| format!("curl failed: {}", e))?;
-    let body = String::from_utf8_lossy(&output.stdout).to_string();
-    serde_json::from_str(&body).map_err(|e| format!("parse error: {} — body: {}", e, body))
+    daemon_post("tools/install/all", "{}")
 }
 
 #[tauri::command]
