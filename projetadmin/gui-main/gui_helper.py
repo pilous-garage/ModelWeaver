@@ -180,7 +180,7 @@ def seed_catalogue():
     if cur.fetchone()[0] > 0:
         cat.close()
         return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
-    data_path = os.path.join(HELPER_DIR, "projetclient", "modules", "catalogue", "data", "tools.json")
+    data_path = os.path.join(PROJETCLIENT_DIR, "modules", "catalogue", "data", "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
     count = cat.sync_tools(rows)
