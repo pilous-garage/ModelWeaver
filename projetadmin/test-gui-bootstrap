@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # =============================================================================
-# test-gui-bootstrap — copie docker-keep-gui, injecte le binaire GUI compilé,
-#                       extrait la release tar, lance GUI sous xvfb+vnc.
-# Container gardé à l'arrêt (pas de --rm). Nom unique: docker-test-gui-bootstrap.
+# test-gui-bootstrap — copie docker-keep-gui, injecte le binaire du BOOTSTRAP
+#                       (installeur GUI), et lance son UI sous xvfb+vnc.
+#                       C'est l'UI du bootstrap qui télécharge la release depuis
+#                       GitHub, l'installe (~/.modelweaver) et lance le GUI.
+#                       Mode interactif : tu cliques Install dans noVNC.
+# Container gardé (pas de --rm). Nom: docker-test-gui-bootstrap.
 # Usage: projetadmin/test-gui-bootstrap
 # =============================================================================
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,12 +14,12 @@ cd "$REPO_ROOT"
 
 BASE_IMAGE="docker-keep-gui"
 CONTAINER="docker-test-gui-bootstrap"
-GUI_BIN="$REPO_ROOT/projetadmin/gui-main/src-tauri/target/release/modelweaver"
-RELEASE_TAR="$REPO_ROOT/release-assets/modelweaver-release-linux-x86_64.tar.gz"
+BOOTSTRAP_BIN="$REPO_ROOT/projetadmin/gui-bootstrap/src-tauri/target/release/modelweaver-bootstrap"
 
-R='\033[0;31m'; G='\033[0;32m'; B='\033[1;34m'; N='\033[0m'
+R='\033[0;31m'; G='\033[0;32m'; B='\033[1;34m'; Y='\033[1;33m'; N='\033[0m'
 info() { echo -e "${B}[INFO]${N} $*"; }
 ok()   { echo -e "${G}[OK]${N}   $*"; }
+warn() { echo -e "${Y}[WARN]${N} $*"; }
 err()  { echo -e "${R}[ERR]${N}  $*"; exit 1; }
 
 # ── Vérifications ──
@@ -27,33 +30,13 @@ docker image inspect "$BASE_IMAGE" &>/dev/null || {
     ok "$BASE_IMAGE construite"
 }
 
-info "vérification binaire GUI compilé..."
-if [ ! -f "$GUI_BIN" ]; then
-    info "construction du binaire GUI (tauri)..."
-    (cd "$REPO_ROOT/projetadmin/gui-main" && npm run tauri build --no-bundle 2>&1 | tail -3)
+info "vérification binaire du bootstrap (gui-bootstrap)..."
+if [ ! -f "$BOOTSTRAP_BIN" ]; then
+    info "construction du binaire bootstrap (tauri)..."
+    (cd "$REPO_ROOT/projetadmin/gui-bootstrap" && npm run tauri build --no-bundle 2>&1 | tail -3)
 fi
-[ -f "$GUI_BIN" ] || err "binaire GUI introuvable: $GUI_BIN"
-ok "binaire GUI : $(ls -lh "$GUI_BIN" | awk '{print $5}')"
-
-info "vérification release tar..."
-if [ ! -f "$RELEASE_TAR" ]; then
-    # construire le tar minimalement (services + modules + gui_helper.py)
-    info "construction du tar..."
-    STAGE="/tmp/opencode/tarbuild"
-    rm -rf "$STAGE" && mkdir -p "$STAGE"
-    cp "$GUI_BIN" "$STAGE/modelweaver"
-    cp "$REPO_ROOT/projetadmin/main-cli/target/release/modelweaver-cli" "$STAGE/modelweaver-cli" 2>/dev/null || true
-    cp "$REPO_ROOT/projetadmin/gui-main/gui_helper.py" "$STAGE/"
-    cp -r "$REPO_ROOT/services" "$STAGE/"
-    cp -r "$REPO_ROOT/modules"  "$STAGE/"
-    cp "$REPO_ROOT/requirements.txt" "$STAGE/"
-    find "$STAGE/services" "$STAGE/modules" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-    chmod +x "$STAGE/modelweaver" "$STAGE/modelweaver-cli" 2>/dev/null || true
-    tar -czf "$RELEASE_TAR" -C "$STAGE" modelweaver modelweaver-cli services modules gui_helper.py requirements.txt
-    rm -rf "$STAGE"
-fi
-[ -f "$RELEASE_TAR" ] || err "release tar introuvable"
-ok "release tar : $(ls -lh "$RELEASE_TAR" | awk '{print $5}')"
+[ -f "$BOOTSTRAP_BIN" ] || err "binaire bootstrap introuvable: $BOOTSTRAP_BIN"
+ok "binaire bootstrap : $(ls -lh "$BOOTSTRAP_BIN" | awk '{print $5}')"
 
 # ── Clean si existe ──
 if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
@@ -64,35 +47,32 @@ fi
 
 # ── Création container ──
 info "création container $CONTAINER (sans --rm → gardé)..."
-docker run -d --name "$CONTAINER" -p 5900:5900 -p 8770:8770 "$BASE_IMAGE"
+docker run -d --name "$CONTAINER" -p 5900:5900 -p 6080:6080 -p 8770:8770 "$BASE_IMAGE"
 ok "container lancé (pid=$(docker inspect -f '{{.State.Pid}}' "$CONTAINER"))"
 
-# ── Injection binaire + release tar ──
-info "extraction release tar dans /opt/modelweaver..."
-docker cp "$RELEASE_TAR" "$CONTAINER:/tmp/release.tar.gz"
-docker exec "$CONTAINER" bash -c 'mkdir -p /opt/modelweaver && tar -xzf /tmp/release.tar.gz -C /opt/modelweaver && chmod +x /opt/modelweaver/modelweaver /opt/modelweaver/modelweaver-cli 2>/dev/null; rm /tmp/release.tar.gz'
-ok "tar extrait"
+# ── Injection du binaire bootstrap (c'est LUI qui fait l'install) ──
+info "injection du binaire bootstrap dans le container..."
+docker cp "$BOOTSTRAP_BIN" "$CONTAINER:/opt/modelweaver-bootstrap"
+docker exec "$CONTAINER" chmod +x /opt/modelweaver-bootstrap
+ok "bootstrap injecté (/opt/modelweaver-bootstrap)"
 
-info "injection binaire GUI compilé (par-dessus le tar)..."
-docker cp "$GUI_BIN" "$CONTAINER:/opt/modelweaver/modelweaver"
-docker exec "$CONTAINER" chmod +x /opt/modelweaver/modelweaver
-ok "binaire GUI injecté"
-
-# ── Lancement GUI (detached) ──
-info "lancement de la GUI sous xvfb (detached)..."
-docker exec -d "$CONTAINER" bash -c 'export DISPLAY=:99 MODELWEAVER_HOME=/opt/modelweaver WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11; /opt/modelweaver/modelweaver > /tmp/gui.log 2>&1'
+# ── Lancement de l'UI du bootstrap sous xvfb (detached, interactif) ──
+info "lancement de l'UI bootstrap sous xvfb (detached)..."
+docker exec -d "$CONTAINER" bash -c 'export DISPLAY=:99 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11; /opt/modelweaver-bootstrap > /tmp/bootstrap.log 2>&1'
 sleep 3
 if docker exec "$CONTAINER" curl -s -m2 http://localhost:8770/health >/dev/null 2>&1; then
-    ok "API daemon UP (port 8770)"
+    ok "API daemon déjà UP (port 8770) — le GUI tourne déjà"
 else
-    warn "API daemon pas encore UP — les logs sont dans /tmp/gui.log"
+    warn "API pas encore UP : c'est normal, le bootstrap est interactif."
+    warn "Ouvre noVNC, clique Install/Télécharger, puis lance le GUI. L'API se lèvera après."
 fi
 
 echo ""
 echo -e "${G}═══════════════════════════════════════════════${N}"
 echo -e "${G}  $CONTAINER prêt${N}"
+echo -e "${B}  Bootstrap UI (navigateur) :${N} http://localhost:6080/vnc.html?autoconnect=true"
 echo -e "${B}  VNC :${N} localhost:5900  (x11vnc, no password)"
-echo -e "${B}  API :${N} curl http://localhost:8770/health"
-echo -e "${B}  GUI log :${N} docker exec $CONTAINER tail -f /tmp/gui.log"
+echo -e "${B}  API :${N} curl http://localhost:8770/health (UP après installation via le bootstrap)"
+echo -e "${B}  Bootstrap log :${N} docker exec $CONTAINER tail -f /tmp/bootstrap.log"
 echo -e "${B}  Stop  :${N} docker stop $CONTAINER   (gardé, pas --rm)"
 echo -e "${G}═══════════════════════════════════════════════${N}"

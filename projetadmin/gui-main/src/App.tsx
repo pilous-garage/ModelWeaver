@@ -63,6 +63,9 @@ function App() {
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
   const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
 
+  // Auto-test opt-in (piloté par MODELWEAVER_ENABLE_AUTOTEST côté Rust).
+  const [autotestEnabled, setAutotestEnabled] = useState(false);
+
   // Debug / process manager panel
   const [showDebug, setShowDebug] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
@@ -175,6 +178,9 @@ function App() {
 
   useEffect(() => {
     checkDependencies();
+    try {
+      invoke<boolean>('autotest_enabled_cmd').then(setAutotestEnabled).catch(() => setAutotestEnabled(false));
+    } catch { setAutotestEnabled(false); }
     return () => { if (autoInstallTimer) clearTimeout(autoInstallTimer); };
   }, []);
 
@@ -303,7 +309,7 @@ function App() {
       // Show dashboard if all required dependencies are installed
       if (requiredDepsList.every(dep => dep.installed)) {
         setShowDashboard(true);
-      } else {
+      } else if (autotestEnabled) {
         addLog(`Missing dependencies detected: ${requiredDepsList.filter(d => !d.installed).map(d => d.name).join(', ')}`);
         addLog('Auto-install will start in 10 seconds...');
         const timer = setTimeout(() => {
@@ -311,6 +317,9 @@ function App() {
           handleInstall();
         }, 10000);
         setAutoInstallTimer(timer);
+      } else {
+        addLog(`Missing dependencies detected: ${requiredDepsList.filter(d => !d.installed).map(d => d.name).join(', ')}`);
+        addLog('Auto-install désactivé (MODELWEAVER_ENABLE_AUTOTEST non défini)');
       }
       })(),
         timeoutPromise
@@ -452,8 +461,9 @@ function App() {
       setCatalogueTools(cat.tools || []);
       await refreshInstalled(); addLog('[LOGITH] refreshInstalled ok');
       addLog('Logithèque chargée (catalogue local)');
-      // Auto-install tous les outils non installés (une seule fois au premier chargement)
-      if (!autoInstalledRef.current) {
+      // Auto-install tous les outils non installés (une seule fois au premier
+      // chargement) — uniquement si MODELWEAVER_ENABLE_AUTOTEST est actif.
+      if (autotestEnabled && !autoInstalledRef.current) {
         autoInstalledRef.current = true;
         addLog('Déclenchement auto-install de tous les outils...');
         invoke<any>('install_all_tools')

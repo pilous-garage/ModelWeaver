@@ -142,6 +142,14 @@ fn become_group_leader() {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceStatus {
+    Pending,
+    Starting,
+    Ready,
+    Failed,
+}
+
 struct Service {
     name: String,
     command: String,
@@ -150,6 +158,8 @@ struct Service {
     child: Option<Child>,
     restarts: u32,
     started_at: u64,
+    dependencies: Vec<String>,
+    status: ServiceStatus,
 }
 
 fn logs_dir() -> PathBuf {
@@ -201,34 +211,56 @@ fn supervisor_thread(services: Arc<Mutex<Vec<Service>>>) {
     std::thread::spawn(move || loop {
         {
             let mut svcs = services.lock().unwrap();
-            for s in svcs.iter_mut() {
-                let exited = match s.child.as_mut() {
-                    Some(c) => match c.try_wait() {
-                        Ok(Some(code)) => {
-                            eprintln!(
-                                "[main-cli] service '{}' terminé (code {:?})",
-                                s.name,
-                                code.code()
-                            );
-                            true
+            for i in 0..svcs.len() {
+                // On utilise un index pour pouvoir vérifier le statut des autres services (deps)
+                let status = svcs[i].status;
+                let deps = svcs[i].dependencies.clone();
+
+                match status {
+                    ServiceStatus::Pending => {
+                        // Vérifier si toutes les dépendances sont Ready
+                        let all_deps_ready = deps.iter().all(|dep_name| {
+                            svcs.iter().any(|s| s.name == *dep_name && s.status == ServiceStatus::Ready)
+                        });
+
+                        if all_deps_ready {
+                            eprintln!("[main-cli] deps ready, starting '{}'...", svcs[i].name);
+                            spawn_service(&mut svcs[i]);
+                            svcs[i].status = ServiceStatus::Starting;
                         }
-                        Ok(None) => false,
-                        Err(_) => true,
-                    },
-                    None => true,
-                };
-                if exited {
-                    s.child = None;
-                    if now_secs().saturating_sub(s.started_at) > 60 {
-                        s.restarts = 0;
                     }
-                    if s.restart && s.restarts < 10 {
-                        s.restarts += 1;
-                        eprintln!(
-                            "[main-cli] restart '{}' (attempt {})",
-                            s.name, s.restarts
-                        );
-                        spawn_service(s);
+                    ServiceStatus::Starting => {
+                        if check_ready(&svcs[i]) {
+                            eprintln!("[main-cli] ✅ service '{}' is READY", svcs[i].name);
+                            svcs[i].status = ServiceStatus::Ready;
+                        } else if let Some(ref mut c) = svcs[i].child {
+                            if let Ok(Some(_)) = c.try_wait() {
+                                eprintln!("[main-cli] service '{}' crashed during startup", svcs[i].name);
+                                svcs[i].status = ServiceStatus::Pending;
+                                svcs[i].child = None;
+                            }
+                        }
+                    }
+                    ServiceStatus::Ready => {
+                        if let Some(ref mut c) = svcs[i].child {
+                            if let Ok(Some(code)) = c.try_wait() {
+                                eprintln!("[main-cli] service '{}' terminé (code {:?})", svcs[i].name, code.code());
+                                svcs[i].status = ServiceStatus::Pending;
+                                svcs[i].child = None;
+                            }
+                        }
+                    }
+                    ServiceStatus::Failed => {}
+                }
+
+                // Gestion des restarts pour les services qui ne sont pas Ready
+                if svcs[i].status != ServiceStatus::Ready {
+                    if svcs[i].restart && svcs[i].restarts < 10 {
+                        if svcs[i].status == ServiceStatus::Pending && svcs[i].child.is_none() {
+                            // Le spawn est géré par la transition Pending -> Starting
+                        }
+                    } else if svcs[i].restarts >= 10 {
+                        svcs[i].status = ServiceStatus::Failed;
                     }
                 }
             }
@@ -266,6 +298,17 @@ fn auto_install_thread() {
             ])
             .output();
     });
+}
+
+fn autotest_enabled() -> bool {
+    // Désactivé par défaut. Activé si MODELWEAVER_ENABLE_AUTOTEST=1|true|yes.
+    match std::env::var("MODELWEAVER_ENABLE_AUTOTEST") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        }
+        Err(_) => false,
+    }
 }
 
 fn cmd_version() {
@@ -309,16 +352,13 @@ fn cmd_start() {
                 "--db".into(),
                 cat_db.display().to_string(),
             ],
+            vec![],
         ),
         service_def(
             "installer",
             python_bin(),
             vec![service_entry(&repo_root, "installer_worker").display().to_string()],
-        ),
-        service_def(
-            "tester",
-            python_bin(),
-            vec![service_entry(&repo_root, "tester").display().to_string()],
+            vec![],
         ),
         service_def(
             "api",
@@ -329,13 +369,22 @@ fn cmd_start() {
                 "--port".into(),
                 "8770".into(),
             ],
+            vec!["catalogue"],
         ),
     ];
 
-    for s in services.iter_mut() {
-        spawn_service(s);
+    // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut
+    // car il dépend du autotest qui n'est pas encore en place.
+    if autotest_enabled() {
+        services.push(service_def(
+            "tester",
+            python_bin(),
+            vec![service_entry(&repo_root, "tester").display().to_string()],
+            vec![],
+        ));
     }
 
+    // On ne spawn plus tout d'un coup, le superviseur s'en charge selon les deps.
     let services = Arc::new(Mutex::new(services));
     supervisor_thread(services.clone());
     auto_install_thread();
@@ -350,7 +399,31 @@ fn cmd_start() {
     std::process::exit(0);
 }
 
-fn service_def(name: &str, command: &str, args: Vec<String>) -> Service {
+fn check_ready(s: &Service) -> bool {
+    // Certains services n'ont pas d'endpoint HTTP (ex: installer, tester)
+    // On les considère Ready dès qu'ils sont spawnés.
+    if s.name == "installer" || s.name == "tester" {
+        return true;
+    }
+
+    let port = match s.name.as_str() {
+        "catalogue" => "8765",
+        "api" => "8770",
+        _ => return true,
+    };
+
+    let url = format!("http://127.0.0.1:{}/health", port);
+    let status = Command::new("curl")
+        .args(["-s", "-f", "-m", "1", &url])
+        .output();
+
+    match status {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn service_def(name: &str, command: &str, args: Vec<String>, deps: Vec<&str>) -> Service {
     Service {
         name: name.to_string(),
         command: command.to_string(),
@@ -359,6 +432,8 @@ fn service_def(name: &str, command: &str, args: Vec<String>) -> Service {
         child: None,
         restarts: 0,
         started_at: 0,
+        dependencies: deps.into_iter().map(|s| s.to_string()).collect(),
+        status: ServiceStatus::Pending,
     }
 }
 

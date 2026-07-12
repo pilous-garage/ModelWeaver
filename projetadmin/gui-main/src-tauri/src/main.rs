@@ -1361,6 +1361,22 @@ async fn check_dependencies_with_config(config: serde_json::Value) -> Result<ser
     Ok(serde_json::Value::Object(results))
 }
 
+fn autotest_enabled() -> bool {
+    // Désactivé par défaut. Activé si MODELWEAVER_ENABLE_AUTOTEST=1|true|yes.
+    match std::env::var("MODELWEAVER_ENABLE_AUTOTEST") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+#[tauri::command]
+fn autotest_enabled_cmd() -> bool {
+    autotest_enabled()
+}
+
 fn main() {
     let helper_path = find_helper_path();
     let db_path = mw_home().join("modelweaver.db");
@@ -1395,40 +1411,44 @@ fn main() {
         vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
     define_service("installer", "loop", python_bin(),
         vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false);
-    define_service("tester", "loop", python_bin(),
-        vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false);
+    // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut.
+    if autotest_enabled() {
+        define_service("tester", "loop", python_bin(),
+            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false);
+    }
     // Daemon API (backend unique, consommé par toute interface).
     define_service("api", "loop", python_bin(),
         vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false);
     start_service_supervisor();
     write_services_summary();
 
-    // Auto-install tous les outils dès que le daemon est prêt (même sans webview).
-    {
-        let _db = db_path.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(8));
-            let home = get_home_dir();
-            let token_path = mw_home().join("api.token");
-            let port_path = mw_home().join("api.port");
-            let token = match std::fs::read_to_string(&token_path) {
-                Ok(t) => t,
-                Err(e) => { log_to_file("AUTO_INSTALL", &format!("token not found: {}", e)); return; }
-            };
-            let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".into());
-            let port = port.trim();
-            let url = format!("http://127.0.0.1:{}/v1/tools/install/all", port);
-            log_to_file("AUTO_INSTALL", &format!("calling POST {}", url));
-            let output = match std::process::Command::new("curl")
-                .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", "{}", &url])
-                .output()
-            {
-                Ok(o) => o,
-                Err(e) => { log_to_file("AUTO_INSTALL", &format!("curl failed: {}", e)); return; }
-            };
-            let body = String::from_utf8_lossy(&output.stdout).to_string();
-            log_to_file("AUTO_INSTALL", &format!("result: {}", body));
-        });
+    // Auto-install tous les outils dès que le daemon est prêt — opt-in uniquement
+    // (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut : pas de déclenchement
+    // automatique tant que l'autotest n'est pas en place.
+    if autotest_enabled() {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        let home = get_home_dir();
+        let token_path = mw_home().join("api.token");
+        let port_path = mw_home().join("api.port");
+        let token = match std::fs::read_to_string(&token_path) {
+            Ok(t) => t,
+            Err(e) => { log_to_file("AUTO_INSTALL", &format!("token not found: {}", e)); return; }
+        };
+        let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".into());
+        let port = port.trim();
+        let url = format!("http://127.0.0.1:{}/v1/tools/install/all", port);
+        log_to_file("AUTO_INSTALL", &format!("calling POST {}", url));
+        let output = match std::process::Command::new("curl")
+            .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", "{}", &url])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => { log_to_file("AUTO_INSTALL", &format!("curl failed: {}", e)); return; }
+        };
+        let body = String::from_utf8_lossy(&output.stdout).to_string();
+        log_to_file("AUTO_INSTALL", &format!("result: {}", body));
+    });
     }
 
     tauri::Builder::default()
@@ -1468,6 +1488,7 @@ fn main() {
             check_dependencies_with_config,
             read_debug_logs,
             close_splashscreen,
+            autotest_enabled_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
