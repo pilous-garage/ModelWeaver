@@ -38,4 +38,8 @@ def watch_system_state(interval: float = 2.0):
 
 
 if __name__ == "__main__":
+    from services.depends import require_deps
+    from pathlib import Path
+    if not require_deps(Path(__file__).resolve().parent):
+        sys.exit(3)
     watch_system_state()

@@ -25,4 +25,6 @@ CONSUMES = {
     "modules.checker.checker": ["Checker"],
     # Helpers partagés.
     "services._common": ["_db_paths", "_quiet_stdout", "log_to_file", "acquire_instance_lock"],
+    # Vérification des dépendances.
+    "services.depends": ["check_all_units"],
 }
