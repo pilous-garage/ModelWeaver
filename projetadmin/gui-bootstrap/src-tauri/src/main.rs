@@ -203,10 +203,18 @@ struct UpdateInfo {
     assets: Vec<serde_json::Value>,
 }
 
+/// Version COMPLÈTE du bootstrap (release tag, ex: 0.6.0.6). Cargo ne permet
+/// que 3 segments, donc on l'embarque via include_str! depuis un fichier généré
+/// par auto-bump avant le build. Sans ça, le bootstrap se verrait en "v0.6.0"
+/// et se croirait toujours obsolète face au latest "v0.6.0.x".
+fn bootstrap_version() -> &'static str {
+    include_str!("bootstrap-version.txt").trim()
+}
+
 #[tauri::command]
 async fn check_update() -> Result<UpdateInfo, String> {
-    // Version propre du bootstrap (Cargo, 3 segments max — indicative).
-    let bootstrap_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // Version propre du bootstrap (embarquée, release tag complet).
+    let bootstrap_version = format!("v{}", bootstrap_version());
     // Version du MAIN réellement installé (source de vérité = version.txt).
     // Si absent (main pas encore installé), on considère v0.0.0 → une MAJ sera
     // proposée. Cela corrige l'ancien faux-positif « un point de moins » où le

@@ -76,6 +76,11 @@ if $DO_COMMIT || $DO_RELEASE; then
     info "  → gui-main (Tauri, frontend embarqué)"
     (cd projetadmin/gui-main && npm run tauri build --no-bundle 2>&1 | tail -3)
 
+    # Injecte la version COMPLÈTE (release tag) dans le binaire bootstrap :
+    # Cargo limite à 3 segments, donc on l'embarque via include_str! depuis
+    # ce fichier, généré ici avant le build du bootstrap.
+    echo "$NEW_NUM" > projetadmin/gui-bootstrap/src-tauri/src/bootstrap-version.txt
+
     info "  → gui-bootstrap (install wizard)"
     (cd projetadmin/gui-bootstrap && npm run tauri build --no-bundle 2>&1 | tail -3)
 
