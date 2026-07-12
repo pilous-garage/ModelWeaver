@@ -1,6 +1,6 @@
 [package]
 name = "modelweaver-bootstrap"
-version = "0.5.21"
+version = "0.6.0"
 description = "ModelWeaver Bootstrap Installer"
 authors = ["ModelWeaver Team"]
 edition = "2021"

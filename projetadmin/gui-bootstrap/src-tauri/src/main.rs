@@ -178,7 +178,12 @@ fn parse_version(v: &str) -> Vec<u32> {
 }
 
 fn is_newer_tag(latest: &str, current: &str) -> bool {
-    parse_version(latest) > parse_version(current)
+    let mut lv = parse_version(latest);
+    let mut cv = parse_version(current);
+    let max_len = lv.len().max(cv.len());
+    lv.resize(max_len, 0);
+    cv.resize(max_len, 0);
+    lv > cv
 }
 
 #[derive(Serialize)]

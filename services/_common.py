@@ -24,18 +24,36 @@ REPO_ROOT = _SERVICE_DIR.parent.parent                   # racine du repo
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-RUN_DIR = Path.home() / ".modelweaver" / "run"
+
+def mw_home() -> Path:
+    """Racine d'installation ModelWeaver (données + code app).
+
+    Résolution (partagée avec le binaire Rust) :
+      1. MODELWEAVER_HOME si défini
+      2. /opt/modelweaver si présent (install system-wide)
+      3. sinon ~/.modelweaver (dev / user local, sans sudo)
+    """
+    ev = os.environ.get("MODELWEAVER_HOME")
+    if ev:
+        return Path(ev)
+    opt = Path("/opt/modelweaver")
+    if opt.exists():
+        return opt
+    return Path.home() / ".modelweaver"
+
+
+RUN_DIR = mw_home() / "run"
 RECIPE_BASE = REPO_ROOT / "modules" / "installer"
 
 
 def _mw_dir() -> Path:
-    d = Path.home() / ".modelweaver"
+    d = mw_home()
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _db_paths() -> tuple[Path, Path]:
-    """Chemins DB stables sous ~/.modelweaver (indépendants du CWD)."""
+    """Chemins DB stables sous mw_home() (indépendants du CWD)."""
     mw_dir = _mw_dir()
     return mw_dir / "modelweaver.db", mw_dir / "catalogue.db"
 
@@ -62,18 +80,51 @@ def log_to_file(level: str, message: str) -> None:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 def acquire_instance_lock(name: str) -> bool:
     """Garantit un seul processus par `name` (single-instance).
 
-    Crée ~/.modelweaver/run/<name>.pid. Si un PID vivant y est déjà présent,
-    retourne False (l'appelant doit s'arrêter). Sinon écrit le PID courant,
-    enregistre un cleanup à la sortie, et retourne True.
-
-    Le superviseur utilise ce même mécanisme pour chacun de ses services, ainsi
-    que pour lui-même (lock 'supervisor').
+    Crée mw_home/run/<name>.pid. Si un PID vivant y est déjà présent, le
+    processus est tué (SIGTERM puis SIGKILL) et le verrou réutilisé : le
+    nouveau prend la place de l'ancien sans toucher à la base (qui est sur
+    disque). Ainsi, relancer un superviseur/daemon le remplace proprement
+    au lieu d'échouer sur un verrou périmé.
     """
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     lock = RUN_DIR / f"{name}.pid"
+
+    # Kill-and-replace : si un ancien détenteur vivant détient le verrou, on le tue.
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip())
+            if _pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                for _ in range(50):
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.1)
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+        except (ValueError, OSError, ProcessLookupError):
+            pass
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     try:
         fd = os.open(lock, os.O_CREAT | os.O_RDWR)
     except OSError:
@@ -83,19 +134,6 @@ def acquire_instance_lock(name: str) -> bool:
     except OSError:
         os.close(fd)
         return False
-
-    try:
-        cur = lock.read_text().strip() if lock.exists() else ""
-    except OSError:
-        cur = ""
-    if cur:
-        try:
-            pid = int(cur)
-            os.kill(pid, 0)  # lève OSError si le processus n'existe pas
-            os.close(fd)
-            return False  # déjà en cours
-        except (ValueError, OSError, ProcessLookupError):
-            pass  # pid mort -> on réutilise le lock
 
     lock.write_text(str(os.getpid()))
     atexit.register(_release_pid_file, lock)

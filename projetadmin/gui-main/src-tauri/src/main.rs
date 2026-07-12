@@ -55,9 +55,27 @@ fn get_home_dir() -> PathBuf {
         })
 }
 
+/// Racine d'installation ModelWeaver (code app + données).
+/// Résolution (partagée avec le backend Python) :
+///   1. MODELWEAVER_HOME si défini
+///   2. /opt/modelweaver si présent (install system-wide)
+///   3. sinon ~/.modelweaver (dev / user local, sans sudo)
+fn mw_home() -> PathBuf {
+    if let Some(v) = std::env::var_os("MODELWEAVER_HOME") {
+        if !v.as_os_str().is_empty() {
+            return PathBuf::from(v);
+        }
+    }
+    let opt = PathBuf::from("/opt/modelweaver");
+    if opt.exists() {
+        return opt;
+    }
+    get_home_dir().join(".modelweaver")
+}
+
 fn log_path() -> PathBuf {
     let home = get_home_dir();
-    let dir = home.join(".modelweaver");
+    let dir = mw_home();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("gui.log")
 }
@@ -126,7 +144,7 @@ fn now_secs() -> u64 {
 }
 
 fn logs_dir() -> PathBuf {
-    let dir = get_home_dir().join(".modelweaver").join("logs");
+    let dir = mw_home().join("logs");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -385,7 +403,7 @@ fn mirror_processes_to_db(db_path: &PathBuf, snap: &[ProcInfo]) {
             ON CONFLICT(id) DO UPDATE SET pid=excluded.pid,status=excluded.status,command=excluded.command,log_path=excluded.log_path,cpu=excluded.cpu,rss_kb=excluded.rss_kb,ended_at=excluded.ended_at,updated_at=strftime('%s','now');",
             p.id, esc(&p.name), pid, parent, esc(&p.status), esc(&p.command), esc(&p.log_path), p.cpu, p.rss_kb, p.started_at as i64, ended);
     }
-    let _ = Command::new("sqlite3").arg(db_path).arg(sql).status();
+    db_run(db_path, &sql);
 }
 
 #[cfg(not(unix))]
@@ -493,7 +511,7 @@ fn set_watch_cache(name: &str, value: &str) {
 
 /// Service Rust léger : lit local_tools depuis la DB et met en cache le JSON.
 fn watch_installed_tools_rust(interval: f64) {
-    let db = get_home_dir().join(".modelweaver").join("modelweaver.db");
+    let db = mw_home().join("modelweaver.db");
     std::thread::spawn(move || loop {
         let sql = "SELECT lt.version, lt.status, lt.install_path, d.ref AS tool_ref, d.name AS tool_name \
             FROM local_tools lt JOIN tool_definitions d ON d.id = lt.tool_id;";
@@ -530,6 +548,8 @@ fn spawn_service_child(entry: &mut ServiceEntry) {
     log_to_file("SUPERVISOR", &format!("spawn {}", entry.info.name));
     let mut cmd = Command::new(&entry.info.command);
     cmd.args(&entry.info.args);
+    // PYTHONPATH = racine du repo pour que `import services` / `import modules` fonctionne.
+    cmd.env("PYTHONPATH", mw_home());
     #[cfg(unix)]
     cmd.process_group(0);
     if entry.watch {
@@ -635,7 +655,7 @@ fn write_services_summary() {
             s.info.restart, s.managed, s.watch));
         out.push('\n');
     }
-    let path = get_home_dir().join(".modelweaver").join("services-summary.txt");
+    let path = mw_home().join("services-summary.txt");
     if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
         let _ = f.write_all(out.as_bytes());
     }
@@ -675,15 +695,15 @@ fn mirror_services_to_db() {
             ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,updated_at=strftime('%s','now');",
             esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64);
     }
-    let home = get_home_dir().join(".modelweaver").join("modelweaver.db");
-    let _ = Command::new("sqlite3").arg(home).arg(sql).status();
+    let home = mw_home().join("modelweaver.db");
+    db_run(&home, &sql);
 }
 #[cfg(not(unix))]
 fn mirror_services_to_db() {}
 
 fn find_helper_path() -> PathBuf {
     let home = get_home_dir();
-    let production = home.join(".modelweaver").join("gui_helper.py");
+    let production = mw_home().join("gui_helper.py");
     if production.exists() {
         return production;
     }
@@ -701,9 +721,14 @@ fn find_helper_path() -> PathBuf {
     production
 }
 
-/// Racine du dépôt : on remonte depuis l'exécutable jusqu'à trouver `services/`,
+/// Racine du dépôt : on préfère MODELWEAVER_HOME (mw_home) si `services/` y est
+/// présent, sinon on remonte depuis l'exécutable jusqu'à trouver `services/`,
 /// repli sur le parent de gui_helper, puis le dossier courant.
 fn find_repo_root() -> PathBuf {
+    let mw = mw_home();
+    if mw.join("services").is_dir() {
+        return mw;
+    }
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent();
         while let Some(d) = dir {
@@ -730,7 +755,7 @@ fn service_entry(repo: &PathBuf, name: &str) -> PathBuf {
 
 /// Chemin du verrou d'instance unique : ~/.modelweaver/run/<name>.pid
 fn lock_path(name: &str) -> PathBuf {
-    get_home_dir().join(".modelweaver").join("run").join(format!("{}.pid", name))
+    mw_home().join("run").join(format!("{}.pid", name))
 }
 
 /// Vrai si un lock valide (PID vivant) existe déjà pour `name`.
@@ -945,7 +970,7 @@ fn install_dependency(name: String) -> Result<String, String> {
 fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonResponse, String> {
     log_cmd(&format!("run_python_script({})", script_path));
     let home = get_home_dir();
-    let root = home.join(".modelweaver");
+    let root = mw_home();
     let full_path = root.join(&script_path);
     let output = Command::new(python_bin())
         .arg(&full_path)
@@ -1037,7 +1062,7 @@ fn uninstall_tool(ref_: String) -> Result<serde_json::Value, String> {
 }
 
 fn install_db_path() -> PathBuf {
-    get_home_dir().join(".modelweaver").join("modelweaver.db")
+    mw_home().join("modelweaver.db")
 }
 
 #[tauri::command]
@@ -1100,8 +1125,8 @@ fn install_queue_clear() -> Result<(), String> {
 #[tauri::command]
 fn install_all_tools() -> Result<serde_json::Value, String> {
     log_cmd("install_all_tools");
-    let token_path = get_home_dir().join(".modelweaver").join("api.token");
-    let port_path = get_home_dir().join(".modelweaver").join("api.port");
+    let token_path = mw_home().join("api.token");
+    let port_path = mw_home().join("api.port");
     let token = std::fs::read_to_string(&token_path).map_err(|_| "daemon token not found".to_string())?;
     let port = std::fs::read_to_string(&port_path).unwrap_or_else(|_| "8770".to_string());
     let port = port.trim();
@@ -1212,7 +1237,7 @@ fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
 fn ensure_bundled_resources(app: &tauri::App) {
     if let Ok(res_dir) = app.path().resource_dir() {
         let home = get_home_dir();
-        let dest = home.join(".modelweaver");
+        let dest = mw_home();
         let _ = std::fs::create_dir_all(&dest);
 
         let src_helper = res_dir.join("gui_helper.py");
@@ -1338,7 +1363,7 @@ async fn check_dependencies_with_config(config: serde_json::Value) -> Result<ser
 
 fn main() {
     let helper_path = find_helper_path();
-    let db_path = get_home_dir().join(".modelweaver").join("modelweaver.db");
+    let db_path = mw_home().join("modelweaver.db");
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
@@ -1365,7 +1390,7 @@ fn main() {
     // superviseur vérifie aussi le lock avant de (re)spawn).
     let repo_root = helper_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| find_repo_root());
     let cat_entry = service_entry(&repo_root, "catalogue");
-    let cat_db = get_home_dir().join(".modelweaver").join("catalogue.remote.db");
+    let cat_db = mw_home().join("catalogue.remote.db");
     define_service("catalogue", "loop", python_bin(),
         vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
     define_service("installer", "loop", python_bin(),
@@ -1384,8 +1409,8 @@ fn main() {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(8));
             let home = get_home_dir();
-            let token_path = home.join(".modelweaver").join("api.token");
-            let port_path = home.join(".modelweaver").join("api.port");
+            let token_path = mw_home().join("api.token");
+            let port_path = mw_home().join("api.port");
             let token = match std::fs::read_to_string(&token_path) {
                 Ok(t) => t,
                 Err(e) => { log_to_file("AUTO_INSTALL", &format!("token not found: {}", e)); return; }

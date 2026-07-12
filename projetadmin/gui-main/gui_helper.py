@@ -12,7 +12,26 @@ import json
 from pathlib import Path
 
 HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(os.path.dirname(HELPER_DIR))
+
+
+def _find_repo_root() -> str:
+    """Remonte depuis gui_helper.py jusqu'au dossier contenant services/ + modules/."""
+    d = HELPER_DIR
+    while True:
+        if os.path.isdir(os.path.join(d, "services")) and os.path.isdir(os.path.join(d, "modules")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    # MODELWEAVER_HOME explicite si défini
+    env = os.environ.get("MODELWEAVER_HOME")
+    if env and os.path.isdir(os.path.join(env, "services")):
+        return env
+    return HELPER_DIR
+
+
+REPO_ROOT = _find_repo_root()
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 

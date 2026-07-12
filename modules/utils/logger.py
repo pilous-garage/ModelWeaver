@@ -3,15 +3,17 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+from services._common import mw_home
+
 class ModelWeaverLogger:
     """Système de logging structuré pour ModelWeaver."""
     
-    def __init__(self, name="modelweaver", log_dir=".modelweaver/logs"):
+    def __init__(self, name="modelweaver", log_dir=None):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         
         # Chemin des logs
-        log_path = Path(log_dir)
+        log_path = mw_home() / "logs" if log_dir is None else Path(log_dir)
         log_path.mkdir(parents=True, exist_ok=True)
         
         # Formatage

@@ -16,6 +16,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from services._common import mw_home
+
 
 class MWError(Exception):
     pass
@@ -36,7 +38,7 @@ class _Namespace:
 
 class MWClient:
     def __init__(self, port=None, token=None, base_dir=None, timeout=930):
-        self.base_dir = Path(base_dir) if base_dir else (Path.home() / ".modelweaver")
+        self.base_dir = Path(base_dir) if base_dir else mw_home()
         self.timeout = timeout
         self.port = port or self._read("api.port")
         self.token = token or self._read("api.token")

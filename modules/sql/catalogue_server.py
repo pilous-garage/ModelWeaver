@@ -19,7 +19,10 @@ import time
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from services._common import mw_home
 
 
 def _project_root() -> Path:
@@ -109,7 +112,7 @@ def main():
     parser = argparse.ArgumentParser(description="Catalogue API Server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--db", type=str,
-                        default=str(_project_root() / ".modelweaver" / "catalogue.db"))
+                        default=str(mw_home() / "catalogue.db"))
     args = parser.parse_args()
 
     db_path = Path(args.db)

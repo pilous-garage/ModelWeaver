@@ -1,6 +1,6 @@
 [package]
 name = "modelweaver"
-version = "0.5.21"
+version = "0.6.0"
 description = "ModelWeaver Main App"
 authors = ["ModelWeaver Team"]
 edition = "2021"

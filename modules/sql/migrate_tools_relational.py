@@ -1,7 +1,11 @@
+import sys
 import sqlite3
 from pathlib import Path
 
-db_path = Path(".modelweaver/modelweaver.db")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from services._common import mw_home
+
+db_path = mw_home() / "modelweaver.db"
 conn = sqlite3.connect(str(db_path))
 cur = conn.cursor()
 

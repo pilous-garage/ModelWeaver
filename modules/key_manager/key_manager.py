@@ -26,8 +26,9 @@ from typing import Dict, Any, Optional, List
 import keyring
 
 from modules.sql.db import ModelWeaverDB
+from services._common import mw_home
 
-_MW_DIR = Path.home() / ".modelweaver"
+_MW_DIR = mw_home()
 _KEYRING_SERVICE = "modelweaver"
 _KEYRING_TABLE_KEY = "keys_table"
 _FALLBACK_KEY = _MW_DIR / ".keyring_fallback.key"

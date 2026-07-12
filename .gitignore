@@ -91,3 +91,7 @@ docker/
 # Logs et rapports
 **/tauri_dev.log
 **/tauri_build.log
+
+# nouveaux binaires Rust (headless + bootstrap)
+projetadmin/main-cli/target/
+projetadmin/bootstrap-cli/target/

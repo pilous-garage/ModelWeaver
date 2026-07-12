@@ -5,12 +5,14 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from services._common import mw_home
+
 class Checker:
     def __init__(self, state_file: Optional[Path] = None):
         if state_file:
             self.state_file = Path(state_file)
         else:
-            self.state_file = Path(__file__).parent.parent / ".modelweaver" / "system_state.json"
+            self.state_file = mw_home() / "system_state.json"
         
         self.state: Dict[str, Any] = {}
 

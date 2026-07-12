@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .recipe_parser import RecipeParser
+from services._common import mw_home
 
 
 class Installer:
@@ -27,7 +28,7 @@ class Installer:
         self.os_type = platform.system()
         self.distro = self._get_distro()
         self.arch = self._normalize_arch(platform.machine())
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".modelweaver" / "cache"
+        self.cache_dir = Path(cache_dir) if cache_dir else mw_home() / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.recipe_parser = RecipeParser(project_root=project_root)
 
@@ -164,21 +165,19 @@ class Installer:
                           progress_callback: Optional[Callable[[int, str], None]] = None) -> bool:
         method = tool.get("install_method", "direct-url")
         ttype = tool.get("tool_type", "binary")
+        pkg = self._get_params(tool).get("package", tool.get("ref", ref))
 
         if method == "pip" or ttype == "python-module":
-            pkg = tool.get("name", ref)
             if progress_callback:
                 progress_callback(50, f"pip uninstall {pkg}...")
             return self._run(["pip", "uninstall", "-y", pkg])
 
         if method == "apt":
-            pkg = tool.get("name", ref)
             if progress_callback:
                 progress_callback(50, f"apt remove {pkg}...")
             return self._run_apt_remove(pkg)
 
         if method == "brew":
-            pkg = tool.get("name", ref)
             if progress_callback:
                 progress_callback(50, f"brew uninstall {pkg}...")
             return self._run(["brew", "uninstall", pkg])
@@ -278,7 +277,7 @@ class Installer:
         return raw or {}
 
     def _run(self, cmd: list) -> bool:
-        if len(cmd) >= 2 and os.path.basename(cmd[0]) == "pip" and cmd[1] == "install":
+        if len(cmd) >= 2 and os.path.basename(cmd[0]) == "pip":
             if "--break-system-packages" not in cmd:
                 cmd.append("--break-system-packages")
         try:

@@ -38,6 +38,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from services._common import mw_home
+
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
 # directement les modules (source de vérité) et le service installer_worker
 # (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
@@ -52,7 +54,7 @@ MW_VERSION = "0.6.0"
 
 
 def _mw_dir() -> Path:
-    d = Path.home() / ".modelweaver"
+    d = mw_home()
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -538,8 +540,6 @@ ROUTES = {
 
 def _quiet(fn, *args):
     with contextlib.redirect_stdout(sys.stderr):
-        if any(a is None for a in args):
-            return fn()
         return fn(*args)
 
 
@@ -654,8 +654,14 @@ def serve(port: int = 8770) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("cmd", nargs="?", default="serve",
+                        help="commande (serve par défaut)")
     parser.add_argument("--port", type=int, default=8770)
     args = parser.parse_args()
+    # `serve` est la commande par défaut ; tout autre argument positionnel
+    # inconnu est ignoré (compatibilité avec les superviseurs qui le passent).
+    if args.cmd not in ("serve", None):
+        pass
     serve(args.port)
 
 

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from modules.sql.migrations import MigrationManager
+from services._common import mw_home
 
 try:
     from dotenv import load_dotenv
@@ -35,11 +36,11 @@ def _project_root() -> Path:
 
 
 def _default_local_db() -> Path:
-    return _project_root() / ".modelweaver" / "modelweaver.db"
+    return mw_home() / "modelweaver.db"
 
 
 def _default_catalogue_db() -> Path:
-    return _project_root() / ".modelweaver" / "catalogue.db"
+    return mw_home() / "catalogue.db"
 
 
 # ──────────────────────────────────────────────
