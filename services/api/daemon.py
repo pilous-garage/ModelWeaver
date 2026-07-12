@@ -524,7 +524,7 @@ ROUTES = {
     "jobs/add":               op_jobs_add,
     # F. Dépendances (modules/services)
     "deps/check":             op_deps_check,
-    "deps/install":           _wrap(op_deps_install),
+    "deps/install":           op_deps_install,
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,
