@@ -273,7 +273,16 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn installed_version() -> Option<String> {
-    // On interroge le binaire CLI headless (le GUI nécessite GTK et échoue en headless).
+    // Source de vérité = version.txt posé lors de l'installation (Cargo ne
+    // gère que 3 segments, donc la version complète de release vit ici).
+    let vf = PathBuf::from(INSTALL_ROOT).join("version.txt");
+    if let Ok(s) = std::fs::read_to_string(&vf) {
+        let v = s.trim().to_string();
+        if !v.is_empty() {
+            return Some(if v.starts_with('v') { v } else { format!("v{}", v) });
+        }
+    }
+    // Fallback : binaire CLI headless (retourne la version Cargo, 3 segments).
     let bin = PathBuf::from(CLI_LINK);
     if !bin.exists() {
         return None;

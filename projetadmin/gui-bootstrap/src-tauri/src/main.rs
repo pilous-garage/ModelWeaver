@@ -92,6 +92,14 @@ fn get_main_version() -> Result<String, String> {
     Ok(version.split_whitespace().last().unwrap_or(&version).to_string())
 }
 
+/// Version du MAIN installé, lue depuis le fichier version.txt posé lors de
+/// l'installation (Cargo ne permet que 3 segments, donc la version complète
+/// de release vit ici). Renvoie None si le main n'est pas encore installé.
+fn read_installed_main_version() -> Option<String> {
+    let p = get_home_dir().join(".modelweaver").join("version.txt");
+    std::fs::read_to_string(&p).ok().map(|s| s.trim().to_string())
+}
+
 #[tauri::command]
 fn get_platform() -> PlatformInfo {
     logger("INFO", "Backend: get_platform called");
@@ -190,14 +198,26 @@ fn is_newer_tag(latest: &str, current: &str) -> bool {
 struct UpdateInfo {
     latest_tag: String,
     current_tag: String,
+    bootstrap_version: String,
     needs_update: bool,
     assets: Vec<serde_json::Value>,
 }
 
 #[tauri::command]
 async fn check_update() -> Result<UpdateInfo, String> {
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
-    logger("INFO", &format!("check_update: current={}, fetching latest from GitHub", current_tag));
+    // Version propre du bootstrap (Cargo, 3 segments max — indicative).
+    let bootstrap_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // Version du MAIN réellement installé (source de vérité = version.txt).
+    // Si absent (main pas encore installé), on considère v0.0.0 → une MAJ sera
+    // proposée. Cela corrige l'ancien faux-positif « un point de moins » où le
+    // bootstrap se comparait à sa propre version Cargo tronquée.
+    let current_tag = match read_installed_main_version() {
+        Some(v) if !v.is_empty() => {
+            if v.starts_with('v') { v } else { format!("v{}", v) }
+        }
+        _ => "v0.0.0".to_string(),
+    };
+    logger("INFO", &format!("check_update: bootstrap={}, installed_main={}, fetching latest from GitHub", bootstrap_version, current_tag));
     let url = format!(
         "https://api.github.com/repos/pilous-garage/ModelWeaver/releases/latest"
     );
@@ -212,7 +232,8 @@ async fn check_update() -> Result<UpdateInfo, String> {
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
 
     let latest_tag = json["tag_name"].as_str().unwrap_or("v0.0.0").to_string();
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // needs_update compare le main installé au latest — gère un nombre
+    // arbitraire de segments (vX.Y.Z.W...), robuste jusqu'à 6+ points.
     let needs_update = is_newer_tag(&latest_tag, &current_tag);
     logger("INFO", &format!("check_update: latest={}, current={}, needs_update={}", latest_tag, current_tag, needs_update));
     let assets = json["assets"].as_array().cloned().unwrap_or_default();
@@ -220,6 +241,7 @@ async fn check_update() -> Result<UpdateInfo, String> {
     Ok(UpdateInfo {
         latest_tag,
         current_tag,
+        bootstrap_version,
         needs_update,
         assets,
     })

@@ -27,16 +27,13 @@ info "détermination version actuelle (GitHub latest)..."
 LATEST_TAG=$(gh api "repos/$REPO_SLUG/releases/latest" --jq '.tag_name' 2>/dev/null || echo "v0.6.0")
 LATEST_TAG="${LATEST_TAG:-v0.6.0}"
 LATEST_NUM=$(echo "$LATEST_TAG" | sed 's/^v//')
-BASE=$(echo "$LATEST_NUM" | grep -o '^[0-9.]*')
-# incrémente le dernier segment .x
-MAJOR=$(echo "$BASE" | cut -d. -f1)
-MINOR=$(echo "$BASE" | cut -d. -f2)
-PATCH=$(echo "$BASE" | cut -d. -f3)
-# cherche un 4e segment (le .x)
-XSEG=$(echo "$LATEST_NUM" | sed 's/^[0-9]*\.[0-9]*\.[0-9]*//' | sed 's/^\.//')
-if [ -z "$XSEG" ]; then XSEG=0; fi
-NEW_X=$((XSEG + 1))
-NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}.${NEW_X}"
+# Incrémente le DERNIER segment, peu importe le nombre de points
+# (gère vX.Y.Z, vX.Y.Z.W, voire vX.Y.Z.W.V.X si besoin).
+IFS='.' read -ra SEGS <<< "$LATEST_NUM"
+LAST=$(( ${#SEGS[@]} - 1 ))
+SEGS[$LAST]=$(( ${SEGS[$LAST]} + 1 ))
+NEW_NUM=$(IFS='.'; echo "${SEGS[*]}")
+NEW_TAG="v$NEW_NUM"
 info "version actuelle : $LATEST_TAG  →  bump → $NEW_TAG"
 
 # ── 2. Check taille git + arborescence + auto-ignore >1Mo ──
@@ -99,11 +96,15 @@ if $DO_COMMIT || $DO_RELEASE; then
     cp -r services "$STAGE/"
     cp -r modules  "$STAGE/"
     cp requirements.txt "$STAGE/"
+    # version.txt porte la version COMPLÈTE (ex: 0.6.0.5) — Cargo ne gère que
+    # 3 segments, donc la source de vérité de la release vit ici. Le bootstrap
+    # lit ~/.modelweaver/version.txt pour comparer les versions.
+    echo "$NEW_NUM" > "$STAGE/version.txt"
     find "$STAGE/services" "$STAGE/modules" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
     chmod +x "$STAGE/modelweaver" "$STAGE/modelweaver-cli"
     tar -czf "$RELEASE_DIR/modelweaver-release-linux-x86_64.tar.gz" \
-        -C "$STAGE" modelweaver modelweaver-cli services modules gui_helper.py requirements.txt
-    echo "0.6.0" > "$RELEASE_DIR/modelweaver-main-version.txt"
+        -C "$STAGE" modelweaver modelweaver-cli services modules gui_helper.py requirements.txt version.txt
+    echo "$NEW_NUM" > "$RELEASE_DIR/modelweaver-main-version.txt"
     ok "tar : $(tar -tzf "$RELEASE_DIR/modelweaver-release-linux-x86_64.tar.gz" | wc -l) entrées"
     rm -rf "$STAGE"
 fi
@@ -114,7 +115,7 @@ if $DO_COMMIT; then
     git add -A
     # retirer les assets de release (pas dans le repo git, mais par sécurité)
     git reset -q -- "$RELEASE_DIR" 2>/dev/null || true
-    COMMIT_MSG="V0.6.0.$NEW_X: bump release $NEW_TAG"
+    COMMIT_MSG="V$NEW_NUM: bump release $NEW_TAG"
     git commit -q -m "$COMMIT_MSG" 2>/dev/null || info "aucun changement à commiter"
     ok "commit: $COMMIT_MSG"
 fi
