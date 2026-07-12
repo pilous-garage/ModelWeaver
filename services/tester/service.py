@@ -9,6 +9,10 @@ from services.installer_worker import jobs
 
 
 def run_tester_service(script_path=None):
+    from services.depends import require_deps
+    from pathlib import Path
+    if not require_deps(Path(__file__).resolve().parent):
+        sys.exit(3)
     """Service testeur (supervisé) : lit un fichier script (.txt) listant des
     actions (install <ref> / uninstall <ref>) et les enfile dans install_jobs.
     Le worker installer consomme la file séquentiellement. Rapport écrit dans

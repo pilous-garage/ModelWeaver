@@ -20,7 +20,7 @@ from typing import Optional
 
 # ── Ancrage du dépôt sur sys.path (modules/, services/, sql/ à la racine) ──
 _SERVICE_DIR = Path(__file__).resolve().parent          # services/
-REPO_ROOT = _SERVICE_DIR.parent                          # racine du repo
+REPO_ROOT = _SERVICE_DIR.parent.parent                   # racine du repo
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

@@ -4,3 +4,8 @@ KIND = "service"
 NAME = "catalogue"
 ENTRYPOINT = "service.py"
 RUNS = "main"
+
+DEPENDS = [
+    {"pip": "psutil"},
+    {"pip": "requests"},
+]

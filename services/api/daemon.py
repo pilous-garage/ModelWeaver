@@ -26,8 +26,17 @@ import secrets
 import argparse
 import platform
 import contextlib
+import sys
+import os
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Ancrage du dépôt sur sys.path (modules/, services/, sql/ à la racine) AVANT
+# tout import de services.* — indispensable quand le daemon est lancé directement
+# (ex. supervisé par Rust : `python services/api/daemon.py serve`).
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
 # directement les modules (source de vérité) et le service installer_worker
@@ -39,7 +48,7 @@ from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file
 
 API_VERSION = "v1"
-MW_VERSION = "0.5.20"
+MW_VERSION = "0.5.21"
 
 
 def _mw_dir() -> Path:
@@ -90,6 +99,7 @@ def check_python_deps():
 
 def init_databases():
     mw_path, cat_path = _db_paths()
+    jobs.ensure_install_jobs()
     mw = ModelWeaverDB(mw_path)
     mw._ensure_schema()
     mw.commit()
@@ -130,8 +140,7 @@ def seed_catalogue():
     if cur.fetchone()[0] > 0:
         cat.close()
         return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
-    data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "modules", "catalogue", "data", "tools.json")
+    data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
     count = cat.sync_tools(rows)
@@ -199,6 +208,7 @@ def update_tools_table():
 
 
 def op_jobs_list(_params):
+    jobs.ensure_install_jobs()
     return jobs.list_jobs()
 
 
@@ -207,6 +217,7 @@ def op_jobs_add(params):
     job_type = params.get("job_type", "install")
     if not ref:
         return {"status": "error", "error": "missing 'ref'"}
+    jobs.ensure_install_jobs()
     jid = jobs.enqueue_job(ref, job_type)
     return {"status": "ok", "job_id": jid, "duplicate": jid == 0}
 
@@ -215,6 +226,7 @@ def op_jobs_status(params):
     jid = params.get("id")
     if jid is None:
         return {"status": "error", "error": "missing 'id'"}
+    jobs.ensure_install_jobs()
     st, log = jobs.job_status(int(jid))
     return {"status": "ok", "job_status": st, "log": log}
 
@@ -223,11 +235,13 @@ def op_jobs_cancel(params):
     jid = params.get("id")
     if jid is None:
         return {"status": "error", "error": "missing 'id'"}
+    jobs.ensure_install_jobs()
     jobs.cancel_job(int(jid))
     return {"status": "ok"}
 
 
 def op_jobs_clear(_params):
+    jobs.ensure_install_jobs()
     jobs.clear_jobs()
     return {"status": "ok"}
 
@@ -243,6 +257,11 @@ def op_logs_read(_params):
 def op_logs_write(params):
     log_to_file(params.get("level", "INFO"), params.get("message", ""))
     return {"status": "ok"}
+
+
+def op_deps_check(_params):
+    from services.depends import check_all_units
+    return check_all_units(_REPO_ROOT)
 
 
 def _wrap(fn):
@@ -275,6 +294,8 @@ ROUTES = {
     "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref")),
     # E. File de jobs (asynchrone)
     "jobs/add":               op_jobs_add,
+    # F. Dépendances (modules/services)
+    "deps/check":             op_deps_check,
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,

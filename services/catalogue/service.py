@@ -10,4 +10,8 @@ from modules.sql.catalogue_server import main
 
 
 if __name__ == "__main__":
+    from services.depends import require_deps
+    from pathlib import Path
+    if not require_deps(Path(__file__).resolve().parent):
+        sys.exit(3)
     main()

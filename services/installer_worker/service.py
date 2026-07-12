@@ -8,6 +8,10 @@ from services.installer_worker import jobs
 
 
 def run_installer_service():
+    from services.depends import require_deps
+    from pathlib import Path
+    if not require_deps(Path(__file__).resolve().parent):
+        sys.exit(3)
     """Worker Python (supervisé) : consomme la table install_jobs et exécute
     install_tool/uninstall_tool (recettes). Un seul processus (single-instance
     garanti par acquire_instance_lock), en pause entre deux jobs."""

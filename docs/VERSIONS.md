@@ -121,6 +121,15 @@ Intégration Docker :
 - `.gitignore` renforcé (`.pytest_cache`, etc.) ; dépôt clône < 3 Mo.
 - Bump version 0.5.19.
 
+### V0.5.21 — Fix seed catalogue + Docker E2E complet ✅
+- Correction du `seed_catalogue` : remplacement `os.path.dirname(os.path.dirname(__file__))`
+  (`services/`) par `_REPO_ROOT` (bonne détection de la racine).
+- Correction `op_deps_check` : `REPO_ROOT` → `_REPO_ROOT` (NameError latent).
+- Test HTTP curl corrigé : `-X POST` au lieu de GET par défaut pour les routes API.
+- E2E Docker : 13/13 tests OK (CLI + HTTP avec/sans token).
+- Nettoyage Docker : suppression image obsolète `modelweaver-gui:latest` (14.3GB).
+- Bump version 0.5.21.
+
 ## V0.6 — Framework d'Agent (🔜 Prochaine)
 **Objectif** : Framework pour définir et orchestrer des agents.
 

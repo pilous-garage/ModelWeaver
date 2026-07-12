@@ -4,7 +4,6 @@ import platform
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import psutil
 
 class Checker:
     def __init__(self, state_file: Optional[Path] = None):
@@ -70,10 +69,17 @@ class Checker:
 
 
     def get_hardware_info(self) -> Dict[str, Any]:
-        """Gathers hardware information."""
+        """Gathers hardware information. `psutil` est une dépendance optionnelle :
+        si absente, on renvoie des champs None plutôt que de planter le daemon."""
+        try:
+            import psutil
+        except Exception:
+            return {
+                "ram_total_gb": None, "ram_available_gb": None,
+                "disk_total_gb": None, "disk_free_gb": None,
+            }
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
-        
         return {
             "ram_total_gb": round(mem.total / (1024**3), 2),
             "ram_available_gb": round(mem.available / (1024**3), 2),

@@ -1,10 +1,24 @@
-.modelweaver
-test_assembly_data
-test_vault.json
-test_state.json
-test_cache
-test_env
-test_proxy_in_docker.py
-integration_test.py
-Dockerfile.bare
-install_in_docker.py
+# Contexte de build pour les images de test du daemon (ubuntu:24.04 minimal).
+# On exclut tout ce qui est lourd / gitignoré / hors-périmètre daemon.
+.git/
+.venv/
+__pycache__/
+*.pyc
+oldcode/
+autoanalyse/
+docker/
+projetadmin/
+release-assets/
+bin/
+share/
+.modelweaver/
+.pytest_cache/
+.mypy_cache/
+**/target/
+**/node_modules/
+**/__pycache__/
+*.tar
+*.tar.gz
+gh.tar.gz
+# .env (secret) reste EXCLU : à monter via -v pour les tests LLM.
+.env

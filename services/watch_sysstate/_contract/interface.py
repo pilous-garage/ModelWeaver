@@ -4,3 +4,7 @@ KIND = "service"
 NAME = "watch_sysstate"
 ENTRYPOINT = "service.py"
 RUNS = "watch_system_state"
+
+DEPENDS = [
+    {"pip": "psutil"},
+]

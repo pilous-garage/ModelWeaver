@@ -4,3 +4,5 @@ KIND = "service"
 NAME = "watch_installed"
 ENTRYPOINT = "service.py"
 RUNS = "watch_installed_tools"
+
+DEPENDS = []
