@@ -111,7 +111,7 @@ fn get_platform() -> PlatformInfo {
 }
 #[tauri::command]
 fn get_current_version() -> String {
-    format!("v{}", env!("CARGO_PKG_VERSION"))
+    format!("v{}", bootstrap_version())
 }
 
 fn run_http_get(url: &str) -> Result<std::process::Output, String> {
@@ -260,7 +260,7 @@ async fn self_update(dry_run: bool) -> Result<String, String> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let exe_name = current_exe_name();
-    let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let current = format!("v{}", bootstrap_version());
     let url = format!(
         "https://github.com/pilous-garage/ModelWeaver/releases/latest/download/{}-{}-{}",
         exe_name, os, arch
@@ -301,7 +301,7 @@ async fn self_update_from_path(new_binary: String) -> Result<String, String> {
     let current_path = std::env::current_exe()
         .map_err(|e| format!("Erreur chemin: {}", e))?;
     let backup_path = current_path.with_extension("bak");
-    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version = format!("v{}", bootstrap_version());
     logger("INFO", &format!("self_update_from_path: version={}, from={}, to={}", version, new_binary, current_path.display()));
 
     let new_path = std::path::PathBuf::from(&new_binary);
@@ -376,7 +376,7 @@ async fn unpack_release(app_handle: tauri::AppHandle, archive_path: String) -> R
 
 #[tauri::command]
 async fn launch_main(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version = format!("v{}", bootstrap_version());
     log_event(&app_handle, "INFO", &format!("launch_main: bootstrap v{}", version));
     let home = get_home_dir();
     let main_path = home.join(".modelweaver").join("modelweaver");
@@ -479,7 +479,7 @@ async fn restart_app(app_handle: tauri::AppHandle, dont_close: bool) -> Result<S
 }
 
 fn main() {
-    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version = format!("v{}", bootstrap_version());
     logger("INFO", &format!("Lancement de ModelWeaver Bootstrap {}", version));
     let args: Vec<String> = std::env::args().collect();
     if args.contains(&"--ultra-debug".to_string()) {
