@@ -31,17 +31,36 @@ APT_REQUIRED=(python3 python3-pip sqlite3)
 echo "[deps] apt install (requis): ${APT_REQUIRED[*]}"
 $SUDO apt-get install -y "${APT_REQUIRED[@]}"
 
+# Empêche pip de mettre à jour les paquets possédés par Debian (ex:
+# importlib-metadata -> tire zipp>=3.20, mais zipp 1.0.0 est fourni par Debian
+# et sans RECORD -> "Cannot uninstall zipp ... RECORD file not found"). On
+# épingle ces paquets à leur version installée : le résolveur choisit alors des
+# versions compatibles (comportement identique à une install propre).
+build_pip_constraints() {
+  local f="$1"
+  : > "$f"
+  for pkg in importlib-metadata zipp; do
+    local v
+    v="$(python3 -m pip show "$pkg" 2>/dev/null | awk -F': ' '/^Version:/ {print $2}')"
+    if [ -n "$v" ]; then echo "${pkg}==${v}" >> "$f"; fi
+  done
+}
+
+CONS_FILE="$(mktemp)"
+build_pip_constraints "$CONS_FILE"
+PIP_CONSTRAINT_ARGS=(--constraint "$CONS_FILE")
+
 # ── python (pip) : safe + light requises ──
 PIP_REQUIRED=(keyring psutil)
 echo "[deps] pip install (requis): ${PIP_REQUIRED[*]}"
-python3 -m pip install "${PIP_REQUIRED[@]}" --break-system-packages
+python3 -m pip install "${PIP_REQUIRED[@]}" --break-system-packages "${PIP_CONSTRAINT_ARGS[@]}"
 
 # ── optionnelles (heavy / unsafe) ──
 if $INCLUDE_OPTIONAL; then
   echo "[deps] apt install (optionnel): docker.io"
   $SUDO apt-get install -y docker.io
   echo "[deps] pip install (optionnel): litellm"
-  python3 -m pip install litellm --break-system-packages
+  python3 -m pip install litellm --break-system-packages "${PIP_CONSTRAINT_ARGS[@]}"
 fi
 
 echo "[deps] installation terminée (ubuntu24)"
