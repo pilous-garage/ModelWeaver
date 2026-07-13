@@ -111,6 +111,7 @@ function App() {
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
   const [loadingActions, setLoadingActions] = useState<Record<string, boolean>>({});
   const [appVersion, setAppVersion] = useState<string>('');
+  const [pendingInstalls, setPendingInstalls] = useState<Record<string, boolean>>({});
   const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
 
   const withFeedback = async <T,>(actionName: string, action: () => Promise<T>): Promise<T | void> => {
@@ -268,6 +269,21 @@ function App() {
     } catch { setAutotestEnabled(false); }
     return () => { if (autoInstallTimer) clearTimeout(autoInstallTimer); };
   }, []);
+
+  // Dès qu'un outil apparaît dans installedTools, on retire son « added »
+  // en attente : le bouton bascule alors sur « ✓ Installé ».
+  useEffect(() => {
+    if (Object.keys(pendingInstalls).length === 0) return;
+    setPendingInstalls(p => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const k of Object.keys(p)) {
+        if (!installedTools.some(t => t.ref === k)) next[k] = true;
+        else changed = true;
+      }
+      return changed ? next : p;
+    });
+  }, [installedTools]);
 
   // Refresh paresseux piloté par les data_version des DB (split physique).
   // On ne rafraîchit que les panneaux du/des domaine(s) ayant changé.
@@ -587,13 +603,17 @@ function App() {
       }
       addLog(`Ajout de ${name} à la file d'installation (séquentielle, thread dédié)`);
       await invoke<number>('install_queue_add', { ref, name, jobType: 'install' })
-        .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
+        .then((id) => {
+          if (!id) addLog(`${name} déjà en cours ou en file`);
+          else setPendingInstalls(p => ({ ...p, [ref]: true }));
+        })
         .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
     });
   };
 
-  const handleCancelInstall = (id: number, name: string) => {
+  const handleCancelInstall = (id: number, name: string, ref?: string) => {
     withFeedback(`cancel-${id}`, async () => {
+      if (ref) setPendingInstalls(p => { const n = { ...p }; delete n[ref]; return n; });
       addLog(`Annulation de ${name} (job #${id})`);
       await invoke('install_queue_cancel', { id }).catch((e: any) => addLog(`  cancel ERREUR ${e}`));
     });
@@ -758,7 +778,7 @@ function App() {
                             <span style={{ color: '#6ee7b7', fontSize: '0.75rem', fontWeight: '600' }}>✓ Installé</span>
                           ) : (() => {
                             const j = queueJob(t.ref);
-                            const added = loadingActions[`install-${t.ref}`] || (j != null && (j.status === 'queued' || j.status === 'running'));
+                            const added = loadingActions[`install-${t.ref}`] || pendingInstalls[t.ref] === true || (j != null && (j.status === 'queued' || j.status === 'running'));
                             if (inst || (j != null && (j.status === 'installed' || j.status === 'removed'))) {
                               const txt = j != null && j.status === 'removed' ? '✓ Retiré' : '✓ Installé';
                               return (
@@ -770,11 +790,11 @@ function App() {
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
                                   <button
                                     disabled
-                                    style={{ padding: '0.4rem 0.7rem', backgroundColor: '#1e3a8a', color: '#bfdbfe', border: 'none', borderRadius: '0.375rem', cursor: 'default', fontSize: '0.72rem', fontWeight: '500', opacity: 0.85 }}
-                                  >added</button>
+                                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.4rem 0.7rem', backgroundColor: '#1e3a8a', color: '#bfdbfe', border: 'none', borderRadius: '0.375rem', cursor: 'default', fontSize: '0.72rem', fontWeight: '500', opacity: 0.9 }}
+                                  ><Spinner size={10} color="#bfdbfe" />added</button>
                                   {j != null && (j.status === 'queued' || j.status === 'running') && (
                                     <button
-                                      onClick={() => handleCancelInstall(j.id, t.name)}
+                                      onClick={() => handleCancelInstall(j.id, t.name, t.ref)}
                                       disabled={loadingActions[`cancel-${j.id}`]}
                                       style={{ padding: '0.25rem 0.55rem', backgroundColor: loadingActions[`cancel-${j.id}`] ? '#4c0519' : '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: loadingActions[`cancel-${j.id}`] ? 'default' : 'pointer', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                                     >{loadingActions[`cancel-${j.id}`] ? <Spinner size={9} color="#fecaca" /> : null}Annuler</button>
@@ -831,7 +851,7 @@ function App() {
                             <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{badge.l}</span>
                             {canCancel && (
                               <button
-                                onClick={() => handleCancelInstall(q.id, q.name)}
+                                onClick={() => handleCancelInstall(q.id, q.name, q.ref)}
                                 style={{ marginLeft: 'auto', padding: '0.15rem 0.5rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.68rem' }}
                               >Annuler</button>
                             )}
