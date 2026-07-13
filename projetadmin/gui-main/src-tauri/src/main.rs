@@ -527,8 +527,10 @@ fn watch_installed_tools_rust(interval: f64) {
     let db = mw_home().join("modelweaver.db");
     std::thread::spawn(move || loop {
         let sql = "SELECT lo.outil_ref AS tool_ref, lo.nom AS tool_name, \
-            li.version_installee AS version, li.status, li.install_path \
+            li.version_installee AS version, li.status, li.install_path, \
+            c.nom AS classe, c.ref AS classe_ref \
             FROM local_outils lo \
+            LEFT JOIN classes_outils c ON c.classe_id = lo.classe_outil_id \
             JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id \
             JOIN local_installs li ON li.local_version_id = lv.local_version_id;";
         let rows = db_query_json(&db, sql);
@@ -538,6 +540,8 @@ fn watch_installed_tools_rust(interval: f64) {
             "version": r.get("version").and_then(|x| x.as_str()).unwrap_or(""),
             "status": r.get("status").and_then(|x| x.as_str()).unwrap_or(""),
             "install_path": r.get("install_path").and_then(|x| x.as_str()).unwrap_or(""),
+            "classe": r.get("classe").and_then(|x| x.as_str()).unwrap_or(""),
+            "classe_ref": r.get("classe_ref").and_then(|x| x.as_str()).unwrap_or(""),
         })).collect();
         let out = serde_json::json!({ "tools": tools, "count": tools.len() });
         set_watch_cache("installed-tools", &out.to_string());
