@@ -44,6 +44,25 @@ const selectStyles = {
   MozAppearance: 'none',
 };
 
+// Groupe une liste d'outils par classe métier (t.classe || t.tool_type),
+// tri alpha sur le nom de classe puis sur le nom d'outil.
+// Retourne [[classeNom, outils[]], ...] prêt à .map().
+function groupByClass(tools: any[]): [string, any[]][] {
+  const groups: Record<string, any[]> = {};
+  for (const t of tools) {
+    const c = (t.classe || t.tool_type || 'Other');
+    (groups[c] ||= []).push(t);
+  }
+  return Object.keys(groups)
+    .sort((a: string, b: string) => a.localeCompare(b))
+    .map((c: string) => {
+      const items = (groups[c] || []).slice().sort(
+        (a: any, b: any) => (a.name || '').localeCompare(b.name || '')
+      );
+      return [c, items] as [string, any[]];
+    });
+}
+
 // Refresh paresseux : on poll /v1/db/versions (PRAGMA data_version par DB +
 // meta 'dependencies') et on ne rafraîchit que les panneaux du domaine ayant
 // changé. Pas de poll lourd : l'endpoint est trivial et le compare côté GUI.
@@ -107,6 +126,7 @@ function App() {
   const [systemState, setSystemState] = useState<any>(null);
   const [catalogueTools, setCatalogueTools] = useState<any[]>([]);
   const [installedTools, setInstalledTools] = useState<any[]>([]);
+  const [foldedClasses, setFoldedClasses] = useState<Record<string, boolean>>({});
   const [logithequeLoading, setLogithequeLoading] = useState(false);
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
   const [loadingActions, setLoadingActions] = useState<Record<string, boolean>>({});
@@ -636,6 +656,8 @@ function App() {
 
   if (showDashboard) {
     const isInstalled = (ref: string) => installedRef.current.some(t => t.ref === ref);
+    const toggleFold = (classe: string) =>
+      setFoldedClasses(prev => ({ ...prev, [classe]: !prev[classe] }));
     const queueJob = (ref: string) => installQueue.filter(q => q.ref === ref).sort((a, b) => b.id - a.id)[0] || null;
     const isQueued = (ref: string) => { const j = queueJob(ref); return !!j && (j.status === 'queued' || j.status === 'running'); };
     const fmtGb = (v: any) => (v == null ? 'n/a' : `${v} Go`);
@@ -741,8 +763,19 @@ function App() {
               {installedTools.length === 0 ? (
                 <div style={{ color: '#94a3b8', fontSize: '0.78rem' }}>Aucun outil détecté</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                  {installedTools.map((t: any) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  {groupByClass(installedTools).map(([classe, tools]) => (
+                    <div key={classe}>
+                      <button
+                        onClick={() => toggleFold(classe)}
+                        style={{ width: '100%', textAlign: 'left', backgroundColor: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '0.3rem', padding: '0.35rem 0.5rem', fontSize: '0.78rem', fontWeight: '600', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                      >
+                        <span>{foldedClasses[classe] ? '▸' : '▾'} {classe}</span>
+                        <span style={{ color: '#64748b', fontWeight: '400' }}>{tools.length}</span>
+                      </button>
+                      {!foldedClasses[classe] && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.4rem', paddingLeft: '0.3rem' }}>
+                          {tools.map((t: any) => (
                     <div key={t.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', borderBottom: '1px solid #334155', paddingBottom: '0.3rem' }}>
                       <span style={{ fontWeight: '500' }}>{t.name || t.ref} <span style={{ color: '#6ee7b7' }}>{t.version || ''}</span></span>
                       <button
@@ -752,6 +785,10 @@ function App() {
                       >
                         {loadingActions[`uninstall-${t.ref}`] ? <Spinner size={10} color="#fca5a5" /> : null} Uninstall
                       </button>
+                    </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -767,11 +804,18 @@ function App() {
                 <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Chargement du catalogue…</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                  {catalogueTools.slice().sort((a: any, b: any) => {
-                    const ca = (a.classe || a.tool_type || '').toLowerCase();
-                    const cb = (b.classe || b.tool_type || '').toLowerCase();
-                    return ca.localeCompare(cb) || (a.name || '').localeCompare(b.name || '');
-                  }).map((t: any) => {
+                  {groupByClass(catalogueTools).map(([classe, tools]) => (
+                    <div key={classe}>
+                      <button
+                        onClick={() => toggleFold(classe)}
+                        style={{ width: '100%', textAlign: 'left', backgroundColor: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: '0.3rem', padding: '0.35rem 0.5rem', fontSize: '0.78rem', fontWeight: '600', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                      >
+                        <span>{foldedClasses[classe] ? '▸' : '▾'} {classe}</span>
+                        <span style={{ color: '#64748b', fontWeight: '400' }}>{tools.length}</span>
+                      </button>
+                      {!foldedClasses[classe] && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginTop: '0.5rem' }}>
+                          {tools.map((t: any) => {
                     const inst = isInstalled(t.ref);
                     const queued = isQueued(t.ref);
                     return (
@@ -826,7 +870,11 @@ function App() {
                         </div>
                       </div>
                     );
-                  })}
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
