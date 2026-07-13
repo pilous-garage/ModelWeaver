@@ -598,7 +598,11 @@ function App() {
 
   const handleAddToInstallList = (ref: string, name: string) => {
     withFeedback(`install-${ref}`, async () => {
-      const deja = installQueue.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
+      // Guard basé sur pendingInstalls (mémoire UI immédiate) et NON sur
+      // installQueue (state potentiellement stale juste après un cancel, avant
+      // le prochain poll ~1s) — sinon un cancel suivi d'un re-clic est bloqué
+      // par un faux "déjà dans la file".
+      const deja = pendingInstalls[ref] === true;
       if (deja) {
         addLog(`${name} déjà dans la file`);
         return;
