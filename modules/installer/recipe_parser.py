@@ -329,16 +329,18 @@ class RecipeParser:
             if local:
                 from modules.sql.db import CatalogueDB
                 db = CatalogueDB()
-                o = db.conn.execute(
+                row = db.conn.execute(
                     "SELECT ref, nom, description FROM catalogue_outils WHERE ref = ?",
                     (ref,)).fetchone()
-                if not o:
+                if not row:
                     return None
-                rows = db.conn.execute(
+                o = {"ref": row["ref"], "nom": row["nom"], "description": row["description"]}
+                rows_raw = db.conn.execute(
                     "SELECT os, arch, manager FROM catalogue_recettes r "
                     "JOIN catalogue_versions v ON v.version_id = r.version_id "
                     "JOIN catalogue_outils o2 ON o2.outil_id = v.outil_id "
                     "WHERE o2.ref = ?", (ref,)).fetchall()
+                rows = [{"os": r["os"], "arch": r["arch"], "manager": r["manager"]} for r in rows_raw]
             else:
                 from modules.sql.db import TursoCatalogueDB
                 db = TursoCatalogueDB()
@@ -356,7 +358,7 @@ class RecipeParser:
 
             rec = {
                 "_ref": ref,
-                "name": o["nom"] if local else o.get("nom") or o.get("name"),
+                "name": o.get("nom") or o.get("name"),
                 "description": o.get("description"),
                 "versions": {"default": {}},
                 "pre_install": [],
