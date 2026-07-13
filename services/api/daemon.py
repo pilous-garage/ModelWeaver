@@ -204,23 +204,26 @@ def seed_recipes(cat):
 
 def seed_catalogue():
     cat = _get_cat()
+    # Seed models + provider_models (idempotent, indépendant des outils).
+    # Ainsi le catalogue LLM est toujours peuplé même si les outils
+    # ont déjà été seedés (cas d'un catalogue pré-existant).
+    from modules.llm_manager.llm_manager import seed_providers, seed_models, seed_provider_models
+    count_providers = seed_providers(cat)
+    count_models = seed_models(cat)
+    count_pm = seed_provider_models(cat)
+    cat.conn.commit()
     cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils")
     if cur.fetchone()[0] > 0:
         try:
             seed_recipes(cat)
         except Exception:
             pass
-        return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
-    # Tools
+        return {"status": "ok", "seeded": False, "note": "catalogue already populated (models synced)"}
+    # Tools (seulement si vides)
     data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
     count_tools = cat.sync_tools(rows)
-    # LLM Providers
-    from modules.llm_manager.llm_manager import seed_providers, seed_models, seed_provider_models
-    count_providers = seed_providers(cat)
-    count_models = seed_models(cat)
-    count_pm = seed_provider_models(cat)
     cat.conn.commit()
     try:
         seed_recipes(cat)
