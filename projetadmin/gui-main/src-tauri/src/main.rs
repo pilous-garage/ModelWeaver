@@ -1285,6 +1285,19 @@ fn close_splashscreen() {
     std::process::exit(0);
 }
 
+#[tauri::command]
+fn app_version() -> String {
+    // Version COMPLÈTE de la release (ex: 0.6.0.36) telle que livrée dans le
+    // tarball (~/.modelweaver/version.txt). Cargo limite à 3 segments, donc on
+    // lit le fichier txt qui porte la source de vérité. Fallback = version Cargo.
+    let p = mw_home().join("version.txt");
+    if let Ok(s) = std::fs::read_to_string(&p) {
+        let v = s.trim();
+        if !v.is_empty() { return v.to_string(); }
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -1559,6 +1572,7 @@ fn main() {
             check_dependencies_with_config,
             read_debug_logs,
             close_splashscreen,
+            app_version,
             autotest_enabled_cmd,
         ])
         .run(tauri::generate_context!())

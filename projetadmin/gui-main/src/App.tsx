@@ -110,6 +110,7 @@ function App() {
   const [logithequeLoading, setLogithequeLoading] = useState(false);
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
   const [loadingActions, setLoadingActions] = useState<Record<string, boolean>>({});
+  const [appVersion, setAppVersion] = useState<string>('');
   const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
 
   const withFeedback = async <T,>(actionName: string, action: () => Promise<T>): Promise<T | void> => {
@@ -226,6 +227,7 @@ function App() {
     invoke<string>('service_log', { name, lines: 200 }).then(setSvcLogText).catch(() => setSvcLogText(''));
   };
   const fetchServiceList = () => invoke<any[]>('service_list').then(setServiceList).catch(() => {});
+  const fetchAppVersion = () => invoke<string>('app_version').then(setAppVersion).catch(() => {});
 
   useEffect(() => {
     if (!showDebug) return;
@@ -259,6 +261,7 @@ function App() {
   };
 
   useEffect(() => {
+    fetchAppVersion();
     checkDependencies();
     try {
       invoke<boolean>('autotest_enabled_cmd').then(setAutotestEnabled).catch(() => setAutotestEnabled(false));
@@ -633,6 +636,9 @@ function App() {
             <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>ModelWeaver Logithèque</h1>
             <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
               {logithequeLoading ? 'Chargement...' : 'Catalogue local + sync distante async'}
+            </div>
+            <div style={{ fontSize: '0.65rem', color: '#475569', marginTop: '0.1rem', fontFamily: 'monospace' }}>
+              {appVersion ? `v${appVersion}` : 'v…'}
             </div>
           </div>
           <button
