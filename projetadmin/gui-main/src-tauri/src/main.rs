@@ -970,13 +970,22 @@ fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
+async fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
     // (manifeste + install-dependencies-<target>.sh). Délégation au daemon.
     // include_optional -> installe aussi les deps heavy/unsafe (litellm, docker).
+    // async + spawn_blocking : l'appel curl bloquant part sur un thread du runtime
+    // async pour ne PAS geler le thread principal du webview (sinon le spinner
+    // ne s'affiche qu'après la fin de l'install).
     log_cmd(&format!("install_all_dependencies(include_optional={})", include_optional));
     let body = format!("{{\"include_optional\":{}}}", include_optional);
-    let resp = daemon_post("deps/install_target", &body)?;
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        daemon_post("deps/install_target", &body)
+    }).await;
+    let resp = match join {
+        Ok(r) => r?,
+        Err(e) => return Err(format!("runtime error: {}", e)),
+    };
     // Le daemon renvoie {"ok": true, "result": {...}} ; le statut réel est
     // dans result.status (result.error en cas d'échec).
     let result = resp.get("result").cloned().unwrap_or(resp.clone());
@@ -998,10 +1007,11 @@ fn check_dependencies_manifest() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn install_dependency(name: String) -> Result<String, String> {
+async fn install_dependency(name: String) -> Result<String, String> {
     log_cmd(&format!("install_dependency({})", name));
     // Délégation au daemon API (backend unique, root en container, sudo/pkexec sinon).
     // Mappe le nom de dépendance logique vers le(s) paquet(s) apt.
+    // async + spawn_blocking : évite de geler le webview pendant l'install.
     let pkg = match name.as_str() {
         "python3" | "python" => "python3 python3-pip",
         "sqlite3" | "sqlite" => "sqlite3",
@@ -1009,7 +1019,13 @@ fn install_dependency(name: String) -> Result<String, String> {
         other => other,
     };
     let body = format!("{{\"package\":\"{}\"}}", pkg);
-    let resp = daemon_post("deps/install", &body)?;
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        daemon_post("deps/install", &body)
+    }).await;
+    let resp = match join {
+        Ok(r) => r?,
+        Err(e) => return Err(format!("runtime error: {}", e)),
+    };
     let result = resp.get("result").cloned().unwrap_or(resp.clone());
     match result.get("status").and_then(|s| s.as_str()) {
         Some("ok") => {
