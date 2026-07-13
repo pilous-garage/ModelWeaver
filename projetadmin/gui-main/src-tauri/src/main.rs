@@ -962,10 +962,13 @@ fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     log_cmd(&format!("install_all_dependencies(include_optional={})", include_optional));
     let body = format!("{{\"include_optional\":{}}}", include_optional);
     let resp = daemon_post("deps/install_target", &body)?;
-    match resp.get("status").and_then(|s| s.as_str()) {
+    // Le daemon renvoie {"ok": true, "result": {...}} ; le statut réel est
+    // dans result.status (result.error en cas d'échec).
+    let result = resp.get("result").cloned().unwrap_or(resp.clone());
+    match result.get("status").and_then(|s| s.as_str()) {
         Some("ok") => Ok("dépendances installées".to_string()),
         _ => {
-            let err = resp.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+            let err = result.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
             log_to_file("ERROR", &format!("deps install_target failed: {}", err));
             Err(err.to_string())
         }
@@ -992,13 +995,14 @@ fn install_dependency(name: String) -> Result<String, String> {
     };
     let body = format!("{{\"package\":\"{}\"}}", pkg);
     let resp = daemon_post("deps/install", &body)?;
-    match resp.get("status").and_then(|s| s.as_str()) {
+    let result = resp.get("result").cloned().unwrap_or(resp.clone());
+    match result.get("status").and_then(|s| s.as_str()) {
         Some("ok") => {
             log_to_file("INSTALL", &format!("{} installed OK via daemon", name));
             Ok(format!("{} installé", name))
         }
         _ => {
-            let err = resp.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+            let err = result.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
             log_to_file("ERROR", &format!("{} install failed: {}", name, err));
             Err(err.to_string())
         }

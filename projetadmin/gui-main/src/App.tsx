@@ -353,7 +353,7 @@ function App() {
       for (const { dep } of plan) updateProgress(dep.name, 'installing', 'via target script...');
 
       try {
-        const result = await invoke<string>('install_all_dependencies', { include_optional: includeOptional });
+        const result = await invoke<string>('install_all_dependencies', { includeOptional });
         addLog(`  target install: SUCCESS (${result})`);
       } catch (err: any) {
         addLog(`  target install: FAILED - ${err}`);
@@ -871,6 +871,7 @@ function App() {
       color: '#e2e8f0',
       fontFamily: 'sans-serif',
       padding: '2rem',
+      overflowY: 'auto',
     }}>
       <div style={{ maxWidth: '800px', width: '100%', margin: '0 auto' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '2rem' }}>
