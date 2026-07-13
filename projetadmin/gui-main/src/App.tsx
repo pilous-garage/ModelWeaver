@@ -109,7 +109,32 @@ function App() {
   const [installedTools, setInstalledTools] = useState<any[]>([]);
   const [logithequeLoading, setLogithequeLoading] = useState(false);
   const [logithequeError, setLogithequeError] = useState<string | null>(null);
+  const [loadingActions, setLoadingActions] = useState<Record<string, boolean>>({});
   const [installQueue, setInstallQueue] = useState<{ id: number; ref: string; name: string; job_type: string; status: string; log: string }[]>([]);
+
+  const withFeedback = async <T,>(actionName: string, action: () => Promise<T>): Promise<T | void> => {
+    setLoadingActions(prev => ({ ...prev, [actionName]: true }));
+    try {
+      return await action();
+    } finally {
+      setLoadingActions(prev => ({ ...prev, [actionName]: false }));
+    }
+  };
+
+  const Spinner = ({ size = 12, color = '#e2e8f0' }: { size?: number; color?: string }) => (
+    <span
+      style={{
+        display: 'inline-block',
+        width: size, height: size,
+        border: `2px solid ${color}`,
+        borderTopColor: 'transparent',
+        borderRadius: '50%',
+        animation: 'mw-spin 0.7s linear infinite',
+        verticalAlign: 'middle',
+      }}
+    />
+  );
+
 
   // Auto-test opt-in (piloté par MODELWEAVER_ENABLE_AUTOTEST côté Rust).
   const [autotestEnabled, setAutotestEnabled] = useState(false);
@@ -125,6 +150,8 @@ function App() {
   const [procList, setProcList] = useState<{ id: number; name: string; pid: number | null; parent_id: number | null; status: string; command: string; log_path: string; cpu: number; rss_kb: number; started_at: number; ended_at: number | null }[]>([]);
   const [procLogId, setProcLogId] = useState<number | null>(null);
   const [procLogText, setProcLogText] = useState<string>('');
+  const [svcLogName, setSvcLogName] = useState<string | null>(null);
+  const [svcLogText, setSvcLogText] = useState<string>('');
   const [serviceList, setServiceList] = useState<{ name: string; mode: string; status: string; pid: number | null; restarts: number; last_exit: number | null; started_at: number }[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -193,6 +220,10 @@ function App() {
   const fetchProcLog = (id: number) => {
     setProcLogId(id);
     invoke<string>('process_log', { id }).then(setProcLogText).catch(() => setProcLogText(''));
+  };
+  const fetchServiceLog = (name: string) => {
+    setSvcLogName(name);
+    invoke<string>('service_log', { name, lines: 200 }).then(setSvcLogText).catch(() => setSvcLogText(''));
   };
   const fetchServiceList = () => invoke<any[]>('service_list').then(setServiceList).catch(() => {});
 
@@ -536,31 +567,39 @@ function App() {
   };
 
   const handleUninstallTool = (ref: string, name: string) => {
-    addLog(`File: demande de désinstallation de ${name} (${ref})`);
-    invoke('install_queue_add', { ref, name, jobType: 'uninstall' })
-      .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
-      .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+    withFeedback(`uninstall-${ref}`, async () => {
+      addLog(`File: demande de désinstallation de ${name} (${ref})`);
+      await invoke('install_queue_add', { ref, name, jobType: 'uninstall' })
+        .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
+        .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+    });
   };
 
   const handleAddToInstallList = (ref: string, name: string) => {
-    const deja = installQueueRef.current.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
-    if (deja) {
-      addLog(`${name} déjà dans la file`);
-      return;
-    }
-    addLog(`Ajout de ${name} à la file d'installation (séquentielle, thread dédié)`);
-    invoke<number>('install_queue_add', { ref, name, jobType: 'install' })
-      .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
-      .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+    withFeedback(`install-${ref}`, async () => {
+      const deja = installQueueRef.current.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
+      if (deja) {
+        addLog(`${name} déjà dans la file`);
+        return;
+      }
+      addLog(`Ajout de ${name} à la file d'installation (séquentielle, thread dédié)`);
+      await invoke<number>('install_queue_add', { ref, name, jobType: 'install' })
+        .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
+        .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+    });
   };
 
   const handleCancelInstall = (id: number, name: string) => {
-    addLog(`Annulation de ${name} (job #${id})`);
-    invoke('install_queue_cancel', { id }).catch((e: any) => addLog(`  cancel ERREUR ${e}`));
+    withFeedback(`cancel-${id}`, async () => {
+      addLog(`Annulation de ${name} (job #${id})`);
+      await invoke('install_queue_cancel', { id }).catch((e: any) => addLog(`  cancel ERREUR ${e}`));
+    });
   };
 
   const handleClearQueue = () => {
-    invoke('install_queue_clear').catch(() => {});
+    withFeedback(`clear-queue`, async () => {
+      await invoke('install_queue_clear').catch(() => {});
+    });
   };
 
   const allRequiredInstalled = requiredDeps.every(dep => dep.installed);
@@ -581,6 +620,7 @@ function App() {
         fontFamily: 'sans-serif',
         overflow: 'hidden',
       }}>
+        <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
         {/* Header */}
         <div style={{
           padding: '1rem 1.5rem',
@@ -596,19 +636,21 @@ function App() {
             </div>
           </div>
           <button
-            onClick={async () => { setCatalogueTools([]); await refreshInstalled(); loadLogitheque(); }}
-            style={{ padding: '0.4rem 0.8rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
+            onClick={() => withFeedback('load-logitheque', async () => { setCatalogueTools([]); await refreshInstalled(); await loadLogitheque(); })}
+            disabled={loadingActions['load-logitheque']}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: loadingActions['load-logitheque'] ? '#1e293b' : '#334155', color: loadingActions['load-logitheque'] ? '#64748b' : '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: loadingActions['load-logitheque'] ? 'default' : 'pointer', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
           >
-            ↻ Rafraîchir
+            {loadingActions['load-logitheque'] ? <Spinner /> : '↻'} Rafraîchir
           </button>
           <button
-            onClick={async () => {
+            onClick={() => withFeedback('install-all', async () => {
               addLog('Installation automatique de tous les outils...');
               try { const r = await invoke<any>('install_all_tools'); addLog(`Résultat: ${JSON.stringify(r)}`); } catch (e) { addLog(`Erreur install all: ${e}`); }
-            }}
-            style={{ padding: '0.4rem 0.8rem', backgroundColor: '#059669', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
+            })}
+            disabled={loadingActions['install-all']}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: loadingActions['install-all'] ? '#064e3b' : '#059669', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: loadingActions['install-all'] ? 'default' : 'pointer', fontSize: '0.75rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
           >
-            ⚡ Tout installer
+            {loadingActions['install-all'] ? <Spinner /> : '⚡'} Tout installer
           </button>
           <button
             onClick={() => setDebug(!showDebug)}
@@ -672,9 +714,10 @@ function App() {
                       <span style={{ fontWeight: '500' }}>{t.name || t.ref} <span style={{ color: '#6ee7b7' }}>{t.version || ''}</span></span>
                       <button
                         onClick={async () => await handleUninstallTool(t.ref, t.name || t.ref)}
-                        style={{ backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.25rem', padding: '0.1rem 0.5rem', fontSize: '0.7rem', cursor: 'pointer' }}
+                        disabled={loadingActions[`uninstall-${t.ref}`]}
+                        style={{ backgroundColor: '#7f1d1d', color: loadingActions[`uninstall-${t.ref}`] ? '#fca5a5' : '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.25rem', padding: '0.1rem 0.5rem', fontSize: '0.7rem', cursor: loadingActions[`uninstall-${t.ref}`] ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                       >
-                        Uninstall
+                        {loadingActions[`uninstall-${t.ref}`] ? <Spinner size={10} color="#fca5a5" /> : null} Uninstall
                       </button>
                     </div>
                   ))}
@@ -716,8 +759,9 @@ function App() {
                                   <span style={{ color: '#fbbf24', fontSize: '0.75rem' }}>{label}</span>
                                   <button
                                     onClick={() => handleCancelInstall(j.id, t.name)}
-                                    style={{ padding: '0.25rem 0.55rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}
-                                  >Annuler</button>
+                                    disabled={loadingActions[`cancel-${j.id}`]}
+                                    style={{ padding: '0.25rem 0.55rem', backgroundColor: loadingActions[`cancel-${j.id}`] ? '#4c0519' : '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: loadingActions[`cancel-${j.id}`] ? 'default' : 'pointer', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                                  >{loadingActions[`cancel-${j.id}`] ? <Spinner size={9} color="#fecaca" /> : null}Annuler</button>
                                 </span>
                               );
                             }
@@ -730,9 +774,10 @@ function App() {
                             return (
                               <button
                                 onClick={() => handleAddToInstallList(t.ref, t.name)}
-                                style={{ padding: '0.4rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '500' }}
+                                disabled={loadingActions[`install-${t.ref}`]}
+                                style={{ padding: '0.4rem 0.7rem', backgroundColor: loadingActions[`install-${t.ref}`] ? '#1e3a8a' : '#3b82f6', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: loadingActions[`install-${t.ref}`] ? 'default' : 'pointer', fontSize: '0.72rem', fontWeight: '500', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                               >
-                                + Add to install list
+                                {loadingActions[`install-${t.ref}`] ? <Spinner size={10} color="#fff" /> : null}+ Add to install list
                               </button>
                             );
                           })()}
@@ -790,8 +835,9 @@ function App() {
                       })}
                       <button
                         onClick={handleClearQueue}
-                        style={{ marginTop: '0.5rem', padding: '0.25rem 0.6rem', backgroundColor: '#334155', color: '#cbd5e1', border: '1px solid #475569', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}
-                      >Vider la file (terminés)</button>
+                        disabled={loadingActions['clear-queue']}
+                        style={{ marginTop: '0.5rem', padding: '0.25rem 0.6rem', backgroundColor: loadingActions['clear-queue'] ? '#1e293b' : '#334155', color: loadingActions['clear-queue'] ? '#64748b' : '#cbd5e1', border: '1px solid #475569', borderRadius: '0.3rem', cursor: loadingActions['clear-queue'] ? 'default' : 'pointer', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                      >{loadingActions['clear-queue'] ? <Spinner size={9} color="#64748b" /> : null}Vider la file (terminés)</button>
                     </>
                   )}
                 </div>
@@ -920,22 +966,26 @@ function App() {
                     {serviceList.length === 0 ? (
                       <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun service déclaré</div>
                     ) : (
-                      serviceList.map((s) => {
-                        const stColor = s.status === 'running' ? '#6ee7b7' : s.status === 'restarting' ? '#fbbf24' : '#f87171';
-                        return (
-                          <div key={s.name} style={{ padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.72rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                              <span style={{ fontWeight: '600', color: '#e2e8f0' }}>{s.name}</span>
-                              <span style={{ color: stColor }}>● {s.status}</span>
-                              {s.pid ? <span style={{ color: '#64748b' }}>pid {s.pid}</span> : null}
-                              <span style={{ color: '#64748b', marginLeft: 'auto' }}>↻ {s.restarts}</span>
-                            </div>
-                            <div style={{ color: '#64748b', fontSize: '0.65rem', marginTop: '0.1rem' }}>
-                              {s.mode}{s.last_exit != null ? ` · exit ${s.last_exit}` : ''} · démarré {new Date(s.started_at * 1000).toLocaleTimeString()}
-                            </div>
-                          </div>
-                        );
-                      })
+                  serviceList.map((s) => {
+                    const stColor = s.status === 'running' ? '#6ee7b7' : s.status === 'restarting' ? '#fbbf24' : '#f87171';
+                    return (
+                      <div key={s.name} style={{ padding: '0.3rem 0', borderBottom: '1px solid #334155', fontSize: '0.72rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <span style={{ fontWeight: '600', color: '#e2e8f0' }}>{s.name}</span>
+                          <span style={{ color: stColor }}>● {s.status}</span>
+                          {s.pid ? <span style={{ color: '#64748b' }}>pid {s.pid}</span> : null}
+                          <span style={{ color: '#64748b', marginLeft: 'auto' }}>↻ {s.restarts}</span>
+                          <button onClick={() => fetchServiceLog(s.name)} style={{ marginLeft: '0.3rem', fontSize: '0.62rem', padding: '0.1rem 0.4rem', backgroundColor: '#334155', color: '#cbd5e1', border: '1px solid #475569', borderRadius: '0.25rem', cursor: 'pointer' }}>logs</button>
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: '0.65rem', marginTop: '0.1rem' }}>
+                          {s.mode}{s.last_exit != null ? ` · exit ${s.last_exit}` : ''} · démarré {new Date(s.started_at * 1000).toLocaleTimeString()}
+                        </div>
+                        {svcLogName === s.name && (
+                          <pre style={{ marginTop: '0.3rem', maxHeight: '160px', overflowY: 'auto', backgroundColor: '#0f172a', color: '#a5b4fc', fontSize: '0.62rem', padding: '0.4rem', borderRadius: '0.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{svcLogText || '(vide)'}</pre>
+                        )}
+                      </div>
+                    );
+                  })
                     )}
                   </>
                 )}

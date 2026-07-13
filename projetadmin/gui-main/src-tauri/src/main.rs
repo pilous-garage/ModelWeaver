@@ -284,6 +284,18 @@ fn proc_log_tail(id: u64, lines: usize) -> String {
     String::new()
 }
 
+/// Read the last `lines` lines of a supervised service on-disk log
+/// (logs_dir()/service-{name}.log).
+fn service_log_tail(name: &str, lines: usize) -> String {
+    let path = logs_dir().join(format!("service-{}.log", safe_name(name)));
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        let all: Vec<&str> = content.lines().collect();
+        let start = all.len().saturating_sub(lines);
+        return all[start..].join("\n");
+    }
+    String::new()
+}
+
 /// 1 Hz monitor: reap finished children, sample CPU/RSS, mirror to DB.
 fn start_proc_monitor(db_path: PathBuf) {
     std::thread::spawn(move || loop {
@@ -1191,6 +1203,11 @@ fn service_list() -> Result<Vec<ServiceInfo>, String> {
 }
 
 #[tauri::command]
+fn service_log(name: String, lines: usize) -> Result<String, String> {
+    Ok(service_log_tail(&name, if lines == 0 { 200 } else { lines }))
+}
+
+#[tauri::command]
 fn watch_get(name: String) -> Result<String, String> {
     Ok(read_watch_cache(&name).unwrap_or_default())
 }
@@ -1519,6 +1536,7 @@ fn main() {
             process_log,
             install_all_tools,
             service_list,
+            service_log,
             watch_get,
             run_command,
             get_platform,
