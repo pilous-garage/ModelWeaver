@@ -237,9 +237,9 @@ def get_installed_tools():
     mw = _get_mw()
     rows = mw.local_tools.list_all()
     out = [{
-        "ref": r.get("tool_ref") or r.get("ref"),
-        "name": r.get("tool_name") or r.get("name"),
-        "version": r.get("version"),
+        "ref": r.get("outil_ref"),
+        "name": r.get("nom"),
+        "version": r.get("version_installee") or r.get("nom_version"),
         "status": r.get("status"),
         "install_path": r.get("install_path"),
     } for r in rows]
