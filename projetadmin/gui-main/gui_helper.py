@@ -149,7 +149,8 @@ def get_installed_tools():
     out = [{"ref": r.get("outil_ref"), "name": r.get("nom"),
             "version": r.get("version_installee") or r.get("nom_version"),
             "status": r.get("status"),
-            "install_path": r.get("install_path")} for r in rows]
+            "install_path": r.get("install_path"),
+            "classe": r.get("classe_nom"), "classe_ref": r.get("classe_ref")} for r in rows]
     mw.close()
     return {"tools": out, "count": len(out)}
 

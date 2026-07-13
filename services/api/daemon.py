@@ -255,6 +255,7 @@ def get_installed_tools():
         "version": r.get("version_installee") or r.get("nom_version"),
         "status": r.get("status"),
         "install_path": r.get("install_path"),
+        "classe": r.get("classe_nom"), "classe_ref": r.get("classe_ref"),
     } for r in rows]
     return {"tools": out, "count": len(out)}
 
