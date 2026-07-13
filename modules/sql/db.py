@@ -1401,16 +1401,28 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Migration classes_outils ignorée: {e}")
 
-        # ── Seed des providers si la table est vide ──
+        # ── Seed si tables vides ──
         # Couvre le cas d'une BDD pré-existante (tables créées) mais non
         # peuplée : le seed INSERT OR IGNORE du .sql est idempotent.
         try:
             pc = self.conn.execute("SELECT COUNT(*) FROM catalogue_providers").fetchone()[0]
-            if pc == 0 and schema.exists():
+            ec = 0
+            try:
+                ec = self.conn.execute("SELECT COUNT(*) FROM provider_endpoints").fetchone()[0]
+            except Exception:
+                ec = 0
+            if (pc == 0 or ec == 0) and schema.exists():
                 self.conn.executescript(schema.read_text())
                 self.conn.commit()
         except Exception as e:
-            print(f"⚠️  Seed providers ignoré: {e}")
+            print(f"⚠️  Seed ignoré: {e}")
+
+        # ── Migration colonnes provider_endpoints ──
+        try:
+            _add_column_if_missing(self.conn, "provider_endpoints", "local_latency", "REAL")
+            _add_column_if_missing(self.conn, "provider_endpoints", "global_quality", "REAL")
+        except Exception as e:
+            print(f"⚠️  Migration provider_endpoints ignorée: {e}")
 
     @contextmanager
     def transaction(self):

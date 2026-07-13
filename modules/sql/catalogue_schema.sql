@@ -184,6 +184,74 @@ VALUES
     ('meganova', 'Meganova', 'cloud', 'openai_compatible', NULL, 0);
 
 -- ============================================================
+-- 1c. PROVIDER_ENDPOINTS — Endpoints API possédés par le provider.
+--     1 provider → N endpoints (base URL canonique + surfaces :
+--     chat, embeddings, models…, ou bases régionales multiples).
+--     Les clés peuvent encore OVERRIDE via api_base (proxy / self-host
+--     / gateway entreprise) — c'est un cas légitime par clé.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS provider_endpoints (
+    endpoint_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id   INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+    label         TEXT NOT NULL,
+    endpoint_url  TEXT NOT NULL,
+    api_type      TEXT,
+    is_default    INTEGER DEFAULT 0,
+    local_latency REAL,
+    global_quality REAL,
+    created_at    INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_provider_endpoints_provider ON provider_endpoints(provider_id);
+
+-- Seed des endpoints canoniques (INSERT OR IGNORE → idempotent).
+-- Sélectionne provider_id via ref pour ne seeder que si le provider existe.
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.openai.com/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='openai';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.anthropic.com', 'anthropic', 1 FROM catalogue_providers WHERE ref='anthropic';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1beta', 'https://generativelanguage.googleapis.com/v1beta', 'gemini', 1 FROM catalogue_providers WHERE ref='google';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'openai/v1', 'https://api.groq.com/openai/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='groq';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.mistral.ai/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='mistral';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.deepseek.com/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='deepseek';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.cohere.com/v1', 'cohere', 1 FROM catalogue_providers WHERE ref='cohere';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://openrouter.ai/api/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='openrouter';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.together.xyz/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='togetherai';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'inference/v1', 'https://api.fireworks.ai/inference/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='fireworks-ai';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.perplexity.ai', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='perplexity';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://integrate.api.nvidia.com/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='nvidia';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api-inference.huggingface.co', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='huggingface';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://models.in.ai', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='github-models';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.scaleway.ai/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='scaleway';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'https://api.endpoints.ai/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='ovhcloud';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'http://localhost:11434', 'ollama', 1 FROM catalogue_providers WHERE ref='ollama';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'v1', 'http://localhost:1234/v1', 'openai_compatible', 1 FROM catalogue_providers WHERE ref='lmstudio';
+-- Endpoints templatés (région/resource variables) — base de référence.
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'resource', 'https://{resource}.openai.azure.com', 'azure', 1 FROM catalogue_providers WHERE ref='azure';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'region', 'https://bedrock-runtime.{region}.amazonaws.com', 'bedrock', 1 FROM catalogue_providers WHERE ref='amazon-bedrock';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'region', 'https://{region}-aiplatform.googleapis.com/v1', 'vertex', 1 FROM catalogue_providers WHERE ref='google-vertex';
+INSERT OR IGNORE INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default)
+SELECT id, 'workspace', 'https://{workspace}.databricks.com/serving-endpoints', 'databricks', 1 FROM catalogue_providers WHERE ref='databricks';
+
+-- ============================================================
 -- 2. CATALOGUE_MODELS — Modèles LLM (référence)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS catalogue_models (

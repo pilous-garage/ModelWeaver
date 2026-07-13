@@ -14,7 +14,7 @@ class Onboarder:
             (r"OPENAI_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "openai", "paid", "pro"),
             (r"ANTHROPIC_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "anthropic", "paid", "pro"),
             (r"GOOGLE_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "google", "paid", None),
-            (r"GOOGLE_GEMINI_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "gemini", "free", None),
+            (r"GOOGLE_GEMINI_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "google", "free", None),
             (r"NVIDIA_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "nvidia", "free", None),
             (r"GROQ_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "groq", "free", None),
             (r"MISTRAL_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "mistral", "paid", None),

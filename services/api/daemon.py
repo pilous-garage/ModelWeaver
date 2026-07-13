@@ -671,6 +671,21 @@ def op_providers_list(_params):
         "FROM catalogue_providers ORDER BY name")
     cols = [d[0] for d in cur.description]
     providers = [dict(zip(cols, row)) for row in cur.fetchall()]
+    # Joindre les endpoints possédés par le provider (table provider_endpoints)
+    try:
+        ecur = cat.conn.execute(
+            "SELECT p.ref, e.id, e.label, e.endpoint_url, e.api_type, e.is_default "
+            "FROM provider_endpoints e JOIN catalogue_providers p ON p.id = e.provider_id")
+        eps: dict = {}
+        for prow in ecur.fetchall():
+            eps.setdefault(prow[0], []).append(
+                {"id": prow[1], "label": prow[2], "endpoint_url": prow[3],
+                 "api_type": prow[4], "is_default": bool(prow[5])})
+        for p in providers:
+            p["endpoints"] = eps.get(p["ref"], [])
+    except Exception:
+        for p in providers:
+            p["endpoints"] = []
     # Enrichir avec has_key : true si une clé API est fournie pour ce provider
     try:
         km = _get_km()
@@ -742,6 +757,33 @@ def op_llm_recommend(params):
     result["recommendations"] = filt
     result["count"] = len(filt)
     return result
+
+
+def op_provider_endpoint_add(params):
+    """Ajoute un endpoint à un provider (table provider_endpoints).
+    params: provider_ref, label, endpoint_url, api_type?, is_default?"""
+    from modules.sql.db import CatalogueDB
+    ref = params.get("provider_ref")
+    label = params.get("label") or "v1"
+    url = params.get("endpoint_url")
+    if not ref or not url:
+        return {"status": "error", "error": "provider_ref et endpoint_url requis"}
+    cat = _get_cat()
+    prow = cat.conn.execute(
+        "SELECT id FROM catalogue_providers WHERE ref=?", (ref,)).fetchone()
+    if not prow:
+        return {"status": "error", "error": f"provider inconnu: {ref}"}
+    is_default = 1 if params.get("is_default") else 0
+    if is_default:
+        # un seul endpoint par défaut
+        cat.conn.execute(
+            "UPDATE provider_endpoints SET is_default=0 WHERE provider_id=?", (prow[0],))
+    cat.conn.execute(
+        "INSERT INTO provider_endpoints (provider_id, label, endpoint_url, api_type, is_default) "
+        "VALUES (?,?,?,?,?)",
+        (prow[0], label, url, params.get("api_type"), is_default))
+    cat.conn.commit()
+    return {"status": "ok", "provider_ref": ref, "endpoint_url": url}
 
 
 def _wrap(fn):
