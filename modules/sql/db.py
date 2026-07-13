@@ -592,7 +592,7 @@ class ToolRepository:
 
     def scan_installed(self, local_repo: "LocalToolRepository") -> int:
         """Détecte les outils installés et peuple local_tools."""
-        import shutil, subprocess, sys
+        import re, shutil, subprocess, sys
         count = 0
         binaries = {
             "ollama": ("ollama", "--version"),
@@ -607,7 +607,10 @@ class ToolRepository:
             version = None
             try:
                 r = subprocess.run([cmd, ver_flag], capture_output=True, text=True, timeout=5)
-                version = r.stdout.strip().split()[-1] if r.stdout else None
+                # Premier token semver-like (ex. curl --version finit par une
+                # feature "zstd" — on ne prend PAS le dernier mot).
+                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", r.stdout or "")
+                version = m.group(1) if m else None
             except Exception: pass
             
             self.save({"ref": ref, "name": ref, "install_method": "binary", "current_version": version})
