@@ -1132,18 +1132,22 @@ function App() {
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
           <button
-            onClick={handleInstall}
-            disabled={allRequiredInstalled || installing}
+            onClick={() => withFeedback('install-deps', handleInstall)}
+            disabled={allRequiredInstalled || installing || loadingActions['install-deps']}
             style={{
               padding: '0.5rem 1rem',
-              backgroundColor: allRequiredInstalled || installing ? '#475569' : '#3b82f6',
+              backgroundColor: (allRequiredInstalled || installing || loadingActions['install-deps']) ? '#475569' : '#3b82f6',
               color: 'white',
               border: 'none',
               borderRadius: '0.375rem',
-              cursor: allRequiredInstalled || installing ? 'not-allowed' : 'pointer',
+              cursor: (allRequiredInstalled || installing || loadingActions['install-deps']) ? 'not-allowed' : 'pointer',
               fontWeight: '500',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.4rem',
             }}
           >
+            {(installing || loadingActions['install-deps']) && <Spinner />}
             {installing
               ? `Installing... (${installProgress.filter(p => p.status === 'success').length}/${installProgress.length})`
               : allRequiredInstalled ? 'All dependencies installed' : 'Install Selected'}
