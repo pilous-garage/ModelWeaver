@@ -59,32 +59,32 @@ class Installer:
         if recipe:
             if progress_callback:
                 progress_callback(5, f"Utilisation de la recette {ref}")
-            # Résolution du chemin de téléchargement pour les binaires
-            download_path = None
-            if tool.get("tool_type") == "binary":
-                # Résoudre le manager block pour obtenir l'URL spécifique
-                resolved = self.recipe_parser.resolve(recipe, forced_manager=forced_manager)
-                url = None
-                if resolved:
+            # Résolution du manager : si aucun manager compatible n'est trouvé
+            # (ex. recette distante incomplète), on retombe sur le fallback legacy.
+            resolved = self.recipe_parser.resolve(recipe, forced_manager=forced_manager)
+            if resolved:
+                # Résolution du chemin de téléchargement pour les binaires
+                download_path = None
+                if tool.get("tool_type") == "binary":
                     version, manager_block = resolved
-                    url = manager_block.get("url")
-                
-                if not url and recipe and "url" in recipe:
-                    url = recipe["url"]
-                elif not url and tool.get("default_download_url"):
-                    url = tool.get("default_download_url")
-                
-                if url:
-                    download_path = self._cached_download(url, ref)
+                    url = (manager_block.get("url")
+                           or (recipe.get("url") if recipe else None)
+                           or tool.get("default_download_url"))
+                    if url:
+                        download_path = self._cached_download(url, ref)
 
-            ok = self.recipe_parser.execute_install(
-                recipe, tool.get("current_version"), progress_callback,
-                forced_manager=forced_manager, download_path=download_path)
-            if ok:
-                print(f"  ✅ {ref} installé via recette")
-            return ok
+                ok = self.recipe_parser.execute_install(
+                    recipe, tool.get("current_version"), progress_callback,
+                    forced_manager=forced_manager, download_path=download_path)
+                if ok:
+                    print(f"  ✅ {ref} installé via recette")
+                    return ok
+                # échec de l'exécution recette -> fallback legacy ci-dessous
+            else:
+                if progress_callback:
+                    progress_callback(10, f"Recette {ref} sans manager compatible, fallback legacy")
 
-        # Fallback legacy
+        # Fallback legacy (utilise install_method du catalogue : pip/apt/...)
         return self._install_legacy(tool, ref, progress_callback)
 
     def uninstall(self, tool: Dict[str, Any], install_path: Optional[str] = None,
