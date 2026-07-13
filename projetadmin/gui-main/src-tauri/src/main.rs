@@ -1140,6 +1140,18 @@ fn uninstall_tool(ref_: String) -> Result<serde_json::Value, String> {
     run_python_helper(&find_helper_path(), &["uninstall_tool", &ref_])
 }
 
+#[tauri::command]
+fn get_providers() -> Result<serde_json::Value, String> {
+    log_cmd("get_providers");
+    run_python_helper(&find_helper_path(), &["get_providers"])
+}
+
+#[tauri::command]
+fn add_provider(data_json: String) -> Result<serde_json::Value, String> {
+    log_cmd("add_provider");
+    run_python_helper(&find_helper_path(), &["add_provider", &data_json])
+}
+
 fn install_db_path() -> PathBuf {
     mw_home().join("runtime.db")
 }
@@ -1562,6 +1574,8 @@ fn main() {
             sync_catalogue,
             install_tool,
             uninstall_tool,
+            get_providers,
+            add_provider,
             install_queue_add,
             install_queue_cancel,
             install_queue_status,

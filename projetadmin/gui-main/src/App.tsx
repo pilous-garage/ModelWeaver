@@ -168,6 +168,9 @@ function App() {
   const [keysNewProvider, setKeysNewProvider] = useState('');
   const [keysNewValue, setKeysNewValue] = useState('');
   const [keysNewTag, setKeysNewTag] = useState<'free' | 'paid'>('free');
+  const [providersList, setProvidersList] = useState<any[]>([]);
+  const [keyProviderMode, setKeyProviderMode] = useState<'known' | 'new'>('known');
+  const [newProviderForm, setNewProviderForm] = useState<{ ref: string; name: string; provider_type: string; api_type: string; website: string }>({ ref: '', name: '', provider_type: 'cloud', api_type: '', website: '' });
   const [debugTab, setDebugTab] = useState<'process' | 'logs' | 'resources'>('process');
   const [procList, setProcList] = useState<{ id: number; name: string; pid: number | null; parent_id: number | null; status: string; command: string; log_path: string; cpu: number; rss_kb: number; started_at: number; ended_at: number | null }[]>([]);
   const [procLogId, setProcLogId] = useState<number | null>(null);
@@ -196,6 +199,11 @@ function App() {
     } catch { /* daemon pas encore prêt */ }
   };
 
+  const fetchProviders = async () => {
+    try { setProvidersList((await invoke<any>('get_providers')).providers || []); }
+    catch { /* ignore */ }
+  };
+
   const handleSetKey = async () => {
     if (!keysNewProvider || !keysNewValue) return;
     try {
@@ -207,6 +215,25 @@ function App() {
       });
       setKeysNewProvider(''); setKeysNewValue(''); setKeysNewTag('free');
       await fetchKeys();
+    } catch { /* ignore */ }
+  };
+
+  const handleAddProvider = async () => {
+    const f = newProviderForm;
+    if (!f.ref || !f.name) return;
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      // Create provider in catalogue
+      const res = await invoke<any>('add_provider', {
+        dataJson: JSON.stringify({ ref: f.ref, name: f.name, provider_type: f.provider_type, api_type: f.api_type, website: f.website })
+      });
+      if (res && res.status === 'ok') {
+        await fetchProviders();
+        setKeysNewProvider(f.ref);
+        setNewProviderForm({ ref: '', name: '', provider_type: 'cloud', api_type: '', website: '' });
+        // Now add key via existing handler
+        await handleSetKey();
+      }
     } catch { /* ignore */ }
   };
 
@@ -714,7 +741,7 @@ function App() {
             🐞 Debug
           </button>
           <button
-            onClick={() => { setShowKeys(!showKeys); if (!showKeys) fetchKeys(); }}
+            onClick={() => { setShowKeys(!showKeys); if (!showKeys) { fetchKeys(); fetchProviders(); } }}
             style={{ padding: '0.4rem 0.8rem', backgroundColor: showKeys ? '#7c3aed' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
           >
             🔑 Clés
@@ -940,29 +967,84 @@ function App() {
               <div style={{ flex: 1, overflowY: 'auto', backgroundColor: '#1e293b', borderRadius: '0.375rem', border: '1px solid #334155', padding: '0.6rem' }}>
                 {/* Ajout d'une clé */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '0.75rem', padding: '0.5rem', backgroundColor: '#0f172a', borderRadius: '0.375rem' }}>
-                  <input
-                    placeholder="Provider (ex: openai)"
-                    value={keysNewProvider}
-                    onChange={e => setKeysNewProvider(e.target.value)}
-                    style={{ padding: '0.3rem 0.5rem', fontSize: '0.72rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
-                  />
-                  <input
-                    placeholder="Clé API"
-                    value={keysNewValue}
+                  {/* Mode toggle */}
+                  <div style={{ display: 'flex', gap: '0.3rem' }}>
+                    <button onClick={() => setKeyProviderMode('known')}
+                      style={{ flex: 1, padding: '0.25rem', fontSize: '0.68rem', backgroundColor: keyProviderMode === 'known' ? '#1d4ed8' : '#334155', color: '#e2e8f0', border: '1px solid ' + (keyProviderMode === 'known' ? '#3b82f6' : '#475569'), borderRadius: '0.25rem', cursor: 'pointer' }}
+                    >Provider connu</button>
+                    <button onClick={() => { setKeyProviderMode('new'); setKeysNewProvider(''); }}
+                      style={{ flex: 1, padding: '0.25rem', fontSize: '0.68rem', backgroundColor: keyProviderMode === 'new' ? '#1d4ed8' : '#334155', color: '#e2e8f0', border: '1px solid ' + (keyProviderMode === 'new' ? '#3b82f6' : '#475569'), borderRadius: '0.25rem', cursor: 'pointer' }}
+                    >Nouveau provider</button>
+                  </div>
+
+                  {keyProviderMode === 'known' ? (
+                    /* Provider connu : dropdown groupé par type */
+                    <select
+                      value={keysNewProvider}
+                      onChange={e => setKeysNewProvider(e.target.value)}
+                      style={{ backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', fontSize: '0.72rem', padding: '0.3rem', outline: 'none' }}
+                    >
+                      <option value="">-- Sélectionner un provider --</option>
+                      {(function() {
+                        const grouped: Record<string, any[]> = {};
+                        for (const p of providersList) {
+                          const t = p.provider_type || 'unknown';
+                          (grouped[t] ||= []).push(p);
+                        }
+                        const sortedTypes = Object.keys(grouped).sort((a: string, b: string) => a.localeCompare(b));
+                        return sortedTypes.map((t: string) => (
+                          <optgroup key={t} label={t}>
+                            {grouped[t].map((p: any) => (
+                              <option key={p.ref} value={p.ref}>{p.name}{p.api_type ? ' — ' + p.api_type : ''}</option>
+                            ))}
+                          </optgroup>
+                        ));
+                      })()}
+                    </select>
+                  ) : (
+                    /* Nouveau provider : formulaire */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                      <input placeholder="Ref (ex: groq)" value={newProviderForm.ref}
+                        onChange={e => setNewProviderForm({ ...newProviderForm, ref: e.target.value })}
+                        style={{ padding: '0.3rem', fontSize: '0.7rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                      />
+                      <input placeholder="Name (ex: Groq)" value={newProviderForm.name}
+                        onChange={e => setNewProviderForm({ ...newProviderForm, name: e.target.value })}
+                        style={{ padding: '0.3rem', fontSize: '0.7rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                      />
+                      <select value={newProviderForm.provider_type}
+                        onChange={e => setNewProviderForm({ ...newProviderForm, provider_type: e.target.value })}
+                        style={{ backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', fontSize: '0.7rem', padding: '0.3rem', outline: 'none' }}
+                      >
+                        <option value="cloud">Cloud</option>
+                        <option value="local">Local</option>
+                        <option value="ollama">Ollama</option>
+                        <option value="builtin">Builtin</option>
+                      </select>
+                      <input placeholder="API Type (ex: openai_compatible)" value={newProviderForm.api_type}
+                        onChange={e => setNewProviderForm({ ...newProviderForm, api_type: e.target.value })}
+                        style={{ padding: '0.3rem', fontSize: '0.7rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                      />
+                      <input placeholder="Website (optionnel)" value={newProviderForm.website}
+                        onChange={e => setNewProviderForm({ ...newProviderForm, website: e.target.value })}
+                        style={{ padding: '0.3rem', fontSize: '0.7rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
+                      />
+                    </div>
+                  )}
+
+                  <input placeholder="Clé API" value={keysNewValue}
                     onChange={e => setKeysNewValue(e.target.value)}
                     style={{ padding: '0.3rem 0.5rem', fontSize: '0.72rem', backgroundColor: '#1e293b', color: '#e2e8f0', border: '1px solid #475569', borderRadius: '0.25rem', outline: 'none' }}
                   />
                   <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                    <select
-                      value={keysNewTag}
+                    <select value={keysNewTag}
                       onChange={e => setKeysNewTag(e.target.value as 'free' | 'paid')}
                       style={{ flex: 1, ...selectStyles, fontSize: '0.72rem', padding: '0.3rem' }}
                     >
                       <option value="free">Free</option>
                       <option value="paid">Paid</option>
                     </select>
-                    <button
-                      onClick={handleSetKey}
+                    <button onClick={keyProviderMode === 'known' ? handleSetKey : handleAddProvider}
                       style={{ padding: '0.3rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '600' }}
                     >+</button>
                   </div>

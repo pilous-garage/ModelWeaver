@@ -161,6 +161,50 @@ def save_system_state():
     return {"status": "ok"}
 
 
+def get_providers():
+    """Liste tous les fournisseurs du catalogue (catalogue.db)."""
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    cur = cat.conn.execute(
+        "SELECT ref, name, provider_type, api_type, website, is_free_tier_provider "
+        "FROM catalogue_providers ORDER BY provider_type, name")
+    cols = [d[0] for d in cur.description]
+    providers = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cat.close()
+    return {"providers": providers, "count": len(providers)}
+
+
+def add_provider(data_json):
+    """Ajoute ou met à jour un fournisseur dans catalogue.db."""
+    import json as _json
+    data = _json.loads(data_json)
+    ref = data.get("ref")
+    if not ref:
+        return {"error": "ref requis"}
+    # Types autorisés (cohérent avec catalogue_schema.sql CHECK)
+    valid_types = {"cloud", "local", "ollama", "builtin"}
+    ptype = data.get("provider_type", "cloud")
+    if ptype not in valid_types:
+        ptype = "cloud"
+    _, cat_path = _db_paths()
+    cat = CatalogueDB(cat_path)
+    existing = cat.conn.execute(
+        "SELECT 1 FROM catalogue_providers WHERE ref=?", (ref,)).fetchone()
+    cat.conn.execute("""
+        INSERT INTO catalogue_providers (ref, name, provider_type, api_type, website, is_free_tier_provider)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(ref) DO UPDATE SET
+            name=excluded.name, provider_type=excluded.provider_type,
+            api_type=excluded.api_type, website=excluded.website,
+            is_free_tier_provider=excluded.is_free_tier_provider
+    """, (ref, data.get("name", ref), ptype,
+          data.get("api_type"), data.get("website"),
+          data.get("is_free_tier_provider", 0)))
+    cat.conn.commit()
+    cat.close()
+    return {"status": "ok", "ref": ref, "created": existing is None}
+
+
 def sync_catalogue_remote(url=None):
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
@@ -244,6 +288,10 @@ if __name__ == "__main__":
         elif command == "uninstall_tool" and len(sys.argv) > 2:
             result = uninstall_tool(sys.argv[2]); print(json.dumps(result))
             sys.exit(0 if result.get("status") == "ok" else 1)
+        elif command == "get_providers":
+            result = get_providers()
+        elif command == "add_provider" and len(sys.argv) > 2:
+            result = add_provider(sys.argv[2])
         else:
             result = {"error": f"Unknown command: {command}"}
         print(json.dumps(result))
