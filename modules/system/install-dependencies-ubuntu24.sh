@@ -55,12 +55,14 @@ PIP_REQUIRED=(keyring psutil)
 echo "[deps] pip install (requis): ${PIP_REQUIRED[*]}"
 python3 -m pip install "${PIP_REQUIRED[@]}" --break-system-packages "${PIP_CONSTRAINT_ARGS[@]}"
 
-# ── optionnelles (heavy / unsafe) ──
+# ── optionnelles ──
+# docker et litellm NE sont PAS des dépendances : ce sont des runtimes/outils
+# gérés par le CATALOGUE (docker = conteneurisation, litellm = abstraction LLM).
+# On ne les installe donc jamais depuis l'installeur de dépendances (notamment
+# docker.io ne doit pas être installé dans un conteneur de test). Le flag
+# --include-optional reste accepté (no-op) pour ne pas casser les appelants.
 if $INCLUDE_OPTIONAL; then
-  echo "[deps] apt install (optionnel): docker.io"
-  $SUDO apt-get install -y docker.io
-  echo "[deps] pip install (optionnel): litellm"
-  python3 -m pip install litellm --break-system-packages "${PIP_CONSTRAINT_ARGS[@]}"
+  echo "[deps] aucune dépendance optionnelle à installer (docker/litellm sont gérés par le catalogue)"
 fi
 
 echo "[deps] installation terminée (ubuntu24)"

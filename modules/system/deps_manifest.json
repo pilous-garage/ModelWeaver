@@ -62,24 +62,6 @@
       "weight": "light",
       "optional": true,
       "targets": { "ubuntu24": "git" }
-    },
-    {
-      "name": "litellm",
-      "description": "litellm (abstraction LLM, lourd)",
-      "language": "python",
-      "safe": false,
-      "weight": "heavy",
-      "optional": true,
-      "targets": { "ubuntu24": "litellm" }
-    },
-    {
-      "name": "docker",
-      "description": "Docker (conteneurisation, lourd)",
-      "language": "system",
-      "safe": false,
-      "weight": "heavy",
-      "optional": true,
-      "targets": { "ubuntu24": "docker.io" }
     }
   ]
 }
