@@ -328,6 +328,44 @@ fn cmd_info() {
     println!("{}", serde_json::to_string_pretty(&info).unwrap());
 }
 
+/// Installe les dépendances via le manifeste — MÊME processus que la GUI
+/// (modules/system/deps.py -> script cible install-dependencies-<target>.sh).
+/// On appelle directement le module Python partagé (code identique à celui
+/// que le daemon expose via /v1/deps/install_target).
+fn install_system_dependencies(include_optional: bool) {
+    let repo = find_repo_root();
+    let py = python_bin();
+    eprintln!("[main-cli] installation dépendances (manifeste, include_optional={})...", include_optional);
+    let code = format!(
+        "import sys,json; sys.path.insert(0,'.'); from modules.system.deps import install_target_dependencies; print(json.dumps(install_target_dependencies(include_optional={})))",
+        if include_optional { "True" } else { "False" }
+    );
+    match Command::new(py).arg("-c").arg(&code).current_dir(&repo).output() {
+        Ok(o) => {
+            let out = String::from_utf8_lossy(&o.stdout);
+            if !out.trim().is_empty() { eprintln!("[main-cli] {}", out.trim()); }
+            let err = String::from_utf8_lossy(&o.stderr);
+            if !err.trim().is_empty() { eprintln!("[main-cli] stderr: {}", err.trim()); }
+            if !o.status.success() { eprintln!("[main-cli] installation des dépendances en échec"); }
+        }
+        Err(e) => eprintln!("[main-cli] impossible de lancer python: {}", e),
+    }
+}
+
+/// Affiche le statut des dépendances du manifeste (debug CLI).
+fn check_system_dependencies() {
+    let repo = find_repo_root();
+    let py = python_bin();
+    eprintln!("[main-cli] statut des dépendances (manifeste) :");
+    let code = "import sys; sys.path.insert(0,'.'); from modules.system.deps import detect_target, load_manifest, is_dependency_installed; \
+t=detect_target(); m=load_manifest(); \
+[print('  {:12} required={} installed={} pkg={}'.format(d['name'], (not d.get('optional')) and d.get('safe') and d.get('weight')=='light', is_dependency_installed(d.get('language','system'), d['targets'].get(t)), d['targets'].get(t))) for d in m.get('dependencies',[]) if d['targets'].get(t)]";
+    match Command::new(py).arg("-c").arg(code).current_dir(&repo).output() {
+        Ok(o) => { eprintln!("{}", String::from_utf8_lossy(&o.stdout)); }
+        Err(e) => eprintln!("[main-cli] échec: {}", e),
+    }
+}
+
 fn cmd_start() {
     if !acquire_instance_lock("main-cli") {
         eprintln!("[main-cli] une instance tourne déjà (run/main-cli.pid). Arrêt.");
@@ -339,6 +377,9 @@ fn cmd_start() {
     become_group_leader();
     let helper = find_helper_path();
     let repo_root = helper.parent().map(|p| p.to_path_buf()).unwrap_or_else(find_repo_root);
+    // Même processus que la GUI : installer les dépendances requises (safe+light)
+    // du manifeste avant de démarrer les services.
+    install_system_dependencies(false);
     let cat_db = mw_home().join("catalogue.remote.db");
 
     let mut services = vec![
@@ -494,7 +535,7 @@ fn cmd_stop() {
 }
 
 fn usage() {
-    eprintln!("Usage: modelweaver-cli [--version|--info|start|stop]");
+    eprintln!("Usage: modelweaver-cli [--version|--info|start|stop|check-deps|install-deps [--include-optional]]");
 }
 
 fn main() {
@@ -505,6 +546,11 @@ fn main() {
         "--info" | "-i" | "info" => cmd_info(),
         "start" => cmd_start(),
         "stop" => cmd_stop(),
+        "check-deps" => check_system_dependencies(),
+        "install-deps" => {
+            let include_optional = args.iter().any(|a| a == "--include-optional");
+            install_system_dependencies(include_optional);
+        }
         "--help" | "-h" | "help" => usage(),
         other => {
             eprintln!("[main-cli] commande inconnue: {}", other);
