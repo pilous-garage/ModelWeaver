@@ -587,27 +587,30 @@ function App() {
 
   const handleUninstallTool = (ref: string, name: string) => {
     withFeedback(`uninstall-${ref}`, async () => {
-      addLog(`File: demande de désinstallation de ${name} (${ref})`);
-      await invoke('install_queue_add', { ref, name, jobType: 'uninstall' })
-        .then((id) => { if (!id) addLog(`${name} déjà en cours ou en file`); })
-        .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+      try {
+        const id = await invoke('install_queue_add', { ref, name, jobType: 'uninstall' });
+        if (!id) addLog(`${name} déjà en cours ou en file`);
+      } catch (e: any) {
+        addLog(`  ${name}: ERREUR file ${e}`);
+      }
     });
   };
 
   const handleAddToInstallList = (ref: string, name: string) => {
     withFeedback(`install-${ref}`, async () => {
-      const deja = installQueueRef.current.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
+      const deja = installQueue.some(q => q.ref === ref && (q.status === 'queued' || q.status === 'running'));
       if (deja) {
         addLog(`${name} déjà dans la file`);
         return;
       }
       addLog(`Ajout de ${name} à la file d'installation (séquentielle, thread dédié)`);
-      await invoke<number>('install_queue_add', { ref, name, jobType: 'install' })
-        .then((id) => {
-          if (!id) addLog(`${name} déjà en cours ou en file`);
-          else setPendingInstalls(p => ({ ...p, [ref]: true }));
-        })
-        .catch((e: any) => addLog(`  ${name}: ERREUR file ${e}`));
+      try {
+        const id = await invoke<number>('install_queue_add', { ref, name, jobType: 'install' });
+        if (!id) addLog(`${name} déjà en cours ou en file`);
+        else setPendingInstalls(p => ({ ...p, [ref]: true }));
+      } catch (e: any) {
+        addLog(`  ${name}: ERREUR file ${e}`);
+      }
     });
   };
 
@@ -629,7 +632,7 @@ function App() {
 
   if (showDashboard) {
     const isInstalled = (ref: string) => installedRef.current.some(t => t.ref === ref);
-    const queueJob = (ref: string) => installQueueRef.current.find(q => q.ref === ref);
+    const queueJob = (ref: string) => installQueue.find(q => q.ref === ref);
     const isQueued = (ref: string) => { const j = queueJob(ref); return !!j && (j.status === 'queued' || j.status === 'running'); };
     const fmtGb = (v: any) => (v == null ? 'n/a' : `${v} Go`);
 
