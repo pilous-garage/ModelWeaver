@@ -29,7 +29,7 @@ import contextlib
 import sys
 import os
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Ancrage du dépôt sur sys.path (modules/, services/, sql/ à la racine) AVANT
 # tout import de services.* — indispensable quand le daemon est lancé directement
@@ -814,7 +814,7 @@ def serve(port: int = 8770) -> None:
     server = None
     for attempt in range(10):
         try:
-            server = HTTPServer(("127.0.0.1", port), MWAPIHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", port), MWAPIHandler)
             break
         except OSError as e:
             print(f"⚠️  bind {port} échoué ({e}), retry {attempt + 1}/10...", file=sys.stderr)

@@ -1,6 +1,8 @@
 version: latest
 block:
   package: ollama
+  pre_steps:
+    - "apt-get update && apt-get install -y zstd"
   install:
     - "curl -fsSL https://ollama.com/install.sh -o /tmp/ollama_install.sh && sh /tmp/ollama_install.sh"
   uninstall:

@@ -558,17 +558,27 @@ class RecipeParser:
             if "--break-system-packages" not in cmd_str and ("pip install" in cmd_str or "pip uninstall" in cmd_str):
                 cmd_str += " --break-system-packages"
 
+            # Rediriger la sortie vers un fichier de log plutôt que de capturer
+            # (capture_output bloque si un processus fils hérite du pipe et le
+            #  garde ouvert — ex: scripts d'install qui démarrent un service).
+            log_path = Path.home() / ".modelweaver" / "install_cmd.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
             if shell:
                 print(f"DEBUG: Executing shell command: {cmd_str}")
-                result = subprocess.run(cmd_str, shell=True, capture_output=True,
-                                        text=True, timeout=1800)
+                with open(log_path, "a", encoding="utf-8") as logf:
+                    result = subprocess.run(
+                        cmd_str, shell=True, stdout=logf, stderr=subprocess.STDOUT,
+                        start_new_session=True, timeout=1800)
             else:
                 print(f"DEBUG: Executing list command: {cmd_str.split()}")
-                result = subprocess.run(cmd_str.split(), capture_output=True,
-                                        text=True, timeout=120)
+                with open(log_path, "a", encoding="utf-8") as logf:
+                    result = subprocess.run(
+                        cmd_str.split(), stdout=logf, stderr=subprocess.STDOUT,
+                        start_new_session=True, timeout=120)
 
             if result.returncode != 0 and not continue_on_error:
-                print(f"DEBUG: Command failed with return code {result.returncode}. stderr: {result.stderr}")
+                print(f"DEBUG: Command failed with return code {result.returncode}")
                 return False
             return True
 

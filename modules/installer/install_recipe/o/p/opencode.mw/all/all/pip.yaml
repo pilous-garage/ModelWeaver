@@ -1,7 +1,0 @@
-version: latest
-block:
-  package: opencode
-  install:
-    - "pip install opencode --break-system-packages --ignore-installed"
-  uninstall:
-    - "pip uninstall -y opencode --break-system-packages"

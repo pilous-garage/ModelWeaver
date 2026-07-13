@@ -40,26 +40,31 @@ info "version actuelle : $LATEST_TAG  →  bump → $NEW_TAG"
 GIT_SIZE=$(du -sm .git 2>/dev/null | awk '{print $1}')
 info "taille .git : ${GIT_SIZE} Mo"
 if [ "$GIT_SIZE" -gt 50 ]; then
-    warn "repo git > 50 Mo → affichage arborescence (niveau 3)"
+    warn "repo git > 50 Mo → affichage arborescence (niveau 1)"
     echo "═══════════════════════════════════════════════"
-    du -h -d 3 --exclude='.git' --exclude='target' --exclude='node_modules' --exclude='.venv' 2>/dev/null | sort -rh | head -40
+    # du -d 1 + exclusions des gros dossiers déjà gitignorés (rapide, pas de
+    # traversée de 2.7 Go de caches). Affichage informatif uniquement.
+    du -h -d 1 --exclude='.git' --exclude='.modelweaver' --exclude='oldcode' \
+        --exclude='autoanalyse' --exclude='gui' --exclude='mistral' \
+        --exclude='gemma' --exclude='gemini' --exclude='docker' \
+        --exclude='node_modules' --exclude='target' 2>/dev/null | sort -rh | head -25
     echo "═══════════════════════════════════════════════"
 
-    info "auto-ignore fichiers > 1 Mo (hors .git/target/node_modules/.venv)..."
+    info "auto-ignore fichiers > 1 Mo (uniquement fichiers non ignorés par git)..."
     ADDED=0
+    # git ls-files --others --exclude-standard ne liste QUE les fichiers que git
+    # suivrait réellement (exclut .modelweaver/*, oldcode/, node_modules, target…).
+    # Évite de scanner 2.7 Go de caches et de faire un git check-ignore par fichier.
     while IFS= read -r f; do
-        rel="${f#./}"
-        # skip already ignored
-        if git check-ignore -q "$rel" 2>/dev/null; then continue; fi
-        # skip inside dirs already ignored
-        case "$rel" in
-            .git/*|target/*|node_modules/*|.venv/*|__pycache__/*|*.pyc) continue ;;
-        esac
-        echo "$rel" >> .gitignore
-        git add .gitignore 2>/dev/null || true
-        ADDED=$((ADDED + 1))
-        info "  → .gitignore + $rel"
-    done < <(find . -type f -size +1M ! -path '*/.git/*' ! -path '*/target/*' ! -path '*/node_modules/*' ! -path '*/.venv/*' 2>/dev/null)
+        [ -z "$f" ] && continue
+        if [ "$(stat -c%s "$f" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+            rel="${f#./}"
+            echo "$rel" >> .gitignore
+            git add .gitignore 2>/dev/null || true
+            ADDED=$((ADDED + 1))
+            info "  → .gitignore + $rel"
+        fi
+    done < <(git ls-files --others --exclude-standard 2>/dev/null)
     ok "$ADDED fichiers ignorés (>1 Mo)"
 fi
 
