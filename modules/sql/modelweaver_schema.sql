@@ -132,15 +132,44 @@ INSERT OR IGNORE INTO package_managers (ref, name, install_cmd, os_family) VALUE
     ('choco', 'Chocolatey', 'choco install -y', 'windows');
 
 -- ============================================================
+-- 5b. CLASSES_OUTILS — Taxonomie métier des outils (miroir local
+--     de la table catalogue.classes_outils). Même seed pour
+--     permettre la jointure locale_outils → classe sans accès
+--     au catalogue distant.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS classes_outils (
+    classe_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref         TEXT UNIQUE NOT NULL,
+    nom         TEXT NOT NULL,
+    description TEXT,
+    sort_order  INTEGER DEFAULT 0,
+    created_at  INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+INSERT OR IGNORE INTO classes_outils (ref, nom, description, sort_order) VALUES
+    ('language',  'Languages',       'Interpréteurs et compilateurs',           10),
+    ('dev-tool',  'Dev Tools',       'Outils de développement',                 20),
+    ('ide',       'IDEs',            'Environnements de développement intégrés', 30),
+    ('chat-llm',  'Chat LLM',        'Interfaces de chat avec les LLM',         40),
+    ('agent',     'Agents',          'Orchestrateurs IA autonomes',             50),
+    ('engine',    'LLM Engines',     'Moteurs d''exécution locale de LLM',      60),
+    ('router',    'Routers',         'Passerelles et proxy LLM',                70),
+    ('context',   'Context Tools',   'Gestion du contexte et secrets',          80),
+    ('system',    'System Tools',    'Utilitaires système',                     90),
+    ('other',     'Other',           'Autres outils',                           999);
+
+-- ============================================================
 -- 6. LOCAL_OUTILS — Miroir local du catalogue_outils
 --    Une ligne par outil connu localement (peut précéder ou non le catalogue).
+--    classe_outil_id pointe vers classes_outils (nullable avant migration).
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_outils (
-    local_outil_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    outil_ref      TEXT UNIQUE NOT NULL,
-    nom            TEXT NOT NULL,
-    tool_type      TEXT CHECK(tool_type IN ('binary','python-module','archive','source','container')),
-    created_at     INTEGER DEFAULT (strftime('%s', 'now'))
+    local_outil_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    outil_ref       TEXT UNIQUE NOT NULL,
+    nom             TEXT NOT NULL,
+    tool_type       TEXT CHECK(tool_type IN ('binary','python-module','archive','source','container')),
+    classe_outil_id INTEGER REFERENCES classes_outils(classe_id) ON DELETE SET NULL,
+    created_at      INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
 -- ============================================================
@@ -396,6 +425,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_identity ON api_keys(identity);
 CREATE INDEX IF NOT EXISTS idx_provider_models_provider ON provider_models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_provider_models_model ON provider_models(model_id);
 CREATE INDEX IF NOT EXISTS idx_local_outils_ref ON local_outils(outil_ref);
+CREATE INDEX IF NOT EXISTS idx_local_classes_ref ON classes_outils(ref);
 CREATE INDEX IF NOT EXISTS idx_local_installs_outil ON local_installs(manager, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run_at, enabled);
 CREATE INDEX IF NOT EXISTS idx_wakeup_ticker ON wakeup_calls(status, execute_after);

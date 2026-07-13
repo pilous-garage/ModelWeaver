@@ -149,15 +149,22 @@ def _record_usage(mw, ref: str, etat: str) -> None:
 
 
 def _lookup_tool(ref: str, cat_shared) -> Optional[Dict[str, Any]]:
-    """Lit un outil depuis catalogue_outils."""
-    cur = cat_shared.conn.execute(
-        "SELECT ref, nom, description, tool_type FROM catalogue_outils WHERE ref = ?",
-        (ref,))
+    """Lit un outil depuis catalogue_outils, avec sa classe métier."""
+    cur = cat_shared.conn.execute("""
+        SELECT o.ref, o.nom, o.description, o.tool_type,
+               c.ref AS classe_ref, c.nom AS classe_nom
+        FROM catalogue_outils o
+        LEFT JOIN classes_outils c ON c.classe_id = o.classe_outil_id
+        WHERE o.ref = ?
+    """, (ref,))
     row = cur.fetchone()
     if not row:
         return None
+    classe_ref = row["classe_ref"] or (row["tool_type"] if row["tool_type"] else "other")
+    classe_nom = row["classe_nom"] or classe_ref
     return {"ref": row["ref"], "name": row["nom"],
-            "description": row["description"], "tool_type": row["tool_type"]}
+            "description": row["description"], "tool_type": row["tool_type"],
+            "classe_ref": classe_ref, "classe": classe_nom}
 
 
 def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:

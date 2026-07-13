@@ -767,7 +767,11 @@ function App() {
                 <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Chargement du catalogue…</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                  {catalogueTools.map((t: any) => {
+                  {catalogueTools.slice().sort((a: any, b: any) => {
+                    const ca = (a.classe || a.tool_type || '').toLowerCase();
+                    const cb = (b.classe || b.tool_type || '').toLowerCase();
+                    return ca.localeCompare(cb) || (a.name || '').localeCompare(b.name || '');
+                  }).map((t: any) => {
                     const inst = isInstalled(t.ref);
                     const queued = isQueued(t.ref);
                     return (
@@ -776,7 +780,7 @@ function App() {
                           <div style={{ fontWeight: '600', fontSize: '0.85rem' }}>{t.name} <span style={{ fontSize: '0.6rem', color: '#64748b' }}>({t.ref})</span></div>
                           <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>{t.description}</div>
                           <div style={{ marginTop: '0.25rem' }}>
-                            <span style={{ fontSize: '0.6rem', backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '0.25rem', padding: '0.05rem 0.35rem', color: '#93c5fd' }}>{t.tool_type}</span>
+                            <span style={{ fontSize: '0.6rem', backgroundColor: '#0c4a6e', border: '1px solid #0ea5e9', borderRadius: '0.25rem', padding: '0.05rem 0.35rem', color: '#7dd3fc' }}>{t.classe || t.tool_type}</span>
                             <span style={{ fontSize: '0.6rem', backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '0.25rem', padding: '0.05rem 0.35rem', color: '#cbd5e1', marginLeft: '0.3rem' }}>{t.install_method}</span>
                           </div>
                         </div>

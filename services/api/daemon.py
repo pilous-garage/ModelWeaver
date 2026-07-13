@@ -134,6 +134,8 @@ def check_databases():
 def seed_recipes(cat):
     """Backfill catalogue_outils/versions/recettes + outils_popularite depuis
     tools.json et les .mw.yaml shippés. Idempotent (INSERT OR IGNORE / dédupe)."""
+    from modules.sql.db import (_ensure_classes_outils_table, resolve_classe_id,
+                                 _default_class_for_ref)
     data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
     try:
         with open(data_path) as f:
@@ -142,13 +144,24 @@ def seed_recipes(cat):
         tools = []
     if isinstance(tools, dict):
         tools = tools.get("tools", [])
+    # S'assurer que la taxonomie classes_outils existe + seed
+    try:
+        _ensure_classes_outils_table(cat.conn)
+    except Exception:
+        pass
     for t in tools:
         ref = t.get("ref")
         if not ref:
             continue
+        # classe métier : champ 'classe' du JSON, sinon déduite du ref
+        classe_ref = t.get("classe") or _default_class_for_ref(ref)
+        try:
+            classe_id = resolve_classe_id(cat.conn, classe_ref)
+        except Exception:
+            classe_id = None
         cat.conn.execute(
-            "INSERT OR IGNORE INTO catalogue_outils (ref, nom, description, tool_type) VALUES (?,?,?,?)",
-            (ref, t.get("name", ref), t.get("description", ""), t.get("tool_type")))
+            "INSERT OR IGNORE INTO catalogue_outils (ref, nom, description, tool_type, classe_outil_id) VALUES (?,?,?,?,?)",
+            (ref, t.get("name", ref), t.get("description", ""), t.get("tool_type"), classe_id))
     cat.conn.commit()
     recipe_dir = _REPO_ROOT / "modules" / "installer" / "install_recipe"
     if not recipe_dir.exists():

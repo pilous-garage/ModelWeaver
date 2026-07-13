@@ -93,6 +93,99 @@ def bump_meta(conn, key: str, commit: bool = True) -> None:
 
 
 # ──────────────────────────────────────────────
+#  Helpers classes_outils (taxonomie métier)
+# ──────────────────────────────────────────────
+
+# Mapping par_ref → classe métier (utilisé pour backfill automatique
+# quand un outil arrive sans classe_outil_id renseigné, ex: legacy seed).
+_DEFAULT_CLASS_MAP = {
+    "opencode": "agent",
+    "litellm": "router",
+    "keyring": "context",
+    "ollama": "engine",
+    # binaires système détectés
+    "python3": "language",
+    "git": "dev-tool",
+    "curl": "dev-tool",
+    "open-webui": "chat-llm",
+    "gitingest": "context",
+    "requests": "dev-tool",
+    "psutil": "system",
+    "cryptography": "dev-tool",
+}
+
+
+def _ensure_classes_outils_table(conn) -> None:
+    """Crée classes_outils + seed si la table n'existe pas encore.
+
+    Idempotent : appelé par _ensure_schema() du catalogue et du local.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='classes_outils'"
+    ).fetchone()
+    if exists:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS classes_outils (
+            classe_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            ref         TEXT UNIQUE NOT NULL,
+            nom         TEXT NOT NULL,
+            description TEXT,
+            sort_order  INTEGER DEFAULT 0,
+            created_at  INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    """)
+    conn.executemany(
+        "INSERT OR IGNORE INTO classes_outils (ref, nom, description, sort_order) VALUES (?,?,?,?)",
+        [
+            ("language", "Languages",       "Interpréteurs et compilateurs",            10),
+            ("dev-tool", "Dev Tools",       "Outils de développement",                 20),
+            ("ide",      "IDEs",            "Environnements de développement intégrés", 30),
+            ("chat-llm", "Chat LLM",        "Interfaces de chat avec les LLM",         40),
+            ("agent",    "Agents",          "Orchestrateurs IA autonomes",             50),
+            ("engine",   "LLM Engines",     "Moteurs d'exécution locale de LLM",       60),
+            ("router",   "Routers",         "Passerelles et proxy LLM",               70),
+            ("context",  "Context Tools",   "Gestion du contexte et secrets",          80),
+            ("system",   "System Tools",    "Utilitaires système",                     90),
+            ("other",    "Other",           "Autres outils",                           999),
+        ],
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_classes_outils_ref ON classes_outils(ref)"
+    )
+
+
+def _add_column_if_missing(conn, table: str, column: str, decl: str) -> None:
+    """ALTER TABLE idempotent : ajoute `column` à `table` si elle n'existe pas.
+
+    `decl` est la définition SQL de la colonne (ex: 'INTEGER REFERENCES ...').
+    """
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def resolve_classe_id(conn, classe_ref: Optional[str]) -> Optional[int]:
+    """Traduit une ref de classe (ex: 'agent') en classe_id.
+
+    Retourne None si classe_ref est None/empty ou si la classe n'existe pas.
+    Crée la table classes_outils si absente (résilience).
+    """
+    if not classe_ref:
+        return None
+    _ensure_classes_outils_table(conn)
+    row = conn.execute(
+        "SELECT classe_id FROM classes_outils WHERE ref=?", (classe_ref,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _default_class_for_ref(ref: str) -> str:
+    """Retourne la classe métier par défaut pour un ref, 'other' sinon."""
+    return _DEFAULT_CLASS_MAP.get(ref, "other")
+
+
+# ──────────────────────────────────────────────
 #  Repositories
 # ──────────────────────────────────────────────
 
@@ -512,11 +605,12 @@ class LocalToolRepository:
     def list_all(self) -> List[Dict[str, Any]]:
         """Liste tous les outils installés localement."""
         cur = self.conn.execute("""
-            SELECT lo.outil_ref, lo.nom, lo.tool_type,
+            SELECT lo.outil_ref, lo.nom, lo.tool_type, c.ref AS classe_ref, c.nom AS classe_nom,
                    lv.nom_version,
                    li.os, li.arch, li.manager, li.package,
                    li.version_installee, li.install_path, li.status
             FROM local_outils lo
+            LEFT JOIN classes_outils c ON c.classe_id = lo.classe_outil_id
             JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
             JOIN local_installs li ON li.local_version_id = lv.local_version_id
             ORDER BY lo.nom
@@ -526,8 +620,9 @@ class LocalToolRepository:
     def get(self, outil_ref: str) -> Optional[Dict[str, Any]]:
         """Dernière installation d'un outil."""
         cur = self.conn.execute("""
-            SELECT lo.*, lv.nom_version, li.*
+            SELECT lo.*, c.ref AS classe_ref, c.nom AS classe_nom, lv.nom_version, li.*
             FROM local_outils lo
+            LEFT JOIN classes_outils c ON c.classe_id = lo.classe_outil_id
             JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
             JOIN local_installs li ON li.local_version_id = lv.local_version_id
             WHERE lo.outil_ref = ?
@@ -535,23 +630,31 @@ class LocalToolRepository:
         """, (outil_ref,))
         return _row_to_dict(cur.fetchone())
 
-    def save(self, data: Dict[str, Any]) -> int:
+    def save(self, data: Dict[str, Any], classe_ref: Optional[str] = None) -> int:
         """Enregistre une installation locale.
 
         Crée local_outils et local_versions si inexistants.
         L'upsert de local_installs utilise la clé (version, manager, os, arch).
+
+        classe_ref : ref de la classe métier (ex: 'agent'). Si absent, on
+        déduit depuis le ref de l'outil via le mapping par défaut.
         """
         ref = data.get("outil_ref") or data.get("ref")
         if not ref:
             raise ValueError("outil_ref requis")
+        _ensure_classes_outils_table(self.conn)
+        if classe_ref is None:
+            classe_ref = data.get("classe") or _default_class_for_ref(ref)
+        classe_id = resolve_classe_id(self.conn, classe_ref)
         # local_outils
         self.conn.execute("""
-            INSERT INTO local_outils (outil_ref, nom, tool_type)
-            VALUES (?, ?, ?)
+            INSERT INTO local_outils (outil_ref, nom, tool_type, classe_outil_id)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(outil_ref) DO UPDATE SET
                 nom=excluded.nom,
-                tool_type=COALESCE(excluded.tool_type, local_outils.tool_type)
-        """, (ref, data.get("nom", ref), data.get("tool_type")))
+                tool_type=COALESCE(excluded.tool_type, local_outils.tool_type),
+                classe_outil_id=COALESCE(excluded.classe_outil_id, local_outils.classe_outil_id)
+        """, (ref, data.get("nom", ref), data.get("tool_type"), classe_id))
         lid = self.conn.execute(
             "SELECT local_outil_id FROM local_outils WHERE outil_ref=?", (ref,)
         ).fetchone()[0]
@@ -726,16 +829,31 @@ class TursoCatalogueDB:
             pass
 
     def upsert_tool(self, tool_data: Dict[str, Any]) -> bool:
-        """Ajoute ou met à jour un outil dans le catalogue distant."""
+        """Ajoute ou met à jour un outil dans le catalogue distant.
+
+        Renseigne classe_outil_id à partir de la classe métier fournie
+        (tool_data['classe'] ou tool_data['classe_ref']), sinon déduite
+        du ref via le mapping par défaut.
+        """
+        try:
+            _ensure_classes_outils_table(self.client)
+            classe_ref = tool_data.get("classe") or tool_data.get("classe_ref")
+            if not classe_ref:
+                classe_ref = _default_class_for_ref(tool_data.get("ref", ""))
+            classe_id = resolve_classe_id(self.client, classe_ref)
+        except Exception:
+            classe_id = None
         sql = """
-        INSERT INTO catalogue_outils (ref, nom, description, tool_type)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO catalogue_outils (ref, nom, description, tool_type, classe_outil_id)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(ref) DO UPDATE SET
-            nom=excluded.nom, description=excluded.description, tool_type=excluded.tool_type
+            nom=excluded.nom, description=excluded.description,
+            tool_type=excluded.tool_type,
+            classe_outil_id=COALESCE(excluded.classe_outil_id, catalogue_outils.classe_outil_id)
         """
         params = (
             tool_data.get("ref"), tool_data.get("name") or tool_data.get("nom"),
-            tool_data.get("description"), tool_data.get("tool_type"),
+            tool_data.get("description"), tool_data.get("tool_type"), classe_id,
         )
         try:
             self.client.execute(sql, params)
@@ -1042,6 +1160,38 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
             )
         """)
 
+        # ── Migration classes_outils (taxonomie métier) ──
+        # Le schéma modelweaver_schema.sql crée déjà classes_outils (+seed)
+        # et local_outils(classe_outil_id) pour les DB neuves. Pour les DB
+        # locales legacy (local_outils sans classe_outil_id), on ajoute la
+        # colonne et on backfill via le mapping par défaut.
+        try:
+            _ensure_classes_outils_table(self.conn)
+            _add_column_if_missing(
+                self.conn, "local_outils", "classe_outil_id",
+                "INTEGER REFERENCES classes_outils(classe_id) ON DELETE SET NULL",
+            )
+            try:
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_local_outils_classe "
+                    "ON local_outils(classe_outil_id)"
+                )
+            except Exception:
+                pass
+            # Backfill : tout outil local sans classe reçoit la classe par défaut
+            # déduite de son ref (fallback 'other').
+            for row in self.conn.execute(
+                "SELECT local_outil_id, outil_ref FROM local_outils WHERE classe_outil_id IS NULL"
+            ).fetchall():
+                cid = resolve_classe_id(self.conn, _default_class_for_ref(row["outil_ref"]))
+                if cid is not None:
+                    self.conn.execute(
+                        "UPDATE local_outils SET classe_outil_id=? WHERE local_outil_id=?",
+                        (cid, row["local_outil_id"]))
+            self.conn.commit()
+        except Exception as e:
+            print(f"⚠️  Migration classes_outils (local) ignorée: {e}")
+
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_outils/versions/installs."""
         import re, shutil, subprocess, sys, platform
@@ -1213,6 +1363,41 @@ class CatalogueDB:
             except Exception:
                 pass
 
+        # ── Migration classes_outils (taxonomie métier) ──
+        # Couvre les deux branches ci-dessus :
+        #  - DB vierge (schéma chargé via catalogue_schema.sql) : la table
+        #    classes_outils + la colonne classe_outil_id sont déjà créées ;
+        #  - DB legacy (branche else) : il faut les créer/ajouter.
+        #  - DB legacy partielle où catalogue_outils existait DÉJÀ au chargement
+        #    du .sql (IF NOT EXISTS ignoré) : on ajoute la colonne ici.
+        try:
+            _ensure_classes_outils_table(self.conn)
+            _add_column_if_missing(
+                self.conn, "catalogue_outils", "classe_outil_id",
+                "INTEGER REFERENCES classes_outils(classe_id) ON DELETE SET NULL",
+            )
+            try:
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_outils_classe "
+                    "ON catalogue_outils(classe_outil_id)"
+                )
+            except Exception:
+                pass
+            # Backfill : tout outil sans classe_outil_id reçoit la classe par défaut
+            # déduite de son ref (fallback 'other').
+            for row in self.conn.execute(
+                "SELECT outil_id, ref FROM catalogue_outils WHERE classe_outil_id IS NULL"
+            ).fetchall():
+                classe_ref = _default_class_for_ref(row["ref"])
+                cid = resolve_classe_id(self.conn, classe_ref)
+                if cid is not None:
+                    self.conn.execute(
+                        "UPDATE catalogue_outils SET classe_outil_id=? WHERE outil_id=?",
+                        (cid, row["outil_id"]))
+            self.conn.commit()
+        except Exception as e:
+            print(f"⚠️  Migration classes_outils ignorée: {e}")
+
     @contextmanager
     def transaction(self):
         try:
@@ -1251,15 +1436,20 @@ class CatalogueDB:
 
     def sync_tools(self, rows: List[Dict]) -> int:
         count = 0
+        _ensure_classes_outils_table(self.conn)
         for r in rows:
+            # classe_outil_id : depuis la classe fournie, sinon déduite du ref
+            classe_ref = r.get("classe") or r.get("classe_ref") or _default_class_for_ref(r.get("ref", ""))
+            classe_id = resolve_classe_id(self.conn, classe_ref)
             # catalogue_outils
             self.conn.execute("""
-                INSERT INTO catalogue_outils (ref, nom, description, tool_type)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO catalogue_outils (ref, nom, description, tool_type, classe_outil_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(ref) DO UPDATE SET
                     nom=excluded.nom, description=excluded.description,
-                    tool_type=COALESCE(excluded.tool_type, catalogue_outils.tool_type)
-            """, (r["ref"], r["name"], r.get("description"), r.get("tool_type")))
+                    tool_type=COALESCE(excluded.tool_type, catalogue_outils.tool_type),
+                    classe_outil_id=COALESCE(excluded.classe_outil_id, catalogue_outils.classe_outil_id)
+            """, (r["ref"], r["name"], r.get("description"), r.get("tool_type"), classe_id))
             # catalogue_versions (current_version)
             ver = r.get("current_version")
             if ver:
@@ -1363,11 +1553,16 @@ class CatalogueDB:
         Pour chaque outil on retourne la liste des managers disponibles
         (recettes compatibles), ce qui remplace l'ancien install_method
         (désormais dans catalogue_recettes.manager).
+
+        Chaque outil porte aussi sa classe métier (classe_ref + classe_nom),
+        résolue via LEFT JOIN sur classes_outils (fallback 'other').
         """
         cur = self.conn.execute("""
             SELECT DISTINCT o.ref, o.nom, o.description, o.tool_type,
+                   c.ref AS classe_ref, c.nom AS classe_nom,
                    r.manager, r.package, r.os, r.arch, r.confidence
             FROM catalogue_outils o
+            LEFT JOIN classes_outils c ON c.classe_id = o.classe_outil_id
             JOIN catalogue_versions v ON v.outil_id = o.outil_id
             JOIN catalogue_recettes r ON r.version_id = v.version_id
             WHERE r.os IN (?, 'all') AND r.arch IN (?, 'all') AND r.enabled = 1
@@ -1379,10 +1574,14 @@ class CatalogueDB:
             d = dict(zip(cols, row))
             ref = d["ref"]
             if ref not in tools_map:
+                classe_ref = d["classe_ref"] or _default_class_for_ref(ref)
+                classe_nom = d["classe_nom"] or classe_ref
                 tools_map[ref] = {
                     "ref": ref, "name": d["nom"],
                     "description": d["description"],
                     "tool_type": d["tool_type"],
+                    "classe_ref": classe_ref,
+                    "classe": classe_nom,
                     "managers": [],
                 }
             tools_map[ref]["managers"].append({

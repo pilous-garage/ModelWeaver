@@ -1,58 +1,57 @@
+"""Script de maintenance : (ré)assigne les classes métier aux outils.
+
+Le seed automatique des classes (10 classes métier) et le backfill par défaut
+sont désormais gérés dans db.py (_ensure_classes_outils_table +
+_default_class_for_ref, exécutés par CatalogueDB._ensure_schema /
+ModelWeaverDB._ensure_schema). Ce script sert à forcer une réassignation
+manuelle (ex: après avoir corrigé le mapping) sur les deux bases.
+
+Usage:
+    python modules/sql/assign_classes.py
+"""
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from modules.sql.db import ModelWeaverDB
+from modules.sql.db import (
+    CatalogueDB,
+    ModelWeaverDB,
+    _ensure_classes_outils_table,
+    resolve_classe_id,
+    _default_class_for_ref,
+)
 
-CLASSES = {
-    "language":  {"label": "Languages",       "sort_order": 10},
-    "dev-tool":  {"label": "Dev Tools",       "sort_order": 20},
-    "ide":       {"label": "IDEs",            "sort_order": 30},
-    "chat-llm":  {"label": "Chat LLM",        "sort_order": 40},
-    "agent":     {"label": "Agents",          "sort_order": 50},
-    "engine":    {"label": "LLM Engines",     "sort_order": 60},
-    "router":    {"label": "Routers",         "sort_order": 70},
-    "context":   {"label": "Context Tools",   "sort_order": 80},
-    "system":    {"label": "System Tools",    "sort_order": 90},
-    "other":     {"label": "Other",           "sort_order": 999},
-}
 
-CLASS_MAP = {
-    "python3": "language",
-    "git": "dev-tool",
-    "curl": "dev-tool",
-    "ollama": "engine",
-    "litellm": "router",
-    "opencode": "chat-llm",
-    "open-webui": "chat-llm",
-    "gitingest": "context",
-}
+def assign_on(conn, table: str, ref_col: str, id_col: str) -> int:
+    """Pour chaque ligne de `table` sans classe_outil_id, déduit via le ref."""
+    _ensure_classes_outils_table(conn)
+    updated = 0
+    for row in conn.execute(
+        f"SELECT {id_col}, {ref_col} FROM {table} WHERE classe_outil_id IS NULL"
+    ).fetchall():
+        cid = resolve_classe_id(conn, _default_class_for_ref(row[ref_col]))
+        if cid is not None:
+            conn.execute(
+                f"UPDATE {table} SET classe_outil_id=? WHERE {id_col}=?",
+                (cid, row[id_col]),
+            )
+            updated += 1
+    conn.commit()
+    return updated
+
 
 def main():
-    db = ModelWeaverDB()
+    cat = CatalogueDB()
+    n_cat = assign_on(cat.conn, "catalogue_outils", "ref", "outil_id")
+    cat.close()
 
-    for ref, info in CLASSES.items():
-        existing = db.tool_classes.get(ref)
-        if existing:
-            db.tool_classes.save({"ref": ref, **info})
-        else:
-            db.tool_classes.save({"ref": ref, **info})
-        print(f"  Class {ref} → {info['label']}")
+    mw = ModelWeaverDB()
+    n_loc = assign_on(mw.conn, "local_outils", "outil_ref", "local_outil_id")
+    mw.close()
 
-    for ref, cls in CLASS_MAP.items():
-        tool = db.tools.get(ref)
-        if tool:
-            db.tools.save({**tool, "class": cls})
+    print(f"✅ Classes réassignées — catalogue: {n_cat}, local: {n_loc}")
 
-    for tool in db.tools.list_all():
-        cls = tool.get("class")
-        if not cls or cls not in CLASSES:
-            db.tools.save({**tool, "class": "other"})
-
-    db.commit()
-    db.close()
-    print("✅ Classes seeded & tools assigned.")
 
 if __name__ == "__main__":
     main()
