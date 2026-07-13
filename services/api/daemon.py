@@ -391,6 +391,17 @@ def op_deps_check(_params):
     return check_all_units(_REPO_ROOT)
 
 
+def _rescan_local_tools():
+    """Re-détecte les outils installés (ex. après install de dépendances comme
+    keyring) et peuple `local_tools`. Bump implicite de la DB inventory."""
+    try:
+        mw = _get_mw()
+        mw.scan_installed_tools()
+        mw.commit()
+    except Exception as e:
+        print(f"⚠️  rescan outils installés échoué : {e}", file=sys.stderr)
+
+
 def op_deps_install(params):
     package = params.get("package")
     if not package:
@@ -401,6 +412,7 @@ def op_deps_install(params):
             _get_rt().bump_meta("dependencies")
         except Exception:
             pass
+        _rescan_local_tools()
     return res
 
 
@@ -418,6 +430,7 @@ def op_deps_install_target(params):
             _get_rt().bump_meta("dependencies")
         except Exception:
             pass
+        _rescan_local_tools()
     return res
 
 
