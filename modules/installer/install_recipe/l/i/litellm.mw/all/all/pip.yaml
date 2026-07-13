@@ -1,0 +1,7 @@
+version: latest
+block:
+  package: litellm
+  install:
+    - "pip install litellm --break-system-packages --ignore-installed"
+  uninstall:
+    - "pip uninstall -y litellm --break-system-packages"

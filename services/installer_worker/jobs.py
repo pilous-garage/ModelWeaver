@@ -10,6 +10,7 @@ import os
 import json
 import sqlite3
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 from services._common import _db_paths, _quiet_stdout, RECIPE_BASE, runtime_db_path
 
@@ -147,30 +148,45 @@ def _record_usage(mw, ref: str, etat: str) -> None:
     mw.commit()
 
 
+def _lookup_tool(ref: str, cat_shared) -> Optional[Dict[str, Any]]:
+    """Lit un outil depuis catalogue_outils."""
+    cur = cat_shared.conn.execute(
+        "SELECT ref, nom, description, tool_type FROM catalogue_outils WHERE ref = ?",
+        (ref,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {"ref": row["ref"], "name": row["nom"],
+            "description": row["description"], "tool_type": row["tool_type"]}
+
+
 def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
     from modules.sql.db import CatalogueDB, ModelWeaverDB
-    from modules.installer.installer import Installer
+    from modules.installer.recipe_parser import RecipeParser
 
-    if cat_shared is not None:
-        cur = cat_shared.conn.execute(
-            "SELECT ref, name, description, tool_type, install_method, current_version, "
-            "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-            (ref,))
-        row = cur.fetchone()
-    else:
+    if cat_shared is None:
         _, cat_path = _db_paths()
-        cat = CatalogueDB(cat_path)
-        cur = cat.conn.execute(
-            "SELECT ref, name, description, tool_type, install_method, current_version, "
-            "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-            (ref,))
-        row = cur.fetchone()
-        cat.close()
-    if not row:
+        cat_shared = CatalogueDB(cat_path)
+        _close_cat = True
+    else:
+        _close_cat = False
+
+    tool = _lookup_tool(ref, cat_shared)
+    if not tool:
+        if _close_cat: cat_shared.close()
         return {"status": "error", "log": f"Outil inconnu: {ref}"}
-    cols = ["ref", "name", "description", "tool_type", "install_method", "current_version",
-            "default_download_url", "allowed_platforms", "allowed_arches"]
-    tool = dict(zip(cols, row))
+
+    # Charger la recette (local fs → catalogue)
+    parser = RecipeParser(project_root=str(RECIPE_BASE.parent))
+    recipe = parser.load_recipe(ref)
+    if not recipe:
+        if _close_cat: cat_shared.close()
+        return {"status": "error", "log": f"Aucune recette trouvée pour {ref}"}
+
+    resolved = parser.resolve(recipe)
+    if not resolved:
+        if _close_cat: cat_shared.close()
+        return {"status": "error", "log": f"Aucun manager compatible pour {ref}"}
 
     log_path = RECIPE_BASE.parent.parent / f"install_{ref}.log"
     log_lines = []
@@ -181,31 +197,26 @@ def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    installer = Installer(project_root=str(RECIPE_BASE))
     with _quiet_stdout():
-        ok = installer.install(tool, progress_callback=progress)
+        ok = parser.execute_install(recipe, progress_callback=progress)
     if ok:
-        # Popularité (compteurs agrégés) + usage local
         try:
-            if cat_shared is not None:
-                cat_shared.bump_popularity(ref, "install")
-            else:
-                c = CatalogueDB(_db_paths()[1]); c.bump_popularity(ref, "install"); c.close()
+            cat_shared.bump_popularity(ref, "install")
         except Exception:
             pass
         try:
-            if mw_shared is not None:
-                _record_usage(mw_shared, ref, "installed")
-            else:
-                mw = ModelWeaverDB(_db_paths()[0]); _record_usage(mw, ref, "installed"); mw.close()
+            mw = mw_shared if mw_shared else ModelWeaverDB(_db_paths()[0])
+            _record_usage(mw, ref, "installed")
+            if not mw_shared: mw.close()
         except Exception:
             pass
-        if mw_shared is not None:
-            mw_shared.scan_installed_tools()
-        else:
-            mw = ModelWeaverDB(_db_paths()[0])
+        try:
+            mw = mw_shared if mw_shared else ModelWeaverDB(_db_paths()[0])
             mw.scan_installed_tools()
-            mw.close()
+            if not mw_shared: mw.close()
+        except Exception:
+            pass
+    if _close_cat: cat_shared.close()
     return {
         "status": "ok" if ok else "error",
         "ref": ref,
@@ -215,28 +226,25 @@ def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
 
 def uninstall_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
     from modules.sql.db import CatalogueDB, ModelWeaverDB
-    from modules.installer.installer import Installer
+    from modules.installer.recipe_parser import RecipeParser
 
-    if cat_shared is not None:
-        cur = cat_shared.conn.execute(
-            "SELECT ref, name, description, tool_type, install_method, current_version, "
-            "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-            (ref,))
-        row = cur.fetchone()
-    else:
+    if cat_shared is None:
         _, cat_path = _db_paths()
-        cat = CatalogueDB(cat_path)
-        cur = cat.conn.execute(
-            "SELECT ref, name, description, tool_type, install_method, current_version, "
-            "default_download_url, allowed_platforms, allowed_arches FROM catalogue_tools WHERE ref = ?",
-            (ref,))
-        row = cur.fetchone()
-        cat.close()
-    if not row:
+        cat_shared = CatalogueDB(cat_path)
+        _close_cat = True
+    else:
+        _close_cat = False
+
+    tool = _lookup_tool(ref, cat_shared)
+    if not tool:
+        if _close_cat: cat_shared.close()
         return {"status": "error", "log": f"Outil inconnu: {ref}"}
-    cols = ["ref", "name", "description", "tool_type", "install_method", "current_version",
-            "default_download_url", "allowed_platforms", "allowed_arches"]
-    tool = dict(zip(cols, row))
+
+    parser = RecipeParser(project_root=str(RECIPE_BASE.parent))
+    recipe = parser.load_recipe(ref)
+    if not recipe:
+        if _close_cat: cat_shared.close()
+        return {"status": "error", "log": f"Aucune recette trouvée pour {ref}"}
 
     log_path = RECIPE_BASE.parent.parent / f"uninstall_{ref}.log"
     log_lines = []
@@ -247,39 +255,26 @@ def uninstall_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    installer = Installer(project_root=str(RECIPE_BASE))
     with _quiet_stdout():
-        ok = installer.uninstall(tool, progress_callback=progress)
+        ok = parser.execute_uninstall(recipe, progress_callback=progress)
     if ok:
-        # Popularité (compteurs agrégés) + usage local
         try:
-            if cat_shared is not None:
-                cat_shared.bump_popularity(ref, "uninstall")
-            else:
-                c = CatalogueDB(_db_paths()[1]); c.bump_popularity(ref, "uninstall"); c.close()
+            cat_shared.bump_popularity(ref, "uninstall")
         except Exception:
             pass
         try:
-            if mw_shared is not None:
-                _record_usage(mw_shared, ref, "uninstalled")
-            else:
-                mw = ModelWeaverDB(_db_paths()[0]); _record_usage(mw, ref, "uninstalled"); mw.close()
+            mw = mw_shared if mw_shared else ModelWeaverDB(_db_paths()[0])
+            _record_usage(mw, ref, "uninstalled")
+            if not mw_shared: mw.close()
         except Exception:
             pass
-        if mw_shared is not None:
-            mw_shared.conn.execute(
-                "DELETE FROM local_tools WHERE tool_id = (SELECT id FROM tool_definitions WHERE ref = ?)",
-                (ref,))
-            mw_shared.conn.commit()
-            mw_shared.scan_installed_tools()
-        else:
-            mw = ModelWeaverDB(_db_paths()[0])
-            mw.conn.execute(
-                "DELETE FROM local_tools WHERE tool_id = (SELECT id FROM tool_definitions WHERE ref = ?)",
-                (ref,))
-            mw.commit()
+        try:
+            mw = mw_shared if mw_shared else ModelWeaverDB(_db_paths()[0])
+            mw.local_tools.remove(ref)
             mw.scan_installed_tools()
-            mw.close()
+            if not mw_shared: mw.close()
+        except Exception:
+            pass
     return {
         "status": "ok" if ok else "error",
         "ref": ref,

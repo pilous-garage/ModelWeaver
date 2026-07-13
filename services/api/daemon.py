@@ -46,7 +46,7 @@ from modules.system.deps import install_system_package, install_target_dependenc
 # (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
 from services.installer_worker import jobs
 from services.watch_sysstate import service as sysstate
-from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_version
+from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_version, fetch_remote_to_local
 from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
 
@@ -147,8 +147,8 @@ def seed_recipes(cat):
         if not ref:
             continue
         cat.conn.execute(
-            "INSERT OR IGNORE INTO catalogue_outils (ref, nom, description) VALUES (?,?,?)",
-            (ref, t.get("name", ref), t.get("description", "")))
+            "INSERT OR IGNORE INTO catalogue_outils (ref, nom, description, tool_type) VALUES (?,?,?,?)",
+            (ref, t.get("name", ref), t.get("description", ""), t.get("tool_type")))
     cat.conn.commit()
     recipe_dir = _REPO_ROOT / "modules" / "installer" / "install_recipe"
     if not recipe_dir.exists():
@@ -191,7 +191,7 @@ def seed_recipes(cat):
 
 def seed_catalogue():
     cat = _get_cat()
-    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
+    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils")
     if cur.fetchone()[0] > 0:
         try:
             seed_recipes(cat)
@@ -225,13 +225,12 @@ def seed_catalogue():
 
 
 def get_catalogue_tools():
+    import platform
     cat = _get_cat()
-    cur = cat.conn.execute(
-        "SELECT ref, name, description, tool_type, install_method, current_version, "
-        "allowed_platforms, allowed_arches FROM catalogue_tools ORDER BY name")
-    cols = [d[0] for d in cur.description]
-    tools = [dict(zip(cols, row)) for row in cur.fetchall()]
-    return {"tools": tools, "count": len(tools)}
+    os_key = platform.system().lower()
+    arch = platform.machine().lower()
+    arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
+    return cat.get_catalogue_tools(os_key=os_key, arch_key=arch)
 
 
 def get_installed_tools():
@@ -258,7 +257,7 @@ def sync_catalogue_remote(url=None):
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
     cat = _get_cat()
-    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] == 0:
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils").fetchone()[0] == 0:
         with _quiet_stdout():
             seed_catalogue()
     with _quiet_stdout():
@@ -280,7 +279,7 @@ def op_tools_install_all(_params):
     """Queue tous les outils du catalogue non encore installés."""
     from modules.checker.checker import Checker
     cat = _get_cat()
-    cur = cat.conn.execute("SELECT ref, name FROM catalogue_tools")
+    cur = cat.conn.execute("SELECT ref, nom AS name FROM catalogue_outils")
     all_tools = cur.fetchall()
     mw = _get_mw()
     installed = {t.get("tool_ref") or t.get("ref") for t in mw.local_tools.list_all()}
@@ -703,6 +702,7 @@ ROUTES = {
     "catalogue/seed":         _wrap(seed_catalogue),
     "catalogue/sync":         lambda p: _quiet(sync_catalogue_remote, p.get("url")),
     "catalogue/tools_table/update": _wrap(update_tools_table),
+    "catalogue/fetch/remote":  lambda p: _quiet(fetch_remote_to_local),
     # D. Outils installés (synchrone)
     "tools/installed/list":   _wrap(get_installed_tools),
     "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref"), None, _get_cat()),

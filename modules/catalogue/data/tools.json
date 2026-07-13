@@ -29,5 +29,15 @@
     "current_version": "25.0.0",
     "allowed_platforms": "Linux,Darwin,Windows",
     "allowed_arches": "x86_64,aarch64"
+  },
+  {
+    "ref": "ollama",
+    "name": "Ollama",
+    "description": "Exécution locale de LLM (llama.cpp, commande R).",
+    "tool_type": "binary",
+    "install_method": "apt",
+    "current_version": "0.6.0",
+    "allowed_platforms": "Linux",
+    "allowed_arches": "x86_64"
   }
 ]

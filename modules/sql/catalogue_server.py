@@ -77,8 +77,11 @@ class CatalogueAPIHandler(BaseHTTPRequestHandler):
         self.send_json(rows)
 
     def _tools(self):
-        rows = self._query("SELECT * FROM catalogue_tools ORDER BY name")
-        self.send_json(rows)
+        from modules.sql.db import CatalogueDB
+        cat = CatalogueDB(self.server.db_path)
+        result = cat.get_catalogue_tools()
+        cat.close()
+        self.send_json(result)
 
     def _commands(self):
         rows = self._query("SELECT * FROM catalogue_commands ORDER BY name")

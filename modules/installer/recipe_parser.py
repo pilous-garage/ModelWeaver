@@ -388,8 +388,8 @@ class RecipeParser:
         target_version, manager_block = resolved
         manager_name = None
         versions = recipe.get("versions", {})
-        ver = version or versions.get("default")
-        if ver and ver in versions:
+        ver = version or target_version
+        if isinstance(ver, str) and ver in versions:
             os_block = versions[ver].get(self.os_key, versions[ver].get("all", {}))
             for k, v in os_block.items():
                 if v == manager_block:
@@ -525,7 +525,7 @@ class RecipeParser:
                 cmd_str = f"sudo {cmd_str}"
 
             # Fix pour PEP 668 (Ubuntu 24.04+)
-            if "pip install" in cmd_str and "--break-system-packages" not in cmd_str:
+            if "--break-system-packages" not in cmd_str and ("pip install" in cmd_str or "pip uninstall" in cmd_str):
                 cmd_str += " --break-system-packages"
 
             if shell:
@@ -580,6 +580,9 @@ class RecipeParser:
 
     @staticmethod
     def _default_uninstall_cmd(block: Dict) -> Optional[str]:
+        pkg = block.get("package")
+        if pkg:
+            return f"pip uninstall -y --break-system-packages {pkg}"
         return None
 
     def _os_key(self) -> str:

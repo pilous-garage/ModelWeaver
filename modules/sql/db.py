@@ -498,195 +498,118 @@ class LocalLLMRepository:
         return cur.lastrowid
 
 
-class ToolRepository:
-    """Gestion des outils (Définitions et Variantes)."""
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
-
-    def list_all(self, tool_type: Optional[str] = None,
-                  is_core: Optional[bool] = None) -> List[Dict[str, Any]]:
-        """Liste les outils en joignant définitions et variantes."""
-        clauses = []
-        params = []
-        if tool_type:
-            clauses.append("v.manager = ?")
-            params.append(tool_type)
-        if is_core is not None:
-            # Note: is_core devra être ajouté à tool_definitions ou tool_variants
-            # Pour l'instant on ignore ou on utilise is_official
-            clauses.append("v.is_official = ?")
-            params.append(1 if is_core else 0)
-            
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        query = f"""
-            SELECT d.ref, d.name, d.description, d.tool_class, 
-                   v.version, v.manager, v.os, v.architecture,
-                   v.size_download, v.size_disk, v.trust_score, 
-                   v.install_count, v.uninstall_count
-            FROM tool_definitions d
-            JOIN tool_variants v ON d.id = v.tool_id
-            {where}
-            ORDER BY d.name
-        """
-        cur = self.conn.execute(query, params)
-        return _rows_to_list(cur.fetchall())
-
-    def get(self, ref: str) -> Optional[Dict[str, Any]]:
-        """Récupère l'outil et sa variante la plus populaire."""
-        cur = self.conn.execute("""
-            SELECT d.*, v.* 
-            FROM tool_definitions d 
-            JOIN tool_variants v ON d.id = v.tool_id 
-            WHERE d.ref = ? 
-            ORDER BY v.install_count DESC LIMIT 1
-        """, (ref,))
-        row = cur.fetchone()
-        return _row_to_dict(row) if row else None
-
-    def save(self, data: Dict[str, Any]) -> int:
-        """Enregistre ou met à jour un outil et sa variante par défaut."""
-        ref = data.get("ref") or _ref("tool")
-        
-        # 1. Definition
-        self.conn.execute("""
-            INSERT INTO tool_definitions (ref, name, description, tool_class)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(ref) DO UPDATE SET
-                name=excluded.name, description=excluded.description, tool_class=excluded.tool_class
-        """, (ref, data.get("name"), data.get("description"), data.get("class", "other")))
-        
-        cur = self.conn.execute("SELECT id FROM tool_definitions WHERE ref = ?", (ref,))
-        tool_id = cur.fetchone()[0]
-        
-        # 2. Variante par défaut (all/all)
-        self.conn.execute("""
-            INSERT INTO tool_variants (tool_id, os, architecture, version, manager, size_download, size_disk, trust_score)
-            VALUES (?, 'all', 'all', ?, ?, ?, ?, ?)
-            ON CONFLICT(tool_id, os, architecture, manager) DO UPDATE SET
-                version=excluded.version, manager=excluded.manager,
-                size_download=excluded.size_download, size_disk=excluded.size_disk,
-                trust_score=excluded.trust_score
-        """, (tool_id, data.get("current_version"), data.get("install_method"),
-              data.get("size_download", 0), data.get("size_disk", 0), data.get("trust_score", 1.0)))
-        
-        return tool_id
-
-    def update_metrics(self, ref: str, os: str, arch: str, manager: str, 
-                       size_dl: int, size_dk: int, install: bool = True):
-        """Met à jour les stats d'une variante spécifique."""
-        cur = self.conn.execute("SELECT id FROM tool_definitions WHERE ref = ?", (ref,))
-        row = cur.fetchone()
-        if not row: return
-        tool_id = row[0]
-        
-        self.conn.execute("""
-            INSERT INTO tool_variants (tool_id, os, architecture, manager, size_download, size_disk)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(tool_id, os, architecture, manager) DO UPDATE SET
-                size_download=excluded.size_download, size_disk=excluded.size_disk
-        """, (tool_id, os, arch, manager, size_dl, size_dk))
-        
-        col = "install_count" if install else "uninstall_count"
-        self.conn.execute(f"UPDATE tool_variants SET {col} = {col} + 1 WHERE tool_id = ? AND os = ? AND architecture = ? AND manager = ?", 
-                          (tool_id, os, arch, manager))
-
-    def scan_installed(self, local_repo: "LocalToolRepository") -> int:
-        """Détecte les outils installés et peuple local_tools."""
-        import re, shutil, subprocess, sys
-        count = 0
-        binaries = {
-            "ollama": ("ollama", "--version"),
-            "opencode": ("opencode", "--version"),
-            "python3": ("python3", "--version"),
-            "git": ("git", "--version"),
-            "curl": ("curl", "--version"),
-        }
-        for ref, (cmd, ver_flag) in binaries.items():
-            path = shutil.which(cmd)
-            if not path: continue
-            version = None
-            try:
-                r = subprocess.run([cmd, ver_flag], capture_output=True, text=True, timeout=5)
-                # Premier token semver-like (ex. curl --version finit par une
-                # feature "zstd" — on ne prend PAS le dernier mot).
-                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", r.stdout or "")
-                version = m.group(1) if m else None
-            except Exception: pass
-            
-            self.save({"ref": ref, "name": ref, "install_method": "binary", "current_version": version})
-            cur = self.conn.execute("SELECT id FROM tool_definitions WHERE ref = ?", (ref,))
-            tool = cur.fetchone()
-            if tool:
-                local_repo.save({"tool_id": tool[0], "version": version or "unknown", "install_path": path, "status": "installed"})
-                count += 1
-        
-        pip_tools = {"litellm": "litellm", "open-webui": "open_webui", "gitingest": "gitingest",
-                      "keyring": "keyring", "requests": "requests", "psutil": "psutil",
-                      "cryptography": "cryptography"}
-        try:
-            r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                import json
-                pip_packages = json.loads(r.stdout)
-                pip_map = {p["name"].lower().replace("-", "_"): p["version"] for p in pip_packages}
-                for ref, pkg_name in pip_tools.items():
-                    version = pip_map.get(pkg_name.lower())
-                    if not version: continue
-                    self.save({"ref": ref, "name": ref, "install_method": "pip", "current_version": version})
-                    cur = self.conn.execute("SELECT id FROM tool_definitions WHERE ref = ?", (ref,))
-                    tool = cur.fetchone()
-                    if tool:
-                        local_repo.save({"tool_id": tool[0], "version": version, "install_path": sys.executable, "status": "installed"})
-                        count += 1
-        except Exception: pass
-        return count
-
-
-
 class LocalToolRepository:
-    """Outils installés localement."""
+    """Gestion des outils locaux (local_outils / local_versions / local_installs).
+
+    Calquée sur la même structure que le catalogue (outils/versions/recettes)
+    pour permettre plusieurs versions d'un même outil installées par des managers
+    différents (ex: litellm pip + conda).
+    """
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def list_all(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        if status:
-            cur = self.conn.execute("""
-                SELECT lt.*, d.ref as tool_ref, d.name as tool_name
-                FROM local_tools lt JOIN tool_definitions d ON d.id = lt.tool_id
-                WHERE lt.status = ? ORDER BY d.name
-            """, (status,))
-        else:
-            cur = self.conn.execute("""
-                SELECT lt.*, d.ref as tool_ref, d.name as tool_name
-                FROM local_tools lt JOIN tool_definitions d ON d.id = lt.tool_id
-                ORDER BY d.name
-            """)
+    def list_all(self) -> List[Dict[str, Any]]:
+        """Liste tous les outils installés localement."""
+        cur = self.conn.execute("""
+            SELECT lo.outil_ref, lo.nom, lo.tool_type,
+                   lv.nom_version,
+                   li.os, li.arch, li.manager, li.package,
+                   li.version_installee, li.install_path, li.status
+            FROM local_outils lo
+            JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
+            JOIN local_installs li ON li.local_version_id = lv.local_version_id
+            ORDER BY lo.nom
+        """)
         return _rows_to_list(cur.fetchall())
 
+    def get(self, outil_ref: str) -> Optional[Dict[str, Any]]:
+        """Dernière installation d'un outil."""
+        cur = self.conn.execute("""
+            SELECT lo.*, lv.nom_version, li.*
+            FROM local_outils lo
+            JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
+            JOIN local_installs li ON li.local_version_id = lv.local_version_id
+            WHERE lo.outil_ref = ?
+            ORDER BY li.ts DESC LIMIT 1
+        """, (outil_ref,))
+        return _row_to_dict(cur.fetchone())
+
     def save(self, data: Dict[str, Any]) -> int:
-        tool_id = data.get("tool_id")
-        if not tool_id:
-            raise ValueError("tool_id requis")
+        """Enregistre une installation locale.
+
+        Crée local_outils et local_versions si inexistants.
+        L'upsert de local_installs utilise la clé (version, manager, os, arch).
+        """
+        ref = data.get("outil_ref") or data.get("ref")
+        if not ref:
+            raise ValueError("outil_ref requis")
+        # local_outils
+        self.conn.execute("""
+            INSERT INTO local_outils (outil_ref, nom, tool_type)
+            VALUES (?, ?, ?)
+            ON CONFLICT(outil_ref) DO UPDATE SET
+                nom=excluded.nom,
+                tool_type=COALESCE(excluded.tool_type, local_outils.tool_type)
+        """, (ref, data.get("nom", ref), data.get("tool_type")))
+        lid = self.conn.execute(
+            "SELECT local_outil_id FROM local_outils WHERE outil_ref=?", (ref,)
+        ).fetchone()[0]
+        # local_versions
+        ver = data.get("nom_version") or data.get("version") or "latest"
+        self.conn.execute("""
+            INSERT INTO local_versions (local_outil_id, nom_version)
+            VALUES (?, ?)
+            ON CONFLICT(local_outil_id, nom_version) DO NOTHING
+        """, (lid, ver))
+        vid = self.conn.execute(
+            "SELECT local_version_id FROM local_versions WHERE local_outil_id=? AND nom_version=?",
+            (lid, ver)).fetchone()[0]
+        # local_installs
         cur = self.conn.execute(
-            "SELECT id FROM local_tools WHERE tool_id = ?", (tool_id,)
-        )
+            "SELECT install_id FROM local_installs WHERE local_version_id=? AND manager=? AND os=? AND arch=?",
+            (vid, data.get("manager"), data.get("os", self._os_key()), data.get("arch", self._arch_key())))
         existing = cur.fetchone()
         if existing:
             self.conn.execute("""
-                UPDATE local_tools SET version=?, install_path=?, status=?,
-                    updated_at=strftime('%s','now')
-                WHERE id=?
-            """, (data.get("version"), data.get("install_path"),
-                  data.get("status", "installed"), existing["id"]))
-            return existing["id"]
+                UPDATE local_installs
+                SET version_installee=?, install_path=?, package=?, status=?,
+                    ts=strftime('%s','now')
+                WHERE install_id=?
+            """, (data.get("version_installee") or data.get("version"),
+                  data.get("install_path"), data.get("package"),
+                  data.get("status", "installed"), existing["install_id"]))
+            return existing["install_id"]
         cur = self.conn.execute("""
-            INSERT INTO local_tools (tool_id, version, install_path, status, installed_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (tool_id, data.get("version"), data.get("install_path"),
-              data.get("status", "installed"),
-              data.get("installed_at") if data.get("installed_at") else None))
+            INSERT INTO local_installs
+                (local_version_id, os, arch, manager, package, version_installee, install_path, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (vid,
+              data.get("os", self._os_key()), data.get("arch", self._arch_key()),
+              data.get("manager"), data.get("package"),
+              data.get("version_installee") or data.get("version"),
+              data.get("install_path"), data.get("status", "installed")))
         return cur.lastrowid
+
+    def remove(self, ref: str) -> bool:
+        """Supprime toutes les installations locales d'un outil."""
+        cur = self.conn.execute("""
+            DELETE FROM local_installs WHERE local_version_id IN (
+                SELECT local_version_id FROM local_versions
+                WHERE local_outil_id=(SELECT local_outil_id FROM local_outils WHERE outil_ref=?))
+        """, (ref,))
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _os_key() -> str:
+        import platform; return platform.system().lower()
+
+    @staticmethod
+    def _arch_key() -> str:
+        import platform
+        m = platform.machine().lower()
+        m = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(m, m)
+        return m
 
 
 class CommandRepository:
@@ -725,43 +648,6 @@ class CommandRepository:
 #  Tool Classes Repository
 # ──────────────────────────────────────────────
 
-class ToolClassRepository:
-    """Classes/catégories d'outils."""
-    
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
-
-    def list_all(self) -> List[Dict[str, Any]]:
-        cur = self.conn.execute("SELECT * FROM tool_classes ORDER BY sort_order, label")
-        return _rows_to_list(cur.fetchall())
-
-    def get(self, ref: str) -> Optional[Dict[str, Any]]:
-        cur = self.conn.execute("SELECT * FROM tool_classes WHERE ref = ?", (ref,))
-        return _row_to_dict(cur.fetchone())
-
-    def save(self, data: Dict[str, Any]) -> int:
-        ref = data.get("ref")
-        existing = None
-        if ref:
-            cur = self.conn.execute("SELECT id FROM tool_classes WHERE ref = ?", (ref,))
-            existing = cur.fetchone()
-        if existing:
-            self.conn.execute("""
-                UPDATE tool_classes SET label=?, sort_order=?
-                WHERE id=?
-            """, (data.get("label"), data.get("sort_order", 0), existing["id"]))
-            return existing["id"]
-        cur = self.conn.execute(
-            "INSERT INTO tool_classes (ref, label, sort_order) VALUES (?, ?, ?)",
-            (ref, data.get("label"), data.get("sort_order", 0))
-        )
-        return cur.lastrowid
-
-    def delete(self, ref: str) -> bool:
-        cur = self.conn.execute("DELETE FROM tool_classes WHERE ref = ?", (ref,))
-        return cur.rowcount > 0
-
-
 class SystemStateRepository:
     """État actuel du système (OS, Archi, Managers)."""
     def __init__(self, conn: sqlite3.Connection):
@@ -799,23 +685,18 @@ class TursoCatalogueDB:
         
         try:
             import libsql
-            self.client = libsql.create_client_sync(self.url.replace("libsql://", "https://"), auth_token=self.token)
-        except (ImportError, AttributeError):
-            try:
-                import libsql_client as libsql
-                self.client = libsql.create_client_sync(self.url.replace("libsql://", "https://"), auth_token=self.token)
-            except Exception as e:
-                raise RuntimeError(f"Échec de connexion Turso: {e}")
+            self.client = libsql.connect(self.url, auth_token=self.token)
+        except Exception as e:
+            raise RuntimeError(f"Échec de connexion Turso: {e}")
 
     def get_tool(self, ref: str) -> Optional[Dict[str, Any]]:
-        """Récupère un outil spécifique depuis le catalogue distant."""
+        """Récupère un outil depuis le catalogue distant."""
         try:
-            res = self.client.execute("SELECT * FROM catalogue_tools WHERE ref = ?", (ref,))
-            if res and len(res) > 0:
-                row = res[0]
-                if hasattr(res, 'columns'):
-                    return dict(zip(res.columns, row))
-                return dict(row) if not isinstance(row, (tuple, list)) else None
+            cur = self.client.execute("SELECT * FROM catalogue_outils WHERE ref = ?", (ref,))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
             return None
         except Exception as e:
             print(f"❌ Erreur Turso (get_tool): {e}")
@@ -823,61 +704,199 @@ class TursoCatalogueDB:
 
     def list_tools(self, tool_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Liste les outils avec filtre optionnel."""
-        query = "SELECT * FROM catalogue_tools"
+        query = "SELECT * FROM catalogue_outils"
         params = []
         if tool_type:
             query += " WHERE tool_type = ?"
             params.append(tool_type)
-        query += " ORDER BY name"
+        query += " ORDER BY nom"
         
         try:
-            res = self.client.execute(query, params)
-            return [dict(row) for row in res]
+            cur = self.client.execute(query, params)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as e:
             print(f"❌ Erreur Turso (list_tools): {e}")
             return []
 
-    def update_metrics(self, tool_id: int, version: str, os_name: str, arch: str, 
-                      manager: str, size_download: int, size_disk: int) -> bool:
-        """Enregistre les poids mesurés après installation."""
-        sql = """
-        INSERT INTO tool_metrics (tool_id, version, os, arch, manager, size_download, size_disk)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(tool_id, version, os, arch, manager) 
-        DO UPDATE SET size_download=excluded.size_download, 
-                      size_disk=excluded.size_disk, 
-                      last_measured=strftime('%s','now')
-        """
+    def _commit(self):
         try:
-            self.client.execute(sql, (tool_id, version, os_name, arch, manager, size_download, size_disk))
-            return True
-        except Exception as e:
-            print(f"❌ Erreur Turso (update_metrics): {e}")
-            return False
+            self.client.commit()
+        except Exception:
+            pass
 
     def upsert_tool(self, tool_data: Dict[str, Any]) -> bool:
         """Ajoute ou met à jour un outil dans le catalogue distant."""
         sql = """
-        INSERT INTO catalogue_tools (ref, name, description, tool_type, install_method, current_version, 
-                                    default_download_url, allowed_platforms, allowed_arches)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO catalogue_outils (ref, nom, description, tool_type)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(ref) DO UPDATE SET
-            name=excluded.name, description=excluded.description, tool_type=excluded.tool_type,
-            install_method=excluded.install_method, current_version=excluded.current_version,
-            default_download_url=excluded.default_download_url, allowed_platforms=excluded.allowed_platforms,
-            allowed_arches=excluded.allowed_arches
+            nom=excluded.nom, description=excluded.description, tool_type=excluded.tool_type
         """
         params = (
-            tool_data.get("ref"), tool_data.get("name"), tool_data.get("description"),
-            tool_data.get("tool_type"), tool_data.get("install_method"), tool_data.get("current_version"),
-            tool_data.get("default_download_url"), tool_data.get("allowed_platforms"), tool_data.get("allowed_arches")
+            tool_data.get("ref"), tool_data.get("name") or tool_data.get("nom"),
+            tool_data.get("description"), tool_data.get("tool_type"),
         )
         try:
             self.client.execute(sql, params)
+            self._commit()
             return True
         except Exception as e:
             print(f"❌ Erreur Turso (upsert_tool): {e}")
             return False
+
+    def upsert_version(self, outil_id: int, nom_version: str, description: Optional[str] = None) -> Optional[int]:
+        """Ajoute une version dans le catalogue distant et retourne version_id."""
+        sql = """
+        INSERT INTO catalogue_versions (outil_id, nom_version, description)
+        VALUES (?, ?, ?)
+        ON CONFLICT(outil_id, nom_version) DO UPDATE SET
+            description=COALESCE(excluded.description, catalogue_versions.description)
+        """
+        try:
+            self.client.execute(sql, (outil_id, nom_version, description))
+            self._commit()
+            cur = self.client.execute(
+                "SELECT version_id FROM catalogue_versions WHERE outil_id=? AND nom_version=?",
+                (outil_id, nom_version))
+            row = cur.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            print(f"❌ Erreur Turso (upsert_version): {e}")
+            return None
+
+    def upsert_recipe(self, version_id: int, os: str, arch: str, manager: str,
+                      package: Optional[str] = None, content: Optional[str] = None,
+                      confidence: float = 1.0) -> bool:
+        """Ajoute ou met à jour une recette dans le catalogue distant."""
+        sql = """
+        INSERT INTO catalogue_recettes (version_id, os, arch, manager, package, content, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(version_id, os, arch, manager) DO UPDATE SET
+            package=COALESCE(excluded.package, catalogue_recettes.package),
+            content=COALESCE(excluded.content, catalogue_recettes.content),
+            confidence=excluded.confidence
+        """
+        try:
+            self.client.execute(sql, (version_id, os, arch, manager, package, content, confidence))
+            self._commit()
+            return True
+        except Exception as e:
+            print(f"❌ Erreur Turso (upsert_recipe): {e}")
+            return False
+
+    def upsert_popularity(self, outil_id: int, nb_install: int = 0, nb_desinstall: int = 0) -> bool:
+        """Ajoute ou met à jour la popularité d'un outil."""
+        sql = """
+        INSERT INTO outils_popularite (outil_id, nb_install, nb_desinstall)
+        VALUES (?, ?, ?)
+        ON CONFLICT(outil_id) DO UPDATE SET
+            nb_install=excluded.nb_install,
+            nb_desinstall=excluded.nb_desinstall,
+            updated_at=strftime('%s','now')
+        """
+        try:
+            self.client.execute(sql, (outil_id, nb_install, nb_desinstall))
+            self._commit()
+            return True
+        except Exception as e:
+            print(f"❌ Erreur Turso (upsert_popularity): {e}")
+            return False
+
+
+def _cols(cur) -> list:
+    """Extrait les noms de colonnes d'un cursor."""
+    return [d[0] for d in cur.description] if cur.description else []
+
+
+def fetch_remote_to_local():
+    """Importe le catalogue distant (Turso) vers le local (catalogue.db).
+
+    Bouton manuel : pas d'auto-sync, pas de push local→Turso.
+    Retourne un dict {outils, versions, recettes} des compteurs.
+    """
+    remote = TursoCatalogueDB()
+    local = CatalogueDB()
+
+    cur = remote.client.execute("SELECT * FROM catalogue_outils")
+    outils = cur.fetchall()
+    ocols = _cols(cur)
+
+    out_count = ver_count = rec_count = 0
+
+    for row in outils:
+        d = dict(zip(ocols, row))
+        local.conn.execute("""
+            INSERT INTO catalogue_outils (ref, nom, description, tool_type)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ref) DO UPDATE SET
+                nom=excluded.nom, description=excluded.description, tool_type=excluded.tool_type
+        """, (d["ref"], d.get("nom"), d.get("description"), d.get("tool_type")))
+        out_count += 1
+
+        lo = local.conn.execute("SELECT outil_id FROM catalogue_outils WHERE ref=?", (d["ref"],)).fetchone()
+        if not lo:
+            continue
+        lid = lo["outil_id"]
+
+        cur2 = remote.client.execute(
+            "SELECT * FROM catalogue_versions WHERE outil_id=?", (d["outil_id"],))
+        versions = cur2.fetchall()
+        vcols = _cols(cur2)
+
+        for vr in versions:
+            vd = dict(zip(vcols, vr))
+            local.conn.execute("""
+                INSERT INTO catalogue_versions (outil_id, nom_version, description)
+                VALUES (?, ?, ?)
+                ON CONFLICT(outil_id, nom_version) DO UPDATE SET
+                    description=COALESCE(excluded.description, catalogue_versions.description)
+            """, (lid, vd["nom_version"], vd.get("description")))
+            ver_count += 1
+
+            lv = local.conn.execute(
+                "SELECT version_id FROM catalogue_versions WHERE outil_id=? AND nom_version=?",
+                (lid, vd["nom_version"])).fetchone()
+            if not lv:
+                continue
+            lvid = lv["version_id"]
+
+            cur3 = remote.client.execute(
+                "SELECT * FROM catalogue_recettes WHERE version_id=?", (vd["version_id"],))
+            recettes = cur3.fetchall()
+            rcols = _cols(cur3)
+
+            for rr in recettes:
+                rd = dict(zip(rcols, rr))
+                local.conn.execute("""
+                    INSERT INTO catalogue_recettes (version_id, os, arch, manager, package, content, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(version_id, os, arch, manager) DO UPDATE SET
+                        package=COALESCE(excluded.package, catalogue_recettes.package),
+                        content=COALESCE(excluded.content, catalogue_recettes.content),
+                        confidence=excluded.confidence
+                """, (lvid, rd["os"], rd["arch"], rd["manager"],
+                      rd.get("package"), rd.get("content"), rd.get("confidence", 1.0)))
+                rec_count += 1
+
+        # Popularité
+        cur4 = remote.client.execute(
+            "SELECT * FROM outils_popularite WHERE outil_id=?", (d["outil_id"],))
+        pop = cur4.fetchone()
+        if pop:
+            pcols = _cols(cur4)
+            pd = dict(zip(pcols, pop))
+            local.conn.execute("""
+                INSERT INTO outils_popularite (outil_id, nb_install, nb_desinstall)
+                VALUES (?, ?, ?)
+                ON CONFLICT(outil_id) DO UPDATE SET
+                    nb_install=excluded.nb_install, nb_desinstall=excluded.nb_desinstall,
+                    updated_at=strftime('%s','now')
+            """, (lid, pd.get("nb_install", 0), pd.get("nb_desinstall", 0)))
+
+    local.conn.commit()
+    local.close()
+    return {"outils": out_count, "versions": ver_count, "recettes": rec_count}
 
 
 # ──────────────────────────────────────────────
@@ -936,13 +955,8 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
-        
-        # Ajout du catalogue distant
-        try:
-            self.remote_catalogue = TursoCatalogueDB()
-        except Exception as e:
-            print(f"⚠️  Mode catalogue distant désactivé: {e}", file=sys.stderr)
-            self.remote_catalogue = None
+
+        self.remote_catalogue = None
 
         # Appliquer les migrations SQL
         migrations_dir = Path(__file__).resolve().parent / "migrations"
@@ -953,10 +967,8 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         self.providers = ProviderRepository(self.conn)
         self.models = ModelRepository(self.conn)
         self.keys = KeyRepository(self.conn)
-        self.tools = ToolRepository(self.conn)
-        self.tool_classes = ToolClassRepository(self.conn)
-        self.system_state = SystemStateRepository(self.conn)
         self.local_tools = LocalToolRepository(self.conn)
+        self.system_state = SystemStateRepository(self.conn)
         self.llms = LocalLLMRepository(self.conn)
         self.commands = CommandRepository(self.conn)
         self._init_agent_repos()
@@ -972,12 +984,6 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         schema = Path(__file__).resolve().parent / "modelweaver_schema.sql"
         if schema.exists():
             self.conn.executescript(schema.read_text())
-
-        # Migration: ajouter recipe_path si manquant
-        try:
-            self.conn.execute("ALTER TABLE tools ADD COLUMN recipe_path TEXT")
-        except Exception:
-            pass
 
         # Migration: ajouter key_display à api_keys
         try:
@@ -1018,8 +1024,67 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         """)
 
     def scan_installed_tools(self) -> int:
-        """Détecte les outils installés et met à jour local_tools."""
-        count = self.tools.scan_installed(self.local_tools)
+        """Détecte les outils installés et met à jour local_outils/versions/installs."""
+        import re, shutil, subprocess, sys, platform
+        count = 0
+        local_os = platform.system().lower()
+        local_arch = platform.machine().lower()
+        local_arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(local_arch, local_arch)
+
+        binaries = {
+            "ollama": ("ollama", "--version"),
+            "opencode": ("opencode", "--version"),
+            "python3": ("python3", "--version"),
+            "git": ("git", "--version"),
+            "curl": ("curl", "--version"),
+        }
+        for ref, (cmd, ver_flag) in binaries.items():
+            path = shutil.which(cmd)
+            if not path:
+                continue
+            version = None
+            try:
+                r = subprocess.run([cmd, ver_flag], capture_output=True, text=True, timeout=5)
+                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", r.stdout or "")
+                version = m.group(1) if m else None
+            except Exception:
+                pass
+            self.local_tools.save({
+                "outil_ref": ref, "nom": ref, "tool_type": "binary",
+                "nom_version": version or "unknown", "manager": "binary",
+                "os": local_os, "arch": local_arch,
+                "version_installee": version or "unknown",
+                "install_path": path, "status": "installed",
+            })
+            count += 1
+
+        pip_tools = {
+            "litellm": "litellm", "open-webui": "open_webui", "gitingest": "gitingest",
+            "keyring": "keyring", "requests": "requests", "psutil": "psutil",
+            "cryptography": "cryptography",
+        }
+        try:
+            r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                import json
+                pip_packages = json.loads(r.stdout)
+                pip_map = {p["name"].lower().replace("-", "_"): p["version"]
+                           for p in pip_packages}
+                for ref, pkg_name in pip_tools.items():
+                    version = pip_map.get(pkg_name.lower())
+                    if not version:
+                        continue
+                    self.local_tools.save({
+                        "outil_ref": ref, "nom": ref, "tool_type": "python-module",
+                        "nom_version": version, "manager": "pip",
+                        "os": local_os, "arch": local_arch,
+                        "version_installee": version,
+                        "install_path": sys.executable, "status": "installed",
+                    })
+                    count += 1
+        except Exception:
+            pass
         self.commit()
         return count
 
@@ -1096,6 +1161,7 @@ class CatalogueDB:
                         outil_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         ref TEXT UNIQUE NOT NULL, nom TEXT NOT NULL,
                         fabricant TEXT, description TEXT,
+                        tool_type TEXT CHECK(tool_type IN ('binary','python-module','archive','source','container')),
                         created_at INTEGER DEFAULT (strftime('%s','now')));
                     CREATE TABLE IF NOT EXISTS catalogue_versions (
                         version_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1120,6 +1186,11 @@ class CatalogueDB:
                     CREATE INDEX IF NOT EXISTS idx_recettes_version ON catalogue_recettes(version_id);
                     CREATE INDEX IF NOT EXISTS idx_outils_ref ON catalogue_outils(ref);
                 """)
+            except Exception:
+                pass
+            # Migration: ajouter tool_type aux DB existantes
+            try:
+                self.conn.execute("ALTER TABLE catalogue_outils ADD COLUMN tool_type TEXT")
             except Exception:
                 pass
 
@@ -1162,15 +1233,25 @@ class CatalogueDB:
     def sync_tools(self, rows: List[Dict]) -> int:
         count = 0
         for r in rows:
+            # catalogue_outils
             self.conn.execute("""
-                INSERT OR REPLACE INTO catalogue_tools
-                    (ref, name, description, tool_type, install_method, current_version,
-                     default_download_url, allowed_platforms, allowed_arches)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (r["ref"], r["name"], r.get("description"), r.get("tool_type"),
-                  r.get("install_method"), r.get("current_version"),
-                  r.get("default_download_url"), r.get("allowed_platforms"),
-                  r.get("allowed_arches")))
+                INSERT INTO catalogue_outils (ref, nom, description, tool_type)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ref) DO UPDATE SET
+                    nom=excluded.nom, description=excluded.description,
+                    tool_type=COALESCE(excluded.tool_type, catalogue_outils.tool_type)
+            """, (r["ref"], r["name"], r.get("description"), r.get("tool_type")))
+            # catalogue_versions (current_version)
+            ver = r.get("current_version")
+            if ver:
+                oid = self.conn.execute(
+                    "SELECT outil_id FROM catalogue_outils WHERE ref=?", (r["ref"],)
+                ).fetchone()[0]
+                self.conn.execute("""
+                    INSERT INTO catalogue_versions (outil_id, nom_version, description)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(outil_id, nom_version) DO NOTHING
+                """, (oid, ver, r.get("description")))
             count += 1
         return count
 
@@ -1256,6 +1337,41 @@ class CatalogueDB:
                    WHERE version_id=(SELECT version_id FROM catalogue_versions WHERE outil_id=?)
                      AND manager='pip' AND enabled=1""", (oid,))
         self.conn.commit()
+
+    def get_catalogue_tools(self, os_key: str = "linux", arch_key: str = "x86_64") -> dict:
+        """Liste les outils du catalogue compatibles avec l'OS/arch local.
+
+        Pour chaque outil on retourne la liste des managers disponibles
+        (recettes compatibles), ce qui remplace l'ancien install_method
+        (désormais dans catalogue_recettes.manager).
+        """
+        cur = self.conn.execute("""
+            SELECT DISTINCT o.ref, o.nom, o.description, o.tool_type,
+                   r.manager, r.package, r.os, r.arch, r.confidence
+            FROM catalogue_outils o
+            JOIN catalogue_versions v ON v.outil_id = o.outil_id
+            JOIN catalogue_recettes r ON r.version_id = v.version_id
+            WHERE r.os IN (?, 'all') AND r.arch IN (?, 'all') AND r.enabled = 1
+            ORDER BY o.nom, r.manager
+        """, (os_key, arch_key))
+        cols = [d[0] for d in cur.description]
+        tools_map = {}
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            ref = d["ref"]
+            if ref not in tools_map:
+                tools_map[ref] = {
+                    "ref": ref, "name": d["nom"],
+                    "description": d["description"],
+                    "tool_type": d["tool_type"],
+                    "managers": [],
+                }
+            tools_map[ref]["managers"].append({
+                "manager": d["manager"], "package": d["package"],
+                "os": d["os"], "arch": d["arch"], "confidence": d["confidence"],
+            })
+        tools = list(tools_map.values())
+        return {"tools": tools, "count": len(tools)}
 
 
 # ──────────────────────────────────────────────

@@ -3,6 +3,6 @@ _ref: ollama
 versions:
   default:
     linux:
-      binary: {}
+      apt: {}
     all:
-      binary: {}
+      apt: {}

@@ -4,5 +4,7 @@ versions:
   default:
     linux:
       binary: {}
+      pip: {}
     all:
       binary: {}
+      pip: {}

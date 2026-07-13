@@ -1,12 +1,15 @@
 -- ModelWeaver Local Database Schema
 -- Fichier: .modelweaver/modelweaver.db
--- Contient l'état local : providers, clés, modèles, outils installés
+-- Contient l'état local : providers, clés, modèles, outils installés.
+-- La partie outil est calquée sur la même structure que le catalogue
+-- (outils / versions / recettes) pour permettre plusieurs versions
+-- d'un même outil installées par des managers différents.
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- ============================================================
--- 1. PROVIDERS — Fournisseurs d'API
+-- 1. PROVIDERS — Fournisseurs d'API (copie locale)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS providers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,40 +97,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 -- ============================================================
--- 5. TOOL_DEFINITIONS — Identité des outils (Réf unique)
--- ============================================================
-CREATE TABLE IF NOT EXISTS tool_definitions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ref             TEXT UNIQUE NOT NULL,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    tool_class      TEXT DEFAULT 'other',
-    created_at      INTEGER DEFAULT (strftime('%s', 'now')),
-    updated_at      INTEGER DEFAULT (strftime('%s', 'now'))
-);
-
--- ============================================================
--- 5.1. TOOL_VARIANTS — Spécifications techniques par OS/Arch
--- ============================================================
-CREATE TABLE IF NOT EXISTS tool_variants (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id         INTEGER NOT NULL REFERENCES tool_definitions(id) ON DELETE CASCADE,
-    os              TEXT NOT NULL,
-    architecture    TEXT NOT NULL,
-    version         TEXT,
-    manager         TEXT NOT NULL,
-    size_download   INTEGER DEFAULT 0,
-    size_disk       INTEGER DEFAULT 0,
-    trust_score     REAL DEFAULT 1.0,
-    is_official     INTEGER DEFAULT 0,
-    install_count   INTEGER DEFAULT 0,
-    uninstall_count INTEGER DEFAULT 0,
-    updated_at      INTEGER DEFAULT (strftime('%s', 'now')),
-    UNIQUE(tool_id, os, architecture, manager)
-);
-
--- ============================================================
--- 5.5. PACKAGE_MANAGERS — Gestionnaires de paquets OS détectés
+-- 5. PACKAGE_MANAGERS — Gestionnaires de paquets OS détectés
 -- ============================================================
 CREATE TABLE IF NOT EXISTS package_managers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +111,6 @@ CREATE TABLE IF NOT EXISTS package_managers (
     updated_at      INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
--- Seed des gestionnaires connus
 INSERT OR IGNORE INTO package_managers (ref, name, install_cmd, os_family) VALUES
     ('apt', 'APT', 'apt-get install -y', 'linux'),
     ('snap', 'Snap', 'snap install', 'linux'),
@@ -163,68 +132,62 @@ INSERT OR IGNORE INTO package_managers (ref, name, install_cmd, os_family) VALUE
     ('choco', 'Chocolatey', 'choco install -y', 'windows');
 
 -- ============================================================
--- 5.6. TOOL_CLASSES — Catégories d'outils
+-- 6. LOCAL_OUTILS — Miroir local du catalogue_outils
+--    Une ligne par outil connu localement (peut précéder ou non le catalogue).
 -- ============================================================
-CREATE TABLE IF NOT EXISTS tool_classes (
+CREATE TABLE IF NOT EXISTS local_outils (
+    local_outil_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    outil_ref      TEXT UNIQUE NOT NULL,
+    nom            TEXT NOT NULL,
+    tool_type      TEXT CHECK(tool_type IN ('binary','python-module','archive','source','container')),
+    created_at     INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- ============================================================
+-- 7. LOCAL_VERSIONS — Version d'un outil local
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_versions (
+    local_version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_outil_id   INTEGER NOT NULL REFERENCES local_outils(local_outil_id) ON DELETE CASCADE,
+    nom_version      TEXT NOT NULL,
+    created_at       INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(local_outil_id, nom_version)
+);
+
+-- ============================================================
+-- 8. LOCAL_INSTALLS — Instance installée d'un outil
+--    Plusieurs lignes possibles pour un même outil/version
+--    (ex: litellm installé via pip ET via conda).
+--    status = installed / failed / outdated / uninstalled
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_installs (
+    install_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_version_id INTEGER NOT NULL REFERENCES local_versions(local_version_id) ON DELETE CASCADE,
+    os               TEXT NOT NULL,
+    arch             TEXT NOT NULL,
+    manager          TEXT,               -- pip, apt, binary, docker…
+    package          TEXT,               -- nom du paquet chez le manager
+    version_installee TEXT,
+    install_path     TEXT,
+    status           TEXT DEFAULT 'pending' CHECK(status IN ('pending','installed','failed','outdated','uninstalled')),
+    ts               INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- ============================================================
+-- 9. COMMANDS — Utilitaires non triviaux pour les IA
+-- ============================================================
+CREATE TABLE IF NOT EXISTS commands (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ref         TEXT UNIQUE NOT NULL,
-    label       TEXT NOT NULL,
-    sort_order  INTEGER DEFAULT 0,
-    created_at  INTEGER DEFAULT (strftime('%s', 'now')),
-    updated_at  INTEGER DEFAULT (strftime('%s', 'now'))
+    name        TEXT NOT NULL,
+    description TEXT,
+    command_type TEXT NOT NULL CHECK(command_type IN ('system', 'binary', 'project', 'utility')),
+    catalogue_ref TEXT,
+    created_at  INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
 -- ============================================================
--- 6. TOOL_PACKAGES — Versions/packages des outils
--- ============================================================
-CREATE TABLE IF NOT EXISTS tool_packages (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id             INTEGER NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
-    version             TEXT NOT NULL,
-    platform            TEXT,
-    arch                TEXT,
-    download_path       TEXT,
-    download_url        TEXT,
-    size_bytes          INTEGER,
-    checksum            TEXT,
-    integrity_status    TEXT DEFAULT 'pending',
-    download_timestamp  INTEGER,
-    installed_at        INTEGER,
-    install_strategy    TEXT,
-    install_cmd_template TEXT,
-    install_result_log  TEXT,
-    UNIQUE(tool_id, version, platform, arch)
-);
-
--- ============================================================
--- 7. PACKAGE_DEPENDENCIES — Dépendances entre packages
--- ============================================================
-CREATE TABLE IF NOT EXISTS package_dependencies (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    package_id          INTEGER NOT NULL REFERENCES tool_packages(id) ON DELETE CASCADE,
-    dep_type            TEXT NOT NULL CHECK(dep_type IN ('system_pkg', 'python_pkg', 'binary_tool')),
-    identifier          TEXT NOT NULL,
-    install_cmd         TEXT NOT NULL,
-    version_constraint  TEXT,
-    required_by_default INTEGER DEFAULT 1
-);
-
--- ============================================================
--- 8. LOCAL_TOOLS — Outils installés localement
--- ============================================================
-CREATE TABLE IF NOT EXISTS local_tools (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id     INTEGER NOT NULL REFERENCES tool_definitions(id) ON DELETE CASCADE,
-    version     TEXT NOT NULL,
-    install_path TEXT,
-    status      TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'installed', 'failed', 'outdated', 'uninstalled')),
-    installed_at INTEGER,
-    updated_at  INTEGER DEFAULT (strftime('%s', 'now')),
-    UNIQUE(tool_id)
-);
-
--- ============================================================
--- 9. LOCAL_LLMS — LLM téléchargés localement (Ollama, etc.)
+-- 10. LOCAL_LLMS — LLM téléchargés localement (Ollama, etc.)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_llms (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,50 +208,7 @@ CREATE TABLE IF NOT EXISTS local_llms (
 );
 
 -- ============================================================
--- 10. COMMANDS — Utilitaires non triviaux pour les IA
--- ============================================================
-CREATE TABLE IF NOT EXISTS commands (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ref         TEXT UNIQUE NOT NULL,
-    name        TEXT NOT NULL,
-    description TEXT,
-    command_type TEXT NOT NULL CHECK(command_type IN ('system', 'binary', 'project', 'utility')),
-    catalogue_ref TEXT,
-    created_at  INTEGER DEFAULT (strftime('%s', 'now'))
-);
-
--- ============================================================
--- 11. INSTALL_JOB_LOG — Historique d'installation
--- ============================================================
-CREATE TABLE IF NOT EXISTS install_job_log (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id         INTEGER REFERENCES tool_definitions(id),
-    package_id      INTEGER REFERENCES tool_packages(id),
-    job_timestamp   INTEGER DEFAULT (strftime('%s', 'now')),
-    job_type        TEXT NOT NULL CHECK(job_type IN ('download', 'install', 'uninstall', 'verify')),
-    status          TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
-    stdout_capture  TEXT,
-    stderr_capture  TEXT,
-    duration_ms     INTEGER,
-    agent_details   TEXT
-);
-
--- ============================================================
--- 12. TOOL_CONFIG — Configuration des outils (scopes)
--- ============================================================
-CREATE TABLE IF NOT EXISTS tool_config (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id     INTEGER NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
-    config_key  TEXT NOT NULL,
-    config_value TEXT,
-    scope       TEXT DEFAULT 'user',
-    created_at  INTEGER DEFAULT (strftime('%s', 'now')),
-    updated_at  INTEGER DEFAULT (strftime('%s', 'now')),
-    UNIQUE(tool_id, config_key, scope)
-);
-
--- ============================================================
--- 13. MODEL_PROVIDERS — Ressources hardware/cloud pour les agents
+-- 11. MODEL_PROVIDERS — Ressources hardware/cloud pour les agents
 -- ============================================================
 CREATE TABLE IF NOT EXISTS model_providers (
     provider_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -304,7 +224,7 @@ CREATE TABLE IF NOT EXISTS model_providers (
 );
 
 -- ============================================================
--- 14. AGENTS — Identité et couplage modèle/hardware
+-- 12. AGENTS — Identité et couplage modèle/hardware
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agents (
     agent_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,7 +239,7 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 -- ============================================================
--- 15. SESSIONS — Fils de discussion persistants
+-- 13. SESSIONS — Fils de discussion persistants
 -- ============================================================
 CREATE TABLE IF NOT EXISTS sessions (
     session_id      TEXT PRIMARY KEY,
@@ -331,7 +251,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- ============================================================
--- 16. AGENT_MESSAGES — Mémoire brute au format OpenAI
+-- 14. AGENT_MESSAGES — Mémoire brute au format OpenAI
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agent_messages (
     message_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -343,7 +263,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 
 -- ============================================================
--- 17. WAKEUP_CALLS — Système nerveux (tâches et réveils)
+-- 15. WAKEUP_CALLS — Système nerveux (tâches et réveils)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wakeup_calls (
     task_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,7 +278,7 @@ CREATE TABLE IF NOT EXISTS wakeup_calls (
 );
 
 -- ============================================================
--- 18. AGENT_QUEUE — Messagerie inter-agents (direct + broadcast)
+-- 16. AGENT_QUEUE — Messagerie inter-agents (direct + broadcast)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agent_queue (
     queue_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -372,7 +292,7 @@ CREATE TABLE IF NOT EXISTS agent_queue (
 );
 
 -- ============================================================
--- 19. CHATROOM_MESSAGES — Board public avec threads
+-- 17. CHATROOM_MESSAGES — Board public avec threads
 -- ============================================================
 CREATE TABLE IF NOT EXISTS chatroom_messages (
     message_id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -383,7 +303,7 @@ CREATE TABLE IF NOT EXISTS chatroom_messages (
 );
 
 -- ============================================================
--- 20. SHARED_TASKS — Todo partagé entre agents
+-- 18. SHARED_TASKS — Todo partagé entre agents
 -- ============================================================
 CREATE TABLE IF NOT EXISTS shared_tasks (
     task_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -400,7 +320,7 @@ CREATE TABLE IF NOT EXISTS shared_tasks (
 );
 
 -- ============================================================
--- 21. WATCHERS — Surveillants automatiques
+-- 19. WATCHERS — Surveillants automatiques
 -- ============================================================
 CREATE TABLE IF NOT EXISTS watchers (
     watcher_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -414,7 +334,7 @@ CREATE TABLE IF NOT EXISTS watchers (
 );
 
 -- ============================================================
--- 22. AGENT_CONNECTIONS — Branchements persistants
+-- 20. AGENT_CONNECTIONS — Branchements persistants
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agent_connections (
     conn_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,48 +347,57 @@ CREATE TABLE IF NOT EXISTS agent_connections (
 );
 
 -- ============================================================
--- 23. SCHEDULED_JOBS — Tâches récurrentes / Planification
+-- 21. SCHEDULED_JOBS — Tâches récurrentes / Planification
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id        INTEGER REFERENCES agents(agent_id) ON DELETE CASCADE,
-    role_type       TEXT,                    -- Si NULL, lié à l'agent_id. Sinon, n'importe quel agent du rôle.
-    skill           TEXT NOT NULL,           -- Skill à déclencher
-    request_payload TEXT,                    -- Payload de la wakeup_call
-    interval_seconds INTEGER,                -- Intervalle de répétition (0 = one-shot)
-    next_run_at     TEXT NOT NULL,           -- Date/Heure du prochain déclenchement
-    enabled         INTEGER DEFAULT 1,       -- 1 = actif, 0 = pause
+    role_type       TEXT,
+    skill           TEXT NOT NULL,
+    request_payload TEXT,
+    interval_seconds INTEGER,
+    next_run_at     TEXT NOT NULL,
+    enabled         INTEGER DEFAULT 1,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
 -- ============================================================
--- 24. TOOL_METRICS — Poids mesurés des variantes d'outils
+-- 22. SYSTEM_STATE — Snapshot de l'OS au dernier check
 -- ============================================================
-CREATE TABLE IF NOT EXISTS tool_metrics (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    tool_id         TEXT NOT NULL,
-    version         TEXT NOT NULL,
-    os              TEXT NOT NULL,
-    arch            TEXT NOT NULL,
-    manager         TEXT NOT NULL,
-    size_download   INTEGER DEFAULT 0,
-    size_disk       INTEGER DEFAULT 0,
-    last_measured   DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tool_id, version, os, arch, manager)
+CREATE TABLE IF NOT EXISTS system_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    os              TEXT,
+    architecture    TEXT,
+    os_version      TEXT,
+    detected_managers TEXT,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run_at, enabled);
+-- ============================================================
+-- 23. TOOL_USAGE — Télémétrie locale (opt-in phase 2/3)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tool_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    install_id  TEXT,
+    outil_ref   TEXT,
+    version_ref TEXT,
+    recette_id  INTEGER,
+    etat        TEXT CHECK(etat IN ('installed','uninstalled','upgraded')),
+    ts          INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- ============================================================
+-- INDEXES
+-- ============================================================
 CREATE INDEX IF NOT EXISTS idx_providers_ref ON providers(ref);
 CREATE INDEX IF NOT EXISTS idx_models_ref ON models(ref);
 CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_identity ON api_keys(identity);
 CREATE INDEX IF NOT EXISTS idx_provider_models_provider ON provider_models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_provider_models_model ON provider_models(model_id);
-CREATE INDEX IF NOT EXISTS idx_tools_ref ON tool_definitions(ref);
-CREATE INDEX IF NOT EXISTS idx_tools_priority ON tool_variants(is_official);
-CREATE INDEX IF NOT EXISTS idx_local_tools_tool ON local_tools(tool_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON install_job_log(job_timestamp);
-CREATE INDEX IF NOT EXISTS idx_packages_tool ON tool_packages(tool_id);
+CREATE INDEX IF NOT EXISTS idx_local_outils_ref ON local_outils(outil_ref);
+CREATE INDEX IF NOT EXISTS idx_local_installs_outil ON local_installs(manager, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON scheduled_jobs(next_run_at, enabled);
 CREATE INDEX IF NOT EXISTS idx_wakeup_ticker ON wakeup_calls(status, execute_after);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON agent_messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id, status);

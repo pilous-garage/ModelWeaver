@@ -118,29 +118,28 @@ def get_system_state():
 def seed_catalogue():
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
-    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] > 0:
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils").fetchone()[0] > 0:
         cat.close(); return {"status": "ok", "seeded": False, "note": "déjà peuplé"}
     data_path = os.path.join(REPO_ROOT, "modules", "catalogue", "data", "tools.json")
     with open(data_path) as f:
         rows = json.load(f)
-    count = cat.sync_tools(rows); cat.conn.commit(); cat.close()
+    count = cat.sync_tools(rows)
+    from services.api.daemon import seed_recipes
+    seed_recipes(cat)
+    cat.conn.commit(); cat.close()
     return {"status": "ok", "seeded": True, "count": count}
 
 
 def get_catalogue_tools():
-    return _catalogue_tools()
-
-
-def _catalogue_tools():
+    import platform as _platform
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
-    cur = cat.conn.execute(
-        "SELECT ref, name, description, tool_type, install_method, current_version, "
-        "allowed_platforms, allowed_arches FROM catalogue_tools ORDER BY name")
-    cols = [d[0] for d in cur.description]
-    tools = [dict(zip(cols, row)) for row in cur.fetchall()]
+    os_key = _platform.system().lower()
+    arch = _platform.machine().lower()
+    arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
+    result = cat.get_catalogue_tools(os_key=os_key, arch_key=arch)
     cat.close()
-    return {"tools": tools, "count": len(tools)}
+    return result
 
 
 def get_installed_tools():
@@ -165,7 +164,7 @@ def sync_catalogue_remote(url=None):
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
-    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools").fetchone()[0] == 0:
+    if cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils").fetchone()[0] == 0:
         with _quiet_stdout():
             seed_catalogue()
     with _quiet_stdout():
