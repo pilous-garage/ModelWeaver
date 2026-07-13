@@ -1025,6 +1025,7 @@ function App() {
       padding: '2rem',
       overflowY: 'auto',
     }}>
+      <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{ maxWidth: '800px', width: '100%', margin: '0 auto' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '2rem' }}>
           ModelWeaver
