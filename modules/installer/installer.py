@@ -280,6 +280,15 @@ class Installer:
         if len(cmd) >= 2 and os.path.basename(cmd[0]) == "pip":
             if "--break-system-packages" not in cmd:
                 cmd.append("--break-system-packages")
+            # Environnement Ubuntu/apt (PEP 668) : pip ne peut pas désinstaller les
+            # paquets système (zipp, typing_extensions, importlib-metadata…) car ils
+            # n'ont pas de fichier RECORD -> "Cannot uninstall X, RECORD file not found".
+            # --ignore-installed installe la version neuve dans /usr/local (qui prime
+            # déjà dans sys.path) sans toucher au paquet système. Uniquement pour les
+            # installs (jamais pour uninstall, sinon pip risquerait de supprimer des
+            # fichiers système).
+            if cmd[1] not in ("uninstall",) and "--ignore-installed" not in cmd:
+                cmd.append("--ignore-installed")
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             return True

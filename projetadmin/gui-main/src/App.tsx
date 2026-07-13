@@ -940,7 +940,18 @@ function App() {
                   </>
                 )}
                 {debugTab === 'logs' && (
-                  <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Cliquez sur « logs » d'un processus de l'onglet Processus pour voir sa sortie disque.</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', height: '100%' }}>
+                    <div style={{ fontSize: '0.66rem', color: '#64748b' }}>Logs d'install / dépendances</div>
+                    {installLog.length === 0 ? (
+                      <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Aucun log pour l'instant — les actions d'install généreront des entrées ici.</div>
+                    ) : (
+                      <div style={{ backgroundColor: '#0f172a', borderRadius: '0.375rem', border: '1px solid #334155', padding: '0.6rem', maxHeight: '100%', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.66rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {installLog.map((line, i) => (
+                          <div key={i} style={{ color: line.includes('FAILED') || line.includes('ERROR') ? '#f87171' : line.includes('SUCCESS') ? '#6ee7b7' : '#94a3b8' }}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
                 {debugTab === 'resources' && (
                   <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>Vue ressources globale (CPU/RAM/bande passante agrégée) — à venir.</div>
