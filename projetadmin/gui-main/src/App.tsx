@@ -752,23 +752,28 @@ function App() {
                             <span style={{ color: '#6ee7b7', fontSize: '0.75rem', fontWeight: '600' }}>✓ Installé</span>
                           ) : (() => {
                             const j = queueJob(t.ref);
-                            if (j && (j.status === 'queued' || j.status === 'running')) {
-                              const label = j.status === 'running' ? '⏳ En cours' : '🕓 En attente';
-                              return (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-                                  <span style={{ color: '#fbbf24', fontSize: '0.75rem' }}>{label}</span>
-                                  <button
-                                    onClick={() => handleCancelInstall(j.id, t.name)}
-                                    disabled={loadingActions[`cancel-${j.id}`]}
-                                    style={{ padding: '0.25rem 0.55rem', backgroundColor: loadingActions[`cancel-${j.id}`] ? '#4c0519' : '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: loadingActions[`cancel-${j.id}`] ? 'default' : 'pointer', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                                  >{loadingActions[`cancel-${j.id}`] ? <Spinner size={9} color="#fecaca" /> : null}Annuler</button>
-                                </span>
-                              );
-                            }
-                            if (j && (j.status === 'installed' || j.status === 'removed')) {
-                              const txt = j.status === 'removed' ? '✓ Retiré' : '✓ Installé';
+                            const added = loadingActions[`install-${t.ref}`] || (j != null && (j.status === 'queued' || j.status === 'running'));
+                            if (inst || (j != null && (j.status === 'installed' || j.status === 'removed'))) {
+                              const txt = j != null && j.status === 'removed' ? '✓ Retiré' : '✓ Installé';
                               return (
                                 <span style={{ color: '#6ee7b7', fontSize: '0.75rem', fontWeight: '600' }}>{txt}</span>
+                              );
+                            }
+                            if (added) {
+                              return (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                                  <button
+                                    disabled
+                                    style={{ padding: '0.4rem 0.7rem', backgroundColor: '#1e3a8a', color: '#bfdbfe', border: 'none', borderRadius: '0.375rem', cursor: 'default', fontSize: '0.72rem', fontWeight: '500', opacity: 0.85 }}
+                                  >added</button>
+                                  {j != null && (j.status === 'queued' || j.status === 'running') && (
+                                    <button
+                                      onClick={() => handleCancelInstall(j.id, t.name)}
+                                      disabled={loadingActions[`cancel-${j.id}`]}
+                                      style={{ padding: '0.25rem 0.55rem', backgroundColor: loadingActions[`cancel-${j.id}`] ? '#4c0519' : '#7f1d1d', color: '#fecaca', border: '1px solid #b91c1c', borderRadius: '0.3rem', cursor: loadingActions[`cancel-${j.id}`] ? 'default' : 'pointer', fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                                    >{loadingActions[`cancel-${j.id}`] ? <Spinner size={9} color="#fecaca" /> : null}Annuler</button>
+                                  )}
+                                </span>
                               );
                             }
                             return (
