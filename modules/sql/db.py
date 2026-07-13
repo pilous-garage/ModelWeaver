@@ -1003,6 +1003,20 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
             )
         """)
 
+        # tool_usage : état d'install local par machine (télémétrie opt-in, phase 2/3).
+        # Stocké dans l'inventory (modelweaver.db) car purement local.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                install_id TEXT,
+                outil_ref TEXT,
+                version_ref TEXT,
+                recette_id INTEGER,
+                etat TEXT CHECK(etat IN ('installed','uninstalled','upgraded')),
+                ts INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""
         count = self.tools.scan_installed(self.local_tools)
@@ -1072,6 +1086,39 @@ class CatalogueDB:
                         created_at INTEGER DEFAULT (strftime('%s','now')),
                         updated_at INTEGER DEFAULT (strftime('%s','now')),
                         UNIQUE(provider_id, model_id))
+                """)
+            except Exception:
+                pass
+            # Migration: nouvelles tables catalogue outils/versions/recettes/popularité
+            try:
+                self.conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS catalogue_outils (
+                        outil_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ref TEXT UNIQUE NOT NULL, nom TEXT NOT NULL,
+                        fabricant TEXT, description TEXT,
+                        created_at INTEGER DEFAULT (strftime('%s','now')));
+                    CREATE TABLE IF NOT EXISTS catalogue_versions (
+                        version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        outil_id INTEGER NOT NULL REFERENCES catalogue_outils(outil_id) ON DELETE CASCADE,
+                        nom_version TEXT NOT NULL, description TEXT,
+                        created_at INTEGER DEFAULT (strftime('%s','now')),
+                        UNIQUE(outil_id, nom_version));
+                    CREATE TABLE IF NOT EXISTS catalogue_recettes (
+                        recette_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        version_id INTEGER NOT NULL REFERENCES catalogue_versions(version_id) ON DELETE CASCADE,
+                        os TEXT NOT NULL DEFAULT 'all', arch TEXT NOT NULL DEFAULT 'all',
+                        manager TEXT, package TEXT, confidence REAL DEFAULT 1.0,
+                        createur_id TEXT DEFAULT 'system',
+                        install_count INTEGER DEFAULT 0, uninstall_count INTEGER DEFAULT 0,
+                        content TEXT, enabled INTEGER DEFAULT 1,
+                        created_at INTEGER DEFAULT (strftime('%s','now')),
+                        updated_at INTEGER DEFAULT (strftime('%s','now')));
+                    CREATE TABLE IF NOT EXISTS outils_popularite (
+                        outil_id INTEGER PRIMARY KEY REFERENCES catalogue_outils(outil_id) ON DELETE CASCADE,
+                        nb_install INTEGER DEFAULT 0, nb_desinstall INTEGER DEFAULT 0,
+                        updated_at INTEGER DEFAULT (strftime('%s','now')));
+                    CREATE INDEX IF NOT EXISTS idx_recettes_version ON catalogue_recettes(version_id);
+                    CREATE INDEX IF NOT EXISTS idx_outils_ref ON catalogue_outils(ref);
                 """)
             except Exception:
                 pass
@@ -1178,6 +1225,37 @@ class CatalogueDB:
 
     def close(self):
         self.conn.close()
+
+    # ── Popularité / télémétrie (compteurs agrégés) ──
+    def bump_popularity(self, ref: str, action: str) -> None:
+        """Incrémente les compteurs d'install/désinstall pour un outil.
+
+        action: 'install' -> nb_install +1 ; 'uninstall' -> nb_desinstall +1.
+        Gestion triviale (+1/-1) ; la réconciliation distante vient plus tard.
+        """
+        row = self.conn.execute(
+            "SELECT outil_id FROM catalogue_outils WHERE ref=?", (ref,)).fetchone()
+        if not row:
+            return
+        oid = row["outil_id"]
+        self.conn.execute("INSERT OR IGNORE INTO outils_popularite (outil_id) VALUES (?)", (oid,))
+        if action == "install":
+            self.conn.execute(
+                "UPDATE outils_popularite SET nb_install=nb_install+1, updated_at=strftime('%s','now') WHERE outil_id=?",
+                (oid,))
+            self.conn.execute(
+                """UPDATE catalogue_recettes SET install_count=install_count+1, updated_at=strftime('%s','now')
+                   WHERE version_id=(SELECT version_id FROM catalogue_versions WHERE outil_id=?)
+                     AND manager='pip' AND enabled=1""", (oid,))
+        elif action == "uninstall":
+            self.conn.execute(
+                "UPDATE outils_popularite SET nb_desinstall=nb_desinstall+1, updated_at=strftime('%s','now') WHERE outil_id=?",
+                (oid,))
+            self.conn.execute(
+                """UPDATE catalogue_recettes SET uninstall_count=uninstall_count+1, updated_at=strftime('%s','now')
+                   WHERE version_id=(SELECT version_id FROM catalogue_versions WHERE outil_id=?)
+                     AND manager='pip' AND enabled=1""", (oid,))
+        self.conn.commit()
 
 
 # ──────────────────────────────────────────────

@@ -21,7 +21,6 @@ class RecipeParser:
         self.project_root = Path(project_root) if project_root else Path.cwd()
         self.recipe_dir_local = self.project_root / "install_recipe"
         self.installed_dir = self.project_root / "installed_recipe"
-        self.github_raw_url = "https://raw.githubusercontent.com/pilous-garage/ModelWeaver/yaml-data/install_recipe"
 
         self.os_type = platform.system()
         self.os_key = self._os_key()
@@ -42,42 +41,27 @@ class RecipeParser:
             return json.load(f)
 
     def _fetch_remote_recipe(self, relative_path: Path) -> Optional[str]:
-        """Télécharge une recette depuis GitHub si elle existe."""
-        import urllib.request
-        url = f"{self.github_raw_url}/{relative_path}"
-        try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                return response.read().decode("utf-8")
-        except Exception as e:
-            print(f"DEBUG: Failed to fetch remote recipe {url}: {e}")
-            return None
+        """[OBSOLÈTE] Les recettes viennent du catalogue, plus de GitHub.
+
+        Conservé pour compatibilité mais non utilisé par la résolution.
+        """
+        return None
 
     def load_recipe(self, ref: str) -> Optional[Dict[str, Any]]:
-        """Charge la recette globale d'un outil (Priorité GitHub -> Fallback Local)."""
+        """Charge la recette globale d'un outil (Priorité Local -> Fallback Catalogue)."""
         tool_dir = self._get_tool_dir(ref)
         global_file = tool_dir / "global.yaml"
-        
-        # 1. Essayer GitHub en priorité (Simulation système inconnu/mise à jour)
-        relative_path = global_file.relative_to(self.recipe_dir_local)
-        content = self._fetch_remote_recipe(relative_path)
-        if content:
-            # Mise à jour du cache local
-            global_file.parent.mkdir(parents=True, exist_ok=True)
-            global_file.write_text(content)
-            recipe = yaml.safe_load(content)
-            if recipe:
-                recipe["_ref"] = ref
-            return recipe
-        
-        # 2. Fallback local si GitHub est indisponible
+
+        # 1. Local d'abord (recettes shippées avec l'app)
         if global_file.exists():
             with open(global_file) as f:
                 recipe = yaml.safe_load(f)
                 if recipe:
                     recipe["_ref"] = ref
-                return recipe
-        
-        return None
+                    return recipe
+
+        # 2. Fallback catalogue (recettes synchronisées depuis le catalogue distant)
+        return self._load_recipe_from_catalogue(ref)
 
 
     def _parse_yaml(self, content: str) -> Dict[str, Any]:
@@ -253,50 +237,110 @@ class RecipeParser:
                      "cargo", "npm", "go", "binary", "source", "container",
                      "package-//manager"]
 
-        # On teste d'abord l'arch spécifique, puis 'all'
-        for arch_key in [self.arch, "all"]:
-            # 1. Priorité absolue au manager forcé
-            if forced_manager:
-                mgr_path = tool_dir / self.os_key / arch_key / f"{forced_manager}.yaml"
-                
-                # Tenter local, puis GitHub
-                content = None
-                if mgr_path.exists():
-                    with open(mgr_path) as f:
-                        content = f.read()
+        # Ordre de priorité des chemins testés (le 1er trouvé gagne) :
+        #   os/arch -> os/all -> all/arch -> all/all
+        # (les managers universels pip/npm/go/cargo sont shippés en all/all
+        #  par get_ideal_sharding_path, d'où la nécessité de tester "all").
+        # Phase 1 : recherche LOCALE uniquement (rapide, sans réseau).
+        # Les recettes sont shippées avec l'app, donc le cas normal ne fait AUCun
+        # appel réseau. Ordre de priorité des chemins :
+        #   os/arch -> os/all -> all/arch -> all/all
+        for os_key in [self.os_key, "all"]:
+            for arch_key in [self.arch, "all"]:
+                if forced_manager:
+                    mgr_path = tool_dir / os_key / arch_key / f"{forced_manager}.yaml"
+                    if mgr_path.exists():
+                        with open(mgr_path) as f:
+                            content = f.read()
+                        data = yaml.safe_load(content)
+                        if data and "block" in data:
+                            return (data.get("version", "latest"), data["block"])
                 else:
-                    relative_path = mgr_path.relative_to(self.recipe_dir_local)
-                    content = self._fetch_remote_recipe(relative_path)
+                    for mgr in priority:
+                        mgr_path = tool_dir / os_key / arch_key / f"{mgr}.yaml"
+                        if mgr_path.exists():
+                            with open(mgr_path) as f:
+                                content = f.read()
+                            data = yaml.safe_load(content)
+                            if data and "block" in data:
+                                return (data.get("version", "latest"), data["block"])
+
+        # Phase 2 : repli CATALOGUE (catalogue_recettes) — sans GitHub.
+        # Les recettes distantes sont synchronisées dans le catalogue (catalogue.db),
+        # donc on interroge directement la base au lieu de fetch GitHub.
+        for os_key in [self.os_key, "all"]:
+            for arch_key in [self.arch, "all"]:
+                if forced_manager:
+                    content = self._catalogue_recipe_content(ref, os_key, arch_key, forced_manager)
                     if content:
-                        mgr_path.parent.mkdir(parents=True, exist_ok=True)
-                        mgr_path.write_text(content)
-
-                if content:
-                    data = yaml.safe_load(content)
-                    if data and "block" in data:
-                        return (data.get("version", "latest"), data["block"])
-
-            # 2. Fallback vers la priorité standard
-            for mgr in priority:
-                mgr_path = tool_dir / self.os_key / arch_key / f"{mgr}.yaml"
-                
-                content = None
-                if mgr_path.exists():
-                    with open(mgr_path) as f:
-                        content = f.read()
+                        data = yaml.safe_load(content)
+                        if data and "block" in data:
+                            return (data.get("version", "latest"), data["block"])
                 else:
-                    relative_path = mgr_path.relative_to(self.recipe_dir_local)
-                    content = self._fetch_remote_recipe(relative_path)
-                    if content:
-                        mgr_path.parent.mkdir(parents=True, exist_ok=True)
-                        mgr_path.write_text(content)
-
-                if content:
-                    data = yaml.safe_load(content)
-                    if data and "block" in data:
-                        return (data.get("version", "latest"), data["block"])
+                    for mgr in priority:
+                        content = self._catalogue_recipe_content(ref, os_key, arch_key, mgr)
+                        if content:
+                            data = yaml.safe_load(content)
+                            if data and "block" in data:
+                                return (data.get("version", "latest"), data["block"])
 
         return None
+
+    # ── Résolution depuis le catalogue (catalogue_recettes) ──
+
+    def _catalogue_recipe_content(self, ref: str, os_key: str, arch_key: str,
+                                  mgr: str) -> Optional[str]:
+        """Lit le contenu d'une recette depuis le catalogue (catalogue.db).
+
+        Le catalogue est la source de vérité des recettes (recettes locales shippées
+        OU recettes synchronisées depuis le catalogue distant). Pas de GitHub.
+        """
+        try:
+            from modules.sql.db import CatalogueDB
+            cat = CatalogueDB()
+            row = cat.conn.execute(
+                "SELECT r.content FROM catalogue_recettes r "
+                "JOIN catalogue_versions v ON v.version_id = r.version_id "
+                "JOIN catalogue_outils o ON o.outil_id = v.outil_id "
+                "WHERE o.ref = ? AND r.manager = ? "
+                "  AND r.os IN (?, 'all') AND r.arch IN (?, 'all') "
+                "ORDER BY (r.os = ?) DESC, (r.arch = ?) DESC, r.confidence DESC "
+                "LIMIT 1",
+                (ref, mgr, os_key, arch_key, os_key, arch_key)).fetchone()
+            return row["content"] if row and row["content"] else None
+        except Exception:
+            return None
+
+    def _load_recipe_from_catalogue(self, ref: str) -> Optional[Dict[str, Any]]:
+        """Reconstruit la recette globale d'un outil depuis le catalogue."""
+        try:
+            from modules.sql.db import CatalogueDB
+            cat = CatalogueDB()
+            o = cat.conn.execute(
+                "SELECT ref, nom, description FROM catalogue_outils WHERE ref = ?",
+                (ref,)).fetchone()
+            if not o:
+                return None
+            rec = {
+                "_ref": ref,
+                "name": o["nom"],
+                "description": o["description"],
+                "versions": {"default": {}},
+                "pre_install": [],
+            }
+            rows = cat.conn.execute(
+                "SELECT os, arch, manager FROM catalogue_recettes r "
+                "JOIN catalogue_versions v ON v.version_id = r.version_id "
+                "JOIN catalogue_outils o2 ON o2.outil_id = v.outil_id "
+                "WHERE o2.ref = ?", (ref,)).fetchall()
+            ver = rec["versions"]["default"]
+            for r in rows:
+                ver.setdefault(r["os"], {})[r["manager"]] = {}
+            if not ver:
+                return None
+            return rec
+        except Exception:
+            return None
 
 
     @staticmethod

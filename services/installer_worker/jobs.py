@@ -138,6 +138,15 @@ def _set_job(job_id: int, status: str, log=None, pid=None) -> None:
 #  Install / Uninstall réels (recettes)
 # ──────────────────────────────────────────────
 
+def _record_usage(mw, ref: str, etat: str) -> None:
+    """Trace l'état d'install local (télémétrie opt-in, phase 2/3)."""
+    install_id = os.environ.get("MODELWEAVER_INSTALL_ID", "local")
+    mw.conn.execute(
+        "INSERT INTO tool_usage (install_id, outil_ref, version_ref, recette_id, etat) "
+        "VALUES (?,?,?,?,?)", (install_id, ref, "latest", None, etat))
+    mw.commit()
+
+
 def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
     from modules.sql.db import CatalogueDB, ModelWeaverDB
     from modules.installer.installer import Installer
@@ -176,6 +185,21 @@ def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
     with _quiet_stdout():
         ok = installer.install(tool, progress_callback=progress)
     if ok:
+        # Popularité (compteurs agrégés) + usage local
+        try:
+            if cat_shared is not None:
+                cat_shared.bump_popularity(ref, "install")
+            else:
+                c = CatalogueDB(_db_paths()[1]); c.bump_popularity(ref, "install"); c.close()
+        except Exception:
+            pass
+        try:
+            if mw_shared is not None:
+                _record_usage(mw_shared, ref, "installed")
+            else:
+                mw = ModelWeaverDB(_db_paths()[0]); _record_usage(mw, ref, "installed"); mw.close()
+        except Exception:
+            pass
         if mw_shared is not None:
             mw_shared.scan_installed_tools()
         else:
@@ -227,6 +251,21 @@ def uninstall_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:
     with _quiet_stdout():
         ok = installer.uninstall(tool, progress_callback=progress)
     if ok:
+        # Popularité (compteurs agrégés) + usage local
+        try:
+            if cat_shared is not None:
+                cat_shared.bump_popularity(ref, "uninstall")
+            else:
+                c = CatalogueDB(_db_paths()[1]); c.bump_popularity(ref, "uninstall"); c.close()
+        except Exception:
+            pass
+        try:
+            if mw_shared is not None:
+                _record_usage(mw_shared, ref, "uninstalled")
+            else:
+                mw = ModelWeaverDB(_db_paths()[0]); _record_usage(mw, ref, "uninstalled"); mw.close()
+        except Exception:
+            pass
         if mw_shared is not None:
             mw_shared.conn.execute(
                 "DELETE FROM local_tools WHERE tool_id = (SELECT id FROM tool_definitions WHERE ref = ?)",

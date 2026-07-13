@@ -131,10 +131,72 @@ def check_databases():
     return result
 
 
+def seed_recipes(cat):
+    """Backfill catalogue_outils/versions/recettes + outils_popularite depuis
+    tools.json et les .mw.yaml shippés. Idempotent (INSERT OR IGNORE / dédupe)."""
+    data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
+    try:
+        with open(data_path) as f:
+            tools = json.load(f)
+    except Exception:
+        tools = []
+    if isinstance(tools, dict):
+        tools = tools.get("tools", [])
+    for t in tools:
+        ref = t.get("ref")
+        if not ref:
+            continue
+        cat.conn.execute(
+            "INSERT OR IGNORE INTO catalogue_outils (ref, nom, description) VALUES (?,?,?)",
+            (ref, t.get("name", ref), t.get("description", "")))
+    cat.conn.commit()
+    recipe_dir = _REPO_ROOT / "modules" / "installer" / "install_recipe"
+    if not recipe_dir.exists():
+        return
+    for global_file in recipe_dir.rglob("global.yaml"):
+        ref = global_file.parent.name
+        if ref.endswith(".mw"):
+            ref = ref[:-3]
+        row = cat.conn.execute("SELECT outil_id FROM catalogue_outils WHERE ref=?", (ref,)).fetchone()
+        if not row:
+            continue
+        outil_id = row["outil_id"]
+        cat.conn.execute(
+            "INSERT OR IGNORE INTO catalogue_versions (outil_id, nom_version) VALUES (?, 'latest')",
+            (outil_id,))
+        vid = cat.conn.execute(
+            "SELECT version_id FROM catalogue_versions WHERE outil_id=? AND nom_version='latest'",
+            (outil_id,)).fetchone()["version_id"]
+        for mgr_file in global_file.parent.rglob("*.yaml"):
+            if mgr_file.name == "global.yaml":
+                continue
+            parts = mgr_file.relative_to(global_file.parent).parts
+            if len(parts) != 3:
+                continue
+            os_k, arch_k, mgr = parts[0], parts[1], parts[2][:-5]
+            exists = cat.conn.execute(
+                "SELECT 1 FROM catalogue_recettes WHERE version_id=? AND os=? AND arch=? AND manager=?",
+                (vid, os_k, arch_k, mgr)).fetchone()
+            if exists:
+                continue
+            content = mgr_file.read_text()
+            cat.conn.execute(
+                """INSERT INTO catalogue_recettes
+                   (version_id, os, arch, manager, package, content, confidence, createur_id)
+                   VALUES (?,?,?,?,?,?,1.0,'system')""",
+                (vid, os_k, arch_k, mgr, ref, content))
+        cat.conn.execute("INSERT OR IGNORE INTO outils_popularite (outil_id) VALUES (?)", (outil_id,))
+    cat.conn.commit()
+
+
 def seed_catalogue():
     cat = _get_cat()
     cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_tools")
     if cur.fetchone()[0] > 0:
+        try:
+            seed_recipes(cat)
+        except Exception:
+            pass
         return {"status": "ok", "seeded": False, "note": "catalogue already populated"}
     # Tools
     data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
@@ -147,6 +209,10 @@ def seed_catalogue():
     count_models = seed_models(cat)
     count_pm = seed_provider_models(cat)
     cat.conn.commit()
+    try:
+        seed_recipes(cat)
+    except Exception as e:
+        print(f"⚠️  seed_recipes échoué : {e}", file=sys.stderr)
     try:
         _get_rt().bump_meta("catalogue")
     except Exception:
