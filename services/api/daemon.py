@@ -668,6 +668,15 @@ def op_providers_list(_params):
         "FROM catalogue_providers ORDER BY name")
     cols = [d[0] for d in cur.description]
     providers = [dict(zip(cols, row)) for row in cur.fetchall()]
+    # Enrichir avec has_key : true si une clé API est fournie pour ce provider
+    try:
+        km = _get_km()
+        has_key_refs = set(km.list_providers())
+        for p in providers:
+            p["has_key"] = p["ref"] in has_key_refs
+    except Exception:
+        for p in providers:
+            p["has_key"] = False
     return {"providers": providers, "count": len(providers)}
 
 
@@ -675,7 +684,31 @@ def op_providers_list(_params):
 
 def op_llm_models_list(params):
     llm = _get_llm()
-    models = llm.list_models(provider_ref=params.get("provider_ref"))
+    # Restriction : ne retourner les modèles que pour les providers
+    # qui ont une clé API fournie (sauf ollama/builtin/local qui n'en ont pas besoin).
+    try:
+        km = _get_km()
+        has_key_refs = set(km.list_providers())
+    except Exception:
+        has_key_refs = set()
+    # Providers qui ne nécessitent pas de clé (ollama, builtin, local)
+    cat = _get_cat()
+    no_key_refs = set()
+    cur = cat.conn.execute(
+        "SELECT ref FROM catalogue_providers WHERE provider_type IN ('ollama', 'builtin', 'local')")
+    no_key_refs = {row[0] for row in cur.fetchall()}
+    allowed_refs = has_key_refs | no_key_refs
+
+    provider_ref = params.get("provider_ref")
+    if provider_ref:
+        if provider_ref not in allowed_refs:
+            return {"models": [], "count": 0, "error": "no_api_key",
+                    "message": f"Aucune clé API fournie pour le provider '{provider_ref}'"}
+        models = llm.list_models(provider_ref=provider_ref)
+    else:
+        # Tous les modèles, mais filtrés par provider (seulement ceux avec clé ou sans-clé-requis)
+        all_models = llm.list_models()
+        models = [m for m in all_models if m.get("provider_ref") in allowed_refs]
     return {"models": models, "count": len(models)}
 
 
@@ -689,7 +722,23 @@ def op_llm_recommend(params):
         return {"status": "error", "error": f"use_case must be one of {valid_use_cases}"}
     if technical_level not in valid_levels:
         return {"status": "error", "error": f"technical_level must be one of {valid_levels}"}
-    return llm.recommend(use_case=use_case, technical_level=technical_level)
+    result = llm.recommend(use_case=use_case, technical_level=technical_level)
+    # Filtrer : ne garder que les reco dont le provider a une clé (ou provider sans-clé-requis)
+    try:
+        km = _get_km()
+        has_key_refs = set(km.list_providers())
+    except Exception:
+        has_key_refs = set()
+    cat = _get_cat()
+    cur = cat.conn.execute(
+        "SELECT ref FROM catalogue_providers WHERE provider_type IN ('ollama', 'builtin', 'local')")
+    no_key_refs = {row[0] for row in cur.fetchall()}
+    allowed_refs = has_key_refs | no_key_refs
+    filt = [r for r in result.get("recommendations", [])
+            if r.get("provider") in allowed_refs]
+    result["recommendations"] = filt
+    result["count"] = len(filt)
+    return result
 
 
 def _wrap(fn):

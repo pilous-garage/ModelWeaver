@@ -1295,12 +1295,15 @@ class CatalogueDB:
         self._ensure_schema()
 
     def _ensure_schema(self):
-        """Crée les tables si elles n'existent pas encore."""
+        """Crée les tables si elles n'existent pas encore.
+        Le script SQL inclut un seed idempotent (INSERT OR IGNORE) des
+        providers. Si la BDD préexiste mais est vide (cas d'un catalogue
+        initialisé sans seed), on rejoue le script pour peupler les providers."""
+        schema = Path(__file__).resolve().parent / "catalogue_schema.sql"
         cur = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='catalogue_providers'"
         )
         if not cur.fetchone():
-            schema = Path(__file__).resolve().parent / "catalogue_schema.sql"
             if schema.exists():
                 self.conn.executescript(schema.read_text())
         else:
@@ -1398,6 +1401,17 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Migration classes_outils ignorée: {e}")
 
+        # ── Seed des providers si la table est vide ──
+        # Couvre le cas d'une BDD pré-existante (tables créées) mais non
+        # peuplée : le seed INSERT OR IGNORE du .sql est idempotent.
+        try:
+            pc = self.conn.execute("SELECT COUNT(*) FROM catalogue_providers").fetchone()[0]
+            if pc == 0 and schema.exists():
+                self.conn.executescript(schema.read_text())
+                self.conn.commit()
+        except Exception as e:
+            print(f"⚠️  Seed providers ignoré: {e}")
+
     @contextmanager
     def transaction(self):
         try:
@@ -1422,12 +1436,17 @@ class CatalogueDB:
     def sync_models(self, rows: List[Dict]) -> int:
         count = 0
         for r in rows:
+            # Rétro-compat : models.json utilise 'id' au lieu de 'ref'
+            ref = r.get("ref") or r.get("id")
+            if not ref:
+                continue
+            name = r.get("name") or ref
             self.conn.execute("""
                 INSERT OR REPLACE INTO catalogue_models
                     (ref, name, developer, release_year, architecture, parameter_count,
                      modality, target_use, license, is_open_weights, parent_model_ref)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (r["ref"], r["name"], r.get("developer"), r.get("release_year"),
+            """, (ref, name, r.get("developer"), r.get("release_year"),
                   r.get("architecture"), r.get("parameter_count"), r.get("modality"),
                   r.get("target_use"), r.get("license"), r.get("is_open_weights", 0),
                   r.get("parent_model_ref")))

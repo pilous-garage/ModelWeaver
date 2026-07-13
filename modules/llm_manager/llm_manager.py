@@ -152,13 +152,12 @@ class LLMManager:
 # ── Seed helpers ──────────────────────────────────────────────
 
 def seed_providers(cat) -> int:
-    import json
-    path = _DATA_DIR / "providers.json"
-    if not path.exists():
-        return 0
-    with open(path) as f:
-        rows = json.load(f)
-    return cat.sync_providers(rows)
+    """Les providers sont désormais seeded directement par le schéma SQL
+    (INSERT OR IGNORE dans catalogue_schema.sql). Cette fonction est gardée
+    pour rétro-compatibilité mais ne fait plus rien — elle retourne juste
+    le count actuel."""
+    cur = cat.conn.execute("SELECT COUNT(*) FROM catalogue_providers")
+    return cur.fetchone()[0]
 
 
 def seed_models(cat) -> int:

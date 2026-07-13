@@ -169,6 +169,8 @@ function App() {
   const [keysNewValue, setKeysNewValue] = useState('');
   const [keysNewTag, setKeysNewTag] = useState<'free' | 'paid'>('free');
   const [providersList, setProvidersList] = useState<any[]>([]);
+  const [modelsList, setModelsList] = useState<any[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [keyProviderMode, setKeyProviderMode] = useState<'known' | 'new'>('known');
   const [newProviderForm, setNewProviderForm] = useState<{ ref: string; name: string; provider_type: string; api_type: string; website: string }>({ ref: '', name: '', provider_type: 'cloud', api_type: '', website: '' });
   const [debugTab, setDebugTab] = useState<'process' | 'logs' | 'resources'>('process');
@@ -202,6 +204,23 @@ function App() {
   const fetchProviders = async () => {
     try { setProvidersList((await invoke<any>('get_providers')).providers || []); }
     catch { /* ignore */ }
+  };
+
+  // Fetch des modèles : uniquement pour les providers ayant une clé API
+  // (le daemon filtre côté backend via op_llm_models_list).
+  const fetchModels = async () => {
+    setModelsLoading(true);
+    try {
+      const token = await invoke<string>('watch_get', { name: 'api_token' });
+      if (!token) { setModelsList([]); return; }
+      const res = await fetch('http://127.0.0.1:8770/v1/llm/models/list', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}'
+      });
+      const data = await res.json();
+      if (data && data.ok) setModelsList(data.result.models || []);
+      else setModelsList([]);
+    } catch { setModelsList([]); }
+    finally { setModelsLoading(false); }
   };
 
   const handleSetKey = async () => {
@@ -1080,6 +1099,41 @@ function App() {
                       </div>
                     </div>
                   ))
+                )}
+              </div>
+
+              {/* Fetch modèles : uniquement providers ayant une clé API */}
+              <div style={{ marginTop: '0.75rem', borderTop: '1px solid #334155', paddingTop: '0.6rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                  <button
+                    onClick={fetchModels}
+                    disabled={modelsLoading}
+                    style={{ padding: '0.25rem 0.6rem', backgroundColor: modelsLoading ? '#1e293b' : '#3b82f6', color: modelsLoading ? '#64748b' : 'white', border: 'none', borderRadius: '0.3rem', cursor: modelsLoading ? 'default' : 'pointer', fontSize: '0.7rem', fontWeight: '600' }}
+                  >{modelsLoading ? 'Chargement…' : '🔄 Fetch modèles'}</button>
+                  <span style={{ fontSize: '0.62rem', color: '#64748b' }}>providers avec clé uniquement</span>
+                </div>
+                {modelsList.length === 0 ? (
+                  <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Aucun modèle (fournissez une clé API pour un provider)</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '220px', overflowY: 'auto' }}>
+                    {(() => {
+                      const byProv: Record<string, any[]> = {};
+                      for (const m of modelsList) {
+                        const pr = m.provider_ref || m.provider_name || 'unknown';
+                        (byProv[pr] ||= []).push(m);
+                      }
+                      return Object.keys(byProv).sort((a, b) => a.localeCompare(b)).map((pr) => (
+                        <div key={pr} style={{ backgroundColor: '#0f172a', borderRadius: '0.3rem', padding: '0.4rem' }}>
+                          <div style={{ fontSize: '0.68rem', fontWeight: '600', color: '#93c5fd', marginBottom: '0.25rem' }}>{pr} ({byProv[pr].length})</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                            {byProv[pr].map((m, i) => (
+                              <span key={i} title={m.provider_model_name || m.ref} style={{ fontSize: '0.6rem', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '0.25rem', padding: '0.1rem 0.35rem', color: '#cbd5e1' }}>{m.name || m.ref}</span>
+                            ))}
+                          </div>
+                        </div>
+                      ));
+                    })()}
+                  </div>
                 )}
               </div>
             </div>
