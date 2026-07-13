@@ -1,0 +1,6 @@
+# Dépendances Python du backend ModelWeaver (core, requises au démarrage des services).
+# Les outils (litellm, open_webui, keyring, ...) sont installés à la demande
+# par l'installer, pas ici.
+psutil
+requests
+PyYAML

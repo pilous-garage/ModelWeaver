@@ -1,0 +1,8 @@
+name: Ollama
+_ref: ollama
+versions:
+  default:
+    linux:
+      apt: {}
+    all:
+      apt: {}

@@ -1,0 +1,8 @@
+name: Keyring
+_ref: keyring
+versions:
+  default:
+    linux:
+      pip: {}
+    all:
+      pip: {}

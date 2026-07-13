@@ -1,4 +1,0 @@
-#!/bin/sh
-# modelweaver-install — wrapper shell pour mw_install.py
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec python3 "$SCRIPT_DIR/mw_install.py" "$@"

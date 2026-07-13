@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sql.db import ModelWeaverDB
+from modules.sql.db import ModelWeaverDB
 from agents.factory import AgentFactory
 from agents.worker import Worker
 from agents.ticker import AsyncTicker

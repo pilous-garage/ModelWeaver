@@ -1,0 +1,7 @@
+version: latest
+block:
+  package: open-webui
+  install:
+    - "pip install open-webui --break-system-packages --ignore-installed"
+  uninstall:
+    - "pip uninstall -y open-webui --break-system-packages"

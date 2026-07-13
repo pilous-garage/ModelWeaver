@@ -1,0 +1,54 @@
+[
+  {
+    "ref": "opencode",
+    "name": "OpenCode",
+    "description": "Agent coding CLI (orchestrateur IA).",
+    "tool_type": "binary",
+    "install_method": "github-release",
+    "current_version": "0.1.0",
+    "default_download_url": "",
+    "allowed_platforms": "Linux,Darwin",
+    "allowed_arches": "x86_64,aarch64"
+  },
+  {
+    "ref": "litellm",
+    "name": "LiteLLM",
+    "description": "Passerelle unifiée vers les providers LLM (proxy + SDK).",
+    "tool_type": "python-module",
+    "install_method": "pip",
+    "current_version": "1.0.0",
+    "allowed_platforms": "Linux,Darwin,Windows",
+    "allowed_arches": "x86_64,aarch64"
+  },
+  {
+    "ref": "keyring",
+    "name": "Keyring",
+    "description": "Stockage sécurisé des clés API (coffre-fort).",
+    "tool_type": "python-module",
+    "install_method": "pip",
+    "current_version": "25.0.0",
+    "allowed_platforms": "Linux,Darwin,Windows",
+    "allowed_arches": "x86_64,aarch64"
+  },
+  {
+    "ref": "ollama",
+    "name": "Ollama",
+    "description": "Runtime local pour servir des modèles LLM (optionnel si RAM >= 8 Go).",
+    "tool_type": "binary",
+    "install_method": "github-release",
+    "current_version": "0.3.0",
+    "default_download_url": "",
+    "allowed_platforms": "Linux,Darwin,Windows",
+    "allowed_arches": "x86_64,aarch64"
+  },
+  {
+    "ref": "open-webui",
+    "name": "Open WebUI",
+    "description": "Interface web locale pour les LLM (optionnel).",
+    "tool_type": "python-module",
+    "install_method": "pip",
+    "current_version": "0.1.0",
+    "allowed_platforms": "Linux,Darwin,Windows",
+    "allowed_arches": "x86_64,aarch64"
+  }
+]

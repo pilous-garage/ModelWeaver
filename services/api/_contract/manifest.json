@@ -1,0 +1,9 @@
+{
+  "name": "api",
+  "kind": "service",
+  "description": "Daemon API locale (HTTP/JSON sur 127.0.0.1, token de session). Seule couture multi-langage GUI/CLI/backend.",
+  "entrypoint": "daemon.py",
+  "start": "python services/api/daemon.py --port 8770",
+  "port": 8770,
+  "clients": ["client.py (SDK Python)", "cli.py (CLI)", "mwClient.ts (à venir)"]
+}

@@ -1,0 +1,32 @@
+{
+  "productName": "ModelWeaver",
+  "version": "0.1.0",
+  "identifier": "com.modelweaver.main",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ModelWeaver",
+        "width": 1000,
+        "height": 700
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "resources": {
+      "../gui_helper.py": "gui_helper.py"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "description": "Manifeste de dépendances ModelWeaver. Source de vérité unique des deps par cible. Les scripts install-dependencies-<target>.sh sont les ARTEFACTS COMPILÉS (générés depuis ce manifeste) — si le script d'une cible est absent, l'install échoue explicitement (fichier *** absent).",
+  "targets": {
+    "ubuntu24": {
+      "os_id": "ubuntu",
+      "os_version": "24.04",
+      "script": "install-dependencies-ubuntu24.sh"
+    }
+  },
+  "dependencies": [
+    {
+      "name": "python3",
+      "description": "Python 3.10+ (runtime core)",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "python3" }
+    },
+    {
+      "name": "python3-pip",
+      "description": "pip (gestionnaire de paquets Python)",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "python3-pip" }
+    },
+    {
+      "name": "keyring",
+      "description": "Keyring (stockage sécurisé des identifiants)",
+      "language": "python",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "keyring" }
+    },
+    {
+      "name": "psutil",
+      "description": "psutil (monitoring système, requis par le service catalogue)",
+      "language": "python",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "psutil" }
+    },
+    {
+      "name": "sqlite3",
+      "description": "SQLite 3.30+ (base de données)",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": false,
+      "targets": { "ubuntu24": "sqlite3" }
+    },
+    {
+      "name": "git",
+      "description": "Git (gestion de versions)",
+      "language": "system",
+      "safe": true,
+      "weight": "light",
+      "optional": true,
+      "targets": { "ubuntu24": "git" }
+    }
+  ]
+}

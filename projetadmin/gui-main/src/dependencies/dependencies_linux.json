@@ -1,0 +1,82 @@
+{
+  "required": [
+    {
+      "name": "python3",
+      "description": "Python 3.10+ (for core functionality)",
+      "check_command": "python3 --version",
+      "version_regex": "Python (\\d+\\.\\d+)",
+      "min_version": "3.10",
+      "install_commands": {
+        "apt": "sudo apt install -y python3 python3-pip",
+        "dnf": "sudo dnf install -y python3 python3-pip",
+        "pacman": "sudo pacman -S --noconfirm python python-pip",
+        "zypper": "sudo zypper install -y python3 python3-pip"
+      },
+      "pip_packages": []
+    },
+    {
+      "name": "sqlite3",
+      "description": "SQLite 3.30+ (for database)",
+      "check_command": "sqlite3 --version",
+      "version_regex": "(\\d+\\.\\d+)",
+      "min_version": "3.30",
+      "install_commands": {
+        "apt": "sudo apt install -y sqlite3",
+        "dnf": "sudo dnf install -y sqlite3",
+        "pacman": "sudo pacman -S --noconfirm sqlite",
+        "zypper": "sudo zypper install -y sqlite3"
+      }
+    }
+  ],
+  "recommended": [
+    {
+      "name": "git",
+      "description": "Git (for version control)",
+      "check_command": "git --version",
+      "version_regex": "git version (\\d+\\.\\d+)",
+      "min_version": "2.0",
+      "install_commands": {
+        "apt": "sudo apt install -y git",
+        "dnf": "sudo dnf install -y git",
+        "pacman": "sudo pacman -S --noconfirm git",
+        "zypper": "sudo zypper install -y git"
+      }
+    }
+  ],
+  "package_managers": {
+    "apt": {
+      "check_command": "which apt",
+      "description": "APT (Debian/Ubuntu)"
+    },
+    "dnf": {
+      "check_command": "which dnf",
+      "description": "DNF (Fedora/RHEL)"
+    },
+    "pacman": {
+      "check_command": "which pacman",
+      "description": "Pacman (Arch Linux)"
+    },
+    "zypper": {
+      "check_command": "which zypper",
+      "description": "Zypper (openSUSE)"
+    },
+    "snap": {
+      "check_command": "which snap",
+      "description": "Snap (Universal)"
+    },
+    "flatpak": {
+      "check_command": "which flatpak",
+      "description": "Flatpak (Universal)"
+    }
+  },
+  "python_package_managers": {
+    "pip": {
+      "check_command": "python3 -m pip --version",
+      "description": "pip (Python package manager)"
+    },
+    "pip3": {
+      "check_command": "pip3 --version",
+      "description": "pip3 (Python package manager)"
+    }
+  }
+}

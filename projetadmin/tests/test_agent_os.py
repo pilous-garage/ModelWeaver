@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sql.db import ModelWeaverDB
-from sql.agent_repository import (
+from modules.sql.db import ModelWeaverDB
+from modules.sql.agent_repository import (
     AgentRepository, AgentMessageRepository,
     ModelProviderRepository, SessionRepository, WakeupCallRepository,
 )

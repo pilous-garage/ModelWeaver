@@ -1,0 +1,98 @@
+[
+  {
+    "ref": "openai",
+    "name": "OpenAI",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://platform.openai.com",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "anthropic",
+    "name": "Anthropic",
+    "provider_type": "cloud",
+    "api_type": "anthropic",
+    "website": "https://console.anthropic.com",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "google",
+    "name": "Google AI",
+    "provider_type": "cloud",
+    "api_type": "google",
+    "website": "https://ai.google.dev",
+    "is_free_tier_provider": 1
+  },
+  {
+    "ref": "groq",
+    "name": "Groq",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://console.groq.com",
+    "is_free_tier_provider": 1
+  },
+  {
+    "ref": "mistral",
+    "name": "Mistral AI",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://console.mistral.ai",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "deepseek",
+    "name": "DeepSeek",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://platform.deepseek.com",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "cohere",
+    "name": "Cohere",
+    "provider_type": "cloud",
+    "api_type": "cohere",
+    "website": "https://dashboard.cohere.com",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "openrouter",
+    "name": "OpenRouter",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://openrouter.ai",
+    "is_free_tier_provider": 0
+  },
+  {
+    "ref": "ollama",
+    "name": "Ollama (Local)",
+    "provider_type": "ollama",
+    "api_type": "openai",
+    "website": "https://ollama.ai",
+    "is_free_tier_provider": 1
+  },
+  {
+    "ref": "llamacpp",
+    "name": "llama.cpp (Local)",
+    "provider_type": "local",
+    "api_type": "openai",
+    "website": "https://github.com/ggml-ai/llama.cpp",
+    "is_free_tier_provider": 1
+  },
+  {
+    "ref": "nvidia",
+    "name": "NVIDIA NIM",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://build.nvidia.com",
+    "is_free_tier_provider": 1
+  },
+  {
+    "ref": "github-models",
+    "name": "GitHub Models",
+    "provider_type": "cloud",
+    "api_type": "openai",
+    "website": "https://github.com/marketplace/models",
+    "is_free_tier_provider": 1
+  }
+]

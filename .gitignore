@@ -8,13 +8,40 @@ venv/
 
 # Node.js
 node_modules/
-gui/installer/node_modules/
-gui/installer/dist/
+dist/
 
-# Rust / Tauri
-# Tauri build output (binaire généré)
-gui/installer/src-tauri/target/
-gui/installer/src-tauri/Cargo.lock
+# Rust / Tauri build artifacts
+**/src-tauri/target/
+**/src-tauri/Cargo.lock
+projetadmin/target/
+
+# Tauri generated schemas
+**/src-tauri/gen/schemas/
+
+# TypeScript build info
+*.tsbuildinfo
+**/vite.config.d.ts
+**/vite.config.js
+
+# Release assets (binaires trop lourds pour git)
+release-assets/
+
+# Binaires GitHub CLI (trop lourds)
+bin/
+share/
+gh.tar.gz
+
+# Archives générées
+*.tar.gz
+
+# Docker test context (généré par test-gui.sh)
+projetadmin/docker/
+projetadmin/docker-cli/
+
+# Logs de test
+projetadmin/log-test-*.log
+projetadmin/log-test-*.log.gui
+projetadmin/.last-test-*-time
 
 # Backups Docker
 docker-backup/
@@ -38,6 +65,11 @@ installed_recipe/
 opencode.json
 tui.json
 
+# Cache de test (généré)
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+
 # Clés API
 .env
 
@@ -45,6 +77,21 @@ tui.json
 *.tar
 *.zip
 
+gui-defunct/
+gui/
+gemini/
+gemma/
+mistral/
+
+# Rangement workspace : archives / tooling (sur disque, hors git)
+oldcode/
+autoanalyse/
+docker/
+
 # Logs et rapports
 **/tauri_dev.log
 **/tauri_build.log
+
+# nouveaux binaires Rust (headless + bootstrap)
+projetadmin/main-cli/target/
+projetadmin/bootstrap-cli/target/
