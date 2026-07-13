@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# =============================================================================
+# test-gui-direct — lance le binaire principal ModelWeaver directement dans un
+# conteneur docker-keep-gui-deps (git+keyring pré-installés), sans bootstrap.
+# Le conteneur est gardé (pas de --rm) pour test interactif via noVNC.
+# Ports : 5902 (VNC), 6082 (noVNC), 8772 (API).
+# Nom du conteneur : docker-test-gui-direct.
+# Usage : projetadmin/test-gui-direct
+# =============================================================================
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+R='\033[0;31m'; G='\033[0;32m'; B='\033[1;34m'; Y='\033[1;33m'; N='\033[0m'
+info() { echo -e "${B}[INFO]${N} $*"; }
+ok()   { echo -e "${G}[OK]${N}   $*"; }
+warn() { echo -e "${Y}[WARN]${N} $*"; }
+err()  { echo -e "${R}[ERR]${N}  $*"; exit 1; }
+
+IMAGE="docker-keep-gui-deps"
+CONTAINER="docker-test-gui-direct"
+TARBALL="$REPO_ROOT/release-assets/modelweaver-release-linux-x86_64.tar.gz"
+
+# ── Vérifications ──
+info "vérification image $IMAGE..."
+docker image inspect "$IMAGE" &>/dev/null || {
+    info "construction de $IMAGE..."
+    docker build -t "$IMAGE" -f "$REPO_ROOT/docker/Dockerfile.keep-gui-deps" "$REPO_ROOT/docker"
+    ok "$IMAGE construite"
+}
+
+info "vérification tarball de release..."
+[ -f "$TARBALL" ] || err "tarball introuvable: $TARBALL (lancer auto-bump d'abord)"
+ok "tarball : $(ls -lh "$TARBALL" | awk '{print $5}')"
+
+# ── Clean si existe ──
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+    info "suppression du container existant $CONTAINER..."
+    docker rm -f "$CONTAINER" >/dev/null
+    ok "$CONTAINER nettoyé"
+fi
+
+# ── Création container ──
+info "création container $CONTAINER (sans --rm → gardé)..."
+docker run -d --name "$CONTAINER" -p 5902:5900 -p 6082:6080 -p 8772:8770 "$IMAGE"
+ok "container lancé (pid=$(docker inspect -f '{{.State.Pid}}' "$CONTAINER"))"
+
+# ── Extraction de la release ──
+info "extraction de la release dans le container..."
+docker exec "$CONTAINER" mkdir -p /root/.modelweaver
+docker exec "$CONTAINER" mkdir -p /root/.modelweaver/cache
+docker cp "$TARBALL" "$CONTAINER:/root/.modelweaver/cache/modelweaver.tar.gz"
+docker exec "$CONTAINER" bash -c '
+set -e
+tar -xzf /root/.modelweaver/cache/modelweaver.tar.gz -C /root/.modelweaver
+rm -f /root/.modelweaver/cache/modelweaver.tar.gz
+chmod +x /root/.modelweaver/modelweaver /root/.modelweaver/modelweaver-cli
+ls -lh /root/.modelweaver/modelweaver
+echo "version.txt: $(cat /root/.modelweaver/version.txt)"
+'
+ok "release extraite dans /root/.modelweaver"
+
+# ── Lancement du GUI principal sous xvfb ──
+info "lancement du GUI principal (daemon + API) sous xvfb..."
+docker exec -d "$CONTAINER" bash -c '
+export DISPLAY=:99
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export GDK_BACKEND=x11
+/root/.modelweaver/modelweaver > /tmp/modelweaver.log 2>&1
+'
+sleep 4
+if docker exec "$CONTAINER" curl -s -m5 http://localhost:8770/health >/dev/null 2>&1; then
+    ok "API daemon UP (port 8770) — le GUI tourne"
+else
+    warn "API pas encore UP — attente 10s..."
+    sleep 10
+    if docker exec "$CONTAINER" curl -s -m5 http://localhost:8770/health >/dev/null 2>&1; then
+        ok "API UP (après 10s)"
+    else
+        warn "API toujours pas UP — vérifier docker exec $CONTAINER tail -f /tmp/modelweaver.log"
+    fi
+fi
+
+echo ""
+echo -e "${G}═══════════════════════════════════════════════${N}"
+echo -e "${G}  $CONTAINER prêt (git+keyring pré-installés)${N}"
+echo -e "${B}  Bootstrap UI (navigateur) :${N} http://localhost:6082/vnc.html?autoconnect=true"
+echo -e "${B}  VNC :${N} localhost:5902  (x11vnc, no password)"
+echo -e "${B}  API :${N} curl http://localhost:8772/health"
+echo -e "${B}  App log :${N} docker exec $CONTAINER tail -f /tmp/modelweaver.log"
+echo -e "${B}  Install:/root/.modelweaver${N}"
+echo -e "${B}  Stop  :${N} docker stop $CONTAINER   (gardé, pas --rm)"
+echo -e "${G}═══════════════════════════════════════════════${N}"

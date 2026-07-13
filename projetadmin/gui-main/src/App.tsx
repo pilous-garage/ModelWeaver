@@ -636,7 +636,7 @@ function App() {
 
   if (showDashboard) {
     const isInstalled = (ref: string) => installedRef.current.some(t => t.ref === ref);
-    const queueJob = (ref: string) => installQueue.find(q => q.ref === ref);
+    const queueJob = (ref: string) => installQueue.filter(q => q.ref === ref).sort((a, b) => b.id - a.id)[0] || null;
     const isQueued = (ref: string) => { const j = queueJob(ref); return !!j && (j.status === 'queued' || j.status === 'running'); };
     const fmtGb = (v: any) => (v == null ? 'n/a' : `${v} Go`);
 
