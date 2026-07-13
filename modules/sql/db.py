@@ -745,6 +745,25 @@ class TursoCatalogueDB:
             print(f"❌ Erreur Turso (upsert_tool): {e}")
             return False
 
+    def get_recipe_content(self, ref: str, mgr: str, os_key: str, arch_key: str) -> Optional[str]:
+        """Récupère le contenu YAML d'une recette depuis le catalogue distant."""
+        sql = """
+        SELECT r.content FROM catalogue_recettes r
+        JOIN catalogue_versions v ON v.version_id = r.version_id
+        JOIN catalogue_outils o ON o.outil_id = v.outil_id
+        WHERE o.ref = ? AND r.manager = ?
+          AND r.os IN (?, 'all') AND r.arch IN (?, 'all')
+        ORDER BY (r.os = ?) DESC, (r.arch = ?) DESC, r.confidence DESC
+        LIMIT 1
+        """
+        try:
+            cur = self.client.execute(sql, (ref, mgr, os_key, arch_key, os_key, arch_key))
+            row = cur.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            print(f"❌ Erreur Turso (get_recipe_content): {e}")
+            return None
+
     def upsert_version(self, outil_id: int, nom_version: str, description: Optional[str] = None) -> Optional[int]:
         """Ajoute une version dans le catalogue distant et retourne version_id."""
         sql = """

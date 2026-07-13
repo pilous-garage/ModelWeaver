@@ -221,7 +221,10 @@ class RecipeParser:
     def resolve(self, recipe: Dict[str, Any],
                       version: Optional[str] = None,
                       forced_manager: Optional[str] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Trouve le meilleur manager pour l'OS courant dans l'arborescence atomique.
+        """Trouve le meilleur manager pour l'OS courant.
+        
+        Phase 1 : catalogue local (catalogue.db)
+        Phase 2 : catalogue distant (Turso)
         
         Retourne (version, manager_block) ou None.
         """
@@ -229,61 +232,47 @@ class RecipeParser:
         if not ref:
             return None
 
-        tool_dir = self._get_tool_dir(ref)
-        
         # Ordre de priorité des managers
         priority = ["apt", "brew", "winget", "choco", "snap", "pip", "pacman",
                      "dnf", "yum", "zypper", "apk", "emerge", "nix", "flatpak",
                      "cargo", "npm", "go", "binary", "source", "container",
                      "package-//manager"]
 
-        # Ordre de priorité des chemins testés (le 1er trouvé gagne) :
-        #   os/arch -> os/all -> all/arch -> all/all
-        # (les managers universels pip/npm/go/cargo sont shippés en all/all
-        #  par get_ideal_sharding_path, d'où la nécessité de tester "all").
-        # Phase 1 : recherche LOCALE uniquement (rapide, sans réseau).
-        # Les recettes sont shippées avec l'app, donc le cas normal ne fait AUCun
-        # appel réseau. Ordre de priorité des chemins :
-        #   os/arch -> os/all -> all/arch -> all/all
-        for os_key in [self.os_key, "all"]:
-            for arch_key in [self.arch, "all"]:
-                if forced_manager:
-                    mgr_path = tool_dir / os_key / arch_key / f"{forced_manager}.yaml"
-                    if mgr_path.exists():
-                        with open(mgr_path) as f:
-                            content = f.read()
-                        data = yaml.safe_load(content)
-                        if data and "block" in data:
-                            return (data.get("version", "latest"), data["block"])
-                else:
-                    for mgr in priority:
-                        mgr_path = tool_dir / os_key / arch_key / f"{mgr}.yaml"
-                        if mgr_path.exists():
-                            with open(mgr_path) as f:
-                                content = f.read()
-                            data = yaml.safe_load(content)
-                            if data and "block" in data:
-                                return (data.get("version", "latest"), data["block"])
+        # Phase 1 : catalogue local (catalogue_recettes)
+        result = self._resolve_from_catalogue(ref, priority, forced_manager, local=True)
+        if result:
+            return result
 
-        # Phase 2 : repli CATALOGUE (catalogue_recettes) — sans GitHub.
-        # Les recettes distantes sont synchronisées dans le catalogue (catalogue.db),
-        # donc on interroge directement la base au lieu de fetch GitHub.
+        # Phase 2 : catalogue distant (Turso)
+        result = self._resolve_from_catalogue(ref, priority, forced_manager, local=False)
+        if result:
+            return result
+
+        return None
+
+    def _resolve_from_catalogue(self, ref: str, priority: List[str],
+                                 forced_manager: Optional[str],
+                                 local: bool) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Résout une recette depuis le catalogue local ou Turso distant."""
         for os_key in [self.os_key, "all"]:
             for arch_key in [self.arch, "all"]:
                 if forced_manager:
-                    content = self._catalogue_recipe_content(ref, os_key, arch_key, forced_manager)
+                    content = (self._catalogue_recipe_content(ref, os_key, arch_key, forced_manager)
+                               if local else
+                               self._turso_recipe_content(ref, os_key, arch_key, forced_manager))
                     if content:
                         data = yaml.safe_load(content)
                         if data and "block" in data:
                             return (data.get("version", "latest"), data["block"])
                 else:
                     for mgr in priority:
-                        content = self._catalogue_recipe_content(ref, os_key, arch_key, mgr)
+                        content = (self._catalogue_recipe_content(ref, os_key, arch_key, mgr)
+                                   if local else
+                                   self._turso_recipe_content(ref, os_key, arch_key, mgr))
                         if content:
                             data = yaml.safe_load(content)
                             if data and "block" in data:
                                 return (data.get("version", "latest"), data["block"])
-
         return None
 
     # ── Résolution depuis le catalogue (catalogue_recettes) ──
@@ -311,28 +300,67 @@ class RecipeParser:
         except Exception:
             return None
 
-    def _load_recipe_from_catalogue(self, ref: str) -> Optional[Dict[str, Any]]:
-        """Reconstruit la recette globale d'un outil depuis le catalogue."""
+    def _turso_recipe_content(self, ref: str, os_key: str, arch_key: str,
+                              mgr: str) -> Optional[str]:
+        """Lit le contenu d'une recette depuis le catalogue distant (Turso)."""
         try:
-            from modules.sql.db import CatalogueDB
-            cat = CatalogueDB()
-            o = cat.conn.execute(
-                "SELECT ref, nom, description FROM catalogue_outils WHERE ref = ?",
-                (ref,)).fetchone()
-            if not o:
-                return None
+            from modules.sql.db import TursoCatalogueDB
+            turso = TursoCatalogueDB()
+            return turso.get_recipe_content(ref, mgr, os_key, arch_key)
+        except Exception:
+            return None
+
+    def _load_recipe_from_catalogue(self, ref: str) -> Optional[Dict[str, Any]]:
+        """Reconstruit la recette globale d'un outil depuis le catalogue.
+        
+        Phase 1 : catalogue local (catalogue.db)
+        Phase 2 : catalogue distant (Turso)
+        """
+        # Phase 1 : local
+        result = self._load_recipe_from_db(ref, local=True)
+        if result:
+            return result
+        # Phase 2 : Turso distant
+        return self._load_recipe_from_db(ref, local=False)
+
+    def _load_recipe_from_db(self, ref: str, local: bool) -> Optional[Dict[str, Any]]:
+        """Charge une recette depuis le catalogue local ou Turso distant."""
+        try:
+            if local:
+                from modules.sql.db import CatalogueDB
+                db = CatalogueDB()
+                o = db.conn.execute(
+                    "SELECT ref, nom, description FROM catalogue_outils WHERE ref = ?",
+                    (ref,)).fetchone()
+                if not o:
+                    return None
+                rows = db.conn.execute(
+                    "SELECT os, arch, manager FROM catalogue_recettes r "
+                    "JOIN catalogue_versions v ON v.version_id = r.version_id "
+                    "JOIN catalogue_outils o2 ON o2.outil_id = v.outil_id "
+                    "WHERE o2.ref = ?", (ref,)).fetchall()
+            else:
+                from modules.sql.db import TursoCatalogueDB
+                db = TursoCatalogueDB()
+                o = db.get_tool(ref)
+                if not o:
+                    return None
+                cur = db.client.execute(
+                    "SELECT r.os, r.arch, r.manager FROM catalogue_recettes r "
+                    "JOIN catalogue_versions v ON v.version_id = r.version_id "
+                    "JOIN catalogue_outils o2 ON o2.outil_id = v.outil_id "
+                    "WHERE o2.ref = ?", (ref,))
+                cols = [d[0] for d in cur.description]
+                rows_raw = cur.fetchall()
+                rows = [dict(zip(cols, r)) for r in rows_raw]
+
             rec = {
                 "_ref": ref,
-                "name": o["nom"],
-                "description": o["description"],
+                "name": o["nom"] if local else o.get("nom") or o.get("name"),
+                "description": o.get("description"),
                 "versions": {"default": {}},
                 "pre_install": [],
             }
-            rows = cat.conn.execute(
-                "SELECT os, arch, manager FROM catalogue_recettes r "
-                "JOIN catalogue_versions v ON v.version_id = r.version_id "
-                "JOIN catalogue_outils o2 ON o2.outil_id = v.outil_id "
-                "WHERE o2.ref = ?", (ref,)).fetchall()
             ver = rec["versions"]["default"]
             for r in rows:
                 ver.setdefault(r["os"], {})[r["manager"]] = {}
