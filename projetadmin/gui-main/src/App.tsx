@@ -44,6 +44,47 @@ const selectStyles = {
   MozAppearance: 'none',
 };
 
+// Refresh paresseux : on poll /v1/db/versions (PRAGMA data_version par DB +
+// meta 'dependencies') et on ne rafraîchit que les panneaux du domaine ayant
+// changé. Pas de poll lourd : l'endpoint est trivial et le compare côté GUI.
+type Domain = 'catalogue' | 'inventory' | 'runtime' | 'dependencies';
+function useDomainVersions(enabled: boolean, onChange: (domains: Domain[]) => void) {
+  const prevRef = useRef<Record<string, number>>({});
+  const cbRef = useRef(onChange);
+  cbRef.current = onChange;
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const token = await invoke<string>('watch_get', { name: 'api_token' });
+        if (!token) return;
+        const res = await fetch('http://127.0.0.1:8770/v1/db/versions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        const data = await res.json();
+        if (!data.ok) return;
+        const v = (data.result || {}) as Record<string, number>;
+        const prev = prevRef.current;
+        const ch: Domain[] = [];
+        for (const k of Object.keys(v) as Domain[]) {
+          if (prev[k] !== undefined && prev[k] !== v[k]) ch.push(k);
+        }
+        prevRef.current = v;
+        if (ch.length) cbRef.current(ch);
+      } catch {
+        /* daemon pas encore prêt */
+      }
+    };
+    const h = setInterval(poll, 300);
+    poll();
+    return () => { cancelled = true; clearInterval(h); };
+  }, [enabled]);
+}
+
 function App() {
   const [requiredDeps, setRequiredDeps] = useState<Dependency[]>([]);
   const [recommendedDeps, setRecommendedDeps] = useState<Dependency[]>([]);
@@ -190,6 +231,36 @@ function App() {
     } catch { setAutotestEnabled(false); }
     return () => { if (autoInstallTimer) clearTimeout(autoInstallTimer); };
   }, []);
+
+  // Refresh paresseux piloté par les data_version des DB (split physique).
+  // On ne rafraîchit que les panneaux du/des domaine(s) ayant changé.
+  useDomainVersions(true, async (domains: Domain[]) => {
+    const d = new Set(domains);
+    try {
+      if (d.has('inventory')) {
+        await refreshInstalled();
+        await refreshSysState();
+        await fetchKeys();
+      }
+      if (d.has('catalogue')) {
+        const cat = await invoke<any>('get_catalogue_tools');
+        setCatalogueTools(cat.tools || []);
+        await refreshInstalled();
+      }
+      if (d.has('runtime')) {
+        const status = await invoke<any[]>('install_queue_status');
+        setInstallQueue(status);
+        installQueueRef.current = status;
+        await fetchProcList();
+        await fetchServiceList();
+      }
+      if (d.has('dependencies')) {
+        await checkDependencies();
+      }
+    } catch {
+      /* daemon indisponible : on ignore */
+    }
+  });
 
   useEffect(() => {
     if (showDashboard) {

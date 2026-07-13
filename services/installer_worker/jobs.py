@@ -11,7 +11,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from services._common import _db_paths, _quiet_stdout, RECIPE_BASE
+from services._common import _db_paths, _quiet_stdout, RECIPE_BASE, runtime_db_path
 
 BUSY_TIMEOUT = 5000
 
@@ -25,8 +25,7 @@ def set_shared_conn(conn):
 def _conn():
     if _shared_conn is not None:
         return _shared_conn
-    mw_path, _ = _db_paths()
-    con = sqlite3.connect(mw_path)
+    con = sqlite3.connect(runtime_db_path())
     con.execute("PRAGMA busy_timeout=5000")
     return con
 

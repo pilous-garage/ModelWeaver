@@ -695,7 +695,7 @@ fn mirror_services_to_db() {
             ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,updated_at=strftime('%s','now');",
             esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64);
     }
-    let home = mw_home().join("modelweaver.db");
+    let home = mw_home().join("runtime.db");
     db_run(&home, &sql);
 }
 #[cfg(not(unix))]
@@ -1105,7 +1105,7 @@ fn uninstall_tool(ref_: String) -> Result<serde_json::Value, String> {
 }
 
 fn install_db_path() -> PathBuf {
-    mw_home().join("modelweaver.db")
+    mw_home().join("runtime.db")
 }
 
 #[tauri::command]
@@ -1411,7 +1411,7 @@ fn autotest_enabled_cmd() -> bool {
 
 fn main() {
     let helper_path = find_helper_path();
-    let db_path = mw_home().join("modelweaver.db");
+    let db_path = mw_home().join("runtime.db");
     log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 

@@ -58,6 +58,41 @@ def _rows_to_list(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
 
 
 # ──────────────────────────────────────────────
+#  Refresh paresseux de la GUI : signal par DB, pas par table
+# ──────────────────────────────────────────────
+def read_db_version(conn) -> int:
+    """PRAGMA data_version : entier incrémenté à chaque écriture sur le fichier.
+
+    La GUI poll ce compteur par DB à 20 Hz ; s'il change, elle rafraîchit les
+    panneaux du domaine correspondant. Pas besoin de triggers par table.
+    """
+    try:
+        return conn.execute("PRAGMA data_version").fetchone()[0]
+    except Exception:
+        return 0
+
+
+def read_meta(conn, key: str, default: int = 0) -> int:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return int(row[0]) if row else default
+    except Exception:
+        return default
+
+
+def bump_meta(conn, key: str, commit: bool = True) -> None:
+    """Incrémente une clé de méta (ex: 'dependencies') pour signaler un changement
+    non stocké en table (dépendances système calculées live)."""
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?,1) "
+        "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+        (key,),
+    )
+    if commit:
+        conn.commit()
+
+
+# ──────────────────────────────────────────────
 #  Repositories
 # ──────────────────────────────────────────────
 
@@ -965,42 +1000,6 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
             )
         """)
 
-        # Table des processus enfants suivis par le gestionnaire de ressources
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS processes (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                pid INTEGER,
-                parent_id INTEGER,
-                status TEXT,
-                command TEXT,
-                log_path TEXT,
-                cpu REAL,
-                rss_kb INTEGER,
-                started_at INTEGER,
-                ended_at INTEGER,
-                updated_at INTEGER DEFAULT (strftime('%s','now'))
-            )
-        """)
-
-        # Table des services supervisés (long-lived, auto-redémarrage)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS services (
-                name TEXT PRIMARY KEY,
-                mode TEXT,
-                command TEXT,
-                args TEXT,
-                status TEXT,
-                pid INTEGER,
-                parent TEXT,
-                restart INTEGER,
-                restarts INTEGER DEFAULT 0,
-                last_exit INTEGER,
-                started_at INTEGER,
-                updated_at INTEGER DEFAULT (strftime('%s','now'))
-            )
-        """)
-
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_tools."""
         count = self.tools.scan_installed(self.local_tools)
@@ -1173,6 +1172,99 @@ class CatalogueDB:
 
         self.conn.commit()
         return results
+
+    def close(self):
+        self.conn.close()
+
+
+# ──────────────────────────────────────────────
+#  RuntimeDB : écritures haute fréquence
+# ──────────────────────────────────────────────
+def _default_runtime_db() -> Path:
+    return mw_home() / "runtime.db"
+
+
+class RuntimeDB:
+    """DB isolée pour les données runtime : processus, services, jobs d'install.
+
+    Le GUI (Rust) y écrit directement en haute fréquence (mirror processus/
+    services) ; le daemon et l'installer_worker écrivent aussi install_jobs.
+    Isolée de l'inventaire/catalogue pour éviter la contention SQLite.
+    Séparation physique : la GUI ne poll PAS table par table, elle compare
+    `PRAGMA data_version` de cette DB (voir `read_db_version`).
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path or _default_runtime_db())
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self._ensure_schema()
+
+    def _ensure_schema(self):
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS processes (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                pid INTEGER,
+                parent_id INTEGER,
+                status TEXT,
+                command TEXT,
+                log_path TEXT,
+                cpu REAL,
+                rss_kb INTEGER,
+                started_at INTEGER,
+                ended_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                name TEXT PRIMARY KEY,
+                mode TEXT,
+                command TEXT,
+                args TEXT,
+                status TEXT,
+                pid INTEGER,
+                parent TEXT,
+                restart INTEGER,
+                restarts INTEGER DEFAULT 0,
+                last_exit INTEGER,
+                started_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS install_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref TEXT NOT NULL,
+                name TEXT,
+                job_type TEXT,
+                status TEXT,
+                log TEXT,
+                pid INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        # meta : clés de signal hors-table (ex: 'dependencies' pour le refresh GUI)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        self.conn.commit()
+
+    def data_version(self) -> int:
+        return read_db_version(self.conn)
+
+    def bump_meta(self, key: str, commit: bool = True):
+        bump_meta(self.conn, key, commit=commit)
+
+    def read_meta(self, key: str, default: int = 0) -> int:
+        return read_meta(self.conn, key, default=default)
 
     def close(self):
         self.conn.close()

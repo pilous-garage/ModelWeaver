@@ -53,9 +53,21 @@ def _mw_dir() -> Path:
 
 
 def _db_paths() -> tuple[Path, Path]:
-    """Chemins DB stables sous mw_home() (indépendants du CWD)."""
+    """Chemins DB stables sous mw_home() (indépendants du CWD).
+
+    (modelweaver.db = inventaire local, catalogue.db = catalogue distant)
+    """
     mw_dir = _mw_dir()
     return mw_dir / "modelweaver.db", mw_dir / "catalogue.db"
+
+
+def runtime_db_path() -> Path:
+    """DBRuntime : écritures haute fréquence (processus, services, jobs d'install).
+
+    Isolée de l'inventaire/catalogue pour éviter la contention (le GUI y écrit
+    directement, le daemon et l'installer_worker aussi).
+    """
+    return _mw_dir() / "runtime.db"
 
 
 @contextlib.contextmanager

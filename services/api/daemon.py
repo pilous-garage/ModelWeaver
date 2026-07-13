@@ -46,9 +46,9 @@ from modules.system.deps import install_system_package, install_target_dependenc
 # (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
 from services.installer_worker import jobs
 from services.watch_sysstate import service as sysstate
-from modules.sql.db import ModelWeaverDB, CatalogueDB
+from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_version
 from modules.checker.checker import Checker
-from services._common import _db_paths, _quiet_stdout, log_to_file
+from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
 
 API_VERSION = "v1"
 MW_VERSION = "0.6.0"
@@ -147,6 +147,10 @@ def seed_catalogue():
     count_models = seed_models(cat)
     count_pm = seed_provider_models(cat)
     cat.conn.commit()
+    try:
+        _get_rt().bump_meta("catalogue")
+    except Exception:
+        pass
     return {
         "status": "ok", "seeded": True,
         "tools": count_tools, "providers": count_providers,
@@ -193,6 +197,10 @@ def sync_catalogue_remote(url=None):
             seed_catalogue()
     with _quiet_stdout():
         results = cat.sync_from_url(url)
+    try:
+        _get_rt().bump_meta("catalogue")
+    except Exception:
+        pass
     return {"status": "ok", "url": url, "results": results}
 
 
@@ -244,6 +252,18 @@ def _get_cat():
                 _CAT_INSTANCE = CatalogueDB(cat_path)
     return _CAT_INSTANCE
 
+
+_RT_INSTANCE = None
+
+
+def _get_rt():
+    global _RT_INSTANCE
+    if _RT_INSTANCE is None:
+        with _DB_LOCK:
+            if _RT_INSTANCE is None:
+                _RT_INSTANCE = RuntimeDB(runtime_db_path())
+    return _RT_INSTANCE
+
 def _get_km():
     from modules.key_manager.key_manager import KeyManager
     global _KM_INSTANCE
@@ -260,22 +280,23 @@ def _get_llm():
 
 def _process_install_jobs():
     """Process one queued install job (blocking). Called by the background thread."""
-    mw = _get_mw()
+    rt = _get_rt()
     # Phase 1: pick a job and mark running (atomically under lock)
     _DB_LOCK.acquire()
     try:
-        cur = mw.conn.execute(
+        cur = rt.conn.execute(
             "SELECT id, ref, name, job_type FROM install_jobs WHERE status='queued' ORDER BY id LIMIT 1")
         row = cur.fetchone()
         if not row:
             return
         jid, ref, name, job_type = row
-        mw.conn.execute("UPDATE install_jobs SET status='running', updated_at=strftime('%s','now') WHERE id=?",
+        rt.conn.execute("UPDATE install_jobs SET status='running', updated_at=strftime('%s','now') WHERE id=?",
                     (jid,))
-        mw.conn.commit()
+        rt.conn.commit()
     finally:
         _DB_LOCK.release()
     cat_singleton = _get_cat()
+    mw = _get_mw()
     # Phase 2: run the install (no lock — may take minutes)
     try:
         if job_type == "install":
@@ -293,9 +314,9 @@ def _process_install_jobs():
     # Phase 3: update job status (brief lock)
     _DB_LOCK.acquire()
     try:
-        mw.conn.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?",
+        rt.conn.execute("UPDATE install_jobs SET status=?, log=?, updated_at=strftime('%s','now') WHERE id=?",
                     (status, log[:500], jid))
-        mw.conn.commit()
+        rt.conn.commit()
     finally:
         _DB_LOCK.release()
 
@@ -374,17 +395,58 @@ def op_deps_install(params):
     package = params.get("package")
     if not package:
         return {"status": "error", "error": "missing 'package'"}
-    return install_system_package(package)
+    res = install_system_package(package)
+    if res.get("status") == "ok":
+        try:
+            _get_rt().bump_meta("dependencies")
+        except Exception:
+            pass
+    return res
 
 
 def op_deps_install_target(params):
     """Installe les dépendances requises de la cible via le script compilé.
 
-    target vide -> auto-détecté. Script absent -> erreur 'fichier *** absent'.
+    target vide -> auto-détecté. Script absent -> erreur 'fichier <script> absent'.
     """
     target = params.get("target", "") or ""
     include_optional = bool(params.get("include_optional", False))
-    return install_target_dependencies(target=target, include_optional=include_optional)
+    res = install_target_dependencies(target=target, include_optional=include_optional)
+    # Signal à la GUI (pseudo-domaine 'dependencies') que l'état a changé.
+    if res.get("status") == "ok":
+        try:
+            _get_rt().bump_meta("dependencies")
+        except Exception:
+            pass
+    return res
+
+
+def op_db_versions(params):
+    """Renvoie les `PRAGMA data_version` par DB (+ meta 'dependencies').
+
+    La GUI poll ce endpoint à 20 Hz et ne rafraîchit que les panneaux du
+    domaine dont la DB a changé (split physique : catalogue / inventory /
+    runtime / dependencies). Pas de triggers par table.
+    """
+    out = {}
+    try:
+        out["inventory"] = read_db_version(_get_mw().conn)
+    except Exception:
+        out["inventory"] = 0
+    try:
+        # combine data_version (écritures externes) + meta (écritures du daemon lui-même)
+        out["catalogue"] = max(read_db_version(_get_cat().conn), _get_rt().read_meta("catalogue"))
+    except Exception:
+        out["catalogue"] = 0
+    try:
+        out["runtime"] = read_db_version(_get_rt().conn)
+    except Exception:
+        out["runtime"] = 0
+    try:
+        out["dependencies"] = _get_rt().read_meta("dependencies")
+    except Exception:
+        out["dependencies"] = 0
+    return out
 
 
 def op_deps_check_manifest(params):
@@ -574,6 +636,7 @@ ROUTES = {
     "deps/install":           op_deps_install,
     "deps/install_target":    op_deps_install_target,
     "deps/check_manifest":    op_deps_check_manifest,
+    "db/versions":            op_db_versions,
     "jobs/list":              op_jobs_list,
     "jobs/status":            op_jobs_status,
     "jobs/cancel":            op_jobs_cancel,
