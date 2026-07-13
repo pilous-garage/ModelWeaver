@@ -758,6 +758,17 @@ def serve(port: int = 8770) -> None:
     # busy_timeout 30s pour les opérations concurrentes en arrière-plan
     mw_singleton.conn.execute("PRAGMA busy_timeout = 30000")
 
+    # Au démarrage : si la table locale des outils installés est vide,
+    # lancer une détection une fois. Les outils installés hors flux catalogue
+    # (ex. dépendances système installées via `deps/install`) doivent
+    # apparaître immédiatement dans la GUI sans attendre un install/uninstall.
+    try:
+        if len(mw_singleton.local_tools.list_all()) == 0:
+            mw_singleton.scan_installed_tools()
+            mw_singleton.commit()
+    except Exception as e:
+        print(f"⚠️  scan outils installés (démarrage) échoué : {e}", file=sys.stderr)
+
     # Injecter la connexion partagée dans le module jobs (évite les locks).
     jobs.set_shared_conn(mw_singleton.conn)
 
