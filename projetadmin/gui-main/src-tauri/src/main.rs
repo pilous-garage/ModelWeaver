@@ -38,6 +38,7 @@ struct SystemInfo {
 #[derive(Serialize, Clone)]
 struct InstallJob {
     id: u64,
+    #[serde(rename = "ref")]
     ref_: String,
     name: String,
     job_type: String,
