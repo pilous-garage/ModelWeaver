@@ -215,6 +215,9 @@ function App() {
   const requiredDepsRef = useRef<Dependency[]>([]);
   const recommendedDepsRef = useRef<Dependency[]>([]);
   const selectedPmsRef = useRef<Record<string, string>>({});
+  // Throttle du check-manifest (lourd ~0.7s : subprocess pip show / dpkg-query).
+  // On ne le lance qu'une fois au montage + toutes les 60s, jamais sur chaque tick.
+  const lastDepCheckRef = useRef(0);
   const selectedRecommendedRef = useRef<Record<string, boolean>>({});
 
   const addLog = (msg: string) => {
@@ -255,7 +258,7 @@ function App() {
         await fetchServiceList();
       }
       if (d.has('dependencies')) {
-        await checkDependencies();
+        await checkDependenciesThrottled();
       }
     } catch {
       /* daemon indisponible : on ignore */
@@ -265,10 +268,16 @@ function App() {
   useEffect(() => {
     if (showDashboard) {
       loadLogitheque();
+      // Premier check-manifest au montage (force), puis périodique 60s.
+      lastDepCheckRef.current = 0;
+      checkDependencies();
+      const depTimer = setInterval(() => checkDependenciesThrottled(), 60000);
+      return () => {
+        installQueueRef.current = [];
+        clearInterval(depTimer);
+      };
     }
-    return () => {
-      installQueueRef.current = [];
-    };
+    installQueueRef.current = [];
   }, [showDashboard]);
 
   // Polling de la file d'installation (thread Rust dédié) : non bloquant pour le reste de la GUI
@@ -364,6 +373,17 @@ function App() {
     } finally {
       setChecking(false);
     }
+  };
+
+  // Check-manifest throttlé : le check complet est lourd (~0.7s, subprocess pip/dpkg).
+  // On le force au montage et ensuite au plus toutes les 60s (jamais sur chaque tick
+  // du poll db/versions). Un install (handleInstall / install_dependency) le relance
+  // explicitement, donc l'UI reste à jour sans surcharge.
+  const checkDependenciesThrottled = async () => {
+    const now = Date.now();
+    if (now - lastDepCheckRef.current < 60000) return;
+    lastDepCheckRef.current = now;
+    await checkDependencies();
   };
 
   const handleRecommendedToggle = (name: string) => {
