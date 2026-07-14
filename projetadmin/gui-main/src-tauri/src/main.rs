@@ -1242,6 +1242,13 @@ fn service_log(name: String, lines: usize) -> Result<String, String> {
 
 #[tauri::command]
 fn watch_get(name: String) -> Result<String, String> {
+    // api_token vit dans le fichier ~/.modelweaver/api.token (écrit par le
+    // daemon), pas dans le cache watch en mémoire. On le lit directement.
+    if name == "api_token" {
+        return std::fs::read_to_string(mw_home().join("api.token"))
+            .map(|s| s.trim().to_string())
+            .map_err(|_| "api token not found".to_string());
+    }
     Ok(read_watch_cache(&name).unwrap_or_default())
 }
 
