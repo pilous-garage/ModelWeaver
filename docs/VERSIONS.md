@@ -139,39 +139,62 @@ Intégration Docker :
   pendant l'install longue ; correction double-release bug.
 - Bump version 0.5.22.
 
-## V0.6 — Framework d'Agent (🔄 En cours → 0.6.0)
+## V0.6 — Framework d'Agent
 
-**Objectif** : poser les briques de sécurisation des clés et du catalogue LLM avant
-d'orchestrer les agents.
+**Objectif** : poser les briques de sécurisation des clés et du catalogue LLM
+avant d'orchestrer les agents.
+
+> ⚠️ **Palier test/UI V0.6.0** : un **test complet + paufinnage visuel** de V0.6.0
+> est requis (GUI clés : slider, badge 🔒, masque ; démonstration end-to-end du
+> verrouillage refusant bien l'accès plaintext aux agents). — **[Clôturé en V0.6.1.0]**
+> Le paufinnage visuel (slider/verrou) et la démo E2E conteneur ont été validés.
 
 ### V0.6.0 — Key Manager : keyring + verrouillage manuel ✅
-- **Stockage keyring OS** : clés jamais en clair sur le disque. Le trousseau système
-  (GNOME Keyring / macOS Keychain / Windows Credential Manager) détient une entrée
-  unique `modelweaver / keys_table` = JSON `{ref: api_key}`, chiffrée au repos et liée
-  à la session. Fallback headless : fichier Fernet dérivé du `machine-id`.
-- **DB = métadonnées pures** : `api_keys` ne contient plus que provider, tag, grade,
-  santé, timestamps + `ref` (UUID unique non réécrivable). `key_display` dérivé EN
-  MÉMOIRE (jamais stocké).
+- **Stockage keyring OS** : clés jamais en clair sur le disque (GNOME Keyring /
+  macOS Keychain / Windows Credential Manager) ; fallback headless Fernet dérivé
+  du `machine-id`.
+- **DB = métadonnées pures** : `api_keys` ne contient plus que provider, tag,
+  grade, santé, timestamps + `ref` (UUID unique non réécrivable). `key_display`
+  dérivé EN MÉMOIRE (jamais stocké).
 - **Verrou manuel par clé** : `locked` persisté ; `get_key()` lève `KeyLockedError`
-  si verrouillée. Le masque + les métadonnées restent visibles (list_keys). Route
-  `keys/set_lock`. Slider lock/unlock dans la GUI.
-- **Chargement en mémoire** : `load()` peuplé le cache après validation du keyring
-  (appelé au démarrage du daemon).
+  si verrouillée. Slider lock/unlock dans la GUI.
+- **Chargement en mémoire** : `load()` peuplé le cache après validation du keyring.
 - Routes API : `keys/set`, `keys/get`, `keys/list`, `keys/delete`, `keys/set_lock`,
   `keys/onboard`. Hard-check des contrats vert (103 vérifications).
-- Suppression de l'ancien module `modules/security/vault.py` (Vault/Fernet) ; migration
-  one-shot `migrate_to_sqlite.py` archivée dans `oldcode/`.
+- Suppression de l'ancien module `modules/security/vault.py`.
 
-> ⚠️ **Palier avant de continuer** : avant d'attaquer le LLM Bridge / les adaptateurs /
-> les rôles d'agents (V0.6.x suivants), un **test complet + paufinage visuel** de V0.6.0
-> est requis (GUI clés : slider, badge 🔒, masque ; démonstration end-to-end du
-> verrouillage refusant bien l'accès plaintext aux agents).
+### V0.6.0.x — Catalogue providers + endpoints + restriction modèles (hors-périmètre, fait)
+Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
+- **Catalogue providers complet** : seed SQL de **154 providers** (cloud/local/ollama/builtin)
+  dans `catalogue_schema.sql` (`INSERT OR IGNORE`, idempotent). `_ensure_schema`
+  réexécute le seed si la BDD pré-existante est vide. `sync_providers` désormais
+  no-op (seed en SQL). `sync_models` accepte `id` (rétro-compat).
+- **Table `provider_endpoints`** (provider → N endpoints) : `endpoint_id` PK,
+  `provider_id` FK, `label`, `endpoint_url`, `api_type`, `is_default`,
+  **`local_latency` REAL**, **`global_quality` REAL**. Seed de 22 endpoints
+  canoniques (openai, anthropic, google/gemini, groq, mistral, deepseek, cohere,
+  openrouter, together, fireworks, perplexity, nvidia, huggingface, github-models,
+  scaleway, ovhcloud, ollama, lmstudio, + bases templatées azure/bedrock/vertex/
+  databricks). `op_providers_list` expose `endpoints[]` ; route `provider/endpoint/add`.
+- **Restriction fetch modèles** : `op_llm_models_list` / `op_llm_recommend` ne
+  retournent les modèles que pour les providers **ayant une clé API** (ou
+  ollama/builtin/local, sans clé requise). Provider sans clé → `error: no_api_key`.
+- **Onboarding `.env`** : `GOOGLE_GEMINI_API_KEY` → provider `google`
+  (corrigé, était `gemini`).
+- **GUI** : gestionnaire de providers (connu / nouveau), bouton « 🔄 Fetch modèles »
+  filtré par provider avec clé, feedback d'erreur visible sur le bouton « + ».
 
-### V0.6.x — LLM Bridge + adaptateurs + rôles (📝 Planifié, après le palier test/UI)
-- **Abstraction LLM (LLM Bridge)** : interface unifiée `BaseProvider` (chat, embed,
-  list_models) — catalogue LLM (`modules/llm_manager/`) déjà en place (12 providers,
-  22 modèles, 36 associations, recommandation use_case × technical_level).
-- **Adaptateurs** : Ollama, LiteLLM, APIs natives (tous consomment `KeyManager.get_key`).
+### V0.6.1 — Clôture V0.6.0 + durcissement clés 🔒 (en cours)
+- **Finitions gestionnaire de clés** : feedback UX sur ajout (message d'erreur
+  visible au lieu de retour silencieux), auto-sélection du 1er provider,
+  affichage des endpoints par provider.
+- **Nettoyage roadmap** : ce document reflète enfin l'état réel de V0.6.0.
+
+### V0.6.x — LLM Bridge + adaptateurs + rôles 📝 (planifié, après V0.6.1)
+- **Abstraction LLM (LLM Bridge)** : interface unifiée `BaseProvider` (chat,
+  embed, list_models) — catalogue LLM déjà en place.
+- **Adaptateurs** : Ollama, LiteLLM, APIs natives (tous consomment
+  `KeyManager.get_key`).
 - **Hardening** : sandboxing des commandes, logging structuré.
 - **Interface config rôles d'agents** + import/export de rôles.
 

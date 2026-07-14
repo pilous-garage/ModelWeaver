@@ -171,6 +171,7 @@ function App() {
   const [providersList, setProvidersList] = useState<any[]>([]);
   const [modelsList, setModelsList] = useState<any[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [keyMsg, setKeyMsg] = useState<string>('');
   const [keyProviderMode, setKeyProviderMode] = useState<'known' | 'new'>('known');
   const [newProviderForm, setNewProviderForm] = useState<{ ref: string; name: string; provider_type: string; api_type: string; website: string }>({ ref: '', name: '', provider_type: 'cloud', api_type: '', website: '' });
   const [debugTab, setDebugTab] = useState<'process' | 'logs' | 'resources'>('process');
@@ -202,7 +203,13 @@ function App() {
   };
 
   const fetchProviders = async () => {
-    try { setProvidersList((await invoke<any>('get_providers')).providers || []); }
+    try {
+      const res = await invoke<any>('get_providers');
+      const list = res?.providers || [];
+      setProvidersList(list);
+      // Auto-sélection du 1er provider pour éviter un retour silencieux du "+"
+      if (!keysNewProvider && list.length > 0) setKeysNewProvider(list[0].ref);
+    }
     catch { /* ignore */ }
   };
 
@@ -224,22 +231,35 @@ function App() {
   };
 
   const handleSetKey = async () => {
-    if (!keysNewProvider || !keysNewValue) return;
+    if (!keysNewProvider || !keysNewValue) {
+      setKeyMsg('⚠️ Sélectionnez un provider et saisissez une clé');
+      return;
+    }
+    setKeyMsg('');
     try {
       const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) return;
-      await fetch('http://127.0.0.1:8770/v1/keys/set', {
+      if (!token) { setKeyMsg('⚠️ Token API indisponible'); return; }
+      const res = await fetch('http://127.0.0.1:8770/v1/keys/set', {
         method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider_ref: keysNewProvider, api_key: keysNewValue, tag: keysNewTag })
       });
+      const data = await res.json();
+      if (!data || !data.ok) { setKeyMsg('⚠️ Échec: ' + (data?.error || 'inconnu')); return; }
       setKeysNewProvider(''); setKeysNewValue(''); setKeysNewTag('free');
+      setKeyMsg('✅ Clé enregistrée pour ' + keysNewProvider);
       await fetchKeys();
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      setKeyMsg('⚠️ Erreur: ' + (e?.message || e));
+    }
   };
 
   const handleAddProvider = async () => {
     const f = newProviderForm;
-    if (!f.ref || !f.name) return;
+    if (!f.ref || !f.name) {
+      setKeyMsg('⚠️ Ref et Name du nouveau provider requis');
+      return;
+    }
+    setKeyMsg('');
     try {
       const token = await invoke<string>('watch_get', { name: 'api_token' });
       // Create provider in catalogue
@@ -252,8 +272,12 @@ function App() {
         setNewProviderForm({ ref: '', name: '', provider_type: 'cloud', api_type: '', website: '' });
         // Now add key via existing handler
         await handleSetKey();
+      } else {
+        setKeyMsg('⚠️ Provider non créé : ' + (res?.error || 'inconnu'));
       }
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      setKeyMsg('⚠️ Erreur : ' + (e?.message || e));
+    }
   };
 
   const handleDeleteKey = async (providerRef: string) => {
@@ -1067,6 +1091,9 @@ function App() {
                       style={{ padding: '0.3rem 0.7rem', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.72rem', fontWeight: '600' }}
                     >+</button>
                   </div>
+                  {keyMsg ? (
+                    <div style={{ fontSize: '0.66rem', color: keyMsg.startsWith('✅') ? '#6ee7b7' : '#fca5a5', marginTop: '0.3rem' }}>{keyMsg}</div>
+                  ) : null}
                 </div>
                 {/* Liste des clés */}
                 {keysList.length === 0 ? (
