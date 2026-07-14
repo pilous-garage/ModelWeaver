@@ -195,6 +195,9 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
   embed, list_models) — catalogue LLM déjà en place.
 - **Adaptateurs** : Ollama, LiteLLM, APIs natives (tous consomment
   `KeyManager.get_key`).
+- **Gestionnaire LLM locaux** : détection, installation et gestion des moteurs
+  locaux (Ollama, LM Studio, llama.cpp) — statut, start/stop, modèles
+  disponibles, auto-découverte sur le réseau local.
 - **Hardening** : sandboxing des commandes, logging structuré.
 - **Interface config rôles d'agents** + import/export de rôles.
 
