@@ -215,6 +215,18 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
 - Logs en temps réel par agent/session
 - Gestion des dépendances entre agents
 
+## V0.9 — Mini-Entreprise de Création de Projet (📝 Planifié)
+**Objectif** : Test réel complet : un projet logiciel conçu, développé et livré
+par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
+
+- Définition d'un projet fil rouge (ex. générateur de sites statiques)
+- Rédaction du cahier des charges par un agent rédacteur
+- Découpage en tâches par un agent architecte
+- Implémentation par des agents codeurs
+- Revue de code et tests par un agent QA
+- Livraison et documentation par un agent livraison
+- Bilan : métriques de productivité, coûts tokens, temps réel
+
 ## V1.0 — Release Stable (🎯 Objectif)
 **Objectif** : Version publique distribuable, stable et documentée.
 
