@@ -1417,10 +1417,19 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Seed ignoré: {e}")
 
+        # ── Migration colonnes provider_endpoints ──
+        try:
+            _add_column_if_missing(self.conn, "provider_endpoints", "local_latency", "REAL")
+            _add_column_if_missing(self.conn, "provider_endpoints", "global_quality", "REAL")
+        except Exception as e:
+            print(f"⚠️  Migration provider_endpoints ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
-        # Indépendant des outils : couvre le cas d'une BDD où les
-        # outils sont présents mais le catalogue LLM non seedé (ex : démarrage
-        # GUI frais). Les fonctions lisent modules/llm_manager/data/*.json.
+        # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
+        # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
+        # viennent de modules/llm_manager/data/*.json). Indépendant des
+        # outils — couvre le cas d'un démarrage GUI frais où le
+        # catalogue LLM n'a jamais été seedé.
         try:
             mc = self.conn.execute("SELECT COUNT(*) FROM catalogue_models").fetchone()[0]
             if mc == 0:
@@ -1430,13 +1439,6 @@ class CatalogueDB:
                 self.conn.commit()
         except Exception as e:
             print(f"⚠️  Seed modèles ignoré: {e}")
-
-        # ── Migration colonnes provider_endpoints ──
-        try:
-            _add_column_if_missing(self.conn, "provider_endpoints", "local_latency", "REAL")
-            _add_column_if_missing(self.conn, "provider_endpoints", "global_quality", "REAL")
-        except Exception as e:
-            print(f"⚠️  Migration provider_endpoints ignorée: {e}")
 
     @contextmanager
     def transaction(self):
