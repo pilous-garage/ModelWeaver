@@ -674,7 +674,7 @@ def op_providers_list(_params):
     # Joindre les endpoints possédés par le provider (table provider_endpoints)
     try:
         ecur = cat.conn.execute(
-            "SELECT p.ref, e.id, e.label, e.endpoint_url, e.api_type, e.is_default "
+            "SELECT p.ref, e.endpoint_id, e.label, e.endpoint_url, e.api_type, e.is_default "
             "FROM provider_endpoints e JOIN catalogue_providers p ON p.id = e.provider_id")
         eps: dict = {}
         for prow in ecur.fetchall():
@@ -837,6 +837,7 @@ ROUTES = {
     "keys/onboard":           op_keys_onboard,
     # H. Providers (catalogue)
     "providers/list":         op_providers_list,
+    "provider/endpoint/add":  op_provider_endpoint_add,
     # I. LLM Manager
     "llm/models/list":        op_llm_models_list,
     "llm/recommend":          op_llm_recommend,
