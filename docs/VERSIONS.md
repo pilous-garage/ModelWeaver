@@ -227,11 +227,55 @@ par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
 - Livraison et documentation par un agent livraison
 - Bilan : métriques de productivité, coûts tokens, temps réel
 
+## V0.10 — Portage Windows / Fedora (📝 Planifié)
+**Objectif** : Rendre ModelWeaver fonctionnel sur Windows (WSL + natif) et Fedora.
+
+- Adaptation des chemins et variables d'environnement Windows
+- Compatibilité shell (PowerShell / CMD)
+- Tests sur Fedora (dnf, SELinux)
+- Installation des dépendances natives par OS
+- CI multi-OS
+
+## V0.11 — Préparation Version Stable (📝 Planifié)
+**Objectif** : Dernière ligne droite avant la release publique.
+
+- Audit de sécurité complet
+- Optimisation des performances (temps de réponse daemon, taille binaire)
+- Relecture et mise à jour de toute la documentation
+- Nettoyage dette technique (code mort, TODO, FIXME)
+- Page de release + changelog
+
+## V0.12 — Test Utilisateur (📝 Planifié)
+**Objectif** : Test en conditions réelles par un utilisateur non-développeur.
+
+- Installation et prise en main par un tiers (le frangin)
+- Feedback brut : ce qui marche, ce qui bloque, ce qui manque
+- Correction des blocages remontés
+- Ajustements UX
+
+## V0.13 — Décision Finale du Nom (📝 Planifié)
+**Objectif** : Choisir le nom définitif du projet avant la release.
+
+- Brainstorming de noms alternatifs à « ModelWeaver »
+- Vérification disponibilité (npm, PyPI, GitHub, domaine)
+- Vote utilisateur / communauté
+- Renommage du projet si nécessaire
+
+## V0.14 — Définition Complète CGU, Licence, Contrat d'Intention (📝 Planifié)
+**Objectif** : Cadre légal complet avant mise à disposition publique.
+
+- Rédaction des Conditions Générales d'Utilisation
+- Choix et rédaction de la licence open-source
+- Contrat d'intention pour les utilisateurs / contributeurs
+- Mention légale et crédits
+- Page « Legal » dans l'application
+
 ## V1.0 — Release Stable (🎯 Objectif)
 **Objectif** : Version publique distribuable, stable et documentée.
 
 - Tests E2E complets
-- Portabilité Windows
-- Branding final
+- Portabilité Windows (via v0.10)
+- Branding final (via v0.13)
 - Documentation professionnelle
+- Cadre légal finalisé (via v0.14)
 - Campagne de lancement
