@@ -23,18 +23,26 @@ for a in "$@"; do case "$a" in --commit) DO_COMMIT=true ;; --push) DO_PUSH=true 
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # ── 1. Déterminer la version actuelle + bump .x ──
-info "détermination version actuelle (GitHub latest)..."
-LATEST_TAG=$(gh api "repos/$REPO_SLUG/releases/latest" --jq '.tag_name' 2>/dev/null || echo "v0.6.0")
-LATEST_TAG="${LATEST_TAG:-v0.6.0}"
-LATEST_NUM=$(echo "$LATEST_TAG" | sed 's/^v//')
 # Incrémente le DERNIER segment, peu importe le nombre de points
 # (gère vX.Y.Z, vX.Y.Z.W, voire vX.Y.Z.W.V.X si besoin).
-IFS='.' read -ra SEGS <<< "$LATEST_NUM"
-LAST=$(( ${#SEGS[@]} - 1 ))
-SEGS[$LAST]=$(( ${SEGS[$LAST]} + 1 ))
-NEW_NUM=$(IFS='.'; echo "${SEGS[*]}")
-NEW_TAG="v$NEW_NUM"
-info "version actuelle : $LATEST_TAG  →  bump → $NEW_TAG"
+# Override possible : VERSION_OVERRIDE=vX.Y.Z force la version cible
+# (utile pour un bump mineur, ex: v0.6.0.51 → v0.6.1.0).
+if [ -n "${VERSION_OVERRIDE:-}" ]; then
+  NEW_NUM="${VERSION_OVERRIDE#v}"
+  NEW_TAG="v$NEW_NUM"
+  info "version forcée (override) → $NEW_TAG"
+else
+  info "détermination version actuelle (GitHub latest)..."
+  LATEST_TAG=$(gh api "repos/$REPO_SLUG/releases/latest" --jq '.tag_name' 2>/dev/null || echo "v0.6.0")
+  LATEST_TAG="${LATEST_TAG:-v0.6.0}"
+  LATEST_NUM=$(echo "$LATEST_TAG" | sed 's/^v//')
+  IFS='.' read -ra SEGS <<< "$LATEST_NUM"
+  LAST=$(( ${#SEGS[@]} - 1 ))
+  SEGS[$LAST]=$(( ${SEGS[$LAST]} + 1 ))
+  NEW_NUM=$(IFS='.'; echo "${SEGS[*]}")
+  NEW_TAG="v$NEW_NUM"
+  info "version actuelle : $LATEST_TAG  →  bump → $NEW_TAG"
+fi
 
 # ── 2. Check taille git + arborescence + auto-ignore >1Mo ──
 GIT_SIZE=$(du -sm .git 2>/dev/null | awk '{print $1}')
