@@ -1,7 +1,15 @@
-"""LLM Manager — Catalogue et recommandation de modèles LLM."""
+"""LLM Manager — Catalogue et recommandation de modèles LLM.
+
+Re-exporte les symboles du bridge pour satisfaire le contrat hardcheck.
+"""
 
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+from modules.llm_manager.base_bridge import (
+    BaseBridge, ModelCapabilities, ChatResponse, BridgeError, ErrorCategory,
+)
+from modules.llm_manager.litellm_bridge import LiteLLMBridge
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 

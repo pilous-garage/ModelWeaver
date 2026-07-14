@@ -280,16 +280,31 @@ CREATE TABLE IF NOT EXISTS provider_models (
     provider_model_name TEXT NOT NULL,
     context_window_tokens INTEGER,
     max_output_tokens   INTEGER,
-    cost_per_input_token  TEXT,
-    cost_per_output_token TEXT,
-    status              TEXT DEFAULT 'active' CHECK(status IN ('active','deprecated','experimental')),
+    cost_per_input_token    TEXT,
+    cost_per_output_token   TEXT,
+    context_window_effective INTEGER,
+    status                  TEXT DEFAULT 'active' CHECK(status IN ('active','deprecated','experimental')),
     created_at          INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at          INTEGER DEFAULT (strftime('%s', 'now')),
     UNIQUE(provider_id, model_id)
 );
 
 -- ============================================================
--- 4. CATALOGUE_COMMANDS — Commandes utilitaires
+-- 4. CONTEXT_AUDIT_LOG — Journal des dépassements de contexte
+-- ============================================================
+CREATE TABLE IF NOT EXISTS context_audit_log (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_ref          TEXT NOT NULL,
+    model_ref             TEXT NOT NULL,
+    tokens_sent           INTEGER NOT NULL,
+    detected_context_limit INTEGER,
+    context_window_effective INTEGER,
+    created_at            INTEGER DEFAULT (strftime('%s', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_provider_model ON context_audit_log(provider_ref, model_ref);
+
+-- ============================================================
+-- 5. CATALOGUE_COMMANDS — Commandes utilitaires
 -- ============================================================
 CREATE TABLE IF NOT EXISTS catalogue_commands (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

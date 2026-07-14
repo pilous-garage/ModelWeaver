@@ -14,6 +14,8 @@ from modules.key_manager.onboarder import Onboarder
 from modules.llm_manager.llm_manager import (
     LLMManager, seed_providers, seed_models, seed_provider_models,
 )
+from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 
 CONSUMES = {
     # File d'installation + install/uninstall réels.
@@ -35,6 +37,9 @@ CONSUMES = {
     "modules.llm_manager.llm_manager": [
         "LLMManager", "seed_providers", "seed_models", "seed_provider_models",
     ],
+    # LLM Bridge (chat, capacités, contexte).
+    "modules.llm_manager.litellm_bridge": ["LiteLLMBridge"],
+    "modules.llm_manager.base_bridge": ["BridgeError", "ErrorCategory"],
     # Helpers partagés.
     "services._common": ["_db_paths", "_quiet_stdout", "log_to_file", "acquire_instance_lock"],
     # Vérification des dépendances.

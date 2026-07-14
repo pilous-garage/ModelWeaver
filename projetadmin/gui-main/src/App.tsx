@@ -176,6 +176,14 @@ function App() {
   const [serviceList, setServiceList] = useState<{ name: string; mode: string; status: string; pid: number | null; restarts: number; last_exit: number | null; started_at: number }[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Chat
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: string; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+  const [chatProvider, setChatProvider] = useState('');
+  const [chatModel, setChatModel] = useState('');
+
   const setDebug = (v: boolean) => {
     setShowDebug(v);
     getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
@@ -211,6 +219,89 @@ function App() {
       else setModelsList([]);
     } catch { setModelsList([]); }
     finally { setModelsLoading(false); }
+  };
+
+  const handleChatSend = async () => {
+    const msg = chatInput.trim();
+    if (!msg || !chatProvider || !chatModel || chatSending) return;
+    const userMsg = { role: 'user', content: msg };
+    const allMessages = [...chatMessages, userMsg];
+    setChatMessages(allMessages);
+    setChatInput('');
+    setChatSending(true);
+    // 1. Récupérer token/port pour fetch direct SSE
+    let daemonToken = '';
+    let daemonPort = 8770;
+    try {
+      const info = await invoke<any>('daemon_post', { route: 'auth/info', body: '{}' });
+      if (info?.ok) {
+        daemonToken = info.result.token;
+        daemonPort = info.result.port;
+      }
+    } catch { /* fallback JSON */ }
+    if (daemonToken) {
+      // 2. SSE streaming
+      let accumulated = '';
+      const msgIdx = allMessages.length;
+      setChatMessages([...allMessages, { role: 'assistant', content: '' }]);
+      try {
+        const response = await fetch(`http://127.0.0.1:${daemonPort}/v1/llm/chat/stream`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_ref: chatProvider, model_ref: chatModel, messages: allMessages }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n');
+          buffer = events.pop() || '';
+          for (const line of events) {
+            if (line.startsWith('event: ')) continue; // event type line, skip
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.done) break;
+                if (data.content !== undefined) {
+                  accumulated += data.content;
+                  setChatMessages(prev => {
+                    const upd = [...prev];
+                    upd[msgIdx] = { role: 'assistant', content: accumulated };
+                    return upd;
+                  });
+                }
+                if (data.error) throw new Error(data.error);
+              } catch (e: any) { /* malformed JSON, ignore */ }
+            }
+          }
+        }
+      } catch (e: any) {
+        setChatMessages(prev => {
+          const upd = [...prev];
+          upd[msgIdx] = { role: 'assistant', content: `⚠️ ${e?.message || String(e)}` };
+          return upd;
+        });
+      }
+    } else {
+      // 3. Fallback JSON synchrone
+      try {
+        const data = await invoke<any>('daemon_post', {
+          route: 'llm/chat',
+          body: JSON.stringify({ provider_ref: chatProvider, model_ref: chatModel, messages: allMessages }),
+        });
+        const content = (data && data.status === 'ok')
+          ? (data.content || '(réponse vide)')
+          : `⚠️ ${data?.error || 'no response'}`;
+        setChatMessages([...allMessages, { role: 'assistant', content }]);
+      } catch (e: any) {
+        setChatMessages([...allMessages, { role: 'assistant', content: `⚠️ Erreur: ${e?.toString?.() ?? String(e)}` }]);
+      }
+    }
+    setChatSending(false);
   };
 
   const handleSetKey = async () => {
@@ -758,6 +849,17 @@ function App() {
             🔑 Clés
           </button>
           <button
+            onClick={() => {
+              const v = !showChat;
+              setShowChat(v);
+              getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
+              if (v) { fetchProviders(); fetchModels(); }
+            }}
+            style={{ padding: '0.4rem 0.8rem', backgroundColor: showChat ? '#dc2626' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
+          >
+            💬 Chat
+          </button>
+          <button
             onClick={toggleFullscreen}
             style={{ padding: '0.4rem 0.6rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
             title="Plein écran"
@@ -773,8 +875,98 @@ function App() {
         {/* Body */}
         <div style={{ flex: 1, display: 'flex', gap: '1rem', padding: '1rem 1.5rem', overflow: 'hidden' }}>
 
-          {/* Left: system state + installed */}
+          {showChat ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+              {/* Selector */}
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+                <select value={chatProvider} onChange={e => { setChatProvider(e.target.value); setChatModel(''); }}
+                  style={{ ...selectStyles, padding: '0.3rem 0.5rem', width: '180px' }}>
+                  <option value="">-- Provider --</option>
+                  {providersList
+                    .filter((p: any) => p.available !== false)
+                    .map((p: any) => (
+                      <option key={p.ref} value={p.ref}>{p.name}</option>
+                    ))}
+                </select>
+                <select value={chatModel} onChange={e => setChatModel(e.target.value)}
+                  style={{ ...selectStyles, padding: '0.3rem 0.5rem', width: '200px' }}>
+                  <option value="">-- Modèle --</option>
+                  {modelsList
+                    .filter((m: any) => !chatProvider || m.provider_ref === chatProvider)
+                    .map((m: any) => (
+                      <option key={`${m.provider_ref}/${m.ref}`} value={m.ref}>{m.name || m.ref}</option>
+                    ))}
+                </select>
+                <button
+                  onClick={() => { setChatMessages([]); setChatInput(''); }}
+                  style={{ padding: '0.3rem 0.6rem', fontSize: '0.72rem', backgroundColor: '#475569', color: '#e2e8f0', border: '1px solid #64748b', borderRadius: '0.3rem', cursor: 'pointer' }}
+                >Effacer</button>
+              </div>
+
+              {/* Messages */}
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.6rem', backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '0.8rem' }}>
+                {chatMessages.length === 0 && (
+                  <div style={{ color: '#64748b', fontSize: '0.8rem', textAlign: 'center', marginTop: '2rem' }}>
+                    Sélectionnez un provider/modèle et envoyez un message.
+                  </div>
+                )}
+                {chatMessages.map((m, i) => (
+                  <div key={i} style={{
+                    maxWidth: '80%',
+                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    backgroundColor: m.role === 'user' ? '#1d4ed8' : '#0f172a',
+                    border: `1px solid ${m.role === 'user' ? '#3b82f6' : '#334155'}`,
+                    borderRadius: '0.5rem',
+                    padding: '0.5rem 0.7rem',
+                    fontSize: '0.78rem',
+                    lineHeight: '1.4',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}>
+                    <div style={{ fontWeight: '600', fontSize: '0.65rem', color: m.role === 'user' ? '#93c5fd' : '#64748b', marginBottom: '0.2rem' }}>
+                      {m.role === 'user' ? 'Vous' : 'Assistant'}
+                    </div>
+                    <div>{m.content}</div>
+                  </div>
+                ))}
+                {chatSending && (
+                  <div style={{ maxWidth: '80%', alignSelf: 'flex-start', backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '0.5rem', padding: '0.5rem 0.7rem', fontSize: '0.78rem' }}>
+                    <Spinner size={14} color="#94a3b8" /> Réflexion…
+                  </div>
+                )}
+              </div>
+
+              {/* Input */}
+              <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+                <input
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChatSend(); } }}
+                  placeholder="Votre message…"
+                  disabled={chatSending}
+                  style={{
+                    flex: 1, padding: '0.5rem 0.7rem', backgroundColor: '#1e293b', color: '#e2e8f0',
+                    border: '1px solid #475569', borderRadius: '0.375rem', fontSize: '0.8rem', outline: 'none',
+                  }}
+                />
+                <button
+                  onClick={handleChatSend}
+                  disabled={!chatProvider || !chatModel || !chatInput.trim() || chatSending}
+                  style={{
+                    padding: '0.5rem 1rem', backgroundColor: chatSending ? '#1e293b' : '#2563eb',
+                    color: chatSending ? '#64748b' : 'white', border: 'none', borderRadius: '0.375rem',
+                    fontSize: '0.78rem', fontWeight: '600', cursor: chatSending ? 'default' : 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
+                  }}
+                >
+                  {chatSending ? <Spinner size={14} color="#64748b" /> : '→'} Envoyer
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
           <div style={{ width: '340px', display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto' }}>
+            {/* Left: system state + installed */}
             <div style={{ backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '1rem' }}>
               <h3 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.75rem' }}>État du système</h3>
               {systemState ? (
@@ -972,6 +1164,8 @@ function App() {
               )}
             </div>
           </div>
+            </>
+          )}
           {showKeys && (
             <div style={{ width: '340px', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflow: 'hidden', borderLeft: '1px solid #334155', paddingLeft: '1rem' }}>
               <h3 style={{ fontSize: '0.9rem', fontWeight: '600' }}>🔑 Clés API ({keysList.length})</h3>

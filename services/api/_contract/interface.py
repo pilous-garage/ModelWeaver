@@ -8,7 +8,7 @@ KIND = "service"
 NAME = "api"
 
 # Table de routes réellement servie, désignée par "module:attribut".
-ROUTES_SOURCE = "daemon:ROUTES"
+ROUTES_SOURCE = "daemon:ROUTES + STREAMING_ROUTES"
 
 # Point d'entrée du service (supervisé). Un seul daemon à la fois (lock api).
 RUNS = "serve"
@@ -56,6 +56,15 @@ EXPOSES = {
     # I. LLM Manager
     "llm/models/list": ["provider_ref"],
     "llm/recommend": ["use_case", "technical_level"],
+    # K. LLM Bridge
+    "llm/chat": ["provider_ref", "model_ref", "messages"],
+    "llm/chat/stream": ["provider_ref", "model_ref", "messages"],
+    "llm/capabilities": ["provider_ref", "model_ref"],
+    "llm/bridge/status": ["provider_ref"],
+    "llm/context/probe": ["provider_ref", "model_ref"],
+    "llm/context/history": ["provider_ref", "model_ref", "limit"],
+    # L. Auth / Infra
+    "auth/info": [],
     # J. Logs
     "logs/read": [],
     "logs/write": ["level", "message"],

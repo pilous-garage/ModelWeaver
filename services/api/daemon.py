@@ -49,9 +49,11 @@ from services.watch_sysstate import service as sysstate
 from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_version, fetch_remote_to_local
 from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
+from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 
 API_VERSION = "v1"
-MW_VERSION = "0.6.0"
+MW_VERSION = "0.6.3"
 
 
 def _mw_dir() -> Path:
@@ -359,6 +361,15 @@ def _get_llm():
     if _LLM_INSTANCE is None:
         _LLM_INSTANCE = LLMManager(cat=_get_cat())
     return _LLM_INSTANCE
+
+
+_BRIDGE_INSTANCE = None
+
+def _get_bridge():
+    global _BRIDGE_INSTANCE
+    if _BRIDGE_INSTANCE is None:
+        _BRIDGE_INSTANCE = LiteLLMBridge(cat=_get_cat(), km=_get_km())
+    return _BRIDGE_INSTANCE
 
 def _process_install_jobs():
     """Process one queued install job (blocking). Called by the background thread."""
@@ -759,6 +770,188 @@ def op_llm_recommend(params):
     return result
 
 
+# ── LLM Bridge ─────────────────────────────────────────────────
+
+def op_llm_chat(params):
+    """Chat avec un modèle via le bridge. params: provider_ref, model_ref, messages[, temperature, max_tokens, system_prompt]"""
+    bridge = _get_bridge()
+    provider_ref = params.get("provider_ref")
+    model_ref = params.get("model_ref")
+    messages = params.get("messages", [])
+    if not provider_ref or not model_ref or not messages:
+        return {"status": "error", "error": "provider_ref, model_ref et messages requis"}
+    try:
+        resp = bridge.chat(
+            provider_ref=provider_ref,
+            model_ref=model_ref,
+            messages=messages,
+            temperature=params.get("temperature", 0.7),
+            max_tokens=params.get("max_tokens"),
+            system_prompt=params.get("system_prompt"),
+            stream=False,
+        )
+        return {
+            "status": "ok",
+            "content": resp.content,
+            "model": resp.model,
+            "finish_reason": resp.finish_reason,
+            "usage": resp.usage,
+        }
+    except BridgeError as be:
+        return {
+            "status": "error",
+            "error": be.message,
+            "category": be.category.value,
+            "provider_ref": be.provider_ref,
+            "model_ref": be.model_ref,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e), "category": "unknown"}
+
+
+def op_auth_info(params):
+    """Retourne les infos nécessaires pour une connexion directe (SSE)."""
+    mw = _mw_dir()
+    token = (mw / "api.token").read_text().strip()
+    port = int((mw / "api.port").read_text().strip())
+    return {"token": token, "port": port}
+
+
+class StreamWriter:
+    """Helper SSE : écriture d'events dans un wfile HTTP."""
+    def __init__(self, wfile):
+        self._wfile = wfile
+        self._closed = False
+
+    def send(self, event: str, data: dict):
+        if self._closed:
+            return
+        payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+        self._wfile.write(payload.encode())
+        self._wfile.flush()
+
+    def error(self, msg: str, category: str = "unknown",
+              provider_ref: str = "", model_ref: str = ""):
+        self.send("error", {"error": msg, "category": category,
+                            "provider_ref": provider_ref, "model_ref": model_ref})
+
+    def done(self):
+        if self._closed:
+            return
+        self.send("done", {"done": True})
+        self._closed = True
+
+
+def op_llm_chat_stream_sse(params, wfile):
+    """SSE streaming : itère sur bridge.chat_stream() et écrit les events."""
+    bridge = _get_bridge()
+    provider_ref = params.get("provider_ref")
+    model_ref = params.get("model_ref")
+    messages = params.get("messages", [])
+    sw = StreamWriter(wfile)
+    try:
+        if not provider_ref or not model_ref or not messages:
+            sw.error("provider_ref, model_ref et messages requis")
+            sw.done()
+            return
+        for chunk in bridge.chat_stream(
+            provider_ref=provider_ref,
+            model_ref=model_ref,
+            messages=messages,
+            temperature=params.get("temperature", 0.7),
+            max_tokens=params.get("max_tokens"),
+            system_prompt=params.get("system_prompt"),
+        ):
+            sw.send("delta", {"content": chunk})
+    except BridgeError as be:
+        sw.error(be.message, be.category.value, be.provider_ref, be.model_ref)
+    except Exception as e:
+        sw.error(str(e), "unknown", provider_ref or "", model_ref or "")
+    finally:
+        sw.done()
+
+
+def op_llm_capabilities(params):
+    """Capacités d'un modèle. params: provider_ref, model_ref"""
+    bridge = _get_bridge()
+    provider_ref = params.get("provider_ref")
+    model_ref = params.get("model_ref")
+    if not provider_ref or not model_ref:
+        return {"status": "error", "error": "provider_ref et model_ref requis"}
+    try:
+        caps = bridge.get_capabilities(provider_ref, model_ref)
+        return {"status": "ok",
+                "context_window": caps.context_window,
+                "max_output": caps.max_output,
+                "cost_input_per_1k": caps.cost_input_per_1k,
+                "cost_output_per_1k": caps.cost_output_per_1k,
+                "supports_vision": caps.supports_vision,
+                "supports_function_calling": caps.supports_function_calling,
+                "mode": caps.mode}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_llm_bridge_status(params):
+    """État du bridge et des providers. params: provider_ref (optionnel)"""
+    bridge = _get_bridge()
+    provider_ref = params.get("provider_ref")
+    try:
+        if provider_ref:
+            return bridge.health_check(provider_ref)
+        providers = bridge.list_available_providers()
+        return {"status": "ok",
+                "bridge": "litellm",
+                "providers": providers,
+                "count": len(providers)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_llm_context_probe(params):
+    """Probe de contexte : vérifie la fenêtre effective. params: provider_ref, model_ref, test_tokens (optionnel)"""
+    bridge = _get_bridge()
+    provider_ref = params.get("provider_ref")
+    model_ref = params.get("model_ref")
+    if not provider_ref or not model_ref:
+        return {"status": "error", "error": "provider_ref et model_ref requis"}
+    try:
+        caps = bridge.get_capabilities(provider_ref, model_ref)
+        effective = bridge.validator.get_effective_context(provider_ref, model_ref)
+        return {"status": "ok",
+                "provider_ref": provider_ref,
+                "model_ref": model_ref,
+                "context_window_announced": caps.context_window,
+                "context_window_effective": effective or caps.context_window}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_llm_context_history(params):
+    """Historique des dépassements de contexte. params: provider_ref (optionnel), model_ref (optionnel), limit"""
+    cat = _get_cat()
+    provider_ref = params.get("provider_ref")
+    model_ref = params.get("model_ref")
+    limit = params.get("limit", 50)
+    if provider_ref and model_ref:
+        cur = cat.conn.execute(
+            "SELECT * FROM context_audit_log WHERE provider_ref=? AND model_ref=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (provider_ref, model_ref, limit))
+    elif provider_ref:
+        cur = cat.conn.execute(
+            "SELECT * FROM context_audit_log WHERE provider_ref=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (provider_ref, limit))
+    else:
+        cur = cat.conn.execute(
+            "SELECT * FROM context_audit_log ORDER BY created_at DESC LIMIT ?",
+            (limit,))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    return {"status": "ok", "logs": rows, "count": len(rows)}
+
+
 def op_provider_endpoint_add(params):
     """Ajoute un endpoint à un provider (table provider_endpoints).
     params: provider_ref, label, endpoint_url, api_type?, is_default?"""
@@ -841,9 +1034,24 @@ ROUTES = {
     # I. LLM Manager
     "llm/models/list":        op_llm_models_list,
     "llm/recommend":          op_llm_recommend,
+    # K. LLM Bridge
+    "llm/chat":               op_llm_chat,
+    "llm/chat/stream":        op_llm_chat,  # fallback JSON
+    "llm/capabilities":       op_llm_capabilities,
+    "llm/bridge/status":      op_llm_bridge_status,
+    "llm/context/probe":      op_llm_context_probe,
+    "llm/context/history":    op_llm_context_history,
+    # L. Auth / Infra
+    "auth/info":              op_auth_info,
     # J. Logs
     "logs/read":              op_logs_read,
     "logs/write":             op_logs_write,
+}
+
+# Routes qui reçoivent (params, wfile) au lieu de (params) -> dict
+# pour la réponse SSE directe (text/event-stream).
+STREAMING_ROUTES = {
+    "llm/chat/stream":        op_llm_chat_stream_sse,
 }
 
 
@@ -877,6 +1085,27 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not_found", "path": self.path})
 
+    def _handle_stream(self, route: str, handler, params: dict):
+        """SSE : envoie les headers puis délègue l'itération au handler(stream, params, wfile)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            handler(params, self.wfile)
+        except Exception as e:
+            import traceback
+            err = json.dumps({"error": str(e), "trace": traceback.format_exc()})
+            self.wfile.write(f"event: error\ndata: {err}\n\n".encode())
+            self.wfile.write(b"event: done\ndata: {\"done\":true}\n\n")
+        finally:
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            self.close_connection = True
+
     def do_POST(self):
         prefix = f"/{API_VERSION}/"
         if not self.path.startswith(prefix):
@@ -886,16 +1115,22 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         route = self.path[len(prefix):].strip("/")
-        handler = ROUTES.get(route)
-        if not handler:
-            self._send(404, {"error": "unknown_route", "route": route})
-            return
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw = self.rfile.read(length) if length else b""
             params = json.loads(raw) if raw else {}
         except Exception as e:
             self._send(400, {"error": "bad_request", "detail": str(e)})
+            return
+        # Streaming SSE ?
+        stream_handler = STREAMING_ROUTES.get(route)
+        if stream_handler:
+            self._handle_stream(route, stream_handler, params)
+            return
+        # JSON normal
+        handler = ROUTES.get(route)
+        if not handler:
+            self._send(404, {"error": "unknown_route", "route": route})
             return
         try:
             result = handler(params)
