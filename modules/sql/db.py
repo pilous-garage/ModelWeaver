@@ -1429,18 +1429,26 @@ class CatalogueDB:
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
         # viennent de modules/llm_manager/data/*.json). Indépendant des
         # outils — couvre le cas d'un démarrage GUI frais où le
-        # catalogue LLM n'a jamais été seedé.
+        # catalogue LLM n'a jamais été seedé, OU où seed_catalogue a
+        # seedé les modèles mais laissé provider_models vide (transaction
+        # ouverte par sync_tools en amont → snapshot vide au seed_provider_models).
         # NB : on commit APRES seed_models pour que provider_models
-        # (qui requête catalogue_models) ne voie pas un snapshot vide
-        # (transaction implicite ouverte par une op. amont).
+        # (qui requête catalogue_models) ne voie pas un snapshot vide.
         try:
             mc = self.conn.execute("SELECT COUNT(*) FROM catalogue_models").fetchone()[0]
-            if mc == 0:
+            pmc = 0
+            try:
+                pmc = self.conn.execute("SELECT COUNT(*) FROM provider_models").fetchone()[0]
+            except Exception:
+                pmc = 0
+            if mc == 0 or pmc == 0:
                 from modules.llm_manager.llm_manager import seed_models, seed_provider_models
-                seed_models(self)
-                self.conn.commit()
-                seed_provider_models(self)
-                self.conn.commit()
+                if mc == 0:
+                    seed_models(self)
+                    self.conn.commit()
+                if pmc == 0:
+                    seed_provider_models(self)
+                    self.conn.commit()
         except Exception as e:
             print(f"⚠️  Seed modèles ignoré: {e}")
 
