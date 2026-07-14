@@ -1563,6 +1563,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            daemon_post,
             log_message,
             get_system_info,
             check_dependencies,

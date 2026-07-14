@@ -77,14 +77,7 @@ function useDomainVersions(enabled: boolean, onChange: (domains: Domain[]) => vo
     const poll = async () => {
       if (cancelled) return;
       try {
-        const token = await invoke<string>('watch_get', { name: 'api_token' });
-        if (!token) return;
-        const res = await fetch('http://127.0.0.1:8770/v1/db/versions', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: '{}',
-        });
-        const data = await res.json();
+        const data = await invoke<any>('daemon_post', { route: 'db/versions', body: '{}' });
         if (!data.ok) return;
         const v = (data.result || {}) as Record<string, number>;
         const prev = prevRef.current;
@@ -192,12 +185,7 @@ function App() {
 
   const fetchKeys = async () => {
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) return;
-      const res = await fetch('http://127.0.0.1:8770/v1/keys/list', {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}'
-      });
-      const data = await res.json();
+      const data = await invoke<any>('daemon_post', { route: 'keys/list', body: '{}' });
       if (data.ok) setKeysList(data.result.keys || []);
     } catch { /* daemon pas encore prêt */ }
   };
@@ -218,12 +206,7 @@ function App() {
   const fetchModels = async () => {
     setModelsLoading(true);
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) { setModelsList([]); return; }
-      const res = await fetch('http://127.0.0.1:8770/v1/llm/models/list', {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}'
-      });
-      const data = await res.json();
+      const data = await invoke<any>('daemon_post', { route: 'llm/models/list', body: '{}' });
       if (data && data.ok) setModelsList(data.result.models || []);
       else setModelsList([]);
     } catch { setModelsList([]); }
@@ -237,13 +220,10 @@ function App() {
     }
     setKeyMsg('');
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) { setKeyMsg('⚠️ Token API indisponible'); return; }
-      const res = await fetch('http://127.0.0.1:8770/v1/keys/set', {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      const data = await invoke<any>('daemon_post', {
+        route: 'keys/set',
         body: JSON.stringify({ provider_ref: keysNewProvider, api_key: keysNewValue, tag: keysNewTag })
       });
-      const data = await res.json();
       if (!data || !data.ok) { setKeyMsg('⚠️ Échec: ' + (data?.error || 'inconnu')); return; }
       setKeysNewProvider(''); setKeysNewValue(''); setKeysNewTag('free');
       setKeyMsg('✅ Clé enregistrée pour ' + keysNewProvider);
@@ -261,8 +241,6 @@ function App() {
     }
     setKeyMsg('');
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      // Create provider in catalogue
       const res = await invoke<any>('add_provider', {
         dataJson: JSON.stringify({ ref: f.ref, name: f.name, provider_type: f.provider_type, api_type: f.api_type, website: f.website })
       });
@@ -282,24 +260,14 @@ function App() {
 
   const handleDeleteKey = async (providerRef: string) => {
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) return;
-      await fetch('http://127.0.0.1:8770/v1/keys/delete', {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_ref: providerRef })
-      });
+      await invoke<any>('daemon_post', { route: 'keys/delete', body: JSON.stringify({ provider_ref: providerRef }) });
       await fetchKeys();
     } catch { /* ignore */ }
   };
 
   const handleToggleLock = async (ref: string, locked: boolean) => {
     try {
-      const token = await invoke<string>('watch_get', { name: 'api_token' });
-      if (!token) return;
-      await fetch('http://127.0.0.1:8770/v1/keys/set_lock', {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ref, locked: !locked })
-      });
+      await invoke<any>('daemon_post', { route: 'keys/set_lock', body: JSON.stringify({ ref, locked: !locked }) });
       await fetchKeys();
     } catch { /* ignore */ }
   };

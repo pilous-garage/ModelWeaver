@@ -15,7 +15,10 @@
         "width": 1000,
         "height": 700
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' https://tauri.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8770 http://localhost:8770"
+    }
   },
   "bundle": {
     "active": true,
