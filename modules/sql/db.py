@@ -1430,11 +1430,15 @@ class CatalogueDB:
         # viennent de modules/llm_manager/data/*.json). Indépendant des
         # outils — couvre le cas d'un démarrage GUI frais où le
         # catalogue LLM n'a jamais été seedé.
+        # NB : on commit APRES seed_models pour que provider_models
+        # (qui requête catalogue_models) ne voie pas un snapshot vide
+        # (transaction implicite ouverte par une op. amont).
         try:
             mc = self.conn.execute("SELECT COUNT(*) FROM catalogue_models").fetchone()[0]
             if mc == 0:
                 from modules.llm_manager.llm_manager import seed_models, seed_provider_models
                 seed_models(self)
+                self.conn.commit()
                 seed_provider_models(self)
                 self.conn.commit()
         except Exception as e:
