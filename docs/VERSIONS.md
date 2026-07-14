@@ -200,38 +200,32 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
   `fetchModels`, `handleAddProvider`, `handleDeleteKey`,
   `handleToggleLock`, `fetchDbVersion`.
 
-### V0.6.3 — LLM Bridge : abstraction unifiée des providers 📝
-- **Interface `BaseProvider`** : contrat commun pour tous les moteurs LLM
-  (chat, embed, list_models, stream, count_tokens).
-- **Adaptateurs** :
-  - OpenAI-compatible (OpenAI, Groq, Together, Fireworks, DeepSeek, GitHub Models)
-  - Google Gemini (API native)
-  - Anthropic (API native)
-  - Ollama (API REST locale)
-  - LiteLLM (passerelle universelle)
-- **Tous les adaptateurs consomment `KeyManager.get_key`** pour les secrets.
-- **Routing intelligent** : sélection automatique du bon adaptateur selon
-  `api_type` du provider.
-- **Streaming SSE** : support du chat streamé via le daemon.
-- **Tests unitaires** par adaptateur avec mock HTTP.
+### V0.6.3 — LLM Bridge : abstraction unifiée des providers ✅
+- **Interface `BaseBridge`** (`modules/llm_manager/base_bridge.py`) : contrat commun
+  (chat, chat_stream, get_capabilities, list_available_providers/models,
+  health_check, classify_error) + types partagés (ModelCapabilities,
+  ChatResponse, ErrorCategory, BridgeError(Exception)).
+- **`LiteLLMBridge`** (`litellm_bridge.py`) : 1 adaptateur (litellm) ;
+  ErrorClassifier (auth/rate/context/server/timeout/unknown) ; ContextValidator
+  (cache + persistance BDD + audit log `context_audit_log`).
+- **Streaming SSE** : `op_llm_chat_stream_sse` + `STREAMING_ROUTES` +
+  `StreamWriter` dans le daemon ; route `auth/info` (bootstrap token/port
+  pour `fetch()` direct côté GUI). Routes `llm/chat/stream` validées E2E.
 
-### V0.6.4 — Gestionnaire LLM locaux 📝
-- **Détection automatique** :
-  - Vérification de la présence d'Ollama, LM Studio, llama.cpp sur le système
-  - Scan des processus en cours, socket Unix / port TCP
-  - Détection des modèles téléchargés (via API locale)
-- **Installation assistée** :
-  - Téléchargement et installation d'Ollama (Linux, macOS, Windows)
-  - Post-install : pull de modèles recommandés (llama3, qwen2.5, phi-4, nomic-embed-text)
-  - Barre de progression dans la GUI
-- **Gestion start/stop** :
-  - Bouton start/stop par moteur local dans la GUI
-  - Statut en temps réel (running, stopped, error)
-  - Logs du moteur accessibles
-- **Auto-découverte réseau** : détection des instances Ollama/LM Studio
-  sur le LAN (mDNS / scan de ports).
-- **GUI** : onglet « LLM locaux » avec tableau des moteurs détectés,
-  modèles disponibles, actions.
+### V0.6.4 — Gestionnaire LLM locaux ✅
+- **`LocalEngineManager`** (`modules/llm_manager/local_engines.py`, NOUVEAU) :
+  détection live Ollama (:11434 / `/api/tags`), LM Studio (:1234 /
+  `/v1/models`), llama.cpp (:8080) ; start/stop headless (Ollama via
+  subprocess + PID) ; listage modèles via API locale. Singleton partagé.
+- **Routes daemon** : `llm/local/list`, `llm/local/start`, `llm/local/stop`,
+  `llm/local/models`.
+- **GUI** : onglet « LLM locaux » (état moteurs, boutons
+  démarrer/arrêter, modèles détectés).
+- **Test E2E conteneur** : détection Ollama (port + `/api/tags`), listage
+  modèles, routage bridge `provider=ollama` → `localhost:11434` validés via
+  moteur local mock + intégration `llm/chat`. Pull d'un vrai minimodèle
+  (smollm:135m) non effectué : bande passante conteneur ~400 KB/s
+  (~1 Go → ~50 min).
 
 ### V0.6.5 — Interface de chat avec les modèles 📝
 - **Fenêtre de chat** dans la GUI :
