@@ -1417,6 +1417,20 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Seed ignoré: {e}")
 
+        # ── Seed modèles + provider_models si vides ──
+        # Indépendant des outils : couvre le cas d'une BDD où les
+        # outils sont présents mais le catalogue LLM non seedé (ex : démarrage
+        # GUI frais). Les fonctions lisent modules/llm_manager/data/*.json.
+        try:
+            mc = self.conn.execute("SELECT COUNT(*) FROM catalogue_models").fetchone()[0]
+            if mc == 0:
+                from modules.llm_manager.llm_manager import seed_models, seed_provider_models
+                seed_models(self)
+                seed_provider_models(self)
+                self.conn.commit()
+        except Exception as e:
+            print(f"⚠️  Seed modèles ignoré: {e}")
+
         # ── Migration colonnes provider_endpoints ──
         try:
             _add_column_if_missing(self.conn, "provider_endpoints", "local_latency", "REAL")
