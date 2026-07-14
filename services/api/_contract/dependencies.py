@@ -40,6 +40,7 @@ CONSUMES = {
     # LLM Bridge (chat, capacités, contexte).
     "modules.llm_manager.litellm_bridge": ["LiteLLMBridge"],
     "modules.llm_manager.base_bridge": ["BridgeError", "ErrorCategory"],
+    "modules.llm_manager.local_engines": ["get_local_engine_manager", "LocalEngineManager"],
     # Helpers partagés.
     "services._common": ["_db_paths", "_quiet_stdout", "log_to_file", "acquire_instance_lock"],
     # Vérification des dépendances.

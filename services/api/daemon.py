@@ -50,10 +50,11 @@ from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_versio
 from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
 from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.local_engines import get_local_engine_manager
 from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 
 API_VERSION = "v1"
-MW_VERSION = "0.6.3"
+MW_VERSION = "0.6.4"
 
 
 def _mw_dir() -> Path:
@@ -952,6 +953,39 @@ def op_llm_context_history(params):
     return {"status": "ok", "logs": rows, "count": len(rows)}
 
 
+def op_llm_local_list(params):
+    """Liste les moteurs LLM locaux détectés (Ollama, LM Studio, ...)."""
+    mgr = get_local_engine_manager()
+    return mgr.list_engines()
+
+
+def op_llm_local_start(params):
+    """Démarre un moteur local gérable en headless. params: engine"""
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    if not engine_ref:
+        return {"status": "error", "error": "paramètre engine requis"}
+    return mgr.start(engine_ref)
+
+
+def op_llm_local_stop(params):
+    """Arrête un moteur local. params: engine"""
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    if not engine_ref:
+        return {"status": "error", "error": "paramètre engine requis"}
+    return mgr.stop(engine_ref)
+
+
+def op_llm_local_models(params):
+    """Liste les modèles disponibles d'un moteur local. params: engine"""
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    if not engine_ref:
+        return {"status": "error", "error": "paramètre engine requis"}
+    return mgr.list_models(engine_ref)
+
+
 def op_provider_endpoint_add(params):
     """Ajoute un endpoint à un provider (table provider_endpoints).
     params: provider_ref, label, endpoint_url, api_type?, is_default?"""
@@ -1041,6 +1075,11 @@ ROUTES = {
     "llm/bridge/status":      op_llm_bridge_status,
     "llm/context/probe":      op_llm_context_probe,
     "llm/context/history":    op_llm_context_history,
+    # K2. LLM locaux (moteurs détectés sur la machine)
+    "llm/local/list":         op_llm_local_list,
+    "llm/local/start":        op_llm_local_start,
+    "llm/local/stop":         op_llm_local_stop,
+    "llm/local/models":       op_llm_local_models,
     # L. Auth / Infra
     "auth/info":              op_auth_info,
     # J. Logs

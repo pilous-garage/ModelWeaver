@@ -63,6 +63,11 @@ EXPOSES = {
     "llm/bridge/status": ["provider_ref"],
     "llm/context/probe": ["provider_ref", "model_ref"],
     "llm/context/history": ["provider_ref", "model_ref", "limit"],
+    # K2. LLM locaux (moteurs détectés sur la machine)
+    "llm/local/list": [],
+    "llm/local/start": ["engine"],
+    "llm/local/stop": ["engine"],
+    "llm/local/models": ["engine"],
     # L. Auth / Infra
     "auth/info": [],
     # J. Logs
