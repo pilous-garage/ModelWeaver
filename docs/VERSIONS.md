@@ -184,22 +184,91 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
 - **GUI** : gestionnaire de providers (connu / nouveau), bouton « 🔄 Fetch modèles »
   filtré par provider avec clé, feedback d'erreur visible sur le bouton « + ».
 
-### V0.6.1 — Clôture V0.6.0 + durcissement clés 🔒 (en cours)
+### V0.6.1 — Clôture V0.6.0 + durcissement clés 🔒 ✅
 - **Finitions gestionnaire de clés** : feedback UX sur ajout (message d'erreur
   visible au lieu de retour silencieux), auto-sélection du 1er provider,
   affichage des endpoints par provider.
 - **Nettoyage roadmap** : ce document reflète enfin l'état réel de V0.6.0.
 
-### V0.6.x — LLM Bridge + adaptateurs + rôles 📝 (planifié, après V0.6.1)
-- **Abstraction LLM (LLM Bridge)** : interface unifiée `BaseProvider` (chat,
-  embed, list_models) — catalogue LLM déjà en place.
-- **Adaptateurs** : Ollama, LiteLLM, APIs natives (tous consomment
-  `KeyManager.get_key`).
-- **Gestionnaire LLM locaux** : détection, installation et gestion des moteurs
-  locaux (Ollama, LM Studio, llama.cpp) — statut, start/stop, modèles
-  disponibles, auto-découverte sur le réseau local.
-- **Hardening** : sandboxing des commandes, logging structuré.
-- **Interface config rôles d'agents** + import/export de rôles.
+### V0.6.2 — Fix IPC GUI (fetch → daemon_post) ✅
+- **Remplacer fetch() direct par invoke('daemon_post')** : les appels HTTP du
+  WebView Tauri vers le daemon étaient bloqués par la CSP (Content Security
+  Policy) par défaut (« Load failed »). Solution : passage par le pont Rust
+  `daemon_post` qui utilise `curl` en interne, bypassant CSP et CORS.
+- **CSP dans tauri.conf.json** : sécurisation préventive.
+- **Refonte complète des handlers** : `handleSetKey`, `fetchKeys`,
+  `fetchModels`, `handleAddProvider`, `handleDeleteKey`,
+  `handleToggleLock`, `fetchDbVersion`.
+
+### V0.6.3 — LLM Bridge : abstraction unifiée des providers 📝
+- **Interface `BaseProvider`** : contrat commun pour tous les moteurs LLM
+  (chat, embed, list_models, stream, count_tokens).
+- **Adaptateurs** :
+  - OpenAI-compatible (OpenAI, Groq, Together, Fireworks, DeepSeek, GitHub Models)
+  - Google Gemini (API native)
+  - Anthropic (API native)
+  - Ollama (API REST locale)
+  - LiteLLM (passerelle universelle)
+- **Tous les adaptateurs consomment `KeyManager.get_key`** pour les secrets.
+- **Routing intelligent** : sélection automatique du bon adaptateur selon
+  `api_type` du provider.
+- **Streaming SSE** : support du chat streamé via le daemon.
+- **Tests unitaires** par adaptateur avec mock HTTP.
+
+### V0.6.4 — Gestionnaire LLM locaux 📝
+- **Détection automatique** :
+  - Vérification de la présence d'Ollama, LM Studio, llama.cpp sur le système
+  - Scan des processus en cours, socket Unix / port TCP
+  - Détection des modèles téléchargés (via API locale)
+- **Installation assistée** :
+  - Téléchargement et installation d'Ollama (Linux, macOS, Windows)
+  - Post-install : pull de modèles recommandés (llama3, qwen2.5, phi-4, nomic-embed-text)
+  - Barre de progression dans la GUI
+- **Gestion start/stop** :
+  - Bouton start/stop par moteur local dans la GUI
+  - Statut en temps réel (running, stopped, error)
+  - Logs du moteur accessibles
+- **Auto-découverte réseau** : détection des instances Ollama/LM Studio
+  sur le LAN (mDNS / scan de ports).
+- **GUI** : onglet « LLM locaux » avec tableau des moteurs détectés,
+  modèles disponibles, actions.
+
+### V0.6.5 — Interface de chat avec les modèles 📝
+- **Fenêtre de chat** dans la GUI :
+  - Sélection du modèle (filtré par provider avec clé + locaux)
+  - Zone de saisie + historique
+  - Streaming des réponses (SSE)
+  - Markdown + code highlighting
+- **Mode multi-modèle** : comparer les réponses de plusieurs modèles
+  côte à côte sur un même prompt.
+- **Paramètres avancés** : température, max_tokens, top_p, system prompt.
+- **Export de conversation** (JSON / Markdown).
+
+### V0.6.6 — Rôles d'agents et configuration 📝
+- **Définition d'un rôle** :
+  - Template de prompt système
+  - Capacités associées (chat, code, analyse, search, tool_use)
+  - Modèle(s) recommandé(s) par rôle
+  - Niveau de température / params par défaut
+- **GUI Éditeur de rôles** :
+  - Création, modification, duplication, suppression
+  - Import/export JSON
+  - Bibliothèque de rôles pré-définis (assistant, codeur, relecteur,
+    architecte, rédacteur, QA)
+- **Attribution provider-modèle par rôle** : lier un rôle à un provider
+  et un modèle spécifiques.
+- **Tests de rôles** : chat de test direct depuis l'éditeur.
+
+### V0.6.7 — Hardening et logging structuré 📝
+- **Sandboxing des commandes** : exécution des outils et appels LLM dans
+  un environnement restreint (sous-processus isolé, timeout, limite mémoire).
+- **Logging structuré** : remplacement des `print()` par `structlog` /
+  logging JSON (service, niveau, timestamp, message, contexte).
+- **Rotation des logs** : pas de saturation disque.
+- **Audit trail** : toutes les opérations sensibles (ajout/suppression clé,
+  installation outils, exécution code) sont tracées.
+- **Rate limiting** : protection des endpoints du daemon contre les appels
+  abusifs.
 
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
