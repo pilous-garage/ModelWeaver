@@ -691,6 +691,29 @@ rien n'était (un merge en conflit passait inaperçu). Corrigé :
   `on_error`, et poursuite en cas de succès. **4/4 PASS**.
 - Régression : mini-entreprise **27/27 PASS**, E2E principal **51/51 PASS**.
 
+### V0.6.24 — Résolution de conflits git + skill git_add ✅
+
+Suite de V0.6.23 : outils pour **résoudre** concrètement un conflit de merge
+(outre la résolution LLM via `project_write` déjà possible).
+
+- **`git_add`** (nouveau skill) : stage un fichier (`path`) ou tout
+  (`git add -A` si `path` absent) dans le clone perso de l'agent.
+- **`git_merge`** étendu :
+  - `strategy: ours|theirs` → `git merge -X {strategy}` : résolution
+    automatique de tous les conflits en faveur d'un côté (le merge réussit,
+    `ok=True`).
+  - `abort: true` → `git merge --abort` : annule proprement un merge en cours
+    (retour à un état propre).
+- **`git_resolve_conflict`** (nouveau skill) : résout **un fichier** en conflit
+  en choisissant `side: ours|theirs` (`git checkout --{side} -- {path}` puis
+  `git add`) — à enchaîner avec `git_commit` pour conclure le merge.
+- Les retours restent normalisés (`ok`/`exit_code`/`stderr`) → détectés par le
+  FSM (V0.6.23).
+- **Total = 63 skills** (ajout `git_add`, `git_resolve_conflict`).
+- **Test `tests/test_git_conflict_resolution.py`** (5 cas) : **5/5 PASS**
+  (`git_add`, `merge -X theirs/ours`, `git_resolve_conflict` par fichier,
+  `merge --abort`).
+
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
 

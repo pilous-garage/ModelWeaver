@@ -1,6 +1,6 @@
-name: system/git_merge@v1
+name: system/git_add@v1
 category: system
-description: "Fusionne une branche dans la branche courante (intégration manager)."
+description: "Stage un fichier (ou tous les fichiers) dans l'index git — utile pour conclure un merge après résolution de conflit."
 inputs:
   project_id:
     type: string
@@ -10,19 +10,10 @@ inputs:
     type: string
     required: false
     description: "Identifiant de l'agent (injecté automatiquement par le FSM si absent)"
-  name:
-    type: string
-    required: true
-    description: "Branche à fusionner"
-  strategy:
+  path:
     type: string
     required: false
-    enum: [ours, theirs]
-    description: "Résolution automatique des conflits en faveur d'un côté (git merge -X)"
-  abort:
-    type: boolean
-    required: false
-    description: "Si true, annule un merge en cours (git merge --abort)"
+    description: "Fichier à stage (relatif au clone). Si absent, stage tout (git add -A)"
 outputs:
   stdout:
     type: string
@@ -35,4 +26,4 @@ outputs:
     description: "True ssi la commande git a réussi (exit_code == 0)"
 implementation:
   type: python
-  function: _exec_git_merge
+  function: _exec_git_add

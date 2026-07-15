@@ -220,6 +220,8 @@ class SkillManager:
             "_exec_git_log": self._exec_git_log,
             "_exec_git_status": self._exec_git_status,
             "_exec_git_merge": self._exec_git_merge,
+            "_exec_git_add": self._exec_git_add,
+            "_exec_git_resolve_conflict": self._exec_git_resolve_conflict,
             "_exec_git_fetch": self._exec_git_fetch,
             "_exec_git_pull": self._exec_git_pull,
             "_exec_git_push": self._exec_git_push,
@@ -1035,11 +1037,18 @@ class SkillManager:
         root, err = self._clone_or_err(inputs)
         if err:
             return err
+        if inputs.get("abort"):
+            return self._git_run(root, ["merge", "--abort"])
         name = inputs.get("name", "")
         if not name:
             return {"stdout": "", "stderr": "name requis", "exit_code": -1,
                     "ok": False}
-        r = self._git_run(root, ["merge", "--no-edit", name])
+        args = ["merge", "--no-edit"]
+        strat = inputs.get("strategy")
+        if strat in ("ours", "theirs"):
+            args += ["-X", strat]
+        args.append(name)
+        r = self._git_run(root, args)
         if r["exit_code"] != 0:
             # Merge en échec : survolontairement un conflit de contenu.
             r = dict(r)
@@ -1048,6 +1057,34 @@ class SkillManager:
             r["error"] = ("merge en échec (conflit de contenu)" if r["conflict"]
                           else f"merge en échec: {r.get('stderr', '')[:200]}")
         return r
+
+    def _exec_git_add(self, inputs: dict, ws: str) -> dict:
+        root, err = self._clone_or_err(inputs)
+        if err:
+            return err
+        path = inputs.get("path", "")
+        if path:
+            return self._git_run(root, ["add", "--", path])
+        return self._git_run(root, ["add", "-A"])
+
+    def _exec_git_resolve_conflict(self, inputs: dict, ws: str) -> dict:
+        """Résout un conflit de merge sur un fichier en choisissant un côté
+        (ours/theirs) puis stage le fichier — à faire après un merge en
+        conflit avant le commit de conclusion."""
+        root, err = self._clone_or_err(inputs)
+        if err:
+            return err
+        path = inputs.get("path", "")
+        if not path:
+            return {"stdout": "", "stderr": "path requis", "exit_code": -1,
+                    "ok": False}
+        side = inputs.get("side", "ours")
+        if side not in ("ours", "theirs"):
+            return {"ok": False, "error": "side doit être 'ours' ou 'theirs'"}
+        co = self._git_run(root, ["checkout", f"--{side}", "--", path])
+        if co["exit_code"] != 0:
+            return co
+        return self._git_run(root, ["add", "--", path])
 
     def _exec_git_fetch(self, inputs: dict, ws: str) -> dict:
         root, err = self._clone_or_err(inputs)
