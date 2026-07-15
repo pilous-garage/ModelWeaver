@@ -1320,16 +1320,19 @@ def op_agent_handoff(params):
 
 
 # ── N. Chat Service (V0.6.6) : sessions = agents role_type='chat' ──
+# Le chat est un agent pur : les opérations sont des façades sur AgentManager
+# (qui pilote le framework FSM + StreamBus + signaux). Aucune logique LLM
+# dupliquée — services/chat/service.py a été retiré.
 
-def _chat_service() -> "ChatService":
-    from services.chat.service import ChatService
-    return ChatService(db=_get_agent_db())
+def _chat_mgr() -> "AgentManager":
+    from services.agent_manager.service import AgentManager
+    return AgentManager(db=_get_agent_db())
 
 
 def op_chat_session_create(params):
-    """Crée une session de chat (agent role_type='chat').
-    params: name, provider_ref?, model_ref?, system_prompt?, allow_read_others?"""
-    return _chat_service().create_session(
+    """Crée une session de chat = agent role_type='chat' (params: name,
+    provider_ref?, model_ref?, system_prompt?, allow_read_others?)."""
+    return _chat_mgr().create_chat_session(
         name=params.get("name"),
         provider_ref=params.get("provider_ref", ""),
         model_ref=params.get("model_ref", ""),
@@ -1339,8 +1342,8 @@ def op_chat_session_create(params):
 
 
 def op_chat_session_list(_params):
-    """Liste les sessions de chat actives."""
-    return _chat_service().list_sessions()
+    """Liste les sessions de chat (agents role_type='chat')."""
+    return _chat_mgr().list_chat_sessions()
 
 
 def op_chat_session_get(params):
@@ -1348,7 +1351,7 @@ def op_chat_session_get(params):
     name = params.get("name")
     if not name:
         return {"status": "error", "error": "name requis"}
-    return _chat_service().get_session(name)
+    return _chat_mgr().get_chat_session(name)
 
 
 def op_chat_session_delete(params):
@@ -1356,7 +1359,7 @@ def op_chat_session_delete(params):
     name = params.get("name")
     if not name:
         return {"status": "error", "error": "name requis"}
-    return _chat_service().delete_session(name)
+    return _chat_mgr().delete_chat_session(name)
 
 
 def op_chat_session_update(params):
@@ -1364,7 +1367,7 @@ def op_chat_session_update(params):
     name = params.get("name")
     if not name:
         return {"status": "error", "error": "name requis"}
-    return _chat_service().update_session(
+    return _chat_mgr().update_chat_session(
         name=name,
         system_prompt=params.get("system_prompt"),
         provider_ref=params.get("provider_ref"),
@@ -1374,14 +1377,14 @@ def op_chat_session_update(params):
 
 
 def op_chat_session_send(params):
-    """Envoie un message à une session (params: name, message, provider_ref?,
-    model_ref?, stream?, temperature?, max_tokens?)."""
+    """Envoie un message à une session = un tour de chat agentique (params:
+    name, message, provider_ref?, model_ref?, stream?, temperature?, max_tokens?)."""
     name = params.get("name")
     message = params.get("message")
     if not name or message is None:
         return {"status": "error", "error": "name et message requis"}
     mt = params.get("max_tokens")
-    return _chat_service().send(
+    return _chat_mgr().chat_send(
         name=name, message=message,
         provider_ref=params.get("provider_ref", ""),
         model_ref=params.get("model_ref", ""),
@@ -1396,7 +1399,7 @@ def op_chat_session_history(params):
     name = params.get("name")
     if not name:
         return {"status": "error", "error": "name requis"}
-    return _chat_service().history(name)
+    return _chat_mgr().get_chat_session(name)
 
 
 def op_chat_session_read(params):
@@ -1405,7 +1408,7 @@ def op_chat_session_read(params):
     other = params.get("other")
     if not name or not other:
         return {"status": "error", "error": "name et other requis"}
-    return _chat_service().read_session(name, other)
+    return _chat_mgr().chat_read(name, other)
 
 
 def op_chat_session_stream(params):
@@ -1413,7 +1416,7 @@ def op_chat_session_stream(params):
     name = params.get("name")
     if not name:
         return {"status": "error", "error": "name requis"}
-    return _chat_service().stream(name, int(params.get("seq", 0) or 0))
+    return op_agent_stream({"name": name, "seq": int(params.get("seq", 0) or 0)})
 
 
 def op_provider_endpoint_add(params):

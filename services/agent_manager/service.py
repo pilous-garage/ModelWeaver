@@ -27,6 +27,21 @@ from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
 from AgentFrameWork.stream_bus import stream_bus
 
 
+# Workflow minimal d'un tour de chat : un seul `llm_call` qui consomme le
+# historique complet passé à run() (messages), diffuse via StreamBus, et
+# ajoute la réponse à l'historique. Le chat est un agent `role_type='chat'`
+# exécuté via ce workflow — aucune logique LLM dupliquée hors du framework.
+CHAT_WORKFLOW = {
+    "steps": [
+        {"id": "chat", "type": "llm_call",
+         "provider_ref": "", "model_ref": "",
+         "temperature": 0.7, "max_tokens": 4096,
+         "output_capture": "_reply", "next": "end"},
+        {"id": "end", "type": "end", "status": "SUCCESS"},
+    ]
+}
+
+
 # ──────────────────────────────────────────────
 #  Agent — Runtime wrapper (Phase 1 minimal)
 # ──────────────────────────────────────────────
@@ -175,6 +190,92 @@ class Agent:
             self._record_failure()
             return {"status": "error", "error": str(e)}
 
+        finally:
+            self._mark_idle()
+
+    def chat_turn(
+        self, user_message: str,
+        provider_ref: str = "", model_ref: str = "",
+        temperature: float = 0.7, max_tokens: int = 4096,
+        system_prompt: str = "",
+    ) -> Dict[str, Any]:
+        """Tour de chat multi-turn via le framework (FSM + StreamBus + signaux).
+
+        Le chat est un agent : on recharge l'historique depuis variables_json,
+        on exécute CHAT_WORKFLOW avec l'historique + le nouveau message, et on
+        persiste l'historique enrichi. Aucune logique LLM propre à ChatService.
+        """
+        self._mark_running()
+        stream_bus.reset(self.agent_id)
+
+        if not self._bridge:
+            self._bridge = LiteLLMBridge()
+
+        variables = json.loads(self._data.get("variables_json") or "{}")
+        history = variables.get("messages", [])
+
+        # Reconstruire les messages LLM : system + historique + nouveau user
+        llm_messages: List[Dict[str, str]] = []
+        system = system_prompt or variables.get("system_prompt", "")
+        if system:
+            llm_messages.append({"role": "system", "content": system})
+        llm_messages.extend(history)
+        llm_messages.append({"role": "user", "content": user_message})
+
+        signal_check = self._make_signal_check()
+        stream_sink = lambda chunk: stream_bus.publish(self.agent_id, chunk, "token")
+
+        try:
+            workflow = {
+                "steps": [
+                    {"id": "chat", "type": "llm_call",
+                     "provider_ref": "", "model_ref": "",
+                     "temperature": temperature, "max_tokens": max_tokens or 4096,
+                     "output_capture": "_reply", "next": "end"},
+                    {"id": "end", "type": "end", "status": "SUCCESS"},
+                ]
+            }
+            fsm = FSMInterpreter(bridge=self._bridge, tool_executor=None)
+            result: FSMResult = fsm.run(
+                workflow=workflow,
+                messages=llm_messages,
+                variables=variables,
+                provider_ref=provider_ref,
+                model_ref=model_ref,
+                signal_check=signal_check,
+                stream_sink=stream_sink,
+            )
+            if result.status not in ("ok", "success", "running"):
+                return {"status": "failed",
+                        "error": result.end_reason or "échec FSM"}
+
+            # Retirer le system prompt qu'on avait ajouté : l'historique ne
+            # stocke que les tours user/assistant.
+            new_history = result.messages[1:] if system else list(result.messages)
+            # NB : result.variables est une COPIE de `variables` prise au démarrage
+            # de run() (donc avec messages=[]). On fusionne d'abord les variables
+            # du FSM, PUIS on (ré)écrit l'historique courant pour ne pas l'écraser.
+            for k, v in result.variables.items():
+                variables[k] = v
+            variables["messages"] = new_history
+            self.db.conn.execute(
+                "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
+                (json.dumps(variables), self.agent_id))
+            self.db.conn.commit()
+
+            return {"status": "ok", "reply": result.content,
+                    "content": result.content,
+                    "messages": new_history,
+                    "tokens_used": result.tokens_used}
+        except AgentAbort:
+            self._record_failure()
+            return {"status": "aborted", "error": "Interrompu par signal kill"}
+        except BridgeError as e:
+            self._record_failure()
+            return {"status": "error", "error": str(e), "category": "llm"}
+        except Exception as e:
+            self._record_failure()
+            return {"status": "error", "error": str(e)}
         finally:
             self._mark_idle()
 
@@ -743,6 +844,144 @@ class AgentManager:
         self.db.conn.commit()
         return {"status": "ok", "from_id": from_id, "to_id": to_id,
                 "carried_variables": len(variables), "carried_state": len(state)}
+
+    # ── Chat Service = agents role_type='chat' (façades sur le framework) ──
+
+    def create_chat_session(self, name: str, system_prompt: str = "",
+                            provider_ref: str = "", model_ref: str = "",
+                            allow_read_others: bool = False,
+                            resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Crée une session de chat = agent role_type='chat' (sans exécution)."""
+        if self.get_by_name(name):
+            return {"status": "error", "error": f"session '{name}' existe déjà"}
+        config = {"workflow": CHAT_WORKFLOW}
+        variables = {
+            "messages": [],
+            "system_prompt": system_prompt,
+            "provider_ref": provider_ref,
+            "model_ref": model_ref,
+            "allow_read_others": bool(allow_read_others),
+        }
+        res = resources if resources is not None else {"llm": True}
+        res.setdefault("llm", True)
+        try:
+            self.db.conn.execute(
+                "INSERT INTO agents (name, ref, role_type, occupation, config_json, "
+                "resources_json, variables_json) VALUES (?, ?, 'chat', 'noncontinue', ?, ?, ?)",
+                (name, f"agent:{name}", json.dumps(config),
+                 json.dumps(res), json.dumps(variables)))
+            self.db.conn.commit()
+            aid = self.db.conn.execute(
+                "SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+            return {"status": "ok", "agent_id": aid, "name": name}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def list_chat_sessions(self) -> Dict[str, Any]:
+        rows = self.db.conn.execute(
+            "SELECT agent_id, name, status, variables_json, resources_json "
+            "FROM agents WHERE role_type = 'chat' ORDER BY name"
+        ).fetchall()
+        out = []
+        for r in rows:
+            v = json.loads(r["variables_json"] or "{}")
+            out.append({
+                "agent_id": r["agent_id"], "name": r["name"], "status": r["status"],
+                "provider_ref": v.get("provider_ref", ""),
+                "model_ref": v.get("model_ref", ""),
+                "allow_read_others": v.get("allow_read_others", False),
+                "messages": len(v.get("messages", [])),
+            })
+        return {"status": "ok", "sessions": out, "count": len(out)}
+
+    def get_chat_session(self, name: str) -> Dict[str, Any]:
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": "session introuvable"}
+        v = json.loads(row.get("variables_json") or "{}")
+        return {"status": "ok", "agent_id": row["agent_id"], "name": row["name"],
+                "provider_ref": v.get("provider_ref", ""),
+                "model_ref": v.get("model_ref", ""),
+                "system_prompt": v.get("system_prompt", ""),
+                "allow_read_others": v.get("allow_read_others", False),
+                "messages": v.get("messages", [])}
+
+    def update_chat_session(self, name: str, system_prompt: Optional[str] = None,
+                            provider_ref: Optional[str] = None,
+                            model_ref: Optional[str] = None,
+                            allow_read_others: Optional[bool] = None) -> Dict[str, Any]:
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": "session introuvable"}
+        v = json.loads(row.get("variables_json") or "{}")
+        if system_prompt is not None:
+            v["system_prompt"] = system_prompt
+        if provider_ref is not None:
+            v["provider_ref"] = provider_ref
+        if model_ref is not None:
+            v["model_ref"] = model_ref
+        if allow_read_others is not None:
+            v["allow_read_others"] = bool(allow_read_others)
+        self.db.conn.execute(
+            "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
+            (json.dumps(v), row["agent_id"]))
+        self.db.conn.commit()
+        return {"status": "ok", "agent_id": row["agent_id"], "name": name}
+
+    def delete_chat_session(self, name: str) -> Dict[str, Any]:
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": "session introuvable"}
+        aid = row["agent_id"]
+        self.db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (aid,))
+        self.db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (aid,))
+        self.db.conn.commit()
+        stream_bus.reset(aid)
+        return {"status": "ok", "agent_id": aid}
+
+    def chat_send(self, name: str, message: str, provider_ref: str = "",
+                  model_ref: str = "", stream: bool = False,
+                  temperature: float = 0.7, max_tokens: Optional[int] = None) -> Dict[str, Any]:
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": "session introuvable"}
+        aid = row["agent_id"]
+        v = json.loads(row.get("variables_json") or "{}")
+        p_ref = provider_ref or v.get("provider_ref", "")
+        m_ref = model_ref or v.get("model_ref", "")
+        if not p_ref or not m_ref:
+            return {"status": "error", "error": "provider/model non défini pour la session"}
+        try:
+            agent = Agent.hydrate(aid, self.db)
+            res = agent.chat_turn(
+                message, provider_ref=p_ref, model_ref=m_ref,
+                temperature=temperature, max_tokens=max_tokens or 4096,
+                system_prompt=v.get("system_prompt", ""))
+            agent.dehydrate()
+            if res.get("status") not in ("ok", "success"):
+                return res
+            return {"status": "ok", "agent_id": aid, "name": name,
+                    "reply": res.get("reply", ""),
+                    "model": f"{p_ref}/{m_ref}", "usage": {},
+                    "messages": len(res.get("messages", []))}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def chat_read(self, name: str, other: str) -> Dict[str, Any]:
+        """Lit l'historique d'une AUTRE session (si celle-ci l'autorise)."""
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": "session lectrice introuvable"}
+        v = json.loads(row.get("variables_json") or "{}")
+        if not v.get("allow_read_others", False):
+            return {"status": "error",
+                    "error": "cette session n'a pas le droit de lire les autres"}
+        orow = self.get_by_name(other)
+        if not orow:
+            return {"status": "error", "error": "session cible introuvable"}
+        ov = json.loads(orow.get("variables_json") or "{}")
+        return {"status": "ok", "reader": name, "source": other,
+                "messages": ov.get("messages", [])}
 
     # ── Interne ──
 

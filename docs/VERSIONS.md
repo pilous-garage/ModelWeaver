@@ -282,28 +282,36 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
 - **Bug fix critique** : `AgentManager.kill()` enregistrait `pid = os.getpid()` (le daemon lui-même, car les agents s'exécutent inline) et faisait `os.kill(pid, SIGTERM)` → un `kill`/`admit` sur un agent actif tuait le **daemon**. Désormais, si `pid == os.getpid()` (agent inline), `kill()` enfile un signal `kill` que la FSM honore (`AgentAbort`) au prochain `signal_check`, au lieu de SIGTERM/SIGKILL le daemon.
 - **E2E Docker** : test complet `tests/e2e_agent_framework.py` piloté via le client HTTP réel (`MWClient`) contre le daemon, conteneurisé (`docker/Dockerfile.e2e` + `docker/entrypoint-e2e.sh` + `docker/run-e2e-agent.sh`). `--network host` pour joindre l'Ollama de l'hôte (modèles en cache). `.env` filtré (hors opencode/zen, openrouter, nvidia) onboardé. **Résultat : 29/29 PASS** (Phases 1→5 + cloud GROQ réel).
 
-### V0.6.6 — Chat Service (backend agentique) ✅
-**Redéfini** : service de chat complet reposant sur le framework Agent
-(V0.6.5) — chaque session de chat = un **agent** (`role_type='chat'`,
-`occupation='noncontinue'`). Backend testable (daemon + E2E). GUI Tauri
-non rebuild (onglet chat à ajouter quand le binaire sera recompilé).
+### V0.6.6 — Chat = agent pur (framework Agent) ✅
+Le chat est une **exécution agentique standard** du framework (V0.6.5) :
+chaque session de chat = un **agent** (`role_type='chat'`,
+`occupation='noncontinue'`) exécuté via `FSMInterpreter` avec un workflow
+mono-étape `CHAT_WORKFLOW` (1 step `llm_call`), historique persisté dans
+`variables_json.messages`, streaming via `StreamBus`, signaux via
+`_make_signal_check`. Aucune logique LLM dupliquée hors du framework.
 
-- **`services/chat/service.py`** (`ChatService`) :
-  - Sessions = agents persistés (identité BDD, cycle hydrate/dehydrate réutilisé).
-  - `create_session` / `list_sessions` / `get_session` / `delete_session` /
-    `update_session` (system_prompt, provider/model, `allow_read_others`).
-  - `send` : appelle `LiteLLMBridge.chat` / `chat_stream` (Ollama, cloud…),
-    persiste l'historique dans `variables_json.messages`.
-  - `history` / `read_session` (lecture d'une AUTRE session SI elle autorise
-    `allow_read_others`) / `stream` (poll du `StreamBus`).
-- **Routes daemon** `chat/session/*` (create/list/get/delete/update/send/
-  history/read/stream) + CLI namespace `chat` + contrat `EXPOSES` à jour.
+- **`services/chat/` supprimé** : `ChatService` dupliquait la logique LLM du
+  framework → retiré. Le chat est 100% porté par le framework Agent.
+- **`Agent.chat_turn()`** (`services/agent_manager/service.py`) : exécute
+  `CHAT_WORKFLOW`, publie les tokens sur le `StreamBus` (clé agent_id),
+  persiste l'historique (`variables_json.messages`) et `_reply` dans la BDD.
+- **`AgentManager`** : `create_chat_session` / `list_chat_sessions` /
+  `get_chat_session` / `update_chat_session` / `delete_chat_session` /
+  `chat_send` / `chat_read` (facades qui pilotent des agents chat).
+- **Routes daemon** `chat/session/*` (create/list/get/update/delete/send/
+  history/read/stream) = **façades** sur `AgentManager` (aucune dépendance à
+  un service dédié ; réutilisent `agent/*`, `agent/stream`, signaux).
 - **Streaming** : tokens publiés sur le `StreamBus` (clé agent_id),
   consultables via `chat/session/stream` (ou `agent/stream`).
 - **Isolation** : une session n'écrit QUE dans sa propre histoire ; lecture
   des autres sessions conditionnée à `allow_read_others`.
+- **Bug corrigé** : `chat_turn` fusionnait `result.variables` (copie prise à
+  l'entrée de `run()`, avec `messages=[]`) APRÈS avoir positionné
+  `variables["messages"]` → écrasait l'historique. Correction : fusion des
+  variables du FSM PUIS réécriture de `messages = new_history`.
 - **E2E** : `tests/e2e_agent_framework.py` Phase 6 = **38/38 PASS** (sessions
-  simultanées, LLM local Ollama, streaming, read-others autorisé/refusé).
+  simultanées, LLM local Ollama, streaming, read-others autorisé/refusé,
+  persistance historique user+assistant).
 
 > Reste à faire (GUI) : fenêtre de chat Tauri (sélecteur modèle, historique,
 > SSE, markdown/code highlighting, multi-modèle, params avancés, export).
