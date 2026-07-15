@@ -67,6 +67,11 @@ class Agent:
         self.occupation = agent_data["occupation"]
         self.status = agent_data["status"]
 
+        # Lifecycle hooks
+        config = json.loads(self._data.get("config_json") or "{}")
+        from services.lifecycle import LifecycleManager
+        self._lifecycle = LifecycleManager(self.agent_id, config)
+
     @classmethod
     def hydrate(cls, agent_id: int, db: Optional[AgentsDB] = None) -> "Agent":
         """Hydrate un agent depuis la BDD.
@@ -118,6 +123,12 @@ class Agent:
         # Résoudre le workflow (FSM)
         config = json.loads(self._data.get("config_json") or "{}")
         workflow = config.get("workflow") or config.get("pipeline")
+        if workflow and isinstance(workflow, dict):
+            from services.skill_manager import expand_workflow
+            try:
+                workflow = expand_workflow(workflow)
+            except Exception:
+                pass
 
         # Construire les messages initiaux
         messages = self._build_messages(request, config)
@@ -140,6 +151,7 @@ class Agent:
                     stream_sink=stream_sink,
                     spawn_handler=spawn_handler,
                     handoff_handler=handoff_handler,
+                    lifecycle_mgr=self._lifecycle,
                 )
                 result = result.to_dict()
             else:
@@ -156,8 +168,10 @@ class Agent:
                 tokens = 0
                 if hasattr(result, 'usage') and isinstance(result.usage, dict):
                     tokens = result.usage.get("total_tokens", 0)
+                budget = getattr(result, 'budget', {}) or {}
                 stream_sink(content)
-                result = {"status": "ok", "content": content, "tokens_used": tokens}
+                result = {"status": "ok", "content": content, "tokens_used": tokens,
+                          "budget": budget}
 
             # Enregistrer les métriques
             db = self.db
@@ -266,7 +280,8 @@ class Agent:
             return {"status": "ok", "reply": result.content,
                     "content": result.content,
                     "messages": new_history,
-                    "tokens_used": result.tokens_used}
+                    "tokens_used": result.tokens_used,
+                    "budget": result.budget}
         except AgentAbort:
             self._record_failure()
             return {"status": "aborted", "error": "Interrompu par signal kill"}
@@ -293,6 +308,14 @@ class Agent:
                     payload = json.loads(sig["payload_json"] or "{}")
                 except (json.JSONDecodeError, TypeError):
                     payload = {}
+                # Lifecycle on_signal hook
+                try:
+                    if hasattr(self, '_lifecycle'):
+                        self._lifecycle.publish("on_signal",
+                            signal_type=stype, signal_payload=payload,
+                            variables=dict(getattr(result, 'variables', {})))
+                except Exception:
+                    pass
                 if stype == "kill":
                     mgr.ack_signal(sig["signal_id"])
                     mgr.complete_signal(sig["signal_id"], {"action": "kill"})
@@ -338,11 +361,21 @@ class Agent:
         provider_ref: str = "", model_ref: str = "",
         signal_check: Any = None, stream_sink: Any = None,
         spawn_handler: Any = None, handoff_handler: Any = None,
+        lifecycle_mgr: Any = None,
     ) -> "FSMResult":
         """Exécution via FSM Interpreter (Phase 4 : signaux + streaming,
         Phase 5 : spawn + handoff)."""
         import json
         variables = json.loads(self._data.get("variables_json") or "{}")
+        # Injecte agent_id pour les skills (memory, log) via {{agent_id}}.
+        variables.setdefault("agent_id", self.agent_id)
+        # Injecte la requête utilisateur (dernier message user) via {{request}}.
+        # Toujours écrasée (et non setdefault) : un agent multi-phases doit voir
+        # la requête courante, pas celle persistée d'une exécution précédente.
+        for _m in reversed(messages):
+            if _m.get("role") == "user":
+                variables["request"] = _m.get("content", "")
+                break
         fsm = FSMInterpreter(
             bridge=self._bridge,
             tool_executor=None,  # tools gérés en Phase 3
@@ -357,6 +390,7 @@ class Agent:
             stream_sink=stream_sink,
             spawn_handler=spawn_handler,
             handoff_handler=handoff_handler,
+            lifecycle_mgr=lifecycle_mgr,
         )
         # Persister les variables (survit à configure / spawn / handoff)
         state = {"current_step": result.next_step_id}
@@ -438,6 +472,13 @@ class Agent:
             (self.agent_id,)
         )
         db.conn.commit()
+
+        # Désabonne les hooks de cycle de vie (évite les fuites EventBus).
+        if hasattr(self, "_lifecycle"):
+            try:
+                self._lifecycle.cleanup()
+            except Exception:
+                pass
 
     def get_status(self) -> Dict[str, Any]:
         """Retourne l'état courant de l'agent."""

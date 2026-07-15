@@ -1,0 +1,45 @@
+name: system/log@v1
+category: system
+description: "Écrit une entrée structurée dans la table audit_log. Utilisé comme hook de cycle de vie."
+inputs:
+  level:
+    type: string
+    required: false
+    default: info
+    description: "Niveau de log (info, warn, error, debug)"
+  message:
+    type: string
+    required: true
+    description: "Message à journaliser"
+  action:
+    type: string
+    required: false
+    default: skill.log
+    description: "Nom de l'action pour l'audit trail"
+  agent_id:
+    type: string
+    required: false
+    default: ""
+    description: "Identifiant de l'agent émetteur"
+  hook_type:
+    type: string
+    required: false
+    default: ""
+    description: "Type de hook ayant déclenché ce log"
+  status:
+    type: string
+    required: false
+    default: ""
+    description: "Statut de l'étape ou de l'exécution"
+  error:
+    type: string
+    required: false
+    default: ""
+    description: "Message d'erreur éventuel"
+outputs:
+  ok:
+    type: boolean
+    description: "True si l'écriture a réussi"
+implementation:
+  type: python
+  function: _exec_log

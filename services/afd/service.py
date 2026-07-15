@@ -106,25 +106,29 @@ def serve(args):
     """Point d'entrée de l'AFD : démarre le socket Unix + Ticker + sync."""
     _ensure_dir()
 
+    from services.logger import MWLogger
+    log = MWLogger("afd")
+
     # Auto-régénération : synchro avec la table agents
     sync_result = AgentDaemon.sync()
-    print(f"AFD sync : {sync_result['zombies_cleaned']} zombies nettoyés, "
-          f"{len(sync_result['agents_active_on_disk'])} agents actifs sur disque")
+    log.info("AFD sync",
+             zombies_cleaned=sync_result['zombies_cleaned'],
+             agents_on_disk=len(sync_result['agents_active_on_disk']))
 
     # Activation du StreamBus cross-process (SQLite WAL tmpfs)
     stream_path = resolve_stream_path()
     activate_cross_process(stream_path)
-    print(f"StreamBus cross-process activé : {stream_path}")
+    log.info("StreamBus activé", path=stream_path)
 
     # Démarrage du Ticker (surveillance heartbeats/zombies)
-    _run_ticker(poll_interval=getattr(args, 'poll', 5.0))
-    print(f"Ticker démarré (poll={getattr(args, 'poll', 5.0)}s)")
+    poll = getattr(args, 'poll', 5.0)
+    _run_ticker(poll_interval=poll)
+    log.info("Ticker démarré", poll_interval=poll)
 
     # Socket Unix IPC
     server = AFDSocketServer()
     sock_path = server.path
-    print(f"AFD v{AFD_VERSION} — écoute sur {sock_path}")
-    print(f"  → gateway: connecte-toi à {sock_path} pour proxy agents")
+    log.info("AFD écoute", version=AFD_VERSION, socket=sock_path)
 
     # Écrire le chemin du socket pour le gateway
     afd_info = mw_home() / "afd.info"
@@ -139,7 +143,7 @@ def serve(args):
     finally:
         server.stop()
         log_to_file("afd", f"STOPPED v{AFD_VERSION}")
-        print("AFD arrêté.")
+        log.info("AFD arrêté")
 
 
 def main():

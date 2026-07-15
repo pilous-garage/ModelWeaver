@@ -1,0 +1,22 @@
+name: system/git_checkout@v1
+category: system
+description: "Change de branche dans le dépôt git du projet."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  name:
+    type: string
+    required: true
+    description: "Nom de branche cible"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_checkout

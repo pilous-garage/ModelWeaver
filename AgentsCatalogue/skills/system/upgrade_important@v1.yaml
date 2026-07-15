@@ -1,0 +1,22 @@
+name: system/upgrade_important@v1
+category: system
+description: "Promouvoir un fichier de l'espace personnel vers le dossier important/ (et l'indexe)."
+inputs:
+  src:
+    type: string
+    required: true
+    description: "Fichier source (relatif au home, ex: work/todo.md ou todo.md)"
+  name:
+    type: string
+    required: false
+    default: ""
+    description: "Nom cible dans important/ (sinon basename de src)"
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+    description: "Chemin relatif résultant (important/...)"
+implementation:
+  type: python
+  function: _exec_upgrade_important

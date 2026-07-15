@@ -1,0 +1,23 @@
+name: system/git_fetch@v1
+category: system
+description: "Récupère les références du dépôt central (origin) dans le clone perso de l'agent, sans fusionner."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  agent_id:
+    type: string
+    required: false
+    default: ""
+    description: "Agent propriétaire du clone (injecté automatiquement)"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_fetch

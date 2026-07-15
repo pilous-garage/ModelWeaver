@@ -1,0 +1,18 @@
+name: system/common_read@v1
+category: system
+description: "Lit un fichier de l'espace commun live d'un groupe (common/{group_id})."
+inputs:
+  group_id:
+    type: string
+    required: true
+    description: "Identifiant du groupe/espace commun"
+  path:
+    type: string
+    required: true
+    description: "Chemin relatif à lire"
+outputs:
+  content:
+    type: string
+implementation:
+  type: python
+  function: _exec_common_read

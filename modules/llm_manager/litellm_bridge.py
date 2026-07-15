@@ -238,6 +238,21 @@ class LiteLLMBridge(BaseBridge):
 
     # ── BaseBridge impl ────────────────────────────────────────
 
+    def _budget_check(self, provider_ref: str, model_ref: str) -> Dict[str, Any]:
+        try:
+            from services.tarif import check_budget
+            return check_budget(provider_ref, model_ref)
+        except Exception:
+            return {}
+
+    def _budget_record(self, provider_ref: str, model_ref: str,
+                       tokens: int = 0, requests: int = 1) -> Dict[str, Any]:
+        try:
+            from services.tarif import record_usage
+            return record_usage(provider_ref, model_ref, tokens, requests)
+        except Exception:
+            return {}
+
     def chat(self, provider_ref: str, model_ref: str,
              messages: List[Dict[str, str]],
              temperature: float = 0.7,
@@ -249,6 +264,16 @@ class LiteLLMBridge(BaseBridge):
         model_id = self._build_model_id(provider_ref, model_ref)
         msgs = self._build_messages(messages, system_prompt)
         api_key, api_base = self._resolve_key(provider_ref)
+
+        # Budget check avant appel
+        budget_check = self._budget_check(provider_ref, model_ref)
+        if not budget_check.get("ok", True):
+            raise BridgeError(
+                category=ErrorCategory.RATE_LIMIT,
+                message="Budget épuisé pour ce fournisseur/modèle",
+                provider_ref=provider_ref,
+                model_ref=model_ref,
+            )
 
         kwargs = dict(
             model=model_id,
@@ -271,16 +296,23 @@ class LiteLLMBridge(BaseBridge):
 
         try:
             response = self._litellm.completion(**kwargs)
+            tokens = 0
+            usage = {}
+            if response.usage:
+                usage = {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                }
+                tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
+            budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
             return ChatResponse(
                 content=response.choices[0].message.content or "",
                 model=response.model,
                 finish_reason=response.choices[0].finish_reason or "stop",
-                usage={
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                } if response.usage else {},
+                usage=usage,
                 raw=response,
+                budget=budget,
             )
         except Exception as e:
             be = self.classifier.classify(e, provider_ref, model_ref)
@@ -292,19 +324,26 @@ class LiteLLMBridge(BaseBridge):
                 kwargs["max_tokens"] = new_limit
                 try:
                     response = self._litellm.completion(**kwargs)
+                    tokens = 0
+                    usage = {}
+                    if response.usage:
+                        usage = {
+                            "prompt_tokens": response.usage.prompt_tokens,
+                            "completion_tokens": response.usage.completion_tokens,
+                            "total_tokens": response.usage.total_tokens,
+                        }
+                        tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
+                    budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
                     return ChatResponse(
                         content=response.choices[0].message.content or "",
                         model=response.model,
                         finish_reason=response.choices[0].finish_reason or "stop",
-                        usage={
-                            "prompt_tokens": response.usage.prompt_tokens,
-                            "completion_tokens": response.usage.completion_tokens,
-                            "total_tokens": response.usage.total_tokens,
-                        } if response.usage else {},
+                        usage=usage,
                         raw=response,
+                        budget=budget,
                     )
                 except Exception as e2:
-                    raise self.classify(e2, provider_ref, model_ref)
+                    raise self.classifier.classify(e2, provider_ref, model_ref)
             raise be
 
     def chat_stream(self, provider_ref: str, model_ref: str,
@@ -318,6 +357,16 @@ class LiteLLMBridge(BaseBridge):
         msgs = self._build_messages(messages, system_prompt)
         api_key, api_base = self._resolve_key(provider_ref)
 
+        # Budget check avant appel
+        budget_check = self._budget_check(provider_ref, model_ref)
+        if not budget_check.get("ok", True):
+            raise BridgeError(
+                category=ErrorCategory.RATE_LIMIT,
+                message="Budget épuisé pour ce fournisseur/modèle",
+                provider_ref=provider_ref,
+                model_ref=model_ref,
+            )
+
         kwargs = dict(
             model=model_id,
             messages=msgs,
@@ -330,13 +379,19 @@ class LiteLLMBridge(BaseBridge):
             kwargs["max_tokens"] = max_tokens
         kwargs.update(params)
 
+        char_count = 0
         try:
             for chunk in self._litellm.completion(**kwargs):
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
+                    char_count += len(delta.content)
                     yield delta.content
         except Exception as e:
             raise self.classifier.classify(e, provider_ref, model_ref)
+        finally:
+            if char_count:
+                tokens = max(1, char_count // 4)
+                self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
 
     def get_capabilities(self, provider_ref: str,
                          model_ref: str) -> ModelCapabilities:

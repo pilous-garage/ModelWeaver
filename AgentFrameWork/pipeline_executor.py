@@ -104,11 +104,12 @@ class PipelineExecutor:
         for cmd in sources.get("commands", []):
             try:
                 resolved = self._resolve(cmd, vars)
-                r = subprocess.run(
-                    resolved, shell=True, capture_output=True, text=True, timeout=30
-                )
-                stdout = r.stdout.strip() or r.stderr.strip()
-                parts.append(f"$ {resolved}\n{stdout[:3000]}")
+                from services.sandbox import Sandbox, SandboxError
+                stdout, stderr, rc = Sandbox().run(resolved, cwd=str(self.project_root), timeout=30)
+                out = stdout.strip() or stderr.strip()
+                parts.append(f"$ {resolved}\n{out[:3000]}")
+            except SandboxError as e:
+                parts.append(f"$ {cmd}\nerreur: {e}")
             except Exception as e:
                 parts.append(f"$ {cmd}\nerreur: {e}")
 

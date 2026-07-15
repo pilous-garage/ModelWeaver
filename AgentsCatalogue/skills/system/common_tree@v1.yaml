@@ -1,0 +1,14 @@
+name: system/common_tree@v1
+category: system
+description: "Liste récursivement tous les fichiers de l'espace commun live (common/{group_id})."
+inputs:
+  group_id:
+    type: string
+    required: true
+    description: "Identifiant du groupe/espace commun"
+outputs:
+  files:
+    type: array
+implementation:
+  type: python
+  function: _exec_common_tree

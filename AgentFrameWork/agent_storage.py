@@ -5,6 +5,9 @@ Chaque agent reçoit un dossier `mw_home()/memagent/{agent_id}/` avec :
   - ctx/     : contexte (system prompt, personnalité, préférences)
   - history/ : historiques de chat/exécution (fichiers, logs)
   - work/    : workspace dédié — RW complet pour l'agent
+  - perso/   : notes privées (tâches en cours, réflexions) — jamais versionné
+  - important/ : notes clés privées (index alias) — jamais versionné
+  - workspace/ : clones git des projets (versionnés) — géré par les skills git
 
 Un quota soft (par défaut 10 Mo) est appliqué : les écritures qui
 dépassent lèvent `QuotaExceeded`. L'escalade à l'utilisateur passe
@@ -24,7 +27,7 @@ from typing import Dict, Optional, Union
 
 MEMAGENT_DEFAULT_QUOTA = 10 * 1024 * 1024       # 10 Mo
 MEMAGENT_MAX_QUOTA = 10 * 1024 * 1024 * 1024     # 10 Go (docker)
-SUBDIRS = ("mem", "ctx", "history", "work")
+SUBDIRS = ("mem", "ctx", "history", "work", "important", "perso")
 
 
 class QuotaExceeded(Exception):

@@ -1,0 +1,21 @@
+name: system/git_clone@v1
+category: system
+description: "Clone le dépôt central du projet dans le workspace perso de l'agent (memagent/{agent}/workspace/{project}). Si déjà cloné, fait un fetch."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet à cloner"
+  agent_id:
+    type: string
+    required: false
+    default: ""
+    description: "Agent propriétaire du clone (injecté automatiquement)"
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+implementation:
+  type: python
+  function: _exec_git_clone

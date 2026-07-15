@@ -58,7 +58,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.6.7.0"
+MW_VERSION = "0.6.22.0"
 
 
 def _mw_dir() -> Path:
@@ -235,7 +235,7 @@ def seed_catalogue():
     try:
         seed_recipes(cat)
     except Exception as e:
-        print(f"⚠️  seed_recipes échoué : {e}", file=sys.stderr)
+        from services.logger import MWLogger; MWLogger("daemon").warning("seed_recipes échoué", error=str(e))
     try:
         _get_rt().bump_meta("catalogue")
     except Exception:
@@ -484,6 +484,16 @@ def op_logs_write(params):
     return {"status": "ok"}
 
 
+def _op_tarif_info(_params):
+    from services.tarif import tarif_info
+    return tarif_info()
+
+
+def _op_tarif_sync(url=None):
+    from services.tarif import sync_tarif
+    return sync_tarif(url)
+
+
 def op_deps_check(_params):
     from services.depends import check_all_units
     return check_all_units(_REPO_ROOT)
@@ -497,7 +507,7 @@ def _rescan_local_tools():
         mw.scan_installed_tools()
         mw.commit()
     except Exception as e:
-        print(f"⚠️  rescan outils installés échoué : {e}", file=sys.stderr)
+        from services.logger import MWLogger; MWLogger("daemon").warning("rescan outils installés échoué", error=str(e))
 
 
 def op_deps_install(params):
@@ -613,6 +623,8 @@ def op_keys_set(params):
         tag=params.get("tag", "paid"),
         grade=params.get("grade"),
     )
+    from services.audit import audit
+    audit("keys.set", provider_ref=provider_ref, ref=ref, ok=True)
     return {"status": "ok", "ref": ref}
 
 
@@ -640,6 +652,8 @@ def op_keys_set_lock(params):
     locked = bool(params.get("locked", True))
     km = _get_km()
     ok = km.set_lock(ref, locked)
+    from services.audit import audit
+    audit("keys.set_lock", ref=ref, locked=locked, ok=ok)
     return {"status": "ok" if ok else "error", "ref": ref, "locked": locked}
 
 
@@ -656,8 +670,10 @@ def op_keys_delete(params):
     km = _get_km()
     ref = params.get("ref")
     provider_ref = params.get("provider_ref")
+    from services.audit import audit
     if ref:
         ok = km.delete_key(ref)
+        audit("keys.delete", ref=ref, ok=ok)
         return {"status": "ok" if ok else "error", "deleted": ok}
     if provider_ref:
         keys = km.list_keys()
@@ -666,6 +682,7 @@ def op_keys_delete(params):
             if k.get("provider_ref") == provider_ref:
                 if km.delete_key(k["ref"]):
                     deleted += 1
+        audit("keys.delete", provider_ref=provider_ref, deleted=deleted, ok=True)
         return {"status": "ok", "deleted": deleted}
     return {"status": "error", "error": "missing 'ref' or 'provider_ref'"}
 
@@ -676,6 +693,8 @@ def op_keys_onboard(params):
     onboarder = Onboarder(km)
     env_path = params.get("env_path", str(_REPO_ROOT / ".env"))
     count = onboarder.onboard_from_env(Path(env_path))
+    from services.audit import audit
+    audit("keys.onboard", env_path=env_path, imported=count, ok=count > 0)
     return {"status": "ok", "imported": count}
 
 
@@ -795,6 +814,15 @@ def op_llm_chat(params):
             system_prompt=params.get("system_prompt"),
             stream=False,
         )
+        tokens = 0
+        if resp.usage:
+            tokens = (resp.usage.get("prompt_tokens", 0) or 0) + (resp.usage.get("completion_tokens", 0) or 0)
+        if tokens:
+            from services.ratelimit import check_rate_limit
+            try:
+                check_rate_limit("llm/chat", "127.0.0.1", tokens=tokens)
+            except Exception:
+                pass
         return {
             "status": "ok",
             "content": resp.content,
@@ -854,6 +882,7 @@ def op_llm_chat_stream_sse(params, wfile):
     model_ref = params.get("model_ref")
     messages = params.get("messages", [])
     sw = StreamWriter(wfile)
+    char_count = 0
     try:
         if not provider_ref or not model_ref or not messages:
             sw.error("provider_ref, model_ref et messages requis")
@@ -867,6 +896,7 @@ def op_llm_chat_stream_sse(params, wfile):
             max_tokens=params.get("max_tokens"),
             system_prompt=params.get("system_prompt"),
         ):
+            char_count += len(chunk)
             sw.send("delta", {"content": chunk})
     except BridgeError as be:
         sw.error(be.message, be.category.value, be.provider_ref, be.model_ref)
@@ -874,6 +904,13 @@ def op_llm_chat_stream_sse(params, wfile):
         sw.error(str(e), "unknown", provider_ref or "", model_ref or "")
     finally:
         sw.done()
+        if char_count:
+            tokens = max(1, char_count // 4)
+            from services.ratelimit import check_rate_limit
+            try:
+                check_rate_limit("llm/chat/stream", "127.0.0.1", tokens=tokens)
+            except Exception:
+                pass
 
 
 def op_llm_capabilities(params):
@@ -1072,8 +1109,12 @@ def op_agent_create(params):
         agent_id = db_conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
         from AgentFrameWork.agent_storage import AgentStorage
         AgentStorage(agent_id, db_conn).ensure()
+        from services.audit import audit
+        audit("agent.create", agent_id=agent_id, role=role, name=name, ok=True)
         return {"status": "ok", "agent_id": agent_id, "ref": ref}
     except Exception as e:
+        from services.audit import audit
+        audit("agent.create", role=role, ok=False, error=str(e))
         return {"status": "error", "error": str(e)}
 
 
@@ -1094,6 +1135,8 @@ def op_agent_delete(params):
     db.conn.commit()
     from AgentFrameWork.agent_storage import AgentStorage
     AgentStorage(agent_id, db.conn).destroy()
+    from services.audit import audit
+    audit("agent.delete", agent_id=agent_id, name=name, ok=True)
     return {"status": "ok", "agent_id": agent_id}
 
 
@@ -1147,7 +1190,13 @@ def op_agent_signal(params):
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return get_afd_client().call(ref, "signal", type=params.get("type"), payload=params.get("payload"))
+    stype = params.get("type")
+    result = get_afd_client().call(ref, "signal", type=stype, payload=params.get("payload"))
+    if stype in ("kill", "pause", "resume", "configure"):
+        from services.audit import audit
+        audit(f"agent.signal.{stype}", agent_id=agent_id, name=name,
+              ok=result.get("status") == "ok", payload=params.get("payload"))
+    return result
 
 
 def op_agent_signals(params):
@@ -1362,6 +1411,14 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
     if sub == "storage":
         return _storage_route(agent_id, method, parts[3:], params)
 
+    # ── Budget (V0.6.11) : interrogation du budget fournisseur/modèle ──
+    if sub == "budget":
+        return _budget_route(agent_id, method, parts[3:], params)
+
+    # ── FsAuth (V0.6.20) : allowlist d'accès hôte absolu ──
+    if sub == "fs_auth":
+        return _fs_auth_route(agent_id, method, parts[3:], params)
+
     if sub == "routes":
         if method != "GET":
             return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
@@ -1395,6 +1452,8 @@ def _storage_route(agent_id: int, method: str, sub_parts: List[str], params: dic
         if not new_max:
             return {"code": 400, "payload": {"error": "max_bytes requis"}}
         st.approve_quota_request(int(new_max))
+        from services.audit import audit
+        audit("storage.quota.approve", agent_id=agent_id, new_max=int(new_max), ok=True)
         return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
                                           "max_bytes": st.max_bytes,
                                           "used_bytes": st.used_bytes,
@@ -1407,6 +1466,66 @@ def _storage_route(agent_id: int, method: str, sub_parts: List[str], params: dic
         "used_bytes": st.used_bytes,
         "quota_request": st.quota_request(),
     }}
+
+
+def _budget_route(agent_id: int, method: str, sub_parts: List[str], params: dict) -> dict:
+    """agents/{id}/budget — interroge le budget restant du fournisseur/modèle de l'agent."""
+    if sub_parts:
+        return {"code": 404, "payload": {"error": "not_found"}}
+    from modules.sql.db import AgentsDB
+    row = AgentsDB().conn.execute(
+        "SELECT config_json FROM agents WHERE agent_id=?",
+        (agent_id,)
+    ).fetchone()
+    if not row:
+        return {"code": 404, "payload": {"error": "agent_not_found"}}
+    config = json.loads(row["config_json"] or "{}")
+    provider_ref = config.get("provider_ref") or ""
+    model_ref = config.get("model_ref") or ""
+    if not provider_ref or not model_ref:
+        return {"code": 200, "payload": {"agent_id": agent_id, "budget": {}}}
+    from services.tarif import check_budget, _get as _get_tarif
+    _get_tarif().seed_default()
+    budget = check_budget(provider_ref, model_ref)
+    return {"code": 200, "payload": {"agent_id": agent_id, "provider_ref": provider_ref,
+                                      "model_ref": model_ref, "budget": budget}}
+
+
+def _fs_auth_route(agent_id: int, method: str, sub_parts: List[str], params: dict) -> dict:
+    """agents/{id}/fs_auth — gestion de l'allowlist d'accès hôte (FsAuthManager).
+
+    GET    agents/{id}/fs_auth          -> liste des racines autorisées
+    POST   agents/{id}/fs_auth          -> grant (root_path, mode=r|rw)
+    DELETE agents/{id}/fs_auth          -> revoke (root_path)
+    """
+    from services.fs_auth import FsAuthManager
+    try:
+        mgr = FsAuthManager()
+    except Exception as e:
+        return {"code": 500, "payload": {"error": f"fs_auth indispo: {e}"}}
+    try:
+        if method == "GET":
+            return {"code": 200, "payload": {"agent_id": agent_id, "grants": mgr.list(agent_id)}}
+        if method == "POST":
+            root = params.get("root_path")
+            mode = params.get("mode", "r")
+            if not root:
+                return {"code": 400, "payload": {"error": "root_path requis"}}
+            mgr.grant(agent_id, root, mode)
+            return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
+                                             "root_path": os.path.abspath(root),
+                                             "mode": "rw" if mode == "rw" else "r"}}
+        if method == "DELETE":
+            root = params.get("root_path")
+            if not root:
+                return {"code": 400, "payload": {"error": "root_path requis"}}
+            mgr.revoke(agent_id, root)
+            return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
+                                             "root_path": os.path.abspath(root),
+                                             "revoked": True}}
+        return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+    finally:
+        mgr.close()
 
 
 # ── Table de routage : "domaine/action" -> handler(params) -> dict ──
@@ -1498,6 +1617,9 @@ ROUTES = {
     "chat/session/history":   op_chat_session_history,
     "chat/session/read":      op_chat_session_read,
     "chat/session/stream":    op_chat_session_stream,
+    # O. Tarif / budget
+    "tarif/info":             lambda p: _quiet(_op_tarif_info, p),
+    "tarif/sync":             lambda p: _quiet(_op_tarif_sync, p.get("url")),
 }
 
 # Routes qui reçoivent (params, wfile) au lieu de (params) -> dict
@@ -1544,6 +1666,14 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             return
         route = self.path[len(prefix):].strip("/")
         parts = [p for p in route.split("/") if p]
+        # Rate limiting
+        client_ip = self.client_address[0]
+        try:
+            from services.ratelimit import check_rate_limit
+            check_rate_limit(route, client_ip)
+        except Exception as e:
+            self._send(429, {"error": "rate_limited", "detail": str(e)})
+            return
         # Route dynamique agents/{id}/routes ?
         dyn = _agent_dynamic_route("GET", parts, {})
         if dyn is not None:
@@ -1593,6 +1723,14 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(400, {"error": "bad_request", "detail": str(e)})
             return
+        # Rate limiting
+        client_ip = self.client_address[0]
+        try:
+            from services.ratelimit import check_rate_limit
+            check_rate_limit(route, client_ip)
+        except Exception as e:
+            self._send(429, {"error": "rate_limited", "detail": str(e)})
+            return
         # Streaming SSE ?
         stream_handler = STREAMING_ROUTES.get(route)
         if stream_handler:
@@ -1618,6 +1756,30 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             self._send(500, {"ok": False, "route": route, "error": str(e),
                              "trace": traceback.format_exc()})
 
+    def do_DELETE(self):
+        prefix = f"/{API_VERSION}/"
+        if not self.path.startswith(prefix):
+            self._send(404, {"error": "not_found", "path": self.path})
+            return
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return
+        route = self.path[len(prefix):].strip("/")
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b""
+            params = json.loads(raw) if raw else {}
+        except Exception as e:
+            self._send(400, {"error": "bad_request", "detail": str(e)})
+            return
+        parts = [p for p in route.split("/") if p]
+        dyn = _agent_dynamic_route("DELETE", parts, params)
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
+            return
+        self._send(404, {"error": "unknown_route", "route": route})
+
 
 def serve(port: int = 8770) -> None:
     """Point d'entrée du service `api` (supervisé). Un seul daemon à la fois."""
@@ -1625,6 +1787,9 @@ def serve(port: int = 8770) -> None:
     if not acquire_instance_lock("api"):
         print("❌ daemon déjà en cours (lock api)", file=sys.stderr)
         sys.exit(1)
+
+    from services.logger import MWLogger
+    log = MWLogger("daemon")
 
     mw = _mw_dir()
     token = secrets.token_hex(32)
@@ -1639,10 +1804,10 @@ def serve(port: int = 8770) -> None:
             server = ThreadingHTTPServer(("127.0.0.1", port), MWAPIHandler)
             break
         except OSError as e:
-            print(f"⚠️  bind {port} échoué ({e}), retry {attempt + 1}/10...", file=sys.stderr)
+            log.warning("Bind échoué", port=port, attempt=attempt+1, error=str(e))
             time.sleep(1)
     if server is None:
-        print("❌ impossible de binder le daemon", file=sys.stderr)
+        log.critical("Impossible de binder le daemon", port=port)
         sys.exit(1)
 
     server.token = token
@@ -1655,7 +1820,7 @@ def serve(port: int = 8770) -> None:
     try:
         _get_km().load()
     except Exception as e:
-        print(f"⚠️  Keyring indisponible (clés non chargées) : {e}", file=sys.stderr)
+        log.warning("Keyring indisponible", error=str(e))
     # busy_timeout 30s pour les opérations concurrentes en arrière-plan
     mw_singleton.conn.execute("PRAGMA busy_timeout = 30000")
 
@@ -1668,7 +1833,7 @@ def serve(port: int = 8770) -> None:
             mw_singleton.scan_installed_tools()
             mw_singleton.commit()
     except Exception as e:
-        print(f"⚠️  scan outils installés (démarrage) échoué : {e}", file=sys.stderr)
+        log.warning("Scan outils installés échoué", error=str(e))
 
     # Injecter la connexion partagée dans le module jobs (évite les locks).
     jobs.set_shared_conn(mw_singleton.conn)
@@ -1681,15 +1846,14 @@ def serve(port: int = 8770) -> None:
         from AgentFrameWork.stream_bus import activate_cross_process, resolve_stream_path
         activate_cross_process(resolve_stream_path())
     except Exception as e:
-        print(f"⚠️  StreamBus cross-process échoué : {e}", file=sys.stderr)
+        log.warning("StreamBus cross-process échoué", error=str(e))
 
-    print(f"✅ ModelWeaver daemon — http://127.0.0.1:{port}  (api {API_VERSION})", file=sys.stderr)
-    print(f"   token : {token_file}", file=sys.stderr)
-    print(f"   routes: {len(ROUTES)}", file=sys.stderr)
+    log.info("Daemon démarré", port=port, api=API_VERSION, version=MW_VERSION,
+             token=str(token_file), routes=len(ROUTES))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("arrêt du daemon", file=sys.stderr)
+        log.info("Arrêt du daemon")
 
 
 def main():

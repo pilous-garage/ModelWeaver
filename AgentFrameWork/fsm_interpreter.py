@@ -42,6 +42,7 @@ class FSMResult:
         self.end_reason: Optional[str] = None
         self.iterations: int = 0
         self.tokens_used: int = 0
+        self.budget: Dict[str, Any] = {}
         # Flags de contrôle (Phase 4 : signaux)
         self._paused: bool = False
 
@@ -54,6 +55,7 @@ class FSMResult:
             "end_reason": self.end_reason,
             "sleep_seconds": self.sleep_seconds,
             "tokens_used": self.tokens_used,
+            "budget": self.budget,
             "paused": self._paused,
         }
 
@@ -92,6 +94,7 @@ class FSMInterpreter:
         stream_sink: Optional[Any] = None,
         spawn_handler: Optional[Any] = None,
         handoff_handler: Optional[Any] = None,
+        lifecycle_mgr: Optional[Any] = None,
     ) -> FSMResult:
         """Exécute le workflow."""
         result = FSMResult()
@@ -100,6 +103,7 @@ class FSMInterpreter:
         self._signal_check = signal_check
         self._spawn_handler = spawn_handler
         self._handoff_handler = handoff_handler
+        self._lifecycle_mgr = lifecycle_mgr
 
         steps = workflow.get("steps", [])
         steps_by_id = {s["id"]: s for s in steps}
@@ -154,11 +158,26 @@ class FSMInterpreter:
             if not should_continue:
                 break
 
+            # ── Lifecycle hook post_step ──
+            if self._lifecycle_mgr:
+                self._lifecycle_mgr.publish("post_step",
+                    step=step, step_id=current_id, status=result.status,
+                    variables=dict(result.variables))
+
             current_id = result.next_step_id
 
         if result.iterations >= max_iter and result.status == "running":
             result.status = "failed"
             result.end_reason = f"Limite d'itérations atteinte ({max_iter})"
+
+        # ── Lifecycle hooks finaux ──
+        if self._lifecycle_mgr:
+            if result.status in ("failed", "aborted"):
+                self._lifecycle_mgr.publish("on_error",
+                    step_id=current_id, status=result.status,
+                    error=result.end_reason or "")
+            self._lifecycle_mgr.publish("post_exec",
+                status=result.status, variables=dict(result.variables))
 
         return result
 
@@ -240,6 +259,8 @@ class FSMInterpreter:
                 content = response.content if hasattr(response, 'content') else str(response)
                 if hasattr(response, 'usage') and isinstance(response.usage, dict):
                     tokens = response.usage.get("total_tokens", 0)
+                if hasattr(response, 'budget') and isinstance(response.budget, dict):
+                    result.budget = response.budget
                 if stream_sink:
                     stream_sink(content)
         except BridgeError as e:
@@ -263,12 +284,57 @@ class FSMInterpreter:
         result.next_step_id = step.get("next")
         return True
 
+    def _step_call(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """Appel unifié d'un skill (remplace tool_call). step: {type: call, fn, inputs, capture}."""
+        fn = step.get("fn", "")
+        if not fn:
+            result.status = "failed"
+            result.end_reason = "call: 'fn' requis"
+            return False
+        inputs = step.get("inputs", {})
+        resolved = {k: self._resolve(v, result.variables) if isinstance(v, str) else v
+                    for k, v in inputs.items()}
+        # agent_id disponible pour les skills (memory/host/log)
+        agent_id = result.variables.get("agent_id", "")
+        if agent_id and "agent_id" not in resolved:
+            resolved["agent_id"] = agent_id
+        try:
+            from services.skill_manager import call_skill
+            from services._common import mw_home
+            if agent_id:
+                ws = str(mw_home() / "memagent" / str(agent_id))
+            else:
+                ws = self.tool_executor.workspace_root if self.tool_executor else "/tmp"
+            out = call_skill(fn, resolved, ws)
+        except Exception as e:
+            result.status = "failed"
+            result.end_reason = f"call {fn}: {e}"
+            return False
+        capture = step.get("capture", {})
+        if capture:
+            for out_key, var_name in capture.items():
+                if out_key in out:
+                    result.variables[var_name] = out[out_key]
+        result.messages.append({
+            "role": "system",
+            "content": f"[{fn}] {json.dumps(out, ensure_ascii=False)[:500]}",
+        })
+        result.next_step_id = step.get("next")
+        return True
+
     def _step_tool_call(
         self, step: Dict, result: FSMResult,
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appel d'outil système."""
+        """Appel d'outil système (déprécié — utiliser `type: call` à la place).
+
+        Mappe les tools legacy vers les skills correspondants.
+        """
         tool_name = step.get("tool", "")
         args = step.get("args", {})
 
@@ -277,19 +343,69 @@ class FSMInterpreter:
             resolved_args[k] = self._resolve(v, result.variables) \
                 if isinstance(v, str) else v
 
-        try:
-            output = self.tool_executor.execute(tool_name, resolved_args)
-            output_capture = step.get("output_capture")
-            if output_capture:
-                result.variables[output_capture] = output
-            result.messages.append({
-                "role": "system",
-                "content": f"[{tool_name}] {output[:500]}",
-            })
-        except Exception as e:
-            result.status = "failed"
-            result.end_reason = f"Tool error: {e}"
-            return False
+        # Mapping backward-compat : tool -> skill
+        TOOL_TO_SKILL = {
+            "read_file": ("system/read_file@v1", {"path": "path"}),
+            "write_file": ("system/write_file@v1", {"path": "path", "content": "content"}),
+            "run_shell": ("system/run_shell@v1", {"command": "command"}),
+        }
+
+        skill_ref, arg_map = TOOL_TO_SKILL.get(tool_name, ("", {}))
+        if skill_ref:
+            mapped_args = {skill_arg: resolved_args[tool_arg]
+                           for tool_arg, skill_arg in arg_map.items()
+                           if tool_arg in resolved_args}
+            agent_id = result.variables.get("agent_id", "")
+            if agent_id and "agent_id" not in mapped_args:
+                mapped_args["agent_id"] = agent_id
+            try:
+                from services.skill_manager import call_skill
+                from services._common import mw_home
+                if agent_id:
+                    ws = str(mw_home() / "memagent" / str(agent_id))
+                else:
+                    ws = self.tool_executor.workspace_root if self.tool_executor else "/tmp"
+                out = call_skill(skill_ref, mapped_args, ws)
+                output_capture = step.get("output_capture")
+                if output_capture:
+                    if tool_name == "read_file" and "content" in out:
+                        result.variables[output_capture] = out["content"]
+                    elif tool_name == "run_shell":
+                        result.variables[output_capture] = (
+                            f"stdout:\n{out.get('stdout', '')}\n"
+                            f"stderr:\n{out.get('stderr', '')}\n"
+                            f"exit_code: {out.get('exit_code', -1)}"
+                        )
+                    elif tool_name == "write_file" and "result" in out:
+                        result.variables[output_capture] = out["result"]
+                result.messages.append({
+                    "role": "system",
+                    "content": f"[{tool_name}->{skill_ref}] "
+                               f"{json.dumps(out, ensure_ascii=False)[:500]}",
+                })
+            except Exception as e:
+                result.status = "failed"
+                result.end_reason = f"Tool->skill error: {e}"
+                return False
+        else:
+            # Fallback : legacy tool_executor
+            if not self.tool_executor:
+                result.status = "failed"
+                result.end_reason = f"Tool '{tool_name}' inconnu et pas de ToolExecutor"
+                return False
+            try:
+                output = self.tool_executor.execute(tool_name, resolved_args)
+                output_capture = step.get("output_capture")
+                if output_capture:
+                    result.variables[output_capture] = output
+                result.messages.append({
+                    "role": "system",
+                    "content": f"[{tool_name}] {output[:500]}",
+                })
+            except Exception as e:
+                result.status = "failed"
+                result.end_reason = f"Tool error: {e}"
+                return False
 
         result.next_step_id = step.get("next")
         return True

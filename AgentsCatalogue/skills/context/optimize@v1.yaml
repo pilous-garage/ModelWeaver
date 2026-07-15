@@ -1,0 +1,26 @@
+name: context/optimize@v1
+category: context
+description: "Compacte le contexte en fonction du budget restant. Si le budget est bas, tronque agressivement les messages les plus anciens. Version v1: troncature simple par seuil."
+inputs:
+  messages:
+    type: list[message]
+    required: true
+    description: Historique complet des messages
+  max_chars:
+    type: int
+    default: 50000
+    description: Nombre maximum de caractères total
+  budget_remaining:
+    type: int | null
+    default: null
+    description: Budget tokens restant (minute ou jour). Si bas → compaction agressive
+outputs:
+  messages:
+    type: list[message]
+    description: Contexte compacté
+  compression_ratio:
+    type: float
+    description: Ratio de compression atteint
+implementation:
+  type: python
+  function: _exec_optimize_context

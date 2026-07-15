@@ -1,0 +1,44 @@
+name: system/http_get@v1
+category: system
+description: "Effectue une requête HTTP GET vers une URL et retourne le corps de réponse."
+inputs:
+  url:
+    type: string
+    required: true
+    description: "URL cible (https:// ou http://)"
+  headers:
+    type: object
+    required: false
+    default: {}
+    description: "En-têtes HTTP additionnels"
+  timeout:
+    type: number
+    required: false
+    default: 15
+    description: "Timeout en secondes"
+  max_bytes:
+    type: number
+    required: false
+    default: 1048576
+    description: "Taille maximale du corps en octets (1 Mo par défaut)"
+  verify_ssl:
+    type: boolean
+    required: false
+    default: true
+    description: "Vérifie le certificat TLS"
+outputs:
+  status_code:
+    type: integer
+    description: "Code de statut HTTP"
+  headers:
+    type: object
+    description: "En-têtes de réponse"
+  body:
+    type: string
+    description: "Corps de la réponse (tronqué si > max_bytes)"
+  error:
+    type: string
+    description: "Message d'erreur si échec"
+implementation:
+  type: python
+  function: _exec_http_get

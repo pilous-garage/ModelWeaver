@@ -3,7 +3,6 @@
 Permet aux agents d'interagir avec le système de fichiers et le shell.
 """
 
-import subprocess
 import os
 import logging
 from typing import Any, Dict, Optional
@@ -44,29 +43,25 @@ class ToolExecutor:
         return f"Fichier {path} écrit avec succès."
 
     def _tool_run_shell(self, command: str) -> str:
-        """Exécute une commande shell et retourne la sortie."""
-        # ATTENTION : Très dangereux, normalement restreint à un sandbox
+        """Exécute une commande shell dans un sandbox (timeout, mémoire, process)."""
+        from services.sandbox import Sandbox, SandboxError
         try:
-            result = subprocess.run(
-                command, 
-                shell=True, 
-                capture_output=True, 
-                text=True, 
-                timeout=30,
-                cwd=self.workspace_root
+            stdout, stderr, rc = Sandbox().run(
+                command, cwd=self.workspace_root, timeout=30
             )
-            return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-        except subprocess.TimeoutExpired:
-            return "Erreur : Timeout de la commande (30s)."
-        except Exception as e:
-            return f"Erreur d'exécution : {str(e)}"
+            out = f"STDOUT:\n{stdout}"
+            if stderr:
+                out += f"\nSTDERR:\n{stderr}"
+            if rc != 0:
+                out += f"\n[exit code: {rc}]"
+            return out
+        except SandboxError as e:
+            return f"Erreur : {e}"
 
     def _safe_path(self, path: str) -> str:
         """Empêche la sortie du répertoire racine (Path Traversal)."""
-        # Nettoyage basique
         normalized = os.path.normpath(path)
         if normalized.startswith("..") or normalized.startswith("/"):
-            # On force le chemin relatif au workspace
             normalized = normalized.lstrip("/")
         
         full_path = os.path.join(self.workspace_root, normalized)

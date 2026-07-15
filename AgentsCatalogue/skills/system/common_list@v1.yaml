@@ -1,0 +1,19 @@
+name: system/common_list@v1
+category: system
+description: "Liste les entrées d'un dossier de l'espace commun live (common/{group_id})."
+inputs:
+  group_id:
+    type: string
+    required: true
+    description: "Identifiant du groupe/espace commun"
+  path:
+    type: string
+    required: false
+    default: ""
+    description: "Sous-dossier (vide = racine)"
+outputs:
+  entries:
+    type: array
+implementation:
+  type: python
+  function: _exec_common_list

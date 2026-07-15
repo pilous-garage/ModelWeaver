@@ -1,0 +1,20 @@
+name: system/project_list@v1
+category: system
+description: "Liste le contenu d'un dossier de l'espace projet partagé."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  path:
+    type: string
+    required: false
+    default: ""
+    description: "Sous-dossier relatif (vide = racine)"
+outputs:
+  entries:
+    type: array
+    description: "Liste {name, type}"
+implementation:
+  type: python
+  function: _exec_project_list

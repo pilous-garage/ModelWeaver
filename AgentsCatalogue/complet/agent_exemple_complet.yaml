@@ -1,0 +1,75 @@
+# Exemple d'agent complet démontrant les skills système et les hooks de cycle de vie.
+# Ce fichier est un config d'agent (passé à agent.create config=...).
+#
+# Parcours :
+#   1. set_variable   -> fixe l'URL cible
+#   2. call system/http_get@v1   -> fetch la page
+#   3. call system/memory_write@v1 -> persiste le résultat en mémoire
+#   4. llm_call       -> résume le contenu récupéré
+#   5. call system/memory_read@v1  -> relit la mémoire (démo read/write)
+#   6. end
+# Hook post_exec (config.hooks) -> system/log@v1 journalise l'exécution.
+# Hook post_step par défaut     -> auto-log debug à chaque étape.
+
+personality:
+  tone: neutre
+  system_prompt: |-
+    Tu es un assistant documentaliste. Tu récupères une page web, la résumes,
+    et conserves le résultat en mémoire pour les prochaines exécutions.
+
+hooks:
+  post_exec:
+    - system/log@v1
+
+workflow:
+  steps:
+    - id: init
+      type: set_variable
+      name: url
+      value: "https://example.com"
+      next: fetch
+
+    - id: fetch
+      type: call
+      fn: system/http_get@v1
+      inputs:
+        url: "{{url}}"
+      capture:
+        status_code: http_status
+        body: http_body
+      next: store
+
+    - id: store
+      type: call
+      fn: system/memory_write@v1
+      inputs:
+        agent_id: "{{agent_id}}"
+        namespace: facts
+        key: last_fetch
+        value:
+          url: "{{url}}"
+          status: "{{http_status}}"
+      next: summarize
+
+    - id: summarize
+      type: llm_call
+      request: "Résume ce contenu en une phrase : {{http_body}}"
+      provider_ref: ""
+      model_ref: ""
+      output_capture: summary
+      next: recall
+
+    - id: recall
+      type: call
+      fn: system/memory_read@v1
+      inputs:
+        agent_id: "{{agent_id}}"
+        namespace: facts
+        key: last_fetch
+      capture:
+        value: remembered
+      next: end
+
+    - id: end
+      type: end
+      status: SUCCESS

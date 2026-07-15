@@ -1,0 +1,24 @@
+name: system/project_write@v1
+category: system
+description: "Écrit un fichier dans l'espace projet partagé (chemin relatif au projet)."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  path:
+    type: string
+    required: true
+    description: "Chemin relatif dans le projet (ex: src/game.py)"
+  content:
+    type: string
+    required: true
+    description: "Contenu à écrire"
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+implementation:
+  type: python
+  function: _exec_project_write

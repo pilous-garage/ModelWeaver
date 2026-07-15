@@ -1,0 +1,23 @@
+name: system/git_log@v1
+category: system
+description: "Affiche l'historique des commits du projet (--oneline)."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  oneline:
+    type: boolean
+    required: false
+    default: true
+    description: "Format --oneline"
+outputs:
+  stdout:
+    type: string
+  lines:
+    type: array
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_log

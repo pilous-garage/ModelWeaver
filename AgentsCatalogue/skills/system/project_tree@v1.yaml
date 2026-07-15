@@ -1,0 +1,15 @@
+name: system/project_tree@v1
+category: system
+description: "Renvoie l'arbre des fichiers de l'espace projet partagé."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+outputs:
+  files:
+    type: array
+    description: "Chemins relatifs de tous les fichiers"
+implementation:
+  type: python
+  function: _exec_project_tree

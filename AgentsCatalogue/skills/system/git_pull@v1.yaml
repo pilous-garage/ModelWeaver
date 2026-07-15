@@ -1,0 +1,23 @@
+name: system/git_pull@v1
+category: system
+description: "Intègre une branche source dans la branche courante (pull local)."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  name:
+    type: string
+    required: false
+    default: ""
+    description: "Branche source à tirer (vide = pull remote si présent)"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_pull

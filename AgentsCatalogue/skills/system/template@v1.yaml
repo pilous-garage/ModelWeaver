@@ -1,0 +1,20 @@
+name: system/template@v1
+category: system
+description: "Rend une chaîne de template en remplaçant les variables {{cle}}."
+inputs:
+  template:
+    type: string
+    required: true
+    description: "Template avec placeholders {{cle}}"
+  vars:
+    type: object
+    required: false
+    default: {}
+    description: "Dictionnaire de variables"
+outputs:
+  result:
+    type: string
+    description: "Chaîne rendue"
+implementation:
+  type: python
+  function: _exec_template

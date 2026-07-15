@@ -1,0 +1,21 @@
+name: system/run_shell@v1
+category: system
+description: Exécute une commande shell dans un sandbox sécurisé
+inputs:
+  command:
+    type: string
+    required: true
+    description: Commande shell à exécuter
+outputs:
+  stdout:
+    type: string
+    description: Sortie standard
+  stderr:
+    type: string
+    description: Sortie d'erreur
+  exit_code:
+    type: int
+    description: Code de retour
+implementation:
+  type: python
+  function: _exec_run_shell

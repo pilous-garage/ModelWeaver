@@ -1,0 +1,16 @@
+name: system/glob@v1
+category: system
+description: "Recherche de fichiers par pattern glob dans l'espace personnel (ex: '*.py', '**/*.md')."
+inputs:
+  pattern:
+    type: string
+    required: false
+    default: "*"
+    description: "Pattern glob relatif au home"
+outputs:
+  matches:
+    type: array
+    description: "Chemins relatifs trouvés"
+implementation:
+  type: python
+  function: _exec_glob

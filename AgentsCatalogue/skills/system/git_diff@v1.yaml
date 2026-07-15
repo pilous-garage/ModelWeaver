@@ -1,0 +1,23 @@
+name: system/git_diff@v1
+category: system
+description: "Affiche un diff git (working tree ou entre branches) dans le projet."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  target:
+    type: string
+    required: false
+    default: ""
+    description: "Cible du diff (branche, commit) ; vide = working tree"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_diff

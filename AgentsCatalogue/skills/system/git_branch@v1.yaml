@@ -1,0 +1,28 @@
+name: system/git_branch@v1
+category: system
+description: "Liste les branches, ou crée une branche (create=true) dans le projet."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  name:
+    type: string
+    required: false
+    default: ""
+    description: "Nom de branche (si create=true)"
+  create:
+    type: boolean
+    required: false
+    default: false
+    description: "Crée la branche (git checkout -b)"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_branch

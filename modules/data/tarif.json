@@ -1,0 +1,87 @@
+{
+  "meta": {
+    "version": 1,
+    "updated_at": null,
+    "url": null
+  },
+  "tiers": {
+    "free": {
+      "tokens_per_min": 10000,
+      "tokens_per_day": 100000,
+      "req_per_min": 10,
+      "req_per_day": 100,
+      "daily_budget_tokens": 100000
+    },
+    "plus": {
+      "tokens_per_min": 100000,
+      "tokens_per_day": 1000000,
+      "req_per_min": 100,
+      "req_per_day": 1000,
+      "daily_budget_tokens": 1000000
+    },
+    "pro": {
+      "tokens_per_min": 1000000,
+      "tokens_per_day": 10000000,
+      "req_per_min": 1000,
+      "req_per_day": 10000,
+      "daily_budget_tokens": 10000000
+    }
+  },
+  "providers": {
+    "openai": {
+      "tier": "free",
+      "overrides": {
+        "daily_budget_tokens": 500000
+      },
+      "models": {
+        "gpt-4o": { "tier": "pro" },
+        "gpt-4o-mini": { "tier": "plus" },
+        "gpt-4-turbo": { "tier": "pro" },
+        "gpt-4": { "tier": "plus" },
+        "gpt-3.5-turbo": { "tier": "free" },
+        "o1": { "tier": "pro" },
+        "o1-mini": { "tier": "plus" }
+      }
+    },
+    "anthropic": {
+      "tier": "free",
+      "overrides": {
+        "daily_budget_tokens": 200000
+      },
+      "models": {
+        "claude-3-5-sonnet": { "tier": "pro" },
+        "claude-3-opus": { "tier": "pro" },
+        "claude-3-haiku": { "tier": "free" }
+      }
+    },
+    "google": {
+      "tier": "free",
+      "models": {
+        "gemini-2.0-flash": { "tier": "free" },
+        "gemini-2.0-pro": { "tier": "plus" }
+      }
+    },
+    "groq": {
+      "tier": "free",
+      "overrides": {
+        "tokens_per_min": 30000,
+        "req_per_min": 30
+      }
+    },
+    "ollama": {
+      "unlimited": true
+    },
+    "lmstudio": {
+      "unlimited": true
+    },
+    "vllm": {
+      "unlimited": true
+    },
+    "tgi": {
+      "unlimited": true
+    },
+    "custom": {
+      "tier": "free"
+    }
+  }
+}

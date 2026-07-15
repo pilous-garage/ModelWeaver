@@ -78,7 +78,7 @@ class MWClient:
         """Appel bas niveau renvoyant (status_http, body) sans lever d'exception
         sur les codes 4xx/5xx (utile pour tester le routage dynamique)."""
         url = f"{self.base_url}/v1/{route.strip('/')}"
-        data = json.dumps(params).encode("utf-8") if method == "POST" else None
+        data = json.dumps(params).encode("utf-8") if method in ("POST", "DELETE", "PUT") else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.token}")

@@ -1,0 +1,22 @@
+name: system/git_merge@v1
+category: system
+description: "Fusionne une branche dans la branche courante (intégration manager)."
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Identifiant du projet"
+  name:
+    type: string
+    required: true
+    description: "Branche à fusionner"
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+implementation:
+  type: python
+  function: _exec_git_merge

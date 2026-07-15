@@ -1,0 +1,20 @@
+name: system/host_read@v1
+category: system
+description: "Lit un fichier par CHEMIN ABSOLU sur l'hôte. Gate par FsAuthManager (allowlist agent)."
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: "Identifiant de l'agent (vérifié contre agent_fs_auth)"
+  path:
+    type: string
+    required: true
+    description: "Chemin absolu à lire (doit être sous une racine autorisée en lecture)"
+outputs:
+  content:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: _exec_host_read

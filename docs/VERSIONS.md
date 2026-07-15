@@ -444,16 +444,222 @@ un **processus dédié** distinct du gateway REST :
 - **Route `GET /v1/capabilities`** déléguée à l'AFD.
 - **E2E** : 51/51 PASS (tout vert en 2-process).
 
-### V0.6.11 — Hardening et logging structuré 📝
-- **Sandboxing des commandes** : exécution des outils et appels LLM dans
-  un environnement restreint (sous-processus isolé, timeout, limite mémoire).
-- **Logging structuré** : remplacement des `print()` par `structlog` /
-  logging JSON (service, niveau, timestamp, message, contexte).
-- **Rotation des logs** : pas de saturation disque.
-- **Audit trail** : toutes les opérations sensibles (ajout/suppression clé,
-  installation outils, exécution code) sont tracées.
-- **Rate limiting** : protection des endpoints du daemon contre les appels
-  abusifs.
+### V0.6.11 — Hardening et logging structuré ✅
+
+- **Logging structuré** : `services/logger.py` — MWLogger, format JSON, rotation
+  10 MiB × 5, fichier + stderr WARNING+. Tous les `print()` remplacés dans le
+  daemon (`serve()`) et l'AFD (`service.py`).
+- **Audit trail** : `services/audit.py` — table `audit_log` dans RuntimeDB.
+  Opérations instrumentées : agent.create, agent.delete, agent.signal.kill/
+  pause/resume/configure, keys.set, keys.delete, keys.set_lock, keys.onboard,
+  storage.quota.approve.
+- **Rate limiting** : `services/ratelimit.py` — sliding window par IP et par
+  route. Limites : 10/min keys, 10/min tools, 20/min agent spawn/delete,
+  60/min agent operations, 100/min GET, 30/min défaut.
+- **Sandboxing** : `services/sandbox.py` — exécution de commandes shell dans
+  un sous-process avec limites (RLIMIT_AS 512 Mo, RLIMIT_FSIZE 10 Mo,
+  RLIMIT_NOFILE 64, RLIMIT_CPU, timeout). Intégré dans
+  `AgentFrameWork/tool_executor.py` et `pipeline_executor.py`.
+
+### V0.6.12 — Skills system + budget tracking ✅
+
+- **TarifManager** : `services/tarif.py` — tiers free/plus/pro, 9 providers,
+  overrides, unlimited pour LLM locaux (ollama, lmstudio, vllm, tgi).
+  Routes `tarif/info` (POST), `tarif/sync` (POST).
+- **Rate limiting refactoring** : `services/ratelimit.py` — paramètre `weight`,
+  `RateLimitExceeded.kind` ("req"/"token"), méthode `record()`.
+- **Budget tracking** : `LiteLLMBridge._budget_check/_budget_record` → `ChatResponse.budget`
+  → `FSMResult.budget` → `Agent.execute()` / `chat_turn()` → agent context.
+  Route `GET /v1/agents/{id}/budget`.
+- **Skills system** : `services/skill_manager.py` — `SkillManager` avec `load_all`,
+  `get` (résolution `@v1`/latest), `expand` (workflow flattening), `call` (dispatch
+  Python). Répertoire `AgentsCatalogue/skills/{system,context,code}/`.
+- **Skills YAML** : `system/read_file@v1`, `system/write_file@v1`,
+  `system/run_shell@v1`, `context/optimize@v1`.
+- **FSM unification** : nouvelle étape `type: call` dans `_step_call` (remplace
+  `tool_call`). `tool_call` conservé comme alias déprécié.
+- **Workflow expansion** : au chargement agent (`Agent.execute()`), les skills
+  référencés dans le workflow sont expandus inline.
+- E2E 51/51 PASS.
+
+### V0.6.13 — Lifecycle hooks + event bus ✅
+
+- **EventBus** : `services/lifecycle.py` — singleton thread-safe. Types :
+  `post_step`, `post_exec`, `on_error`, `on_signal`. Publish/subscribe.
+- **LifecycleManager** : s'abonne aux hooks définis dans `config.hooks` de l'agent.
+  Chaque hook peut référencer un skill (`"hooks": {"post_exec": ["system/log@v1"]}`).
+- **Intégration FSM** : `_step_call` et le moteur FSM déclenchent `post_step` après
+  chaque étape, `on_error` en cas d'échec, `post_exec` en fin d'exécution.
+- **Signaux** : `_make_signal_check` déclenche `on_signal` pour chaque signal
+  consommé (pause/kill/resume/configure).
+- **Tool→Skill migration** : `_step_tool_call` route désormais les appels legacy
+  (`read_file`, `write_file`, `run_shell`) vers les skills système via
+  `call_skill`. Fallback sur `ToolExecutor` si outil inconnu.
+- E2E 51/51 PASS.
+
+### V0.6.14 — Skill system/log@v1 ✅
+
+- **Skill `system/log@v1`** : écriture structurée dans la table `audit_log`
+  (niveaux info/warn/error/debug). Utilisable comme hook de cycle de vie
+  (ex: `"hooks": {"post_exec": ["system/log@v1"]}`).
+- Handler `_exec_log` dans `SkillManager` (délègue à `services.audit.audit`).
+
+### V0.6.15 — Skill system/http_get@v1 ✅
+
+- **Skill `system/http_get@v1`** : requête HTTP GET depuis un agent (timeout,
+  max_bytes 1 Mo, verify_ssl, headers). Retourne `status_code`, `headers`,
+  `body`, `error`. URL validée (http/https uniquement).
+- Handler `_exec_http_get` dans `SkillManager` (lib `requests`).
+
+### V0.6.16 — Agent memory skills ✅
+
+- **Skills `system/memory_write@v1` / `system/memory_read@v1`** : persistance
+  JSON dans `mw_home()/memagent/{agent_id}/mem/{namespace}/{key}.json`.
+  Espaces de noms + clés (caractères sûrs). Les hooks de cycle de vie
+  injectent `agent_id` automatiquement.
+- Handlers `_exec_memory_write` / `_exec_memory_read` dans `SkillManager`.
+- Total : 8 skills disponibles (`system/` ×6, `context/` ×1, `code/` vide).
+- E2E 51/51 PASS.
+
+### V0.6.17 — Hook post_step par défaut + exemple workflow ✅
+
+- **Hook `post_step` par défaut (auto-log)** : `LifecycleManager._setup` installe
+  automatiquement un hook `post_step` → `system/log@v1` (niveau debug) si
+  l'agent n'en définit pas. Toute exécution est ainsi tracée par étape.
+- **Injection `agent_id`** dans les variables FSM (`_execute_with_fsm`) →
+  disponible comme `{{agent_id}}` pour les skills mémoire/log dans un workflow.
+- **Exemple d'agent complet** : `AgentsCatalogue/complet/agent_exemple_complet.yaml`
+  — workflow FSM combinant `system/http_get@v1`, `system/memory_write@v1`,
+  `system/memory_read@v1`, `llm_call`, et hook `post_exec` → `system/log@v1`.
+- **Cleanup** : `Agent.dehydrate()` désabonne les hooks de l'EventBus
+  (évite les fuites de subscriptions entre exécutions).
+- E2E 51/51 PASS.
+
+### V0.6.18 — Skill system/http_post@v1 ✅
+
+- **Skill `system/http_post@v1`** : requêtes POST/PUT/PATCH/DELETE avec corps
+  JSON (`body`) ou texte (`body_text`), timeout, max_bytes 1 Mo, verify_ssl,
+  headers. Méthode validée (POST/PUT/PATCH/DELETE), URL http/https validée.
+- Handler `_exec_http_post` (+ helper privé `_http_request` partagé avec GET).
+- Total : 9 skills (`system/` ×7, `context/` ×1, `code/` vide).
+- E2E 51/51 PASS.
+
+### V0.6.19 — Skills système étendus + FsAuthManager + home agents ✅
+
+- **Home agent = `mw_home()/memagent/{agent_id}/`** avec 5 sous-espaces :
+  `work/` (défaut RW), `important/` (fichiers clés, envoyés à chaque contexte),
+  `mem/`, `ctx/`, `history/`. `important/` ajouté à `AgentStorage.SUBDIRS`.
+- **Adressage relatif** : skills fichiers résolus sous le home (anti-traversée).
+  Chemin nu sans sous-dossier → `work/` ; **nom connu** (todo, readme, version,
+  concept, notes, changelog, …) → `important/`. `index.json` à la racine mappe
+  alias courts → chemins (auto-maj à création/suppression dans `important/`,
+  skip si ambigu).
+- **Skills fichiers étendus** : `system/list_dir`, `system/glob`,
+  `system/delete_file`, `system/copy_file`, `system/move_file`, `system/mkdir`,
+  `system/append_file`, `system/file_info`, `system/sleep`.
+- **Classification** : `system/upgrade_important` / `system/downgrade_important`
+  (promotion/rétrogradation + maj index).
+- **Temps/Données/Texte/Système** : `system/timestamp`, `system/json_query`,
+  `system/base64`, `system/hash`, `system/uuid`, `system/template`,
+  `system/string_ops`, `system/diff`, `system/get_env` (allowlist),
+  `system/random`.
+- **Agent/Orchestration** : `system/call_agent` (invoke un autre agent),
+  `system/get_budget` (TarifManager), `system/emit_event` (EventBus + journal
+  `ctx/events.jsonl`), `system/ask_user` (question stockée `ctx/ask/`).
+- **FsAuthManager** (`services/fs_auth.py`, table `agent_fs_auth`) : allowlist
+  DB par agent (racines + mode r/rw), **vérifiée à chaque appel**. Skills hôte
+  absolus : `system/host_read` / `system/host_write` / `system/host_run`.
+- **FSM** : `_step_call` et `_step_tool_call` passent désormais le **home de
+  l'agent** comme `ws` (résolu depuis `{{agent_id}}`). `EventBus` supporte
+  désormais des types d'événements custom (str).
+- Total : **37 skills** (`system/` ×35, `context/optimize@v1`, `code/` vide).
+- E2E 51/51 PASS.
+
+### V0.6.20 — API de gestion FsAuthManager (daemon + CLI) ✅
+
+- **Route daemon** `agents/{id}/fs_auth` :
+  - `GET` → liste des racines autorisées (`FsAuthManager.list`)
+  - `POST` → `grant(root_path, mode=r|rw)`
+  - `DELETE` → `revoke(root_path)`
+  - Handler `_fs_auth_route` + dispatch dans `_agent_dynamic_route`.
+- **`do_DELETE`** ajouté au `MWAPIHandler` (le daemon ne gérait que GET/POST).
+- **CLI** : `mw_cli.py agent fs_auth {list|grant|revoke} <id> [root_path] [mode]`
+  (templating `{id}` dans la route, méthode HTTP déduite).
+- **MWClient.request_raw** : envoie un corps pour DELETE/PUT (pas seulement POST).
+- **Ancrage repo root** ajouté au CLI (comme le daemon) pour import `services.*`.
+- E2E 51/51 PASS.
+
+### V0.6.21 — Réseaux de collaboration + test « mini-entreprise » ✅
+
+- **3 réseaux de communication inter-agents** + **espace projet partagé**
+  (skills `system/*`, handlers dans `services/skill_manager.py`) :
+  - **Réseau 1 (1:1)** : `message_send` / `message_recv` — inbox par agent
+    (`mw_home()/inbox/{agent_id}/`).
+  - **Réseau 2 (N:N)** : `chatroom_post` / `chatroom_read` — log partagé
+    `chatroom.jsonl` du projet.
+  - **Réseau 3 (git local)** : `git_init/branch/checkout/commit/diff/log/
+    status/merge/pull/push` — le projet est un dépôt git partagé.
+  - **Substrat** : `project_init/write/read/list/tree`
+    (`mw_home()/projects/{project_id}/`).
+- **Injection `{{request}}` dans le FSM** (`_execute_with_fsm`) : la requête
+  courante devient une variable (toujours écrasée, pas `setdefault`), ce qui
+  permet aux workflows multi-phases de faire un `switch` dessus
+  (ex. manager `assign` puis `merge`).
+- **`git_init` durci** : branche `master` déterministe (`init -b master`),
+  identité git locale (commits OK en conteneur vierge), et `.gitignore`
+  excluant `chatroom.jsonl` + inbox (canaux de comm, non versionnés — sinon
+  `git add -A` les suit et les posts concurrents avortent les merges).
+- **Test E2E `tests/e2e_mini_entreprise.py`** (statique, sans LLM, donc
+  reproductible) : une équipe de 4 agents (manager / analyst / 2 workers)
+  code un mini-jeu — spec → assign → workers sur branches → merge →
+  intégration `main.py` → review. Vérifie les 3 réseaux, l'historique git
+  multi-commits, l'arbre projet, et `python src/main.py` (exit 0).
+  Dockerisé : `docker/entrypoint-mini-entreprise.sh` +
+  `docker/run-mini-entreprise.sh` (pas d'Ollama requis).
+- **Résultats** : mini-entreprise **22/22 PASS** (local + Docker), E2E
+  principal **51/51 PASS** (non régressé).
+
+### V0.6.22 — Modèle de collaboration dépôt central + clones par agent ✅
+
+Refonte de l'architecture de collaboration (retour utilisateur) : plus d'arbre
+git partagé unique ; chaque agent travaille sur **sa** copie, et les canaux de
+communication sont **hors** du versionnement.
+
+- **Séparation nette des espaces** (skills `system/*`,
+  `services/skill_manager.py`) :
+  - **Dépôt central BARE** : `mw_home()/repos/{project_id}.git` — source de
+    vérité partagée.
+  - **Clone par agent** : `mw_home()/memagent/{agent_id}/workspace/{project_id}`
+    — le travail **versionné** vit ici (fichiers projet + `important/`). Les
+    dossiers **privés** (`perso/`, `ctx/`, `mem/`, `history/`) restent hors du
+    clone → jamais versionnés.
+  - **Chatroom N:N** : `mw_home()/comms/{chatroom_id}/chatroom.jsonl` — découplé
+    des projets (tout groupe d'agents), plus dans le git (fini le hack
+    `.gitignore` chatroom).
+  - **Inbox 1:1** : `mw_home()/inbox/{agent_id}/`.
+  - **Espace commun live** (non versionné) : `mw_home()/common/{group_id}/`
+    (skills `common_write/read/list/tree`).
+- **Skills git refondus** :
+  - `repo_init` : crée le dépôt bare + sème un commit initial (master :
+    README + `.gitignore`) via un clone temporaire.
+  - `git_clone` : clone le central dans le workspace perso de l'agent (fetch si
+    déjà cloné).
+  - `git_fetch` (nouveau) + `git_branch/checkout/commit/diff/log/status/merge/
+    pull/push` opèrent tous sur le **clone perso** de l'agent (`agent_id` +
+    `project_id`). `push`/`pull`/`fetch` parlent au central (`origin`).
+- **Skills projet** (`project_write/read/list/tree`) opèrent sur le clone perso
+  de l'agent (plus d'arbre partagé). **Suppression** de `project_init`/`git_init`
+  (pas de rétro-compat, framework interne).
+- **`perso/`** ajouté aux sous-espaces du home agent (notes privées, réflexions).
+- **Total skills = 61** (ajout repo_init, git_clone, git_fetch, common_*×4 ;
+  retrait project_init, git_init).
+- **Test `tests/e2e_mini_entreprise.py`** réécrit pour le vrai flux distribué :
+  manager `repo_init`+clone → analyst/workers clonent → workers codent sur des
+  **branches** (`feature-logic`/`feature-ui`) et `push` → manager `fetch`+`merge`
+  les branches distantes + intègre `main.py` + `push` → analyst `pull`+review.
+  Vérifie aussi que le clone **ne contient pas** les dossiers privés et que
+  `important/` est bien versionné. **27/27 PASS** (local + Docker).
+- E2E principal **51/51 PASS** (non régressé).
 
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.

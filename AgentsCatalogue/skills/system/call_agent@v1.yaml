@@ -1,0 +1,29 @@
+name: system/call_agent@v1
+category: system
+description: "Invoque un autre agent par nom/ref et renvoie son résultat d'exécution."
+inputs:
+  target:
+    type: string
+    required: true
+    description: "Nom ou ref de l'agent cible"
+  request:
+    type: string
+    required: true
+    description: "Requête à transmettre"
+  provider_ref:
+    type: string
+    required: false
+    default: ""
+  model_ref:
+    type: string
+    required: false
+    default: ""
+outputs:
+  ok:
+    type: boolean
+  result:
+    type: object
+    description: "Résultat de l'agent cible"
+implementation:
+  type: python
+  function: _exec_call_agent

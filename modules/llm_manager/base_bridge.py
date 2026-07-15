@@ -47,6 +47,7 @@ class ChatResponse:
     finish_reason: str = "stop"
     usage: Dict[str, int] = field(default_factory=dict)
     raw: Any = None
+    budget: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
