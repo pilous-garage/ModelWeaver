@@ -27,6 +27,36 @@ from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
 from AgentFrameWork.stream_bus import stream_bus
 
 
+# ── Bridge LLM partagé : branché sur le Key Manager (clés en BDD) ──
+# Les agents s'exécutent via le daemon, dont l'environnement ne porte pas les
+# clés API (ex: GROQ_API_KEY). On résout donc les clés via le KeyManager
+# (stockées en BDD, hors env) et les endpoints/api_type via le catalogue.
+_cat_db = None
+_km = None
+
+
+def _get_catalogue_db():
+    global _cat_db
+    if _cat_db is None:
+        from modules.sql.db import CatalogueDB
+        _cat_db = CatalogueDB()
+    return _cat_db
+
+
+def _get_key_manager():
+    global _km
+    if _km is None:
+        from modules.key_manager.key_manager import KeyManager
+        from modules.sql.db import ModelWeaverDB
+        _km = KeyManager(ModelWeaverDB())
+    return _km
+
+
+def make_bridge() -> "LiteLLMBridge":
+    """Construit un bridge LiteLLM avec Key Manager (clés BDD) + catalogue."""
+    return LiteLLMBridge(cat=_get_catalogue_db(), km=_get_key_manager())
+
+
 # Workflow minimal d'un tour de chat : un seul `llm_call` qui consomme le
 # historique complet passé à run() (messages), diffuse via StreamBus, et
 # ajoute la réponse à l'historique. Le chat est un agent `role_type='chat'`
@@ -118,7 +148,7 @@ class Agent:
 
         # Charger le bridge si pas déjà fait
         if not self._bridge:
-            self._bridge = LiteLLMBridge()
+            self._bridge = make_bridge()
 
         # Résoudre le workflow (FSM)
         config = json.loads(self._data.get("config_json") or "{}")
@@ -223,7 +253,7 @@ class Agent:
         stream_bus.reset(self.agent_id)
 
         if not self._bridge:
-            self._bridge = LiteLLMBridge()
+            self._bridge = make_bridge()
 
         variables = json.loads(self._data.get("variables_json") or "{}")
         history = variables.get("messages", [])
@@ -376,33 +406,58 @@ class Agent:
             if _m.get("role") == "user":
                 variables["request"] = _m.get("content", "")
                 break
-        fsm = FSMInterpreter(
-            bridge=self._bridge,
-            tool_executor=None,  # tools gérés en Phase 3
-        )
-        result: FSMResult = fsm.run(
-            workflow=workflow,
-            messages=messages,
-            variables=variables,
-            provider_ref=provider_ref,
-            model_ref=model_ref,
-            signal_check=signal_check,
-            stream_sink=stream_sink,
-            spawn_handler=spawn_handler,
-            handoff_handler=handoff_handler,
-            lifecycle_mgr=lifecycle_mgr,
-        )
-        # Persister les variables (survit à configure / spawn / handoff)
-        state = {"current_step": result.next_step_id}
-        # Occupation `disparate` : l'agent retourne dormir en BDD après exécution
-        if self.occupation == "disparate":
-            state["sleeping"] = True
-        self.db.conn.execute(
-            "UPDATE agents SET variables_json = ?, state_json = ? WHERE agent_id = ?",
-            (json.dumps(result.variables), json.dumps(state), self.agent_id),
-        )
-        self.db.conn.commit()
-        return result
+        # Suivi live du step courant : la GUI (agent/list) lit
+        # agent_runtime.current_step. Le FSM émet `post_step` à chaque étape ;
+        # on le reflète en BDD pour que l'activité soit observable en direct
+        # (sinon la GUI ne voit que le littéral 'running' pendant toute l'exéc).
+        from services.lifecycle import get_event_bus, HookType
+        _bus = get_event_bus()
+        _agent_id = self.agent_id
+        _db = self.db
+
+        def _on_post_step(event):
+            if event.agent_id != _agent_id:
+                return
+            try:
+                _db.conn.execute(
+                    "UPDATE agent_runtime SET current_step = ?, "
+                    "heartbeat_at = datetime('now') WHERE agent_id = ?",
+                    (event.step_id or "running", _agent_id))
+                _db.conn.commit()
+            except Exception:
+                pass
+
+        _bus.subscribe(HookType.POST_STEP, _on_post_step)
+        try:
+            fsm = FSMInterpreter(
+                bridge=self._bridge,
+                tool_executor=None,  # tools gérés en Phase 3
+            )
+            result: FSMResult = fsm.run(
+                workflow=workflow,
+                messages=messages,
+                variables=variables,
+                provider_ref=provider_ref,
+                model_ref=model_ref,
+                signal_check=signal_check,
+                stream_sink=stream_sink,
+                spawn_handler=spawn_handler,
+                handoff_handler=handoff_handler,
+                lifecycle_mgr=lifecycle_mgr,
+            )
+            # Persister les variables (survit à configure / spawn / handoff)
+            state = {"current_step": result.next_step_id}
+            # Occupation `disparate` : l'agent retourne dormir en BDD après exécution
+            if self.occupation == "disparate":
+                state["sleeping"] = True
+            self.db.conn.execute(
+                "UPDATE agents SET variables_json = ?, state_json = ? WHERE agent_id = ?",
+                (json.dumps(result.variables), json.dumps(state), self.agent_id),
+            )
+            self.db.conn.commit()
+            return result
+        finally:
+            _bus.unsubscribe(HookType.POST_STEP, _on_post_step)
 
     def _make_spawn_handler(self):
         """Closure : crée/exécute/endort un agent enfant via l'AgentManager."""
@@ -543,7 +598,7 @@ class AgentManager:
 
     def __init__(self, db: Optional[AgentsDB] = None):
         self.db = db or AgentsDB()
-        self._bridge = LiteLLMBridge()
+        self._bridge = make_bridge()
 
     # ── API publique ──
 

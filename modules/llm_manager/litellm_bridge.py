@@ -15,6 +15,7 @@ from modules.llm_manager.base_bridge import (
     BaseBridge, ChatResponse, ModelCapabilities,
     ErrorCategory, BridgeError,
 )
+from modules.key_manager.key_manager import KeyLockedError
 
 logger = logging.getLogger("modelweaver.bridge.litellm")
 
@@ -185,6 +186,11 @@ class LiteLLMBridge(BaseBridge):
                     key = rec.get("api_key")
                     base = rec.get("api_base") or self._resolve_api_base(provider_ref)
                     return key, base
+            except KeyLockedError:
+                # Une clé verrouillée doit remonter telle quelle, pas être
+                # masquée en « clé manquante » (qui donnerait une erreur auth
+                # confuse). Les appelants la traitent comme une erreur claire.
+                raise
             except Exception:
                 pass
         return os.environ.get(f"{provider_ref.upper()}_API_KEY"), self._resolve_api_base(provider_ref)
@@ -291,8 +297,7 @@ class LiteLLMBridge(BaseBridge):
         effective = self.validator.get_effective_context(
             provider_ref, model_ref)
         if effective and max_tokens is None:
-            kwargs["max_tokens"] = min(
-                max_tokens or effective, effective)
+            kwargs["max_tokens"] = effective
 
         try:
             response = self._litellm.completion(**kwargs)
