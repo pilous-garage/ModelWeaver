@@ -327,7 +327,41 @@ mono-étape `CHAT_WORKFLOW` (1 step `llm_call`), historique persisté dans
   → `from AgentsCatalogue.role_manager`). `ROLES_DIR` pointe sur `AgentsCatalogue/rôles`.
 - `oldcode/` et `autoanalyse/` (copies legacy) laissés intacts (`from agents.` préservé).
 
-### V0.6.7 — Rôles d'agents et configuration 📝
+### V0.6.7 — Rôles d'agents, configuration & routage dynamique ✅
+**Agent Framework Daemon** : routage résolu à runtime (les agents sont
+dynamiques — rôles, capacités, états, droits — donc les routes ne sont
+PAS hardcodées au démarrage mais dérivées à chaque requête de
+`(rôle → skills) × (état de l'agent)`).
+
+- **`AgentFrameWork/router.py`** (nouveau) : cœur du routage dynamique.
+  - `routes_for(role, state, skills)` → liste des `RouteSpec` qu'un agent
+    expose **maintenant** (1 route par `skill` de rôle + ops lifecycle
+    `status`/`configure`/`pause`/`resume`/`kill` selon l'état).
+  - `resolve(agent, op)` → `(RouteSpec, None)` si autorisé, sinon
+    `(None, raison)` avec `raison ∈ {unknown, not_capable, state}`.
+  - `capabilities_catalog()` → catalogue des rôles + `skills`/`capabilities`
+    déclarés dans `AgentsCatalogue/` (source de vérité des capacités).
+- **Daemon — routes dynamiques `agents/{id}/*`** (vs `agent/*` statiques) :
+  - `GET /v1/capabilities` → catalogue des rôles/skills.
+  - `GET /v1/agents/{id}/routes` → introspection : ops que CET agent expose
+    (dérivées de son rôle × son état).
+  - `POST /v1/agents/{id}/<op>` → dispatch : op de capacité → `Agent.execute`
+    (ou `chat_turn` pour `chat`) ; op lifecycle → signal/`configure`/`status`.
+    Réponses : `200` autorisé, `403 not_capable` (skill hors-rôle),
+    `404 unknown` (op inexistante), `409 state` (op lifecycle interdite à
+    cet état), `405` méthode.
+- **Résolution par skill** : un agent rôle `assistant` (skills `chat,
+  research, summarize, search`) expose les routes `chat, research,
+  summarize, search, status, configure` ; `code_gen` (skill absent du rôle)
+  → `403 not_capable`.
+- **E2E** : `tests/e2e_agent_framework.py` Phase 7 = **44/44 PASS** (catalogue,
+  introspection routes, op autorisée exécute, op hors-rôle 403, op inconnue 404).
+- **MWClient** : `request_raw(method, route, **params)` (retourne
+  `(status, body)` sans lever sur 4xx, pour tester le routage).
+
+> Reste (GUI) : Éditeur de rôles visuel (création/import-export JSON,
+> bibliothèque de rôles), attribution provider-modèle par rôle.
+
 - **Définition d'un rôle** :
   - Template de prompt système
   - Capacités associées (chat, code, analyse, search, tool_use)

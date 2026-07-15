@@ -74,6 +74,25 @@ class MWClient:
             raise MWError(f"{route}: {payload.get('error')}")
         return payload.get("result")
 
+    def request_raw(self, method, route, **params):
+        """Appel bas niveau renvoyant (status_http, body) sans lever d'exception
+        sur les codes 4xx/5xx (utile pour tester le routage dynamique)."""
+        url = f"{self.base_url}/v1/{route.strip('/')}"
+        data = json.dumps(params).encode("utf-8") if method == "POST" else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read())
+            except Exception:
+                return e.code, {"error": str(e)}
+        except urllib.error.URLError as e:
+            return 0, {"error": str(e.reason)}
+
     def health(self):
         with urllib.request.urlopen(f"{self.base_url}/health", timeout=5) as resp:
             return json.loads(resp.read())

@@ -357,6 +357,45 @@ def main():
     check("P6 suppression sessions", (dela or {}).get("status") == "ok"
           and (delb or {}).get("status") == "ok", f"{dela} {delb}")
 
+    # ===== PHASE 7 : routage dynamique des agents (Agent Framework Daemon) =====
+    print("\n=== PHASE 7 : routage dynamique agents ===")
+    # Catalogue des capacités (rôles + skills)
+    sc, bc = mw.request_raw("GET", "capabilities")
+    roles7 = (bc.get("result") or {}).get("roles", {})
+    check("P7 capabilities (200 + rôles)", sc == 200 and "assistant" in roles7, str(bc)[:160])
+
+    # Crée un agent rôle assistant (skills: chat, research, summarize, search)
+    ca = mw.agent.create(name="e2e_dyn", role="assistant", occupation="noncontinue")
+    check("P7 agent assistant créé", (ca or {}).get("status") == "ok" and ca.get("agent_id"), str(ca))
+    aid7 = ca.get("agent_id")
+
+    # Introspection : routes résolues à runtime depuis le rôle
+    sr, br = mw.request_raw("GET", f"agents/{aid7}/routes")
+    ops7 = [(r.get("op")) for r in (br.get("result") or {}).get("routes", [])]
+    check("P7 routes reflètent le rôle (chat/research/summarize/search)",
+          {"chat", "research", "summarize", "search"}.issubset(set(ops7)), str(ops7))
+
+    # Op autorisée par le rôle -> exécution LLM
+    sok, bok = mw.request_raw("POST", f"agents/{aid7}/research",
+                              message="Donne un fait sur Paris en une phrase.",
+                              provider_ref=LM_PROVIDER, model_ref=LM_MODEL)
+    check("P7 op autorisée exécute (research 200)", sok == 200
+          and (bok.get("result") or {}).get("status") == "ok", f"{sok} {str(bok)[:160]}")
+
+    # Op hors-rôle -> 403 not_capable (code_gen n'est pas un skill d'assistant)
+    sk, bk = mw.request_raw("POST", f"agents/{aid7}/code_gen",
+                            message="x", provider_ref=LM_PROVIDER, model_ref=LM_MODEL)
+    check("P7 op hors-rôle refusée (code_gen 403 not_capable)",
+          sk == 403 and (bk.get("result") or {}).get("reason") == "not_capable",
+          f"{sk} {str(bk)[:160]}")
+
+    # Op inconnue -> 404 unknown
+    su, bu = mw.request_raw("POST", f"agents/{aid7}/frobnicate", message="x")
+    check("P7 op inconnue (404 unknown)", su == 404
+          and (bu.get("result") or {}).get("reason") == "unknown", f"{su} {str(bu)[:160]}")
+
+    mw.agent.delete(name="e2e_dyn")
+
     # ===== Résumé =====
     cleanup(mw)
     passed = sum(1 for _, ok, _ in results if ok)

@@ -53,6 +53,11 @@ from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_p
 from modules.llm_manager.litellm_bridge import LiteLLMBridge
 from modules.llm_manager.local_engines import get_local_engine_manager
 from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
+from AgentFrameWork.router import (
+    resolve as router_resolve,
+    routes_for as router_routes_for,
+    capabilities_catalog as router_capabilities,
+)
 
 API_VERSION = "v1"
 MW_VERSION = "0.6.6.0"
@@ -1455,6 +1460,95 @@ def _wrap(fn):
     return handler
 
 
+# ── Routage dynamique des agents (Agent Framework Daemon) ──
+# Les agents sont dynamiques : les routes ne sont pas hardcodées, elles sont
+# résolues à runtime par AgentFrameWork.router selon le rôle + l'état.
+# Convention : `agent/*` = routes statiques de gestion ; `agents/{id}/*` =
+# routes résolues dynamiquement pour UN agent (introspection + dispatch).
+
+def op_agent_capabilities(_params):
+    """Catalogue des rôles + skills/capabilities (GET /v1/capabilities)."""
+    return router_capabilities()
+
+
+def _agent_dynamic_route(method: str, parts: List[str], params: dict):
+    """Route dynamique `agents/{id}/{sub}`.
+
+    Retourne un dict {"code": int, "payload": dict} ou None si le chemin
+    ne correspond pas au pattern dynamique.
+    """
+    # parts = ["agents", id, sub]  (sub = "routes" ou un nom d'op)
+    if len(parts) != 3 or parts[0] != "agents":
+        return None
+    try:
+        agent_id = int(parts[1])
+    except ValueError:
+        return {"code": 400, "payload": {"error": "bad_agent_id", "agent_id": parts[1]}}
+    sub = parts[2]
+
+    from services.agent_manager.service import AgentManager, Agent
+    mgr = AgentManager()
+    agent = mgr.get_by_id(agent_id)
+    if not agent:
+        return {"code": 404, "payload": {"error": "agent_not_found", "agent_id": agent_id}}
+
+    if sub == "routes":
+        if method != "GET":
+            return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+        routes = router_routes_for(agent.get("role_type", ""), agent.get("status", "INIT"))
+        return {"code": 200, "payload": {
+            "agent_id": agent_id,
+            "role": agent.get("role_type"),
+            "status": agent.get("status"),
+            "routes": [r.to_dict() for r in routes],
+        }}
+
+    if method != "POST":
+        return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+
+    route, reason = router_resolve(agent, sub)
+    if route is None:
+        code = {"unknown": 404, "not_capable": 403, "state": 409}.get(reason, 404)
+        return {"code": code, "payload": {
+            "error": "op_not_allowed", "op": sub, "reason": reason,
+            "agent_role": agent.get("role_type"), "agent_status": agent.get("status"),
+        }}
+
+    try:
+        if route.kind == "lifecycle":
+            if sub == "status":
+                return {"code": 200, "payload": agent}
+            if sub == "configure":
+                cfg = json.loads(agent.get("config_json") or "{}")
+                if "temperature" in params:
+                    cfg["temperature"] = float(params["temperature"])
+                if "max_tokens" in params:
+                    cfg["max_tokens"] = int(params["max_tokens"])
+                mgr.db.conn.execute(
+                    "UPDATE agents SET config_json = ? WHERE agent_id = ?",
+                    (json.dumps(cfg), agent_id))
+                mgr.db.conn.commit()
+                return {"code": 200, "payload": {"status": "ok", "config": cfg}}
+            # pause / resume / kill -> signal canal de supervision
+            sig = mgr.send_signal(agent_id, sub)
+            return {"code": 200, "payload": sig}
+
+        # capability : exécution via le framework (réutilise Agent.execute/chat_turn)
+        a = Agent.hydrate(agent_id, mgr.db)
+        msg = params.get("message") or params.get("request") or ""
+        prov = params.get("provider_ref") or params.get("provider") or ""
+        model = params.get("model_ref") or params.get("model") or ""
+        if sub == "chat":
+            res = a.chat_turn(msg, provider_ref=prov, model_ref=model)
+        else:
+            res = a.execute(msg, provider_ref=prov, model_ref=model)
+        a.dehydrate()
+        return {"code": 200, "payload": res}
+    except Exception as e:
+        import traceback
+        return {"code": 500, "payload": {"error": str(e), "trace": traceback.format_exc()}}
+
+
 # ── Table de routage : "domaine/action" -> handler(params) -> dict ──
 ROUTES = {
     # A. Système & environnement
@@ -1581,6 +1675,25 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send(200, {"ok": True, "version": MW_VERSION, "api": API_VERSION})
             return
+        prefix = f"/{API_VERSION}/"
+        if not self.path.startswith(prefix):
+            self._send(404, {"error": "not_found", "path": self.path})
+            return
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return
+        route = self.path[len(prefix):].strip("/")
+        parts = [p for p in route.split("/") if p]
+        # Route dynamique agents/{id}/routes ?
+        dyn = _agent_dynamic_route("GET", parts, {})
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
+            return
+        # Catalogue des capacités (rôles/skills) ?
+        if route == "capabilities":
+            self._send(200, {"ok": True, "route": route, "result": router_capabilities()})
+            return
         self._send(404, {"error": "not_found", "path": self.path})
 
     def _handle_stream(self, route: str, handler, params: dict):
@@ -1624,6 +1737,13 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         stream_handler = STREAMING_ROUTES.get(route)
         if stream_handler:
             self._handle_stream(route, stream_handler, params)
+            return
+        # Route dynamique agents/{id}/{op} ?
+        parts = [p for p in route.split("/") if p]
+        dyn = _agent_dynamic_route("POST", parts, params)
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
             return
         # JSON normal
         handler = ROUTES.get(route)
