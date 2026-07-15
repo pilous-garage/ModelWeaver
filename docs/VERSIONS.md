@@ -240,7 +240,7 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
 - **Organisateur** : assigne les LLM au runtime, l'agent ne choisit pas.
 - **Signaux parallèles** : pause/status/kill sans interruption forcée.
 
-### V0.6.5.1 — Agent Core (Phase 1 : minimal) 📝
+### V0.6.5.1 — Agent Core (Phase 1 : minimal) ✅
 - Nouvelle table `agents` (occupation, resources_json, variables_json).
 - Table `agent_runtime` (thread_id, pid, heartbeat).
 - `Agent.hydrate()` / `Agent.dehydrate()` — cycle BDD → thread → BDD.
@@ -248,7 +248,7 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
 - `AgentManager` — `list_active()`, `check_heartbeats()`.
 - Ticker → check Agent Manager uniquement.
 
-### V0.6.5.2 — FSM Interpreter (Phase 2) 📝
+### V0.6.5.2 — FSM Interpreter (Phase 2) ✅
 - Remplace l'ancien Worker.
 - Exécute les steps : llm_call, tool_call, switch, sleep, set_variable, end.
 - LLM Bridge devient un tool provider (plus de urllib.request direct).
@@ -407,22 +407,39 @@ quota soft, workspace RW complet, et escalade au gestionnaire de ressources
   (auto-name, quota 10Mo, écriture, quota_request pending → approve,
   dossier détruit à la suppression).
 
-### V0.6.9 — Agent Framework Daemon : processus dédié 📝
-Suite V0.6.7 (routage dynamique en-process). On extrait le runtime des
-agents dans un **processus dédié** (le vrai « daemon d'interaction agents »)
-distinct du gateway REST :
+### V0.6.9 — AgentDaemon : interface unique pour les agents ✅
+Point d'entrée unique `AgentDaemon.call(agent_ref, function, **kwargs)` :
+résolution agent (nom ou id) → routage (rôle + état via router.py) → exécution
+via le framework. L'appelant ne sait rien de l'implémentation derrière.
 
-- **AFD en processus séparé** : exécution FSM + `StreamBus` + supervision
+- **`services/agent_daemon/`** (nouveau) : `AgentDaemon.call()` englobe toute
+  opération sur un agent : lookup BDD, validation router, lifecycle (status/
+  configure/pause/resume/kill), capability (chat/research/...), signaux,
+  stream, spawn, handoff, evaluate, admit. Retourne toujours un dict
+  `{"status": "ok"|"error", ...}`.
+- **Routage dynamique** : `_agent_dynamic_route` dans `daemon.py` devient un
+  **proxy mince** vers `AgentDaemon.call()`. Les opérateurs `agent/*` sont
+  simplifiés (délégation).
+- **Storage** (infra, pas agent) : reste dans `daemon.py` via `_storage_route`.
+- **E2E** : 51/51 PASS (toujours vert après refactoring).
+- **Prochaine étape** : extraction de l'AFD en processus dédié + StreamBus
+  cross-process (socket Unix + BDD tmpfs WAL).
+
+### V0.6.10 — Agent Framework Daemon : processus dédié 📝
+Suite V0.6.9 (AgentDaemon en-process). On extrait le runtime des agents dans
+un **processus dédié** distinct du gateway REST :
+
+- **AFD en processus séparé** : exécution FSM + StreamBus + supervision
   (Ticker/watchdog) déplacés dans un daemon propre ; le daemon REST actuel
-  devient un **gateway mince** qui proxy vers l'AFD via IPC.
-- **`StreamBus` cross-process** : passage du bus en mémoire vers un transport
-  IPC (socket Unix / pubsub SQLite) pour que le streaming soit visible hors
-  du process d'exécution.
-- **Lancement par le supervisor Rust** : 2 process à démarrer (gateway + AFD).
+  devient un **gateway mince** qui proxy vers l'AFD via socket Unix.
+- **StreamBus cross-process** : passage du bus en mémoire vers une table
+  SQLite tmpfs avec WAL (single writer par agent = zero contention).
+- **Auto-régénération** : l'AFD scanne la table `agents` au démarrage,
+  nettoie les zombies, reprend les agents en cours. Pattern Phénix++.
 - **Isolation redémarrage** : une MAJ du gateway ne tue plus les agents en
-  cours ; les routes `agents/{id}/*` résolues par l'AFD.
+  cours.
 
-### V0.6.10 — Hardening et logging structuré 📝
+### V0.6.11 — Hardening et logging structuré 📝
 - **Sandboxing des commandes** : exécution des outils et appels LLM dans
   un environnement restreint (sous-processus isolé, timeout, limite mémoire).
 - **Logging structuré** : remplacement des `print()` par `structlog` /

@@ -54,8 +54,6 @@ from modules.llm_manager.litellm_bridge import LiteLLMBridge
 from modules.llm_manager.local_engines import get_local_engine_manager
 from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 from AgentFrameWork.router import (
-    resolve as router_resolve,
-    routes_for as router_routes_for,
     capabilities_catalog as router_capabilities,
 )
 
@@ -1100,234 +1098,103 @@ def op_agent_delete(params):
 
 
 def op_agent_execute(params):
-    """Hydrate un agent et exécute une requête LLM.
-    params: agent_id (ou name), request, provider_ref, model_ref
-    """
-    from services.agent_manager.service import Agent
-    db = _get_agent_db()
+    """Hydrate un agent et exécute une requête LLM — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
     agent_id = params.get("agent_id")
     name = params.get("name")
-    if not agent_id and not name:
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    if name:
-        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
-        if not row:
-            return {"status": "error", "error": "agent introuvable"}
-        agent_id = row["agent_id"]
-    request = params.get("request", "")
-    if not request:
-        return {"status": "error", "error": "request requis"}
-    provider_ref = params.get("provider_ref", "")
-    model_ref = params.get("model_ref", "")
-    # Phase 3 : si le LLM n'est pas imposé, l'Organisateur l'alloue selon
-    # les ressources de l'agent (le LLM est un tool provider, pas un choix).
-    if not provider_ref or not model_ref:
-        row = db.conn.execute("SELECT resources_json FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
-        try:
-            resources = json.loads(row["resources_json"] or "{}") if row else {}
-        except (json.JSONDecodeError, TypeError):
-            resources = {}
-        if resources.get("llm"):
-            from modules.llm_manager.organisateur import Organisateur
-            alloc = Organisateur().allocate(resources)
-            if alloc["allocated"]:
-                if not provider_ref:
-                    provider_ref = alloc["provider_ref"]
-                if not model_ref:
-                    model_ref = alloc["model_ref"]
-            else:
-                return {"status": "error", "error": f"LLM non allouable : {alloc['reason']}"}
-    try:
-        agent = Agent.hydrate(agent_id, db)
-        result = agent.execute(request, provider_ref=provider_ref, model_ref=model_ref)
-        agent.dehydrate()
-        return result
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    return AgentDaemon.call(ref, "execute",
+                            request=params.get("request", ""),
+                            provider_ref=params.get("provider_ref", ""),
+                            model_ref=params.get("model_ref", ""))
 
 
 def op_agent_manager_status(_params):
-    """Retourne le statut de l'AgentManager."""
-    from services.agent_manager.service import AgentManager
-    mgr = AgentManager()
-    active = mgr.list_active()
-    zombies = mgr.check_heartbeats()
-    return {
-        "active_agents": len(active),
-        "active": [{"id": a["agent_id"], "name": a["name"]} for a in active],
-        "zombies": zombies,
-    }
-
-
-def _resolve_agent_id(params) -> Optional[int]:
-    db = _get_agent_db()
-    agent_id = params.get("agent_id")
-    name = params.get("name")
-    if not agent_id and not name:
-        return None
-    if name:
-        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
-        return row["agent_id"] if row else None
-    return agent_id
+    """Retourne le statut de l'AgentManager — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    return AgentDaemon.call(None, "manager_status")
 
 
 def op_agent_evaluate(params):
-    """Évalue si un agent PEUT tourner (ressources + LLM) maintenant.
-    params: agent_id (ou name), resources? (override partiel)
-    """
-    from services.ressource_manager.service import RessourceManager
-    agent_id = _resolve_agent_id(params)
-    if not agent_id:
+    """Évalue si un agent PEUT tourner — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    db = _get_agent_db()
-    row = db.conn.execute("SELECT resources_json FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
-    if not row:
-        return {"status": "error", "error": "agent introuvable"}
-    try:
-        resources = json.loads(row["resources_json"] or "{}")
-    except (json.JSONDecodeError, TypeError):
-        resources = {}
-    resources.update(params.get("resources", {}) or {})
-    verdict = RessourceManager().evaluate(resources)
-    verdict["agent_id"] = agent_id
-    verdict["status"] = "ok"
-    return verdict
+    return AgentDaemon.call(ref, "evaluate", resources=params.get("resources"))
 
 
 def op_agent_admit(params):
-    """Admission control + préemption pour un agent.
-    params: agent_id (ou name)
-    """
-    from services.agent_manager.service import AgentManager
-    agent_id = _resolve_agent_id(params)
-    if not agent_id:
+    """Admission control — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    result = AgentManager().admit(agent_id)
-    result["status"] = "ok"
-    return result
+    return AgentDaemon.call(ref, "admit")
 
 
 def op_agent_signal(params):
-    """Enfile un signal pour un agent (Phase 4).
-    params: agent_id (ou name), type, payload?
-    type ∈ pause|resume|status|health|kill|configure
-    """
-    from services.agent_manager.service import AgentManager
-    agent_id = _resolve_agent_id(params)
-    if not agent_id:
+    """Enfile un signal — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    stype = params.get("type")
-    if not stype:
-        return {"status": "error", "error": "type requis"}
-    return AgentManager().send_signal(agent_id, stype, params.get("payload"))
+    return AgentDaemon.call(ref, "signal", type=params.get("type"), payload=params.get("payload"))
 
 
 def op_agent_signals(params):
-    """Liste les signaux d'un agent (filtre status optionnel).
-    params: agent_id (ou name), status?
-    """
-    from services.agent_manager.service import AgentManager
-    agent_id = _resolve_agent_id(params)
-    if not agent_id:
+    """Liste les signaux — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    status = params.get("status")
-    db = _get_agent_db()
-    if status:
-        rows = db.conn.execute(
-            "SELECT * FROM agent_signals WHERE agent_id = ? AND status = ? ORDER BY signal_id",
-            (agent_id, status)).fetchall()
-    else:
-        rows = db.conn.execute(
-            "SELECT * FROM agent_signals WHERE agent_id = ? ORDER BY signal_id",
-            (agent_id,)).fetchall()
-    return {"status": "ok", "agent_id": agent_id,
-            "signals": [dict(r) for r in rows], "count": len(rows)}
+    return AgentDaemon.call(ref, "signals", status=params.get("status"))
 
 
 def op_agent_signal_ack(params):
-    """Acquittement manuel d'un signal (cas hors exécution).
-    params: signal_id
-    """
-    from services.agent_manager.service import AgentManager
-    sid = params.get("signal_id")
-    if not sid:
-        return {"status": "error", "error": "signal_id requis"}
-    return AgentManager().ack_signal(sid)
+    """Acquittement d'un signal — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    return AgentDaemon.call(None, "signal/ack", signal_id=params.get("signal_id"))
 
 
 def op_agent_signal_complete(params):
-    """Clôture manuelle d'un signal (cas hors exécution).
-    params: signal_id, result?
-    """
-    from services.agent_manager.service import AgentManager
-    sid = params.get("signal_id")
-    if not sid:
-        return {"status": "error", "error": "signal_id requis"}
-    return AgentManager().complete_signal(sid, params.get("result"))
+    """Clôture d'un signal — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    return AgentDaemon.call(None, "signal/complete", signal_id=params.get("signal_id"),
+                            result=params.get("result"))
 
 
 def op_agent_stream(params):
-    """Retourne les chunks diffusés par un agent depuis un seq (poll HTTP).
-    params: agent_id (ou name), seq?
-    """
-    from AgentFrameWork.stream_bus import stream_bus
-    agent_id = _resolve_agent_id(params)
-    if not agent_id:
+    """Retourne les chunks diffusés — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    seq = params.get("seq", 0) or 0
-    chunks = stream_bus.since(agent_id, seq)
-    last = chunks[-1]["seq"] if chunks else seq
-    return {"status": "ok", "agent_id": agent_id, "seq": last,
-            "chunks": chunks, "count": len(chunks)}
+    return AgentDaemon.call(ref, "stream", seq=params.get("seq", 0))
 
 
 def op_agent_spawn(params):
-    """Phase 5 : spawn à la demande d'un agent (souvent occupation `disparate`).
-    params: name, role, request, occupation?, resources?, config?, provider_ref?,
-            model_ref?, keep_sleeping?
-    """
-    from services.agent_manager.service import AgentManager
-    name = params.get("name")
-    role = params.get("role")
-    request = params.get("request", "")
-    if not name or not role:
-        return {"status": "error", "error": "name et role requis"}
-    return AgentManager().spawn_agent(
-        name=name, role=role, request=request,
-        occupation=params.get("occupation", "disparate"),
-        resources=params.get("resources"),
-        config=params.get("config"),
-        provider_ref=params.get("provider_ref", ""),
-        model_ref=params.get("model_ref", ""),
-        keep_sleeping=params.get("keep_sleeping", True),
-    )
+    """Spawn d'agent — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    return AgentDaemon.call(None, "spawn", **params)
 
 
 def op_agent_handoff(params):
-    """Phase 5 : succession — transfert de session d'un agent vers un successeur.
-    params: from_id (ou from_name), to_id (ou to_name)
-    """
-    from services.agent_manager.service import AgentManager
-    db = _get_agent_db()
-    from_id = params.get("from_id")
-    from_name = params.get("from_name")
-    if not from_id and not from_name:
-        return {"status": "error", "error": "from_id ou from_name requis"}
-    if from_name:
-        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (from_name,)).fetchone()
-        if not row:
-            return {"status": "error", "error": "agent source introuvable"}
-        from_id = row["agent_id"]
-    to_id = params.get("to_id")
-    to_name = params.get("to_name")
-    if not to_id and not to_name:
-        return {"status": "error", "error": "to_id ou to_name requis"}
-    if to_name:
-        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (to_name,)).fetchone()
-        if not row:
-            return {"status": "error", "error": "agent cible introuvable"}
-        to_id = row["agent_id"]
-    return AgentManager().handoff(from_id, to_id)
+    """Succession d'agent — proxy vers AgentDaemon."""
+    from services.agent_daemon import AgentDaemon
+    return AgentDaemon.call(None, "handoff", **params)
 
 
 # ── N. Chat Service (V0.6.6) : sessions = agents role_type='chat' ──
@@ -1478,13 +1345,11 @@ def op_agent_capabilities(_params):
 
 
 def _agent_dynamic_route(method: str, parts: List[str], params: dict):
-    """Route dynamique `agents/{id}/{sub}`.
+    """Route dynamique `agents/{id}/{sub}` — proxy vers AgentDaemon.call().
 
-    Retourne un dict {"code": int, "payload": dict} ou None si le chemin
-    ne correspond pas au pattern dynamique.
+    Le routeur AgentFrameWork.router resolve les ops autorisées par rôle+état.
+    Toute la logique métier est dans services.agent_daemon.
     """
-    # parts = ["agents", id, sub]  (sub = "routes" ou un nom d'op)
-    #        ou ["agents", id, "storage"] / ["agents", id, "storage", "quota", "approve"]
     if len(parts) < 3 or parts[0] != "agents":
         return None
     try:
@@ -1493,93 +1358,55 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
         return {"code": 400, "payload": {"error": "bad_agent_id", "agent_id": parts[1]}}
     sub = parts[2]
 
-    from services.agent_manager.service import AgentManager, Agent
-    mgr = AgentManager()
-    agent = mgr.get_by_id(agent_id)
-    if not agent:
-        return {"code": 404, "payload": {"error": "agent_not_found", "agent_id": agent_id}}
-
-    # ── Storage (V0.6.8) ──
+    # ── Storage (V0.6.8) : reste ici (infra, pas agent) ──
     if sub == "storage":
-        from AgentFrameWork.agent_storage import AgentStorage
-        st = AgentStorage(agent_id, mgr.db.conn)
-        storage_sub = parts[3] if len(parts) > 3 else None
-        if storage_sub == "quota" and len(parts) >= 5 and parts[4] == "approve":
-            if method != "POST":
-                return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
-            new_max = params.get("max_bytes")
-            if not new_max:
-                return {"code": 400, "payload": {"error": "max_bytes requis"}}
-            st.approve_quota_request(int(new_max))
-            return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
-                                              "max_bytes": st.max_bytes,
-                                              "used_bytes": st.used_bytes,
-                                              "quota_request": None}}
-        # GET : infos stockage ; POST : recalc used
-        if method == "POST":
-            st.recalc_used()
-        return {"code": 200, "payload": {
-            "agent_id": agent_id,
-            "max_bytes": st.max_bytes,
-            "used_bytes": st.used_bytes,
-            "quota_request": st.quota_request(),
-        }}
+        return _storage_route(agent_id, method, parts[3:], params)
 
     if sub == "routes":
         if method != "GET":
             return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
-        routes = router_routes_for(agent.get("role_type", ""), agent.get("status", "INIT"))
+        from services.agent_daemon import AgentDaemon
+        routes = AgentDaemon.routes_for(agent_id)
         return {"code": 200, "payload": {
             "agent_id": agent_id,
-            "role": agent.get("role_type"),
-            "status": agent.get("status"),
-            "routes": [r.to_dict() for r in routes],
+            "routes": routes,
         }}
 
-    if method != "POST":
-        return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+    # Résoudre et exécuter via AgentDaemon.call()
+    from services.agent_daemon import AgentDaemon
+    result = AgentDaemon.call(agent_id, sub, **params)
+    if result.get("status") == "error" and "code" in result:
+        code = result["code"]
+        reason = result.get("reason", "unknown")
+        return {"code": code, "payload": {"error": "op_not_allowed", "op": sub, "reason": reason}}
+    code = 200 if result.get("status") in ("ok", "success") else 500
+    return {"code": code, "payload": result}
 
-    route, reason = router_resolve(agent, sub)
-    if route is None:
-        code = {"unknown": 404, "not_capable": 403, "state": 409}.get(reason, 404)
-        return {"code": code, "payload": {
-            "error": "op_not_allowed", "op": sub, "reason": reason,
-            "agent_role": agent.get("role_type"), "agent_status": agent.get("status"),
-        }}
 
-    try:
-        if route.kind == "lifecycle":
-            if sub == "status":
-                return {"code": 200, "payload": agent}
-            if sub == "configure":
-                cfg = json.loads(agent.get("config_json") or "{}")
-                if "temperature" in params:
-                    cfg["temperature"] = float(params["temperature"])
-                if "max_tokens" in params:
-                    cfg["max_tokens"] = int(params["max_tokens"])
-                mgr.db.conn.execute(
-                    "UPDATE agents SET config_json = ? WHERE agent_id = ?",
-                    (json.dumps(cfg), agent_id))
-                mgr.db.conn.commit()
-                return {"code": 200, "payload": {"status": "ok", "config": cfg}}
-            # pause / resume / kill -> signal canal de supervision
-            sig = mgr.send_signal(agent_id, sub)
-            return {"code": 200, "payload": sig}
-
-        # capability : exécution via le framework (réutilise Agent.execute/chat_turn)
-        a = Agent.hydrate(agent_id, mgr.db)
-        msg = params.get("message") or params.get("request") or ""
-        prov = params.get("provider_ref") or params.get("provider") or ""
-        model = params.get("model_ref") or params.get("model") or ""
-        if sub == "chat":
-            res = a.chat_turn(msg, provider_ref=prov, model_ref=model)
-        else:
-            res = a.execute(msg, provider_ref=prov, model_ref=model)
-        a.dehydrate()
-        return {"code": 200, "payload": res}
-    except Exception as e:
-        import traceback
-        return {"code": 500, "payload": {"error": str(e), "trace": traceback.format_exc()}}
+def _storage_route(agent_id: int, method: str, sub_parts: List[str], params: dict) -> dict:
+    """Gère les sous-routes agents/{id}/storage/* (infra, pas agent)."""
+    from AgentFrameWork.agent_storage import AgentStorage
+    from modules.sql.db import AgentsDB
+    st = AgentStorage(agent_id, AgentsDB().conn)
+    if sub_parts and sub_parts[0] == "quota" and len(sub_parts) >= 2 and sub_parts[1] == "approve":
+        if method != "POST":
+            return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+        new_max = params.get("max_bytes")
+        if not new_max:
+            return {"code": 400, "payload": {"error": "max_bytes requis"}}
+        st.approve_quota_request(int(new_max))
+        return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
+                                          "max_bytes": st.max_bytes,
+                                          "used_bytes": st.used_bytes,
+                                          "quota_request": None}}
+    if method == "POST":
+        st.recalc_used()
+    return {"code": 200, "payload": {
+        "agent_id": agent_id,
+        "max_bytes": st.max_bytes,
+        "used_bytes": st.used_bytes,
+        "quota_request": st.quota_request(),
+    }}
 
 
 # ── Table de routage : "domaine/action" -> handler(params) -> dict ──
