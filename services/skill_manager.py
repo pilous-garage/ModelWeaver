@@ -874,17 +874,24 @@ class SkillManager:
         return full
 
     def _git_run(self, root: Path, args: List[str], timeout: int = 60) -> dict:
-        """Exécute `git -C {root} …` dans le working tree `root`."""
+        """Exécute `git -C {root} …` dans le working tree `root`.
+
+        Normalise toujours la sortie : {stdout, stderr, exit_code, ok}.
+        `ok` vaut True ssi exit_code == 0 — permet au FSM de détecter un
+        échec git (commit/merge/push en erreur) au lieu de le laisser passer
+        inaperçu (V0.6.23)."""
         from services.sandbox import Sandbox, SandboxError
         if not Path(root).exists():
-            return {"stdout": "", "stderr": "chemin inexistant", "exit_code": -1}
+            return {"stdout": "", "stderr": "chemin inexistant", "exit_code": -1,
+                    "ok": False}
         try:
             stdout, stderr, rc = Sandbox().run(
                 ["git", "-C", str(root)] + args, cwd=str(root),
                 shell=False, timeout=timeout)
-            return {"stdout": stdout, "stderr": stderr, "exit_code": rc}
+            return {"stdout": stdout, "stderr": stderr, "exit_code": rc,
+                    "ok": rc == 0}
         except SandboxError as e:
-            return {"stdout": "", "stderr": str(e), "exit_code": -1}
+            return {"stdout": "", "stderr": str(e), "exit_code": -1, "ok": False}
 
     def _git_identity(self, root: Path, agent_id: str) -> None:
         """Identité git locale : sans elle, `commit` échoue en env vierge."""
@@ -897,11 +904,11 @@ class SkillManager:
         aid = inputs.get("agent_id", "")
         if not pid or not aid:
             return None, {"stdout": "", "stderr": "project_id et agent_id requis",
-                          "exit_code": -1}
+                          "exit_code": -1, "ok": False}
         root = self._agent_clone(aid, pid)
         if not (root / ".git").exists():
             return None, {"stdout": "", "stderr": "clone introuvable (git_clone ?)",
-                          "exit_code": -1}
+                          "exit_code": -1, "ok": False}
         return root, None
 
     # ── Réseau 3 : git (dépôt central bare + clones par agent) ──
@@ -1030,8 +1037,17 @@ class SkillManager:
             return err
         name = inputs.get("name", "")
         if not name:
-            return {"stdout": "", "stderr": "name requis", "exit_code": -1}
-        return self._git_run(root, ["merge", "--no-edit", name])
+            return {"stdout": "", "stderr": "name requis", "exit_code": -1,
+                    "ok": False}
+        r = self._git_run(root, ["merge", "--no-edit", name])
+        if r["exit_code"] != 0:
+            # Merge en échec : survolontairement un conflit de contenu.
+            r = dict(r)
+            r["conflict"] = ("CONFLICT" in r.get("stderr", "")
+                             or "CONFLICT" in r.get("stdout", ""))
+            r["error"] = ("merge en échec (conflit de contenu)" if r["conflict"]
+                          else f"merge en échec: {r.get('stderr', '')[:200]}")
+        return r
 
     def _exec_git_fetch(self, inputs: dict, ws: str) -> dict:
         root, err = self._clone_or_err(inputs)

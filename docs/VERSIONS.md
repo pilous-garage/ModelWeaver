@@ -661,6 +661,36 @@ communication sont **hors** du versionnement.
   `important/` est bien versionné. **27/27 PASS** (local + Docker).
 - E2E principal **51/51 PASS** (non régressé).
 
+### V0.6.23 — Échecs de skills visibles dans le FSM + gestion des conflits git ✅
+
+Le point noir de V0.6.22 : un échec git (merge/commit/push en erreur, branche
+inexistante…) était **avalé** par `_step_call` — le FSM continuait comme si de
+rien n'était (un merge en conflit passait inaperçu). Corrigé :
+
+- **Normalisation des retours git** (`services/skill_manager.py`) : `_git_run`
+  renvoie désormais toujours `{stdout, stderr, exit_code, ok}` (`ok = exit_code
+  == 0`). `_clone_or_err` et `_exec_git_merge` posent aussi `ok: False`.
+- **`_exec_git_merge`** signale explicitement un conflit : `conflict: True` +
+  `error: "merge en échec (conflit de contenu)"` quand `CONFLICT` apparaît dans
+  la sortie git. La résolution reste possible avec les skills existants : l'agent
+  lit le fichier en conflit (`project_read`), écrit la version réconciliée
+  (`project_write`, qui écrase les marqueurs), puis `git_commit` (`git add -A`
+  + commit) conclut le merge.
+- **`_step_call` du FSM** (`AgentFrameWork/fsm_interpreter.py`) détecte
+  désormais l'échec d'un skill et le remonte :
+  - expose `result.variables["_last_call_ok"]` et `_last_call_error`
+    (exploitables par un `switch` ou une étape `model` suivante) ;
+  - si `step["on_error"]` est défini → branche vers cette étape (l'agent peut
+    réagir : résoudre le conflit, notifier…) ; sinon le workflow s'arrête en
+    `status="failed"` avec un motif explicite dans `end_reason`.
+- **Docs YAML** : `agent_id` ajouté aux `inputs` de tous les skills `git_*`/
+  `project_*` (injecté auto par le FSM si absent) ; `ok` ajouté aux `outputs`
+  des skills git.
+- **Test `tests/test_fsm_skill_failure.py`** (4 cas) : détection du conflit de
+  merge (`ok=False`, `conflict=True`), arrêt du FSM sur échec, branchement
+  `on_error`, et poursuite en cas de succès. **4/4 PASS**.
+- Régression : mini-entreprise **27/27 PASS**, E2E principal **51/51 PASS**.
+
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
 

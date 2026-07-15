@@ -6,6 +6,10 @@ inputs:
     type: string
     required: true
     description: "Identifiant du projet"
+  agent_id:
+    type: string
+    required: false
+    description: "Identifiant de l'agent (injecté automatiquement par le FSM si absent)"
 outputs:
   files:
     type: array

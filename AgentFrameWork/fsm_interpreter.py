@@ -289,7 +289,17 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appel unifié d'un skill (remplace tool_call). step: {type: call, fn, inputs, capture}."""
+        """Appel unifié d'un skill (remplace tool_call). step: {type: call, fn, inputs, capture, on_error}.
+
+        V0.6.23 : un échec de skill (ex. merge/commit/push git en erreur,
+        agent introuvable…) est désormais détecté et remonté au FSM au lieu
+        de passer inaperçu :
+          - `result.variables["_last_call_ok"]` / `_last_call_error` exposent
+            le résultat à l'étape suivante (exploitable par switch/model).
+          - si `step["on_error"]` est défini, le FSM branche vers cette étape
+            (l'agent peut réagir : résoudre un conflit, notifier…) ;
+          - sinon le workflow s'arrête en `status="failed"` avec un motif
+            explicite dans `end_reason`."""
         fn = step.get("fn", "")
         if not fn:
             result.status = "failed"
@@ -314,6 +324,12 @@ class FSMInterpreter:
             result.status = "failed"
             result.end_reason = f"call {fn}: {e}"
             return False
+
+        ok, err = self._skill_outcome(out)
+        result.variables["_last_call_ok"] = ok
+        if not ok:
+            result.variables["_last_call_error"] = err
+
         capture = step.get("capture", {})
         if capture:
             for out_key, var_name in capture.items():
@@ -323,8 +339,45 @@ class FSMInterpreter:
             "role": "system",
             "content": f"[{fn}] {json.dumps(out, ensure_ascii=False)[:500]}",
         })
+
+        if not ok:
+            result.messages.append({
+                "role": "system",
+                "content": f"[call:{fn}] ÉCHEC: {err[:300]}",
+            })
+            on_error = step.get("on_error")
+            if on_error:
+                # Branche vers un gestionnaire d'erreur ; le FSM continue.
+                result.next_step_id = on_error
+                return True
+            result.status = "failed"
+            result.end_reason = f"call {fn} a échoué: {err[:200]}"
+            result.next_step_id = step.get("next")
+            return False
+
         result.next_step_id = step.get("next")
         return True
+
+    @staticmethod
+    def _skill_outcome(out: Any) -> tuple:
+        """Renvoie `(ok, message_erreur)` pour le résultat d'un skill.
+
+        Un skill est considéré en échec si :
+          - `ok` vaut explicitement False, ou
+          - `status` vaut "error"/"failed", ou
+          - `exit_code` (présent) est != 0."""
+        if not isinstance(out, dict):
+            return True, ""
+        if out.get("ok") is False:
+            err = out.get("stderr") or out.get("error") or ""
+            if out.get("conflict"):
+                err = "CONFLIT DE MERGE — " + err
+            return False, str(err)
+        if out.get("status") in ("error", "failed", "FAILED"):
+            return False, str(out.get("error") or out.get("message") or "")
+        if isinstance(out.get("exit_code"), int) and out["exit_code"] != 0:
+            return False, str(out.get("stderr") or "")
+        return True, ""
 
     def _step_tool_call(
         self, step: Dict, result: FSMResult,

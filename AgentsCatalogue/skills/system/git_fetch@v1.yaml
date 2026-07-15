@@ -18,6 +18,9 @@ outputs:
     type: string
   exit_code:
     type: integer
+  ok:
+    type: boolean
+    description: "True ssi la commande git a réussi (exit_code == 0)"
 implementation:
   type: python
   function: _exec_git_fetch
