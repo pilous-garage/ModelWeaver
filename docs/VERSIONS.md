@@ -361,6 +361,10 @@ PAS hardcodées au démarrage mais dérivées à chaque requête de
 
 > Reste (GUI) : Éditeur de rôles visuel (création/import-export JSON,
 > bibliothèque de rôles), attribution provider-modèle par rôle.
+> **Limite V0.6.7** : l'AFD est encore **en-process** (StreamBus mémoire,
+> routage résolu dans le daemon REST) ; le split en processus dédié
+> (StreamBus cross-process) est planifié en **V0.6.8**. Binaire GUI Tauri
+> non rebuild (onglets chat/agents absents du binaire releasé).
 
 - **Définition d'un rôle** :
   - Template de prompt système
@@ -376,7 +380,22 @@ PAS hardcodées au démarrage mais dérivées à chaque requête de
   et un modèle spécifiques.
 - **Tests de rôles** : chat de test direct depuis l'éditeur.
 
-### V0.6.8 — Hardening et logging structuré 📝
+### V0.6.8 — Agent Framework Daemon : processus dédié 📝
+Suite V0.6.7 (routage dynamique en-process). On extrait le runtime des
+agents dans un **processus dédié** (le vrai « daemon d'interaction agents »)
+distinct du gateway REST :
+
+- **AFD en processus séparé** : exécution FSM + `StreamBus` + supervision
+  (Ticker/watchdog) déplacés dans un daemon propre ; le daemon REST actuel
+  devient un **gateway mince** qui proxy vers l'AFD via IPC.
+- **`StreamBus` cross-process** : passage du bus en mémoire vers un transport
+  IPC (socket Unix / pubsub SQLite) pour que le streaming soit visible hors
+  du process d'exécution.
+- **Lancement par le supervisor Rust** : 2 process à démarrer (gateway + AFD).
+- **Isolation redémarrage** : une MAJ du gateway ne tue plus les agents en
+  cours ; les routes `agents/{id}/*` résolues par l'AFD.
+
+### V0.6.9 — Hardening et logging structuré 📝
 - **Sandboxing des commandes** : exécution des outils et appels LLM dans
   un environnement restreint (sous-processus isolé, timeout, limite mémoire).
 - **Logging structuré** : remplacement des `print()` par `structlog` /

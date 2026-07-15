@@ -60,7 +60,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.6.6.0"
+MW_VERSION = "0.6.7.0"
 
 
 def _mw_dir() -> Path:
