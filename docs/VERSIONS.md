@@ -769,7 +769,12 @@ rendre le framework observable panneau par panneau pendant un live test.
   `DebugPanel` (process/services/logs/resources).
 - Build vérifié : `tsc --noEmit` (0 erreur) + `vite build` (52 modules, OK).
 - Pas de changement de comportement/styling (refactor purement structurel).
-- Prochaine étape : live test multi-agents étendu observable via la GUI.
+- **Live test étendu** `tests/test_live_multiagent.py` (1/1 PASS, ~110s, groq
+  réel) : 4 agents (Manager + 2 Workers + Analyst) collaborent via FSM + skills
+  git/projet, chaque agent générant son livrable via un VRAI LLM (groq/
+  llama-3.1-8b-instant, TPM 6000 → appels espacés de 35s). Valide la
+  collaboration multi-agents + le FSM + la génération LLM de bout en bout.
+- Prochaine étape : observation du même scénario via la GUI modulaire.
 
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
