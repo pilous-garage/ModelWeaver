@@ -751,7 +751,7 @@ class AgentManager:
     # ── Phase 5 : Agents rares & orchestration ──
 
     def spawn_agent(
-        self, name: str, role: str, request: str,
+        self, name: str = "", role: str = "", request: str = "",
         occupation: str = "disparate",
         resources: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
@@ -763,19 +763,14 @@ class AgentManager:
 
         keep_sleeping=True : après exécution l'agent reste en BDD (status INIT),
         prêt à réveiller. False : il est supprimé.
+        name vide → auto-généré format `role_N` (ex: assistant_3).
         """
         if occupation not in ("continue", "noncontinue", "disparate"):
             return {"status": "error", "error": f"occupation invalide: {occupation}"}
+        if not role:
+            return {"status": "error", "error": "role requis pour spawn_agent"}
+        name = self._make_agent_name(self.db.conn, role, name)
         ref = f"agent:{name}"
-        # Uniquifier le nom en cas de collision (spawn répété d'enfants
-        # au même nom) pour ne pas violer l'UNIQUE sur `name`.
-        base_name = name
-        suffix = 1
-        while self.db.conn.execute(
-                "SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone():
-            name = f"{base_name}_{suffix}"
-            suffix += 1
-            ref = f"agent:{name}"
         # Normaliser le config : un workflow ({'steps':...}) doit être
         # encapsulé dans {'workflow': ...} pour qu'Agent.execute le reconnaisse.
         if config and isinstance(config, dict) and "steps" in config and "workflow" not in config:
@@ -791,6 +786,9 @@ class AgentManager:
             agent_id = self.db.conn.execute(
                 "SELECT agent_id FROM agents WHERE name = ?", (name,)
             ).fetchone()[0]
+            # V0.6.8 : espace disque proprio
+            from AgentFrameWork.agent_storage import AgentStorage
+            AgentStorage(agent_id, self.db.conn).ensure()
         except Exception as e:
             return {"status": "error", "error": f"création agent: {e}"}
 
@@ -804,11 +802,16 @@ class AgentManager:
                 self.db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (agent_id,))
                 self.db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
                 self.db.conn.commit()
+                # V0.6.8 : nettoyer le dossier disque
+                from AgentFrameWork.agent_storage import AgentStorage
+                AgentStorage(agent_id, self.db.conn).destroy()
             return {"status": "ok", "agent_id": agent_id, "ref": ref,
                     "result": result, "sleeping": keep_sleeping}
         except Exception as e:
             self.db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
             self.db.conn.commit()
+            from AgentFrameWork.agent_storage import AgentStorage
+            AgentStorage(agent_id, self.db.conn).destroy()
             return {"status": "error", "error": str(e)}
 
     def handoff(self, from_id: int, to_id: int,
@@ -847,13 +850,13 @@ class AgentManager:
 
     # ── Chat Service = agents role_type='chat' (façades sur le framework) ──
 
-    def create_chat_session(self, name: str, system_prompt: str = "",
+    def create_chat_session(self, name: str = "", system_prompt: str = "",
                             provider_ref: str = "", model_ref: str = "",
                             allow_read_others: bool = False,
                             resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Crée une session de chat = agent role_type='chat' (sans exécution)."""
-        if self.get_by_name(name):
-            return {"status": "error", "error": f"session '{name}' existe déjà"}
+        """Crée une session de chat = agent role_type='chat' (sans exécution).
+        name vide → auto-généré `chat_N`."""
+        name = self._make_agent_name(self.db.conn, "chat", name)
         config = {"workflow": CHAT_WORKFLOW}
         variables = {
             "messages": [],
@@ -873,6 +876,9 @@ class AgentManager:
             self.db.conn.commit()
             aid = self.db.conn.execute(
                 "SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+            # V0.6.8 : espace disque proprio
+            from AgentFrameWork.agent_storage import AgentStorage
+            AgentStorage(aid, self.db.conn).ensure()
             return {"status": "ok", "agent_id": aid, "name": name}
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -936,6 +942,8 @@ class AgentManager:
         self.db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (aid,))
         self.db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (aid,))
         self.db.conn.commit()
+        from AgentFrameWork.agent_storage import AgentStorage
+        AgentStorage(aid, self.db.conn).destroy()
         stream_bus.reset(aid)
         return {"status": "ok", "agent_id": aid}
 
@@ -992,6 +1000,32 @@ class AgentManager:
             return True
         except (OSError, ProcessLookupError):
             return False
+
+
+    @staticmethod
+    def _make_agent_name(conn, role: str, proposed_name: str = "") -> str:
+        """Génère un nom unique d'agent : si proposed_name non vide, le
+        prend tel quel (collision → suffixe). Sinon, génère format `role_N`
+        (ex: assistant_3)."""
+        if proposed_name:
+            name = proposed_name
+            suffix = 1
+            while conn.execute(
+                "SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone():
+                name = f"{proposed_name}_{suffix}"
+                suffix += 1
+            return name
+        cur = conn.execute(
+            "SELECT COUNT(*) + 1 FROM agents WHERE role_type = ?",
+            (role,),
+        )
+        n = cur.fetchone()[0]
+        name = f"{role}_{n}"
+        while conn.execute(
+            "SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone():
+            n += 1
+            name = f"{role}_{n}"
+        return name
 
 
 # ──────────────────────────────────────────────

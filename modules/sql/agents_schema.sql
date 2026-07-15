@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS agents (
     resources_json TEXT,                             -- {llm, ram: {min, max}, cpu: {min, max}, priority, preemptible}
     variables_json TEXT,                             -- variables internes (mémoire de travail)
     state_json    TEXT,                              -- état FSM courant
+    storage_json  TEXT,                              -- stockage disque proprio (quota/path/used_bytes)
     successor_id  INTEGER REFERENCES agents(agent_id),
     created_at    TEXT DEFAULT (datetime('now')),
     last_active_at TEXT                              -- dernière déshydratation

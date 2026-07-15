@@ -363,7 +363,7 @@ PAS hardcodées au démarrage mais dérivées à chaque requête de
 > bibliothèque de rôles), attribution provider-modèle par rôle.
 > **Limite V0.6.7** : l'AFD est encore **en-process** (StreamBus mémoire,
 > routage résolu dans le daemon REST) ; le split en processus dédié
-> (StreamBus cross-process) est planifié en **V0.6.8**. Binaire GUI Tauri
+> (StreamBus cross-process) est planifié en **V0.6.9**. Binaire GUI Tauri
 > non rebuild (onglets chat/agents absents du binaire releasé).
 
 - **Définition d'un rôle** :
@@ -380,7 +380,34 @@ PAS hardcodées au démarrage mais dérivées à chaque requête de
   et un modèle spécifiques.
 - **Tests de rôles** : chat de test direct depuis l'éditeur.
 
-### V0.6.8 — Agent Framework Daemon : processus dédié 📝
+### V0.6.8 — Stockage disque propriétaire par agent (memagent) ✅
+Chaque agent reçoit un dossier dédié `mw_home()/memagent/{agent_id}/` avec
+quota soft, workspace RW complet, et escalade au gestionnaire de ressources
+(demande d'augmentation → approbation utilisateur).
+
+- **`AgentFrameWork/agent_storage.py`** (nouveau) : `AgentStorage(agent_id, conn)`.
+  - Sous-dossiers : `mem/` (mémoire long-terme), `ctx/` (contexte),
+    `history/` (historiques), `work/` (workspace dédié RW complet).
+  - Quota par défaut **10 Mo** (configurable jusqu'à 10 Go pour docker),
+    stocké dans `agents.storage_json.max_bytes`.
+  - Compteur `used_bytes` mis à jour incrémentalement (léger).
+  - `QuotaExceeded` levé si dépassement.
+  - `request_quota_increase(needed)` enregistre une demande `pending`
+    (escalade au gestionnaire de ressources → utilisateur).
+  - `approve_quota_request(new_max)` approuve et met à jour le quota.
+  - Cycle de vie : `ensure()` au hydrate, `destroy()` au delete.
+- **BDD** : colonne `agents.storage_json` (TEXT, migration idempotente).
+- **Nommage auto `role_N`** : si `name` non fourni → `assistant_3`
+  (via `AgentManager._make_agent_name`). `role_type` reste séparé.
+- **Routes dynamiques `agents/{id}/storage`** :
+  - `GET` → infos (used/max/quota_request).
+  - `POST` → recalc used (walk disque).
+  - `POST agents/{id}/storage/quota/approve` → approuve demande pending.
+- **E2E** : `tests/e2e_agent_framework.py` Phase 8 = **51/51 PASS**
+  (auto-name, quota 10Mo, écriture, quota_request pending → approve,
+  dossier détruit à la suppression).
+
+### V0.6.9 — Agent Framework Daemon : processus dédié 📝
 Suite V0.6.7 (routage dynamique en-process). On extrait le runtime des
 agents dans un **processus dédié** (le vrai « daemon d'interaction agents »)
 distinct du gateway REST :
@@ -395,7 +422,7 @@ distinct du gateway REST :
 - **Isolation redémarrage** : une MAJ du gateway ne tue plus les agents en
   cours ; les routes `agents/{id}/*` résolues par l'AFD.
 
-### V0.6.9 — Hardening et logging structuré 📝
+### V0.6.10 — Hardening et logging structuré 📝
 - **Sandboxing des commandes** : exécution des outils et appels LLM dans
   un environnement restreint (sous-processus isolé, timeout, limite mémoire).
 - **Logging structuré** : remplacement des `print()` par `structlog` /

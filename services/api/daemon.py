@@ -1051,32 +1051,36 @@ def op_agent_get(params):
 
 def op_agent_create(params):
     """Crée un agent en BDD.
-    params: name, role, occupation?, config?, resources?, variables?
+    params: name (facultatif, sinon auto role_N), role, occupation?, config?, resources?, variables?
     """
-    name = params.get("name")
     role = params.get("role")
-    if not name or not role:
-        return {"status": "error", "error": "name et role requis"}
-    db = _get_agent_db()
+    if not role:
+        return {"status": "error", "error": "role requis"}
+    from services.agent_manager.service import AgentManager
+    mgr = AgentManager(db=_get_agent_db())
+    name = mgr._make_agent_name(_get_agent_db().conn, role, params.get("name", ""))
     ref = f"agent:{name}"
     occupation = params.get("occupation", "noncontinue")
     config_json = json.dumps(params.get("config", {}))
     resources_json = json.dumps(params.get("resources", {}))
     variables_json = json.dumps(params.get("variables", {}))
     try:
-        db.conn.execute("""
+        db_conn = _get_agent_db().conn
+        db_conn.execute("""
             INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json, variables_json)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (name, ref, role, occupation, config_json, resources_json, variables_json))
-        db.conn.commit()
-        agent_id = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+        db_conn.commit()
+        agent_id = db_conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+        from AgentFrameWork.agent_storage import AgentStorage
+        AgentStorage(agent_id, db_conn).ensure()
         return {"status": "ok", "agent_id": agent_id, "ref": ref}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
 def op_agent_delete(params):
-    """Supprime un agent (et son runtime s'il existe)."""
+    """Supprime un agent (et son runtime + espace disque)."""
     agent_id = params.get("agent_id")
     name = params.get("name")
     if not agent_id and not name:
@@ -1090,6 +1094,8 @@ def op_agent_delete(params):
     db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (agent_id,))
     db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
     db.conn.commit()
+    from AgentFrameWork.agent_storage import AgentStorage
+    AgentStorage(agent_id, db.conn).destroy()
     return {"status": "ok", "agent_id": agent_id}
 
 
@@ -1478,7 +1484,8 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
     ne correspond pas au pattern dynamique.
     """
     # parts = ["agents", id, sub]  (sub = "routes" ou un nom d'op)
-    if len(parts) != 3 or parts[0] != "agents":
+    #        ou ["agents", id, "storage"] / ["agents", id, "storage", "quota", "approve"]
+    if len(parts) < 3 or parts[0] != "agents":
         return None
     try:
         agent_id = int(parts[1])
@@ -1491,6 +1498,32 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
     agent = mgr.get_by_id(agent_id)
     if not agent:
         return {"code": 404, "payload": {"error": "agent_not_found", "agent_id": agent_id}}
+
+    # ── Storage (V0.6.8) ──
+    if sub == "storage":
+        from AgentFrameWork.agent_storage import AgentStorage
+        st = AgentStorage(agent_id, mgr.db.conn)
+        storage_sub = parts[3] if len(parts) > 3 else None
+        if storage_sub == "quota" and len(parts) >= 5 and parts[4] == "approve":
+            if method != "POST":
+                return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
+            new_max = params.get("max_bytes")
+            if not new_max:
+                return {"code": 400, "payload": {"error": "max_bytes requis"}}
+            st.approve_quota_request(int(new_max))
+            return {"code": 200, "payload": {"status": "ok", "agent_id": agent_id,
+                                              "max_bytes": st.max_bytes,
+                                              "used_bytes": st.used_bytes,
+                                              "quota_request": None}}
+        # GET : infos stockage ; POST : recalc used
+        if method == "POST":
+            st.recalc_used()
+        return {"code": 200, "payload": {
+            "agent_id": agent_id,
+            "max_bytes": st.max_bytes,
+            "used_bytes": st.used_bytes,
+            "quota_request": st.quota_request(),
+        }}
 
     if sub == "routes":
         if method != "GET":

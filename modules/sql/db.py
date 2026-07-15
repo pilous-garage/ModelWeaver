@@ -1798,6 +1798,8 @@ class AgentsDB:
         schema = Path(__file__).resolve().parent / "agents_schema.sql"
         if schema.exists():
             self.conn.executescript(schema.read_text())
+        # Migration V0.6.8 : storage_json (espace disque proprio par agent)
+        _add_column_if_missing(self.conn, "agents", "storage_json", "TEXT")
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)

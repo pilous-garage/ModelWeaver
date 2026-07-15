@@ -396,6 +396,45 @@ def main():
 
     mw.agent.delete(name="e2e_dyn")
 
+    # ===== PHASE 8 : stockage disque propriétaire par agent (memagent) =====
+    print("\n=== PHASE 8 : stockage disque (memagent) ===")
+    # Création auto nom role_N
+    ca8 = mw.agent.create(name="", role="assistant")
+    check("P8 auto-name (assistant_N)", (ca8 or {}).get("status") == "ok"
+          and (ca8 or {}).get("ref","").startswith("agent:assistant_"), str(ca8))
+    aid8 = ca8.get("agent_id")
+    # Vérifier le dossier existe (via HTTP storage route)
+    sr8, br8 = mw.request_raw("GET", f"agents/{aid8}/storage")
+    check("P8 storage GET 200 + max=10Mo", sr8 == 200
+          and br8.get("result",{}).get("max_bytes") == 10*1024*1024, str(br8)[:120])
+    # Écrire un fichier via AgentStorage
+    from AgentFrameWork.agent_storage import AgentStorage
+    from modules.sql.db import AgentsDB
+    st8 = AgentStorage(aid8, AgentsDB().conn)
+    st8.write("work", "test.txt", "hello")
+    # GET storage -> used > 0
+    sr8b, br8b = mw.request_raw("GET", f"agents/{aid8}/storage")
+    check("P8 used_bytes > 0 après écriture", sr8b == 200
+          and br8b.get("result",{}).get("used_bytes",0) > 0, f"used={br8b.get('result',{}).get('used_bytes')}")
+    # Demande d'augmentation quota
+    st8.request_quota_increase(50*1024*1024)
+    sr8c, br8c = mw.request_raw("GET", f"agents/{aid8}/storage")
+    qr = br8c.get("result",{}).get("quota_request")
+    check("P8 quota_request pending", qr is not None and qr.get("status") == "pending", str(qr))
+    # Approuver
+    sr8d, br8d = mw.request_raw("POST", f"agents/{aid8}/storage/quota/approve",
+                                max_bytes=100*1024*1024)
+    check("P8 approve 200", sr8d == 200
+          and br8d.get("result",{}).get("max_bytes") == 100*1024*1024, str(br8d)[:120])
+    # Vérifier request cleared
+    sr8e, br8e = mw.request_raw("GET", f"agents/{aid8}/storage")
+    check("P8 quota_request cleared après approve",
+          br8e.get("result",{}).get("quota_request") is None, str(br8e)[:120])
+    # Suppression agent → dossier détruit
+    mw.agent.delete(agent_id=aid8)
+    from pathlib import Path
+    check("P8 dossier détruit après delete agent", not Path(st8.root).exists(), str(st8.root))
+
     # ===== Résumé =====
     cleanup(mw)
     passed = sum(1 for _, ok, _ in results if ok)
