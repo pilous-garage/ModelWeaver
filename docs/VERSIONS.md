@@ -748,16 +748,28 @@ toute usurpation d'identité entre agents.
   valide (groq/llama-3.1-8b-instant, sinon ollama/mistral-small:22b).
 - Releasé : **tag v0.6.25.0**.
 
-### V0.7.0 — Démarrage V0.7 : refactoring GUI modulaire (📝 En cours) ✅ (point de départ)
+### V0.7.0 — Refactoring GUI modulaire (un fichier par panneau) ✅
 
-Marqueur de début de la lignée V0.7. La GUI actuelle est **monolithique**
-(un seul fichier regroupant tous les panneaux) ; l'objectif V0.7 est de la
-**découper en modules** (un fichier par panneau) pour rendre le framework
-observables via l'UI pendant un live test multi-agents.
+La GUI React/Tauri (`projetadmin/gui-main`) était **monolithique** : tout le
+code (état, handlers, JSX de tous les panneaux) vivait dans un seul
+`src/App.tsx` (~2000 lignes). Elle est désormais **découpée en modules** pour
+rendre le framework observable panneau par panneau pendant un live test.
 
-- `MW_VERSION` → `"0.7.0.0"`.
-- Suite : refactor GUI en un fichier/module par panneau, build, puis live
-  test étendu observable via la GUI.
+- `src/App.tsx` : wrapper minimal (8 lignes) — `useApp()` puis
+  `<DashboardPanel>` ou `<DependenciesPanel>` selon `showDashboard`.
+- `src/useApp.ts` : hook `useApp()` contenant tout l'état/handlers/effects ;
+  expose `AppApi` (type = `ReturnType<typeof useApp>`) consommé par les panneaux.
+- `src/types.ts` : interfaces `Dependency`/`PackageManager`/`PythonPackageManager`.
+- `src/components/ui.tsx` : `Spinner`, `UsageBar`, `sigBtn`, `selectStyles`.
+- `src/lib/helpers.ts` : `groupByClass`, `maskKey`.
+- `src/panels/*.tsx` (**un fichier par panneau**) :
+  `DashboardPanel`, `DependenciesPanel` (welcome/checks), `ChatPanel`,
+  `AgentsPanel`, `LocalModelsPanel`, `SystemStatePanel`, `ResourcesPanel`,
+  `InstalledToolsPanel`, `CataloguePanel`, `InstallQueuePanel`, `KeysPanel`,
+  `DebugPanel` (process/services/logs/resources).
+- Build vérifié : `tsc --noEmit` (0 erreur) + `vite build` (52 modules, OK).
+- Pas de changement de comportement/styling (refactor purement structurel).
+- Prochaine étape : live test multi-agents étendu observable via la GUI.
 
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
