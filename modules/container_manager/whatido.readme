@@ -1,0 +1,13 @@
+# Container Manager — Exécution isolée dans des conteneurs Docker
+
+Module d'abstraction pour lancer des commandes dans des conteneurs Docker
+éphémères (environnement d'exécution isolé et reproductible).
+
+Responsabilités :
+- `run_command(command, volume_mounts)` : lance une commande dans un conteneur
+  temporaire (`docker run --rm`), avec montages de volumes host↔conteneur, et
+  renvoie la sortie (ou lève `RuntimeError` en cas d'échec).
+- `list_images()` : liste les images Docker disponibles localement.
+
+Classe notable : `ContainerManager` (image par défaut `python:3.12-slim`).
+État : logique d'orchestration/supervision plus poussée non implémentée ici.

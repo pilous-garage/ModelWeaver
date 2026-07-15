@@ -8,7 +8,7 @@ remplacé par un agent LLM "Architecte".
 import time
 from typing import Any, Dict, Optional
 from sql.db import ModelWeaverDB
-from agents.factory import AgentFactory
+from AgentFrameWork.factory import AgentFactory
 
 class ProvisioningService:
     """Gère la création d'agents optimaux pour un rôle donné."""

@@ -22,9 +22,9 @@ from modules.sql.agent_repository import (
     AgentRepository, AgentMessageRepository,
     ModelProviderRepository, SessionRepository, WakeupCallRepository,
 )
-from agents.factory import AgentFactory
-from agents.role_manager import RoleManager
-from agents.ticker import AsyncTicker
+from AgentFrameWork.factory import AgentFactory
+from AgentsCatalogue.role_manager import RoleManager
+from AgentFrameWork.ticker import AsyncTicker
 
 
 def test_schema_creation():

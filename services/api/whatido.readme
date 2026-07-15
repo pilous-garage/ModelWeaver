@@ -1,0 +1,12 @@
+# service `api` — Daemon API ModelWeaver
+
+Point d'entrée central : un serveur HTTP local (ThreadingHTTPServer) qui expose toute la logique métier de ModelWeaver aux clients (CLI, GUI, SDK).
+
+Responsabilités :
+- `daemon.py` : serveur d'API REST/JSON (`/v1/<route>`) + endpoints SSE, avec auth par token Bearer.
+- Routes couvertes : système/état, BDD (init/check/versions), catalogue, outils installés, jobs d'install, logs, dépendances, clés/providers LLM, chat LLM (streaming SSE), LLM locaux, agents, endpoint provider custom.
+- Délègue le traitement des jobs d'install à une boucle interne (`_job_processor_loop`) qui consomme `install_jobs`.
+- `client.py` : SDK Python `MWClient` (auto-découverte du port/token) utilisé par le CLI et les outils.
+- `cli.py` : interface ligne de commande purement cliente, sans logique métier.
+
+Points d'entrée : `daemon.py serve` (lancé par le superviseur Rust) ; `MWClient`/`mw_cli.py` côté client. Version : `MW_VERSION`.

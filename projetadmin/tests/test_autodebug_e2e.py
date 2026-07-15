@@ -13,9 +13,9 @@ import threading
 import logging
 import json
 from modules.sql.db import ModelWeaverDB
-from agents.ticker import AsyncTicker
-from agents.factory import AgentFactory
-from agents.provisioning import ProvisioningService
+from AgentFrameWork.ticker import AsyncTicker
+from AgentFrameWork.factory import AgentFactory
+from AgentFrameWork.provisioning import ProvisioningService
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("autodebug_test")

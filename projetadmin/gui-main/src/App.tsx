@@ -150,6 +150,31 @@ function App() {
     />
   );
 
+  // Bouton de signal (agents)
+  const sigBtn = (bg: string): React.CSSProperties => ({
+    padding: '0.25rem 0.5rem', fontSize: '0.68rem', fontWeight: 600,
+    borderRadius: '0.3rem', border: 'none', cursor: 'pointer', backgroundColor: bg, color: 'white',
+  });
+
+  // Barre de consommation (0-100%), couleur selon seuil.
+  const UsageBar = ({ pct, label, detail }: { pct: number | null | undefined; label: string; detail?: string }) => {
+    const v = (pct == null || isNaN(pct as number)) ? 0 : Math.max(0, Math.min(100, pct as number));
+    const color = v > 90 ? '#ef4444' : v > 70 ? '#f59e0b' : '#22c55e';
+    return (
+      <div style={{ marginBottom: '0.55rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: '0.2rem' }}>
+          <span style={{ color: '#94a3b8' }}>{label}</span>
+          <span style={{ fontFamily: 'monospace', color: '#e2e8f0' }}>
+            {pct == null || isNaN(pct as number) ? 'n/a' : `${Math.round(pct as number)}%`}{detail ? ` · ${detail}` : ''}
+          </span>
+        </div>
+        <div style={{ height: '0.5rem', backgroundColor: '#0f172a', borderRadius: '0.25rem', overflow: 'hidden', border: '1px solid #334155' }}>
+          <div style={{ width: `${v}%`, height: '100%', backgroundColor: color, transition: 'width 0.4s ease' }} />
+        </div>
+      </div>
+    );
+  };
+
 
   // Auto-test opt-in (piloté par MODELWEAVER_ENABLE_AUTOTEST côté Rust).
   const [autotestEnabled, setAutotestEnabled] = useState(false);
@@ -190,6 +215,16 @@ function App() {
   const [localLoading, setLocalLoading] = useState(false);
   const [localBusy, setLocalBusy] = useState<string>('');
   const [localMsg, setLocalMsg] = useState('');
+
+  // Agents (Phase 4 : signaux + streaming)
+  const [showAgents, setShowAgents] = useState(false);
+  const [agentList, setAgentList] = useState<any[]>([]);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentMgr, setAgentMgr] = useState<{ active_agents: number; zombies: number[] }>({ active_agents: 0, zombies: [] });
+  const [agentStreamText, setAgentStreamText] = useState('');
+  const [agentStreamAgent, setAgentStreamAgent] = useState<number | null>(null);
+  const [agentStreamSeq, setAgentStreamSeq] = useState(0);
+  const [agentSignals, setAgentSignals] = useState<any[]>([]);
 
   const setDebug = (v: boolean) => {
     setShowDebug(v);
@@ -253,6 +288,51 @@ function App() {
       await fetchLocalEngines();
     } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
     finally { setLocalBusy(''); }
+  };
+
+  // ── Agents (Phase 4) ──
+  const fetchAgents = async () => {
+    setAgentLoading(true);
+    try {
+      const data = await invoke<any>('daemon_post', { route: 'agent/list', body: '{}' });
+      if (data?.ok || data?.agents) setAgentList(data.agents || []);
+      try {
+        const m = await invoke<any>('daemon_post', { route: 'agent/manager/status', body: '{}' });
+        if (m) setAgentMgr({ active_agents: m.active_agents || 0, zombies: m.zombies || [] });
+      } catch { /* ignore */ }
+    } catch { /* ignore */ }
+    finally { setAgentLoading(false); }
+  };
+
+  const sendAgentSignal = async (agentId: number, type: string, payload?: any) => {
+    try {
+      await invoke<any>('daemon_post', {
+        route: 'agent/signal',
+        body: JSON.stringify({ agent_id: agentId, type, payload }),
+      });
+      await fetchAgentSignals(agentId);
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const fetchAgentSignals = async (agentId: number) => {
+    try {
+      const data = await invoke<any>('daemon_post', {
+        route: 'agent/signals', body: JSON.stringify({ agent_id: agentId }),
+      });
+      setAgentSignals(data?.signals || []);
+    } catch { setAgentSignals([]); }
+  };
+
+  const watchAgentStream = async (agentId: number) => {
+    setAgentStreamAgent(agentId);
+    setAgentStreamText('');
+    setAgentStreamSeq(0);
+    await fetchAgentSignals(agentId);
+  };
+
+  const stopAgentStream = () => {
+    setAgentStreamAgent(null);
+    setAgentStreamText('');
   };
 
   const handleChatSend = async () => {
@@ -468,6 +548,28 @@ function App() {
     });
   }, [installedTools]);
 
+  // Polling du stream temps réel d'un agent (Phase 4) : append les chunks.
+  useEffect(() => {
+    if (agentStreamAgent == null) return;
+    const poll = async () => {
+      try {
+        const data = await invoke<any>('daemon_post', {
+          route: 'agent/stream',
+          body: JSON.stringify({ agent_id: agentStreamAgent, seq: agentStreamSeq }),
+        });
+        if (data?.chunks?.length) {
+          const text = data.chunks.map((c: any) => c.chunk).join('');
+          setAgentStreamText(prev => prev + text);
+          setAgentStreamSeq(data.seq);
+        }
+        await fetchAgentSignals(agentStreamAgent);
+      } catch { /* ignore */ }
+    };
+    const h = setInterval(poll, 400);
+    poll();
+    return () => clearInterval(h);
+  }, [agentStreamAgent]);
+
   // Refresh paresseux piloté par les data_version des DB (split physique).
   // On ne rafraîchit que les panneaux du/des domaine(s) ayant changé.
   useDomainVersions(true, async (domains: Domain[]) => {
@@ -511,6 +613,20 @@ function App() {
       };
     }
     installQueueRef.current = [];
+  }, [showDashboard]);
+
+  // Polling temps réel des ressources GLOBALES (CPU/RAM/Disque machine) :
+  // get_system_state lit Checker.get_hardware_info() qui track le CPU global.
+  useEffect(() => {
+    if (!showDashboard) return;
+    const poll = async () => {
+      try {
+        setSystemState(await invoke<any>('get_system_state'));
+      } catch { /* daemon indisponible */ }
+    };
+    const h = setInterval(poll, 1500);
+    poll();
+    return () => clearInterval(h);
   }, [showDashboard]);
 
   // Polling de la file d'installation (thread Rust dédié) : non bloquant pour le reste de la GUI
@@ -894,18 +1010,30 @@ function App() {
           >
             💬 Chat
           </button>
-          <button
-            onClick={() => {
-              const v = !showLocal;
-              setShowLocal(v);
-              setShowChat(false);
-              if (v) { getCurrentWindow().setSize(new LogicalSize(1100, 760)).catch(() => {}); fetchLocalEngines(); }
-              else { getCurrentWindow().setSize(new LogicalSize(1000, 700)).catch(() => {}); }
-            }}
-            style={{ padding: '0.4rem 0.8rem', backgroundColor: showLocal ? '#f59e0b' : '#334155', color: '#0f172a', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
-          >
-            🖥️ LLM locaux
-          </button>
+            <button
+              onClick={() => {
+                const v = !showLocal;
+                setShowLocal(v);
+                setShowChat(false);
+                if (v) { getCurrentWindow().setSize(new LogicalSize(1100, 760)).catch(() => {}); fetchLocalEngines(); }
+                else { getCurrentWindow().setSize(new LogicalSize(1000, 700)).catch(() => {}); }
+              }}
+              style={{ padding: '0.4rem 0.8rem', backgroundColor: showLocal ? '#f59e0b' : '#334155', color: '#0f172a', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
+            >
+              🖥️ LLM locaux
+            </button>
+            <button
+              onClick={() => {
+                const v = !showAgents;
+                setShowAgents(v);
+                setShowChat(false); setShowLocal(false);
+                getCurrentWindow().setSize(new LogicalSize(v ? 1200 : 1000, v ? 760 : 700)).catch(() => {});
+                if (v) fetchAgents();
+              }}
+              style={{ padding: '0.4rem 0.8rem', backgroundColor: showAgents ? '#06b6d4' : '#334155', color: '#0f172a', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
+            >
+              🤖 Agents
+            </button>
           <button
             onClick={toggleFullscreen}
             style={{ padding: '0.4rem 0.6rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
@@ -1010,6 +1138,57 @@ function App() {
                 </button>
               </div>
             </div>
+          ) : showAgents ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: '600' }}>🤖 Agents (signaux & streaming)</h3>
+                <button onClick={fetchAgents} disabled={agentLoading}
+                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.72rem', backgroundColor: agentLoading ? '#1e293b' : '#2563eb', color: 'white', border: 'none', borderRadius: '0.3rem', cursor: agentLoading ? 'default' : 'pointer' }}>
+                  {agentLoading ? <Spinner size={12} color="#64748b" /> : '↻ Actualiser'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', fontSize: '0.7rem' }}>
+                <span style={{ backgroundColor: '#052e16', color: '#6ee7b7', padding: '0.2rem 0.5rem', borderRadius: '0.3rem', border: '1px solid #064e3b' }}>● Actifs : {agentMgr.active_agents}</span>
+                <span style={{ backgroundColor: agentMgr.zombies.length ? '#2a0a0a' : '#1e293b', color: agentMgr.zombies.length ? '#fca5a5' : '#94a3b8', padding: '0.2rem 0.5rem', borderRadius: '0.3rem', border: '1px solid ' + (agentMgr.zombies.length ? '#7f1d1d' : '#334155') }}>🧟 Zombies : {agentMgr.zombies.length}{agentMgr.zombies.length ? ' (' + agentMgr.zombies.join(', ') + ')' : ''}</span>
+              </div>
+              {agentStreamAgent != null ? (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.6rem', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.8rem', color: '#93c5fd' }}>Stream temps réel · agent #{agentStreamAgent}</span>
+                    <button onClick={stopAgentStream} style={{ padding: '0.25rem 0.6rem', fontSize: '0.7rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: 'none', borderRadius: '0.3rem', cursor: 'pointer' }}>■ Arrêter</button>
+                  </div>
+                  <div style={{ flex: 1, overflowY: 'auto', backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '0.8rem', fontSize: '0.78rem', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                    {agentStreamText || '… (en attente de chunks)'}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Signaux : {agentSignals.length ? agentSignals.map((s: any) => `${s.type}:${s.status}`).join(' · ') : 'aucun'}</div>
+                </div>
+              ) : (
+                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  {agentList.length === 0 && !agentLoading && (
+                    <div style={{ color: '#94a3b8', fontSize: '0.8rem', padding: '1rem', backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155' }}>
+                      Aucun agent. Créez-en un via <code>agent/create</code>.
+                    </div>
+                  )}
+                  {agentList.map((a: any) => (
+                    <div key={a.agent_id} style={{ backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '0.8rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                         <div>
+                           <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#e2e8f0' }}>{a.name} {a.running && <span style={{ color: '#6ee7b7', fontSize: '0.7rem' }}>● actif</span>}{agentMgr.zombies.includes(a.agent_id) && <span style={{ color: '#fca5a5', fontSize: '0.7rem' }}>🧟 zombie</span>}</div>
+                           <div style={{ fontSize: '0.66rem', color: '#64748b' }}>{a.role_type} · {a.occupation} · <span style={{ color: a.status === 'RUNNING' ? '#6ee7b7' : '#94a3b8' }}>{a.status}</span>{a.running && a.heartbeat ? ` · ❤ ${Math.round(a.heartbeat)} ms` : ''}{a.running && a.current_step ? ` · 🪜 ${a.current_step}` : ''}</div>
+                         </div>
+                        <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                          <button onClick={() => sendAgentSignal(a.agent_id, 'pause')} style={sigBtn('#475569')}>⏸ Pause</button>
+                          <button onClick={() => sendAgentSignal(a.agent_id, 'resume')} style={sigBtn('#0e7490')}>▶ Reprendre</button>
+                          <button onClick={() => sendAgentSignal(a.agent_id, 'configure', { variables: { note: 'via-gui' } })} style={sigBtn('#7c3aed')}>⚙ Config</button>
+                          <button onClick={() => sendAgentSignal(a.agent_id, 'kill')} style={sigBtn('#7f1d1d')}>✕ Kill</button>
+                          <button onClick={() => watchAgentStream(a.agent_id)} style={sigBtn('#059669')}>📡 Stream</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           ) : showLocal ? (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
@@ -1073,6 +1252,7 @@ function App() {
                 <div style={{ fontSize: '0.78rem', lineHeight: '1.7' }}>
                   <div><span style={{ color: '#64748b' }}>OS :</span> {systemState.os} {systemState.os_version || ''}</div>
                   <div><span style={{ color: '#64748b' }}>Arch :</span> {systemState.architecture}</div>
+                  <div><span style={{ color: '#64748b' }}>Cœurs :</span> {systemState.cpu_count ?? 'n/a'}</div>
                   <div><span style={{ color: '#64748b' }}>RAM :</span> {fmtGb(systemState.ram_total_gb)} <span style={{ color: '#64748b' }}>(libre {fmtGb(systemState.ram_available_gb)})</span></div>
                   <div><span style={{ color: '#64748b' }}>Disque :</span> {fmtGb(systemState.disk_total_gb)} <span style={{ color: '#64748b' }}>(libre {fmtGb(systemState.disk_free_gb)})</span></div>
                   <div style={{ marginTop: '0.5rem' }}>
@@ -1084,6 +1264,46 @@ function App() {
                       {(systemState.detected_managers || []).length === 0 && <span style={{ color: '#fca5a5' }}>aucun</span>}
                     </div>
                   </div>
+                </div>
+              ) : <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>…</div>}
+            </div>
+
+            <div style={{ backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '1rem' }}>
+              <h3 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.2rem' }}>Ressources consommées (temps réel)</h3>
+              <div style={{ fontSize: '0.62rem', color: '#475569', marginBottom: '0.7rem', fontFamily: 'monospace' }}>machine globale · maj 1.5s</div>
+              {systemState ? (
+                <div>
+                  <UsageBar
+                    pct={systemState.cpu_percent}
+                    label={`CPU (${systemState.cpu_count ?? '?' } cœurs)`}
+                  />
+                  <UsageBar
+                    pct={systemState.ram_total_gb ? (systemState.ram_used_gb ?? (systemState.ram_total_gb - (systemState.ram_available_gb ?? 0))) / systemState.ram_total_gb * 100 : null}
+                    label="RAM"
+                    detail={systemState.ram_used_gb != null ? `${fmtGb(systemState.ram_used_gb)} / ${fmtGb(systemState.ram_total_gb)}` : undefined}
+                  />
+                  <UsageBar
+                    pct={systemState.disk_total_gb ? (systemState.disk_used_gb ?? (systemState.disk_total_gb - (systemState.disk_free_gb ?? 0))) / systemState.disk_total_gb * 100 : null}
+                    label="Disque"
+                    detail={systemState.disk_used_gb != null ? `${fmtGb(systemState.disk_used_gb)} / ${fmtGb(systemState.disk_total_gb)}` : undefined}
+                  />
+                  {systemState.cpu_per_core && systemState.cpu_per_core.length > 0 && (
+                    <div style={{ marginTop: '0.6rem' }}>
+                      <div style={{ fontSize: '0.66rem', color: '#64748b', marginBottom: '0.35rem' }}>Par cœur</div>
+                      <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                        {systemState.cpu_per_core.map((c: number, i: number) => {
+                          const cv = c == null ? 0 : Math.max(0, Math.min(100, c));
+                          const cc = cv > 90 ? '#ef4444' : cv > 70 ? '#f59e0b' : '#22c55e';
+                          return (
+                            <div key={i} title={`cœur ${i} : ${Math.round(cv)}%`}
+                              style={{ flex: '1 1 0', minWidth: '8px', height: '2.2rem', backgroundColor: '#0f172a', borderRadius: '0.2rem', border: '1px solid #334155', display: 'flex', alignItems: 'flex-end', overflow: 'hidden' }}>
+                              <div style={{ width: '100%', height: `${cv}%`, backgroundColor: cc, transition: 'height 0.4s ease' }} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>…</div>}
             </div>

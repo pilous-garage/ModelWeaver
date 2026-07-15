@@ -43,6 +43,10 @@ def _default_catalogue_db() -> Path:
     return mw_home() / "catalogue.db"
 
 
+def _default_agents_db() -> Path:
+    return mw_home() / "agents.db"
+
+
 # ──────────────────────────────────────────────
 #  Utility
 # ──────────────────────────────────────────────
@@ -1759,6 +1763,47 @@ class RuntimeDB:
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)
+
+    def close(self):
+        self.conn.close()
+
+
+# ──────────────────────────────────────────────
+#  AgentsDB — Base dédiée aux agents
+# ──────────────────────────────────────────────
+
+class AgentsDB:
+    """Point d'entrée pour la base agents (domaine distinct).
+
+    Banque séparée de modelweaver.db — contient l'identité, le runtime,
+    les métriques et les signaux des agents.
+
+    Usage:
+        db = AgentsDB()
+        db.conn.execute("SELECT * FROM agents")
+        db.close()
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path) if db_path else _default_agents_db()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self._ensure_schema()
+
+    def _ensure_schema(self):
+        schema = Path(__file__).resolve().parent / "agents_schema.sql"
+        if schema.exists():
+            self.conn.executescript(schema.read_text())
+
+    def read_meta(self, key: str, default: int = 0) -> int:
+        return read_meta(self.conn, key, default=default)
+
+    def bump_meta(self, key: str) -> None:
+        bump_meta(self.conn, key, commit=False)
 
     def close(self):
         self.conn.close()

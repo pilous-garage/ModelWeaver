@@ -227,18 +227,99 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
   (smollm:135m) non effectué : bande passante conteneur ~400 KB/s
   (~1 Go → ~50 min).
 
-### V0.6.5 — Interface de chat avec les modèles 📝
-- **Fenêtre de chat** dans la GUI :
-  - Sélection du modèle (filtré par provider avec clé + locaux)
-  - Zone de saisie + historique
-  - Streaming des réponses (SSE)
-  - Markdown + code highlighting
-- **Mode multi-modèle** : comparer les réponses de plusieurs modèles
-  côte à côte sur un même prompt.
-- **Paramètres avancés** : température, max_tokens, top_p, system prompt.
-- **Export de conversation** (JSON / Markdown).
+### V0.6.5 — Agent Architecture (définition) ✅
+- **Spécification complète** (`docs/AGENT_SPEC.md`, `docs/AGENT_SPEC_FINAL.md`) :
+  Agent = automate à états, LLM = tool provider, occupation continue/noncontinue/disparate.
+- **Déclaration évolutive** : noyau (name+role+occupation) + extensions
+  (personality, context, variables, FSM, resources, channels, signals, tools).
+- **Resources extensibles** par booléen + ordres de grandeur (ram, cpu, llm...).
+- **Priorité 0-10 + préemption** 3 niveaux (stop→kill→pkill).
+- **Architecture Phénix++** : threads hydratés/déshydratés, OS gère le multithreading.
+- **Agent Manager** supervise (existence, heartbeats, signaux), n'orchestre pas.
+- **Ticker** : un seul point de contact → vérifie l'Agent Manager.
+- **Organisateur** : assigne les LLM au runtime, l'agent ne choisit pas.
+- **Signaux parallèles** : pause/status/kill sans interruption forcée.
 
-### V0.6.6 — Rôles d'agents et configuration 📝
+### V0.6.5.1 — Agent Core (Phase 1 : minimal) 📝
+- Nouvelle table `agents` (occupation, resources_json, variables_json).
+- Table `agent_runtime` (thread_id, pid, heartbeat).
+- `Agent.hydrate()` / `Agent.dehydrate()` — cycle BDD → thread → BDD.
+- `Agent.execute()` — appel Bridge LLM (pas de FSM compliqué encore).
+- `AgentManager` — `list_active()`, `check_heartbeats()`.
+- Ticker → check Agent Manager uniquement.
+
+### V0.6.5.2 — FSM Interpreter (Phase 2) 📝
+- Remplace l'ancien Worker.
+- Exécute les steps : llm_call, tool_call, switch, sleep, set_variable, end.
+- LLM Bridge devient un tool provider (plus de urllib.request direct).
+- Migration des rôles YAML existants vers le format FSM.
+
+### V0.6.5.3 — Resources & Priorité (Phase 3) ✅
+- **Organisateur** (`modules/llm_manager/organisateur.py`) : logique PURE d'allocation LLM. Reçoit `resources.llm` + `llm_pref {provider, model, use_case, level}`, matche providers à clé (KeyManager) + moteurs locaux (Ollama/LM Studio/llama.cpp), fallback recommandation catalogue. Le LLM est un tool provider → l'Organisateur l'assigne, l'agent ne choisit pas.
+- **Ressource Manager** (`services/ressource_manager/`, service global) : agrège Checker hardware (RAM/Disque/**CPU global**) + LLM (Organisateur) + futurs gestionnaires. `evaluate(resources)` → verdict `possible`/`impossible` + raisons + allocation LLM. `watch_resources()` publie le snapshot.
+- **AgentManager** : `evaluate(agent_id)` (verdict ressources+LLM) et `admit(agent_id)` (admission control + **préemption 3 niveaux stop→kill→pkill** des agents `preemptible` de priorité strictement inférieure). `resources.priority` (0-10) et `resources.preemptible` actifs.
+- **Daemon** : routes `agent/resources/evaluate` + `agent/admit` ; `agent/execute` auto-alloue le LLM via l'Organisateur quand non imposé. Contrats MAJ.
+- Correction import circulaire `agents/__init__` ↔ `agent_manager.service` (import lazy d'`AgentManager` dans `ticker.py`).
+- Testé : allocation LLM (mock Ollama → `ollama/codestral`), évaluation ressources (RAM/CPU), admission + préemption (kill d'un agent basse priorité confirmé).
+
+### V0.6.5.4 — Signaux & Streaming (Phase 4) ✅
+- **Canal de signaux** (`agent_signals`) : `AgentManager.send_signal/pending_signals/ack_signal/complete_signal`. Types `pause, resume, status, health, kill, configure`.
+- **Consommation par l'agent** (FSM) : `signal_check` appelé avant chaque étape (et en boucle pendant une pause) ; `pause`→attente jusqu'à `resume` ; `kill`→`AgentAbort` (aussi **en cours de génération LLM**, chunk par chunk) ; `configure`→fusionne `variables` + persiste `state_json` ; `status`/`health`→acquittés.
+- **Streaming bus** (`agents/stream_bus.py`) : buffer circulaire par agent ; le FSM diffuse chaque chunk `llm_call` (via `bridge.chat_stream`) ; route `agent/stream` (poll `seq`) pour visualisation temps réel.
+- **Interjection** : un signal envoyé en cours d'exécution (ex. `kill` mid-stream) est consommé et interrompt l'agent.
+- **Daemon** : routes `agent/signal`, `agent/signals`, `agent/signal/ack`, `agent/signal/complete`, `agent/stream`. Contrats MAJ.
+- **GUI** : onglet 🤖 Agents (liste + boutons Pause/Reprendre/Config/Kill/Stream + viewer de stream temps réel pollé).
+- Correction précédence LLM : le `model_ref` déclaré à l'étape FSM prime sur l'allocation par défaut de l'Organisateur.
+- Testé : pause/resume (success), kill (aborted, y compris mid-stream), configure (variables injectées + persistées), streaming (10 chunks via `agent/stream`), interjection kill mid-stream.
+
+### V0.6.5.5 — Agents Rares & Orchestration (Phase 5) ✅
+- Occupation `disparate` : spawn à la demande (`AgentManager.spawn_agent`), exécution puis sommeil BDD automatique (`state.sleeping=true`, pas de runtime résident). Testé : agent créé exécuté → status `INIT`, runtime absent.
+- `spawn` step dans le FSM : `_step_spawn` (`spawn_handler`/`handoff_handler` injectés dans `Agent.execute`) crée un agent enfant, capture sa sortie (`output_capture`), nom auto-uniquifié en cas de collision. Testé : enfant `p5_grand` créé + réponse LLM capturée ("Bien sûr ! ... Luna").
+- Succession : `AgentManager.handoff()` transfère variables + state_json de `from`→`to`, chaîne `successor_id`, `from` retourne INIT/dort. Testé via `agent/handoff` : var `child_out` transportée vers le successeur.
+- **Correction** : `spawn_agent` encapsule un `config` de type workflow (`{"steps":...}`) en `{"workflow": ...}` pour qu'`Agent.execute` le reconnaisse (sinon l'enfant tombait en chemin Phase 1 sans modèle).
+- **Daemon** : routes `agent/spawn`, `agent/handoff` + contrats MAJ (`services/api/_contract/interface.py`).
+- **GUI** : onglet 🤖 Agents — tableau de bord Agent Manager (compteurs `● Actifs` / `🧟 Zombies` depuis `agent/manager/status`) + badge `● actif` / `🧟 zombie` par agent + heartbeat (ms) et `🪜 current_step` quand running.
+- **Bug fix critique** : `AgentManager.kill()` enregistrait `pid = os.getpid()` (le daemon lui-même, car les agents s'exécutent inline) et faisait `os.kill(pid, SIGTERM)` → un `kill`/`admit` sur un agent actif tuait le **daemon**. Désormais, si `pid == os.getpid()` (agent inline), `kill()` enfile un signal `kill` que la FSM honore (`AgentAbort`) au prochain `signal_check`, au lieu de SIGTERM/SIGKILL le daemon.
+- **E2E Docker** : test complet `tests/e2e_agent_framework.py` piloté via le client HTTP réel (`MWClient`) contre le daemon, conteneurisé (`docker/Dockerfile.e2e` + `docker/entrypoint-e2e.sh` + `docker/run-e2e-agent.sh`). `--network host` pour joindre l'Ollama de l'hôte (modèles en cache). `.env` filtré (hors opencode/zen, openrouter, nvidia) onboardé. **Résultat : 29/29 PASS** (Phases 1→5 + cloud GROQ réel).
+
+### V0.6.6 — Chat Service (backend agentique) ✅
+**Redéfini** : service de chat complet reposant sur le framework Agent
+(V0.6.5) — chaque session de chat = un **agent** (`role_type='chat'`,
+`occupation='noncontinue'`). Backend testable (daemon + E2E). GUI Tauri
+non rebuild (onglet chat à ajouter quand le binaire sera recompilé).
+
+- **`services/chat/service.py`** (`ChatService`) :
+  - Sessions = agents persistés (identité BDD, cycle hydrate/dehydrate réutilisé).
+  - `create_session` / `list_sessions` / `get_session` / `delete_session` /
+    `update_session` (system_prompt, provider/model, `allow_read_others`).
+  - `send` : appelle `LiteLLMBridge.chat` / `chat_stream` (Ollama, cloud…),
+    persiste l'historique dans `variables_json.messages`.
+  - `history` / `read_session` (lecture d'une AUTRE session SI elle autorise
+    `allow_read_others`) / `stream` (poll du `StreamBus`).
+- **Routes daemon** `chat/session/*` (create/list/get/delete/update/send/
+  history/read/stream) + CLI namespace `chat` + contrat `EXPOSES` à jour.
+- **Streaming** : tokens publiés sur le `StreamBus` (clé agent_id),
+  consultables via `chat/session/stream` (ou `agent/stream`).
+- **Isolation** : une session n'écrit QUE dans sa propre histoire ; lecture
+  des autres sessions conditionnée à `allow_read_others`.
+- **E2E** : `tests/e2e_agent_framework.py` Phase 6 = **38/38 PASS** (sessions
+  simultanées, LLM local Ollama, streaming, read-others autorisé/refusé).
+
+> Reste à faire (GUI) : fenêtre de chat Tauri (sélecteur modèle, historique,
+> SSE, markdown/code highlighting, multi-modèle, params avancés, export).
+
+### Restructuration du code des agents (séparation framework / catalogue)
+- `agents/` → **`AgentFrameWork/`** : moteur générique (FSM, StreamBus, Ticker,
+  Worker, Factory, Dispatcher, Scheduler, Provisioning, services watchdog/watcher/
+  review/auto_debug, DSL/pipeline/tool executors).
+- **`AgentsCatalogue/`** (nouveau) : contenu spécifique des agents :
+  - `role_manager.py` (ex-`agents/role_manager.py`) + `rôles/` (12 YAML de rôles)
+  - `skills/`, `personnalité/`, `comportement/`, `complet/` (dossiers data, vides pour l'instant)
+- Tous les imports `from agents.` → `from AgentFrameWork.` (sauf `role_manager`
+  → `from AgentsCatalogue.role_manager`). `ROLES_DIR` pointe sur `AgentsCatalogue/rôles`.
+- `oldcode/` et `autoanalyse/` (copies legacy) laissés intacts (`from agents.` préservé).
+
+### V0.6.7 — Rôles d'agents et configuration 📝
 - **Définition d'un rôle** :
   - Template de prompt système
   - Capacités associées (chat, code, analyse, search, tool_use)
@@ -253,7 +334,7 @@ Travaux ajoutés au-delà du Key Manager, validés E2E conteneur :
   et un modèle spécifiques.
 - **Tests de rôles** : chat de test direct depuis l'éditeur.
 
-### V0.6.7 — Hardening et logging structuré 📝
+### V0.6.8 — Hardening et logging structuré 📝
 - **Sandboxing des commandes** : exécution des outils et appels LLM dans
   un environnement restreint (sous-processus isolé, timeout, limite mémoire).
 - **Logging structuré** : remplacement des `print()` par `structlog` /

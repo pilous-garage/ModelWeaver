@@ -1,0 +1,21 @@
+# Module test_runner
+
+## Rôle
+Exécute des scripts de test de manière isolée dans un conteneur, afin de
+valider du code (ex. recettes, agents) sans impacter le système hôte.
+
+## Responsabilités
+- Écrire un script fourni dans un répertoire temporaire de l'hôte.
+- Monter ce répertoire dans un conteneur et y exécuter le script via
+  `python3`.
+- Récupérer et retourner le résultat sous forme structurée
+  (`success`, `output`, `error`).
+
+## Classe principale
+- `TestRunner(container_manager)`
+  - `run_test_script(script_content, working_dir=None)` : lance le script
+    dans un conteneur et renvoie un dictionnaire de résultat.
+
+## Dépendances
+Module `container_manager` (délègue l'exécution en conteneur et le montage
+de volumes).

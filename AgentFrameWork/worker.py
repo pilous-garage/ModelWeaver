@@ -24,9 +24,9 @@ import logging
 
 logger = logging.getLogger("modelweaver.worker")
 
-from agents.pipeline_executor import PipelineExecutor
-from agents.dsl_executor import DSLExecutor
-from agents.tool_executor import ToolExecutor
+from AgentFrameWork.pipeline_executor import PipelineExecutor
+from AgentFrameWork.dsl_executor import DSLExecutor
+from AgentFrameWork.tool_executor import ToolExecutor
 
 
 class Worker:

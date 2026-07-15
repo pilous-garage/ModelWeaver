@@ -247,6 +247,12 @@ def watch_system_state(interval=2.0):
     _run(interval)
 
 
+def run_agent_manager(interval=5.0):
+    """Service AgentManager : supervise les threads agents."""
+    from services.agent_manager.service import run_service as _run
+    _run(interval)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({"error": "No command"})); sys.exit(1)
@@ -278,6 +284,8 @@ if __name__ == "__main__":
             run_installer_service(); sys.exit(0)
         elif command == "run_tester_service":
             run_tester_service(); sys.exit(0)
+        elif command == "run_agent_manager":
+            run_agent_manager(); sys.exit(0)
         elif command == "save_system_state":
             result = save_system_state()
         elif command == "sync_catalogue_remote":

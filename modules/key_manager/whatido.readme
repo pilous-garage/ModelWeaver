@@ -1,0 +1,21 @@
+# Key Manager — Stockage sécurisé des clés API
+
+Module de gestion des clés API des fournisseurs, avec sécurisation au repos :
+les secrets ne touchent jamais le disque en clair.
+
+Responsabilités :
+- Stocker les secrets dans le keyring OS (GNOME Keyring / macOS Keychain /
+  Windows Credential Manager), avec fallback headless chiffré Fernet
+  (clé dérivée du machine-id) si pas de D-Bus.
+- Conserver en BDD SQLite uniquement les métadonnées (provider, tag, grade,
+  santé, timestamps) + un `ref` UUID faisant le lien avec le keyring.
+- Ajouter / lire / supprimer des clés (`set_key`, `get_key`, `delete_key`),
+  lister avec masque mémoire (`key_display` = `ab****cd`), verrouiller/déverrouiller
+  (`lock_key`/`unlock_key`), suivre la santé (`update_health`).
+- `get_key` refuse (via `KeyLockedError`) de rendre une clé verrouillée en clair
+  mais autorise l'affichage du masque et des métadonnées.
+
+Classes / fichiers notables :
+- `KeyManager`, `_KeyStore` (backend keyring/Fernet), `KeyLockedError`.
+- `onboarder.py` : `Onboarder` importe automatiquement les clés depuis un `.env`
+  (OpenAI, Anthropic, Google, Groq, Mistral, etc.).

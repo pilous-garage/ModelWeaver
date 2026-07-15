@@ -1,0 +1,10 @@
+# service `catalogue` — Serveur de synchronisation du catalogue
+
+Expose le catalogue d'outils via un petit serveur HTTP, déléguant tout à `modules.sql.catalogue_server`.
+
+Responsabilités :
+- `service.py` est un simple point d'entrée (script supervisé) qui vérifie les dépendances (`require_deps`) puis lance `catalogue_server.main()`.
+- Le serveur (`CatalogueServer` / `CatalogueAPIHandler`) sert des endpoints en lecture : santé, providers, modèles, outils du catalogue, commandes, et requêtes SQL paramétrées (`_query`).
+- Sert aussi au seed initial de la base catalogue (`_seed_catalogue_db`).
+
+Point d'entrée : exécution directe du module (lance le serveur HTTP du catalogue).

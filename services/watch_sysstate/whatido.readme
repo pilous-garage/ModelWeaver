@@ -1,0 +1,9 @@
+# service `watch_sysstate` — Surveillance de l'état système
+
+Met à jour et publie périodiquement l'état matériel/logiciel de la machine.
+
+Responsabilités :
+- `get_system_state()` construit un dict complet via `modules.checker.checker.Checker` : OS, version, architecture, processeur, managers détectés et infos matériel.
+- `watch_system_state()` : boucle unique (single-instance) qui émet l'état courant en JSON sur stdout (une ligne = un état) toutes les 2 s, ou `{"error": ...}` en cas d'échec.
+
+Point d'entrée : `watch_system_state(interval=2.0)` (service supervisé).

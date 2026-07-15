@@ -1,0 +1,15 @@
+# Plumber — Routage des requêtes vers les modèles
+
+Module de routage des requêtes utilisateur vers le meilleur modèle disponible
+selon une stratégie (placeholder non implémenté pour l'instant).
+
+Responsabilités :
+- `route_request(prompt, preferred_routing)` : point d'entrée prévu pour
+  choisir un modèle, gérer les appels (via LiteLLM) et les replis (fallbacks).
+- Servir de couche de décision entre le catalogue (modèles/disponibilité) et
+  les clés (`KeyManager`) pour exécuter une inférence.
+
+État actuel :
+- La logique réelle n'est pas encore implémentée : `route_request` renvoie
+  `{"status": "not_implemented"}`. Le module reçoit un `Catalogue` et un
+  `KeyManager` mais ne les exploite pas encore.

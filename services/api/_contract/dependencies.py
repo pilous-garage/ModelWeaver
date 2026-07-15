@@ -45,4 +45,8 @@ CONSUMES = {
     "services._common": ["_db_paths", "_quiet_stdout", "log_to_file", "acquire_instance_lock"],
     # Vérification des dépendances.
     "services.depends": ["check_all_units"],
+    # Agent Manager (nouveau).
+    "modules.sql.db": ["AgentsDB"],
+    "services.agent_manager.service": ["AgentManager", "Agent"],
+    "AgentFrameWork.fsm_interpreter": ["FSMInterpreter"],
 }

@@ -1,0 +1,20 @@
+# SQL — Couche d'accès aux données (DAO) et schémas SQLite
+
+Module central de persistance : schémas SQL, repositories (DAO) et utilitaires
+de migration pour toutes les bases ModelWeaver.
+
+Responsabilités :
+- Définir et créer les schémas : principale (`modelweaver.db`), catalogue
+  (`catalogue.db`), agents, orchestration, runtime.
+- Exposer des repositories orientés objet (pattern DAO) : `ProviderRepository`,
+  `ModelRepository`, `KeyRepository`, `LocalLLMRepository`, `LocalToolRepository`,
+  `CommandRepository`, `SystemStateRepository`, etc. + couche agents/orchestration
+  (`agent_repository.py`, `orchestration_repository.py`).
+- Gérer les migrations de schéma (`MigrationManager`, dossier `migrations/`) et
+  le seed/la synchro du catalogue (`CatalogueDB.sync_*`, `fetch_remote_to_local`).
+- Servir un catalogue via HTTP (`catalogue_server.py` : /api/providers, /models,
+  /tools, /commands).
+
+Fichiers clés : `db.py` (cœur), `catalogue_server.py`, `migrations.py`,
+`agent_repository.py`, `orchestration_repository.py`, `assign_classes.py`,
+`migrate_tools_relational.py`.

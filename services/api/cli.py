@@ -41,6 +41,16 @@ COMMANDS = {
     ("jobs", "cancel"):             ("jobs/cancel", ["id"]),
     ("jobs", "clear"):              ("jobs/clear", []),
     ("logs", "read"):               ("logs/read", []),
+    # N. Chat Service (V0.6.6)
+    ("chat", "session", "create"):  ("chat/session/create", ["name", "provider_ref", "model_ref", "system_prompt", "allow_read_others"]),
+    ("chat", "session", "list"):    ("chat/session/list", []),
+    ("chat", "session", "get"):     ("chat/session/get", ["name"]),
+    ("chat", "session", "delete"):  ("chat/session/delete", ["name"]),
+    ("chat", "session", "update"):  ("chat/session/update", ["name", "system_prompt", "provider_ref", "model_ref", "allow_read_others"]),
+    ("chat", "session", "send"):    ("chat/session/send", ["name", "message", "provider_ref", "model_ref", "stream", "temperature", "max_tokens"]),
+    ("chat", "session", "history"): ("chat/session/history", ["name"]),
+    ("chat", "session", "read"):    ("chat/session/read", ["name", "other"]),
+    ("chat", "session", "stream"):  ("chat/session/stream", ["name", "seq"]),
 }
 
 

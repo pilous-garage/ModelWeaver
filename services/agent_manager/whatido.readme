@@ -1,0 +1,10 @@
+# service `agent_manager` — Superviseur d'agents
+
+Gère le cycle de vie et la supervision des agents ModelWeaver (entités pilotées par LLM/FSM).
+
+Responsabilités (`Agent`, `AgentManager`, `run_service`) :
+- `Agent` : enveloppe runtime d'un agent hydraté depuis la BDD. `hydrate()` crée une entrée `agent_runtime` ; `execute()` lance une requête via `LiteLLMBridge` (Phase 1) ou le `FSMInterpreter` (workflow, Phase 2), enregistre les métriques (`agent_metrics`) et gère heartbeats/statuts (IDLE/RUNNING). `dehydrate()` libère l'agent.
+- `AgentManager` : supervision pure (pas d'orchestration). `list_active()`, `get_by_name/id()`, `check_heartbeats()` détecte les zombies, `kill()` (SIGTERM→SIGKILL→pkill), et `tick()` nettoie les zombies.
+- `run_service()` : boucle supervisée unique qui appelle `tick()` périodiquement (~5 s) et publie le résultat.
+
+Points d'entrée : `run_service()`, `AgentManager.tick()`, `Agent.execute()`.

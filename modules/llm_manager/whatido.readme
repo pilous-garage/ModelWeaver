@@ -1,0 +1,29 @@
+# Module llm_manager
+
+## Rôle
+Cœur de la gestion des modèles LLM : catalogue/recommandation de modèles,
+interface unifiée (bridge) vers les providers, et pilotage des moteurs LLM
+locaux.
+
+## Contenu principal
+- `llm_manager.py` : classe `LLMManager` (consultation du catalogue et
+  recommandations). Fournit `list_providers`, `list_models`, `get_model`,
+  `recommend(use_case, technical_level)` s'appuyant sur une matrice
+  `RECOMMENDATIONS` (coding/chat/analysis/writing × free/paid/local).
+  Contient aussi les helpers de seed (`seed_providers`, `seed_models`,
+  `seed_provider_models`).
+- `base_bridge.py` : contrat abstrait `BaseBridge` (interface déclarative,
+  vérifiée par hardcheck) que tout bridge LLM doit respecter, plus les types
+  partagés `ModelCapabilities`, `ChatResponse`, `BridgeError`,
+  `ErrorCategory`. Méthodes : `chat`, `chat_stream`, `get_capabilities`,
+  `list_available_providers/models`, `health_check`, `classify_error`.
+- `litellm_bridge.py` : implémentation concrète `LiteLLMBridge` via LiteLLM
+  (seul bridge officiel), avec `ErrorClassifier` pour classifier les erreurs.
+- `local_engines.py` : détection et pilotage des moteurs locaux (Ollama,
+  LM Studio, llama.cpp) via socket + HTTP. Classes `LocalEngine`,
+  `LocalEngineManager` (detect/start/stop/list_models).
+- `bridges/`, `data/` : bridges additionnels et données (models.json, etc.).
+
+## Rôle transversal
+Découple les agents des providers : ils consomment `BaseBridge` et non
+l'implémentation concrète.

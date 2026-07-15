@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-ROLES_DIR = Path(__file__).resolve().parent / "roles"
+ROLES_DIR = Path(__file__).resolve().parent / "rôles"
 
 VALID_SKILLS = {
     "chat", "code_gen", "review", "debug", "refactor",

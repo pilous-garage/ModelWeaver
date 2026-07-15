@@ -71,22 +71,47 @@ class Checker:
 
 
     def get_hardware_info(self) -> Dict[str, Any]:
-        """Gathers hardware information. `psutil` est une dépendance optionnelle :
-        si absente, on renvoie des champs None plutôt que de planter le daemon."""
+        """Gathers hardware information GLOBALE (machine entière, pas seulement
+        les services). `psutil` est une dépendance optionnelle : si absente, on
+        renvoie des champs None plutôt que de planter le daemon.
+
+        Le CPU est tracké en consommation globale : `cpu_percent(interval=0)`
+        renvoie l'usage depuis le dernier appel (non bloquant ; 0.0 au 1er appel
+        puis valeur live à chaque poll). `cpu_count` fournit le nombre de cœurs
+        logiques pour le calcul de charge par cœur.
+        """
         try:
             import psutil
         except Exception:
             return {
                 "ram_total_gb": None, "ram_available_gb": None,
                 "disk_total_gb": None, "disk_free_gb": None,
+                "cpu_count": None, "cpu_percent": None, "cpu_per_core": None,
             }
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
+        # CPU global (consommation machine, pas uniquement services).
+        # Interval court (0.2s) -> mesure réelle à chaque appel, même si
+        # get_system_state est invoqué sans état inter-processus persistant.
+        cpu_count = psutil.cpu_count(logical=True)
+        try:
+            cpu_percent = psutil.cpu_percent(interval=0.2)
+        except Exception:
+            cpu_percent = None
+        try:
+            cpu_per_core = psutil.cpu_percent(interval=0.0, percpu=True)
+        except Exception:
+            cpu_per_core = None
         return {
             "ram_total_gb": round(mem.total / (1024**3), 2),
             "ram_available_gb": round(mem.available / (1024**3), 2),
+            "ram_used_gb": round((mem.total - mem.available) / (1024**3), 2),
             "disk_total_gb": round(disk.total / (1024**3), 2),
             "disk_free_gb": round(disk.free / (1024**3), 2),
+            "disk_used_gb": round((disk.total - disk.free) / (1024**3), 2),
+            "cpu_count": cpu_count,
+            "cpu_percent": cpu_percent,
+            "cpu_per_core": cpu_per_core,
         }
 
     def check_dependencies(self) -> List[Dict[str, Any]]:

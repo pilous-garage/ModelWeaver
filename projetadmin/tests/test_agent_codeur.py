@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.sql.db import ModelWeaverDB
-from agents.factory import AgentFactory
-from agents.role_manager import RoleManager
+from AgentFrameWork.factory import AgentFactory
+from AgentsCatalogue.role_manager import RoleManager
 
 
 # Providers testables, en ordre de priorité

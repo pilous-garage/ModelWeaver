@@ -1,0 +1,22 @@
+# Module dashboard
+
+## Rôle
+Fournit un tableau de bord console (CLI) pour visualiser l'état global de
+ModelWeaver : état du système, dépendances et contenu du catalogue.
+
+## Responsabilités
+- Afficher l'état du système via le module `checker` (OS, RAM, dépendances
+  présentes/absentes).
+- Afficher un résumé du catalogue via le module `catalogue` (nombre de
+  modèles, aperçu des premiers modèles).
+- Offrir un mode de rafraîchissement continu (monitoring en boucle).
+
+## Classe principale
+- `Dashboard(checker, catalogue)`
+  - `show_status()` : affiche un instantané complet de l'état système et
+    catalogue.
+  - `monitor_loop(interval=5)` : rafraîchit l'affichage à intervalle régulier
+    jusqu'à interruption (Ctrl+C).
+
+## Dépendances
+Modules `checker` et `catalogue`. Contrat public : exporte `Dashboard`.

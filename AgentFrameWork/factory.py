@@ -10,8 +10,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 from sql.db import ModelWeaverDB
-from agents.role_manager import RoleManager
-from agents.worker import Worker
+from AgentsCatalogue.role_manager import RoleManager
+from AgentFrameWork.worker import Worker
 
 
 class Agent:

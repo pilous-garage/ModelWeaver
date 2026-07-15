@@ -29,6 +29,7 @@ import contextlib
 import sys
 import os
 from pathlib import Path
+from typing import Optional, Dict, Any, List
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Ancrage du dépôt sur sys.path (modules/, services/, sql/ à la racine) AVANT
@@ -46,7 +47,7 @@ from modules.system.deps import install_system_package, install_target_dependenc
 # (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
 from services.installer_worker import jobs
 from services.watch_sysstate import service as sysstate
-from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, read_db_version, fetch_remote_to_local
+from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, AgentsDB, read_db_version, fetch_remote_to_local
 from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
 from modules.llm_manager.litellm_bridge import LiteLLMBridge
@@ -54,7 +55,7 @@ from modules.llm_manager.local_engines import get_local_engine_manager
 from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 
 API_VERSION = "v1"
-MW_VERSION = "0.6.4"
+MW_VERSION = "0.6.6.0"
 
 
 def _mw_dir() -> Path:
@@ -986,6 +987,435 @@ def op_llm_local_models(params):
     return mgr.list_models(engine_ref)
 
 
+# ── Agent Manager ──────────────────────────────────────────
+
+def _get_agent_db() -> AgentsDB:
+    d = getattr(_get_agent_db, "_db", None)
+    if d is None:
+        d = AgentsDB()
+        _get_agent_db._db = d
+    return d
+
+
+def op_agent_list(_params):
+    """Liste tous les agents (vivants et morts)."""
+    db = _get_agent_db()
+    rows = db.conn.execute(
+        "SELECT agent_id, name, ref, role_type, occupation, status, "
+        "       created_at, last_active_at "
+        "FROM agents ORDER BY name"
+    ).fetchall()
+    agents = [dict(r) for r in rows]
+    # Enrichir avec runtime si actif
+    for a in agents:
+        rt = db.conn.execute(
+            "SELECT thread_id, heartbeat_at, current_step FROM agent_runtime WHERE agent_id = ?",
+            (a["agent_id"],)
+        ).fetchone()
+        if rt:
+            a["running"] = True
+            a["thread_id"] = rt["thread_id"]
+            a["heartbeat"] = rt["heartbeat_at"]
+            a["current_step"] = rt["current_step"]
+        else:
+            a["running"] = False
+    return {"agents": agents, "count": len(agents)}
+
+
+def op_agent_get(params):
+    """Retourne un agent par ID ou name."""
+    db = _get_agent_db()
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    if agent_id:
+        row = db.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    elif name:
+        row = db.conn.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
+    else:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    if not row:
+        return {"status": "error", "error": "agent introuvable"}
+    agent = dict(row)
+    # Runtime
+    rt = db.conn.execute(
+        "SELECT * FROM agent_runtime WHERE agent_id = ?", (agent["agent_id"],)
+    ).fetchone()
+    agent["runtime"] = dict(rt) if rt else None
+    return {"agent": agent}
+
+
+def op_agent_create(params):
+    """Crée un agent en BDD.
+    params: name, role, occupation?, config?, resources?, variables?
+    """
+    name = params.get("name")
+    role = params.get("role")
+    if not name or not role:
+        return {"status": "error", "error": "name et role requis"}
+    db = _get_agent_db()
+    ref = f"agent:{name}"
+    occupation = params.get("occupation", "noncontinue")
+    config_json = json.dumps(params.get("config", {}))
+    resources_json = json.dumps(params.get("resources", {}))
+    variables_json = json.dumps(params.get("variables", {}))
+    try:
+        db.conn.execute("""
+            INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json, variables_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (name, ref, role, occupation, config_json, resources_json, variables_json))
+        db.conn.commit()
+        agent_id = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()[0]
+        return {"status": "ok", "agent_id": agent_id, "ref": ref}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_agent_delete(params):
+    """Supprime un agent (et son runtime s'il existe)."""
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    if not agent_id and not name:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    db = _get_agent_db()
+    if name:
+        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return {"status": "error", "error": "agent introuvable"}
+        agent_id = row["agent_id"]
+    db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (agent_id,))
+    db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+    db.conn.commit()
+    return {"status": "ok", "agent_id": agent_id}
+
+
+def op_agent_execute(params):
+    """Hydrate un agent et exécute une requête LLM.
+    params: agent_id (ou name), request, provider_ref, model_ref
+    """
+    from services.agent_manager.service import Agent
+    db = _get_agent_db()
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    if not agent_id and not name:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    if name:
+        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return {"status": "error", "error": "agent introuvable"}
+        agent_id = row["agent_id"]
+    request = params.get("request", "")
+    if not request:
+        return {"status": "error", "error": "request requis"}
+    provider_ref = params.get("provider_ref", "")
+    model_ref = params.get("model_ref", "")
+    # Phase 3 : si le LLM n'est pas imposé, l'Organisateur l'alloue selon
+    # les ressources de l'agent (le LLM est un tool provider, pas un choix).
+    if not provider_ref or not model_ref:
+        row = db.conn.execute("SELECT resources_json FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        try:
+            resources = json.loads(row["resources_json"] or "{}") if row else {}
+        except (json.JSONDecodeError, TypeError):
+            resources = {}
+        if resources.get("llm"):
+            from modules.llm_manager.organisateur import Organisateur
+            alloc = Organisateur().allocate(resources)
+            if alloc["allocated"]:
+                if not provider_ref:
+                    provider_ref = alloc["provider_ref"]
+                if not model_ref:
+                    model_ref = alloc["model_ref"]
+            else:
+                return {"status": "error", "error": f"LLM non allouable : {alloc['reason']}"}
+    try:
+        agent = Agent.hydrate(agent_id, db)
+        result = agent.execute(request, provider_ref=provider_ref, model_ref=model_ref)
+        agent.dehydrate()
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_agent_manager_status(_params):
+    """Retourne le statut de l'AgentManager."""
+    from services.agent_manager.service import AgentManager
+    mgr = AgentManager()
+    active = mgr.list_active()
+    zombies = mgr.check_heartbeats()
+    return {
+        "active_agents": len(active),
+        "active": [{"id": a["agent_id"], "name": a["name"]} for a in active],
+        "zombies": zombies,
+    }
+
+
+def _resolve_agent_id(params) -> Optional[int]:
+    db = _get_agent_db()
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    if not agent_id and not name:
+        return None
+    if name:
+        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
+        return row["agent_id"] if row else None
+    return agent_id
+
+
+def op_agent_evaluate(params):
+    """Évalue si un agent PEUT tourner (ressources + LLM) maintenant.
+    params: agent_id (ou name), resources? (override partiel)
+    """
+    from services.ressource_manager.service import RessourceManager
+    agent_id = _resolve_agent_id(params)
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    db = _get_agent_db()
+    row = db.conn.execute("SELECT resources_json FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    if not row:
+        return {"status": "error", "error": "agent introuvable"}
+    try:
+        resources = json.loads(row["resources_json"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        resources = {}
+    resources.update(params.get("resources", {}) or {})
+    verdict = RessourceManager().evaluate(resources)
+    verdict["agent_id"] = agent_id
+    verdict["status"] = "ok"
+    return verdict
+
+
+def op_agent_admit(params):
+    """Admission control + préemption pour un agent.
+    params: agent_id (ou name)
+    """
+    from services.agent_manager.service import AgentManager
+    agent_id = _resolve_agent_id(params)
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    result = AgentManager().admit(agent_id)
+    result["status"] = "ok"
+    return result
+
+
+def op_agent_signal(params):
+    """Enfile un signal pour un agent (Phase 4).
+    params: agent_id (ou name), type, payload?
+    type ∈ pause|resume|status|health|kill|configure
+    """
+    from services.agent_manager.service import AgentManager
+    agent_id = _resolve_agent_id(params)
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    stype = params.get("type")
+    if not stype:
+        return {"status": "error", "error": "type requis"}
+    return AgentManager().send_signal(agent_id, stype, params.get("payload"))
+
+
+def op_agent_signals(params):
+    """Liste les signaux d'un agent (filtre status optionnel).
+    params: agent_id (ou name), status?
+    """
+    from services.agent_manager.service import AgentManager
+    agent_id = _resolve_agent_id(params)
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    status = params.get("status")
+    db = _get_agent_db()
+    if status:
+        rows = db.conn.execute(
+            "SELECT * FROM agent_signals WHERE agent_id = ? AND status = ? ORDER BY signal_id",
+            (agent_id, status)).fetchall()
+    else:
+        rows = db.conn.execute(
+            "SELECT * FROM agent_signals WHERE agent_id = ? ORDER BY signal_id",
+            (agent_id,)).fetchall()
+    return {"status": "ok", "agent_id": agent_id,
+            "signals": [dict(r) for r in rows], "count": len(rows)}
+
+
+def op_agent_signal_ack(params):
+    """Acquittement manuel d'un signal (cas hors exécution).
+    params: signal_id
+    """
+    from services.agent_manager.service import AgentManager
+    sid = params.get("signal_id")
+    if not sid:
+        return {"status": "error", "error": "signal_id requis"}
+    return AgentManager().ack_signal(sid)
+
+
+def op_agent_signal_complete(params):
+    """Clôture manuelle d'un signal (cas hors exécution).
+    params: signal_id, result?
+    """
+    from services.agent_manager.service import AgentManager
+    sid = params.get("signal_id")
+    if not sid:
+        return {"status": "error", "error": "signal_id requis"}
+    return AgentManager().complete_signal(sid, params.get("result"))
+
+
+def op_agent_stream(params):
+    """Retourne les chunks diffusés par un agent depuis un seq (poll HTTP).
+    params: agent_id (ou name), seq?
+    """
+    from AgentFrameWork.stream_bus import stream_bus
+    agent_id = _resolve_agent_id(params)
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    seq = params.get("seq", 0) or 0
+    chunks = stream_bus.since(agent_id, seq)
+    last = chunks[-1]["seq"] if chunks else seq
+    return {"status": "ok", "agent_id": agent_id, "seq": last,
+            "chunks": chunks, "count": len(chunks)}
+
+
+def op_agent_spawn(params):
+    """Phase 5 : spawn à la demande d'un agent (souvent occupation `disparate`).
+    params: name, role, request, occupation?, resources?, config?, provider_ref?,
+            model_ref?, keep_sleeping?
+    """
+    from services.agent_manager.service import AgentManager
+    name = params.get("name")
+    role = params.get("role")
+    request = params.get("request", "")
+    if not name or not role:
+        return {"status": "error", "error": "name et role requis"}
+    return AgentManager().spawn_agent(
+        name=name, role=role, request=request,
+        occupation=params.get("occupation", "disparate"),
+        resources=params.get("resources"),
+        config=params.get("config"),
+        provider_ref=params.get("provider_ref", ""),
+        model_ref=params.get("model_ref", ""),
+        keep_sleeping=params.get("keep_sleeping", True),
+    )
+
+
+def op_agent_handoff(params):
+    """Phase 5 : succession — transfert de session d'un agent vers un successeur.
+    params: from_id (ou from_name), to_id (ou to_name)
+    """
+    from services.agent_manager.service import AgentManager
+    db = _get_agent_db()
+    from_id = params.get("from_id")
+    from_name = params.get("from_name")
+    if not from_id and not from_name:
+        return {"status": "error", "error": "from_id ou from_name requis"}
+    if from_name:
+        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (from_name,)).fetchone()
+        if not row:
+            return {"status": "error", "error": "agent source introuvable"}
+        from_id = row["agent_id"]
+    to_id = params.get("to_id")
+    to_name = params.get("to_name")
+    if not to_id and not to_name:
+        return {"status": "error", "error": "to_id ou to_name requis"}
+    if to_name:
+        row = db.conn.execute("SELECT agent_id FROM agents WHERE name = ?", (to_name,)).fetchone()
+        if not row:
+            return {"status": "error", "error": "agent cible introuvable"}
+        to_id = row["agent_id"]
+    return AgentManager().handoff(from_id, to_id)
+
+
+# ── N. Chat Service (V0.6.6) : sessions = agents role_type='chat' ──
+
+def _chat_service() -> "ChatService":
+    from services.chat.service import ChatService
+    return ChatService(db=_get_agent_db())
+
+
+def op_chat_session_create(params):
+    """Crée une session de chat (agent role_type='chat').
+    params: name, provider_ref?, model_ref?, system_prompt?, allow_read_others?"""
+    return _chat_service().create_session(
+        name=params.get("name"),
+        provider_ref=params.get("provider_ref", ""),
+        model_ref=params.get("model_ref", ""),
+        system_prompt=params.get("system_prompt", ""),
+        allow_read_others=bool(params.get("allow_read_others", False)),
+    )
+
+
+def op_chat_session_list(_params):
+    """Liste les sessions de chat actives."""
+    return _chat_service().list_sessions()
+
+
+def op_chat_session_get(params):
+    """Récupère une session (params: name)."""
+    name = params.get("name")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    return _chat_service().get_session(name)
+
+
+def op_chat_session_delete(params):
+    """Supprime une session (params: name)."""
+    name = params.get("name")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    return _chat_service().delete_session(name)
+
+
+def op_chat_session_update(params):
+    """Met à jour system_prompt / provider / model / allow_read_others (params: name, ...)."""
+    name = params.get("name")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    return _chat_service().update_session(
+        name=name,
+        system_prompt=params.get("system_prompt"),
+        provider_ref=params.get("provider_ref"),
+        model_ref=params.get("model_ref"),
+        allow_read_others=params.get("allow_read_others"),
+    )
+
+
+def op_chat_session_send(params):
+    """Envoie un message à une session (params: name, message, provider_ref?,
+    model_ref?, stream?, temperature?, max_tokens?)."""
+    name = params.get("name")
+    message = params.get("message")
+    if not name or message is None:
+        return {"status": "error", "error": "name et message requis"}
+    mt = params.get("max_tokens")
+    return _chat_service().send(
+        name=name, message=message,
+        provider_ref=params.get("provider_ref", ""),
+        model_ref=params.get("model_ref", ""),
+        stream=bool(params.get("stream", False)),
+        temperature=float(params.get("temperature", 0.7)),
+        max_tokens=int(mt) if mt is not None else None,
+    )
+
+
+def op_chat_session_history(params):
+    """Historique d'une session (params: name)."""
+    name = params.get("name")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    return _chat_service().history(name)
+
+
+def op_chat_session_read(params):
+    """Lit l'historique d'une AUTRE session (params: name, other)."""
+    name = params.get("name")
+    other = params.get("other")
+    if not name or not other:
+        return {"status": "error", "error": "name et other requis"}
+    return _chat_service().read_session(name, other)
+
+
+def op_chat_session_stream(params):
+    """Stream des tokens d'une session (params: name, seq?)."""
+    name = params.get("name")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    return _chat_service().stream(name, int(params.get("seq", 0) or 0))
+
+
 def op_provider_endpoint_add(params):
     """Ajoute un endpoint à un provider (table provider_endpoints).
     params: provider_ref, label, endpoint_url, api_type?, is_default?"""
@@ -1085,6 +1515,32 @@ ROUTES = {
     # J. Logs
     "logs/read":              op_logs_read,
     "logs/write":             op_logs_write,
+    # M. Agent Manager
+    "agent/list":             op_agent_list,
+    "agent/get":              op_agent_get,
+    "agent/create":           op_agent_create,
+    "agent/delete":           op_agent_delete,
+    "agent/execute":          op_agent_execute,
+    "agent/manager/status":   op_agent_manager_status,
+    "agent/resources/evaluate": op_agent_evaluate,
+    "agent/admit":            op_agent_admit,
+    "agent/signal":           op_agent_signal,
+    "agent/signals":          op_agent_signals,
+    "agent/signal/ack":       op_agent_signal_ack,
+    "agent/signal/complete":  op_agent_signal_complete,
+    "agent/stream":           op_agent_stream,
+    "agent/spawn":            op_agent_spawn,
+    "agent/handoff":          op_agent_handoff,
+    # N. Chat Service (V0.6.6)
+    "chat/session/create":    op_chat_session_create,
+    "chat/session/list":      op_chat_session_list,
+    "chat/session/get":       op_chat_session_get,
+    "chat/session/delete":    op_chat_session_delete,
+    "chat/session/update":    op_chat_session_update,
+    "chat/session/send":      op_chat_session_send,
+    "chat/session/history":   op_chat_session_history,
+    "chat/session/read":      op_chat_session_read,
+    "chat/session/stream":    op_chat_session_stream,
 }
 
 # Routes qui reçoivent (params, wfile) au lieu de (params) -> dict

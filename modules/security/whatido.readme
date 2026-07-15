@@ -1,0 +1,17 @@
+# Module security
+
+## Rôle
+Module réservé à la sécurité de ModelWeaver. Il est actuellement **vide**
+(aucun fichier Python, pas de contrat ni d'implémentation) : c'est un
+emplacement (placeholder) prévu pour de futures fonctionnalités.
+
+## Responsabilités prévues (à implémenter)
+- Gestion et validation des secrets / clés d'API des providers LLM.
+- Contrôle des droits et de l'escalade de privilèges lors des installations.
+- Vérification d'intégrité des recettes et des binaires téléchargés
+  (signatures, checksums).
+- Politiques de sécurité pour l'exécution en conteneur.
+
+## État actuel
+Répertoire vide. À compléter ; aucune classe ni fonction n'y est encore
+définie.

@@ -1,0 +1,13 @@
+# service `installer_worker` — Worker d'installation
+
+Consomme la file `install_jobs` et exécute réellement les recettes d'install/désinstall.
+
+Responsabilités (`service.py`) :
+- Boucle supervisée unique (`acquire_instance_lock`) qui prend le prochain job `queued` et l'exécute via `install_tool` / `uninstall_tool`.
+- Met à jour le statut du job (`running` → `installed`/`removed`/`failed`) et journalise.
+
+Logique métier (`jobs.py`) :
+- Gestion de la file `install_jobs` : `ensure_install_jobs`, `enqueue_job` (idempotent), `job_status`, `list_jobs`, `cancel_job`, `clear_jobs`, `_set_job`.
+- Exécution réelle : `install_tool` / `uninstall_tool` chargent la recette (`RecipeParser`), l'exécutent, mettent à jour popularité/catalogue, scannent les outils installés et tracent l'usage.
+
+Concurrence gérée par SQLite (WAL + busy_timeout). Point d'entrée : `run_installer_service()`.

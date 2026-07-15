@@ -1,0 +1,14 @@
+# Organiser — Menu terminal de pilotage ModelWeaver
+
+Module d'interface en ligne de commande (CLI) qui orchestre le catalogue et le
+gestionnaire de clés via un menu interactif simple.
+
+Responsabilités :
+- Démarrer un menu terminal (`start_interactive_menu`) proposant : lister les
+  modèles disponibles, ajouter une clé de fournisseur, quitter.
+- Afficher les modèles présents dans le catalogue (`list_models`).
+- Ajouter une clé API pour un fournisseur via `add_key_menu` → `KeyManager.set_key`.
+
+Classes / fonctions notables :
+- `Organiser` : construit à partir d'un `Catalogue` et d'un `KeyManager`, agit
+  comme une couche de présentation minimale (sans logique métier propre).

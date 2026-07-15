@@ -1,0 +1,16 @@
+# Module utils
+
+## Rôle
+Fournit des utilitaires transverses partagés par l'ensemble de ModelWeaver.
+Actuellement centré sur le système de logging.
+
+## Contenu
+- `logger.py` : classe `ModelWeaverLogger` — système de logging structuré.
+  - Écrit à la fois sur la console (niveau INFO) et dans un fichier journalier
+    (`mw_YYYYMMDD.log`, niveau DEBUG) situé sous `mw_home()/logs`.
+  - Format uniforme : `date | niveau | nom | message`.
+  - Méthodes raccourcies : `info`, `debug`, `warn`, `error`, `critical`.
+  - Expose une instance globale prête à l'emploi : `log`.
+
+## Dépendances
+`services._common.mw_home` pour localiser le répertoire de logs.

@@ -1,0 +1,15 @@
+# Checker — Diagnostic système et dépendances
+
+Module d'inspection de l'environnement d'exécution (OS, matériel, dépendances,
+gestionnaires de paquets).
+
+Responsabilités :
+- Vérifier la présence de commandes dans le PATH (`check_command`).
+- Récolter les infos système (`get_system_info`) et matérielles
+  (`get_hardware_info`, via `psutil` optionnel — renvoie None si absent).
+- Détecter les gestionnaires de paquets disponibles (`get_detected_managers`).
+- Vérifier les dépendances requises (`check_dependencies` : python3, git, curl).
+- Agréger tous les contrôles (`run_all_checks`) et persister l'état
+  (`save_state`, JSON) ou l'écrire en BDD (`update_local_db`).
+
+Classe notable : `Checker` (état sauvegardé dans `~/.modelweaver/system_state.json`).

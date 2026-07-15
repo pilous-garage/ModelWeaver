@@ -1,0 +1,18 @@
+# Catalogue — Référentiel fournisseurs, modèles et outils
+
+Module métier du catalogue : il agrège et expose les fournisseurs, modèles et
+outils disponibles, et synchronise les données distantes vers la BDD.
+
+Responsabilités :
+- Lister / récupérer / ajouter fournisseurs, modèles et outils
+  (`list_providers`, `get_model`, `add_model`, `search_models`, ...).
+- Obtenir les modèles d'un fournisseur (`list_models_by_provider`).
+- Synchroniser le catalogue distant : `sync_with_remote` interroge models.dev
+  et l'API NVIDIA, filtre les modèles de chat et écrit dans la BDD.
+
+Fichiers notables :
+- `catalogue.py` : classe `Catalogue` (délègue tout à `modules.sql.db`,
+  aucun SQL ici) + `CacheStore` (cache mémoire).
+- `fetcher.py` : `Fetcher` effectue les requêtes HTTP (models.dev, NVIDIA) et
+  détermine si un modèle est un modèle de chat (`is_chat_model`).
+- `data/` et `schemas/` : jeux de données et schémas de catalogue hors-ligne.

@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
-from agents.pipeline_executor import PipelineExecutor, PipelineError
+from AgentFrameWork.pipeline_executor import PipelineExecutor, PipelineError
 
 logger = logging.getLogger("modelweaver.dsl")
 

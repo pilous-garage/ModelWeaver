@@ -8,7 +8,7 @@ et les agents disponibles. Il s'assure que chaque tâche est assignée
 import logging
 from typing import Any, Dict, List, Optional
 from sql.db import ModelWeaverDB
-from agents.provisioning import ProvisioningService
+from AgentFrameWork.provisioning import ProvisioningService
 
 logger = logging.getLogger("modelweaver.dispatcher")
 

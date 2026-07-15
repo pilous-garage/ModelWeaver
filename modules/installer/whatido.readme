@@ -1,0 +1,27 @@
+# Module installer
+
+## Rôle
+Installe et désinstalle des outils/modèles à partir du catalogue ou de
+recettes `.mw.yaml`. Gère plusieurs méthodes d'installation et le
+téléchargement/déploiement de binaires.
+
+## Contenu principal
+- `installer.py` : classe `Installer`.
+  - `install(tool, ...)` : privilégie les recettes `.mw.yaml` (via
+    `RecipeParser`), avec repli (« fallback legacy ») sur les méthodes du
+    catalogue.
+  - `uninstall(tool, ...)` : désinstallation via recette ou legacy.
+  - Méthodes supportées : `pip`, `apt`, `brew`, `winget`,
+    `package-manager`, `direct-url`, `github-release`, `installer-script`.
+  - Gère détection OS/distro/arch, cache de téléchargement, extraction
+    d'archives (tar.gz/zip) et déploiement de binaires (/usr/local/bin ou
+    ~/.local/bin).
+- `recipe_parser.py` : classe `RecipeParser` — parse les recettes `.mw.yaml`
+  (structure shardée `install_recipe/x/y/ref.mw`), résout le manager
+  compatible selon OS/arch, exécute install/uninstall.
+- `github_bridge.py` : classe `GitHubBridge` — pousse (push) des recettes YAML
+  vers le dépôt GitHub officiel via l'API (nécessite `GITHUB_TOKEN`).
+- `install_recipe/` : recettes locales embarquées, organisées par sharding.
+
+## Dépendances
+`services._common` (mw_home), `requests`, `yaml`.

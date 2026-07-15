@@ -1,0 +1,28 @@
+# Module system
+
+## Rôle
+Gère les dépendances système de ModelWeaver : détection de la plateforme,
+lecture d'un manifeste de dépendances et installation via des scripts
+compilés par cible ou via le gestionnaire de paquets (apt).
+
+## Contenu
+- `deps.py` : logique Python de gestion des dépendances.
+- `deps_manifest.json` : manifeste décrivant les dépendances et cibles.
+- `install-dependencies-ubuntu24.sh` : script d'installation compilé pour la
+  cible Ubuntu 24.
+
+## Fonctions clés (deps.py)
+- `detect_target()` : détecte la cible (ex. `ubuntu24`) depuis
+  `/etc/os-release`.
+- `load_manifest()` / `required_dependencies(target)` : chargement du
+  manifeste et filtrage des dépendances requises (safe, light, non
+  optionnelles).
+- `resolve_target_script(target)` : localise le script compilé de la cible
+  (échec explicite si absent).
+- `is_dependency_installed(language, pkg)` : vérifie la présence d'un paquet
+  (pip pour python, dpkg pour système).
+- `install_target_dependencies(...)` : installe les dépendances de la cible
+  via le script.
+- `install_system_package(package_name)` : installe un paquet via apt, avec
+  escalade de privilèges auto (`sudo`/`pkexec`) et `apt-get update` à la
+  demande.

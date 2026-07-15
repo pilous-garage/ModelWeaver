@@ -1,0 +1,10 @@
+# service `watch_installed`
+
+Surveille périodiquement les outils installés et publie leur état courant.
+
+Responsabilités :
+- Boucle unique (single-instance via `acquire_instance_lock`) qui lit la table `local_tools` de la BDD ModelWeaver.
+- Pour chaque outil : ref, nom, version, statut et chemin d'installation.
+- Émet un objet JSON par ligne sur stdout (`{"tools": [...], "count": N}`) toutes les 2 s, ou `{"error": ...}` en cas d'échec.
+
+Point d'entrée : `watch_installed_tools(interval=2.0)` (exécuté en tant que service supervisé).

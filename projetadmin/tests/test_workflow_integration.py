@@ -16,9 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.sql.db import ModelWeaverDB
-from agents.factory import AgentFactory
-from agents.worker import Worker
-from agents.ticker import AsyncTicker
+from AgentFrameWork.factory import AgentFactory
+from AgentFrameWork.worker import Worker
+from AgentFrameWork.ticker import AsyncTicker
 
 def run_test():
     print("\n🧪 Test Workflow DSL & Succession\n")

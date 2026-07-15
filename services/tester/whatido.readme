@@ -1,0 +1,11 @@
+# service `tester` — Service testeur (QA automatisée)
+
+Lit un script de test et enfile les actions install/uninstall comme jobs, en les exécutant séquentiellement.
+
+Responsabilités :
+- Boucle supervisée unique (`acquire_instance_lock`) qui surveille `~/.modelweaver/tests/test-script.txt`.
+- Parse chaque ligne d'action (`install <ref>` / `uninstall <ref>` / `remove <ref>`) et l'enfile via `jobs.enqueue_job`.
+- Attend la fin de chaque job (jusqu'à 900 s) avant le suivant, puis rédige un rapport dans `test-report.txt`.
+- Archive le script traité en `.done.txt` pour éviter les rejeux.
+
+Point d'entrée : `run_tester_service(script_path=None)`.
