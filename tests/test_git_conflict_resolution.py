@@ -129,6 +129,31 @@ class TestConflictResolution(unittest.TestCase):
                         {"project_id": PROJ, "agent_id": AGENT}, WS)
         self.assertTrue(st.get("clean"), st)
 
+    def test_git_merge_lists_conflicts(self):
+        bad = call_skill("system/git_merge@v1",
+                         {"project_id": PROJ, "agent_id": AGENT, "name": "feat"}, WS)
+        self.assertFalse(bad["ok"])
+        self.assertIn("a.txt", bad.get("conflicts", []))
+
+    def test_git_status_lists_conflicts(self):
+        call_skill("system/git_merge@v1",
+                   {"project_id": PROJ, "agent_id": AGENT, "name": "feat"}, WS)
+        st = call_skill("system/git_status@v1",
+                        {"project_id": PROJ, "agent_id": AGENT}, WS)
+        self.assertIn("a.txt", st.get("conflicts", []))
+
+    def test_resolve_conflict_all(self):
+        call_skill("system/git_merge@v1",
+                   {"project_id": PROJ, "agent_id": AGENT, "name": "feat"}, WS)
+        rc = call_skill("system/git_resolve_conflict@v1",
+                        {"project_id": PROJ, "agent_id": AGENT, "path": "all",
+                         "side": "ours"}, WS)
+        self.assertTrue(rc["ok"], rc)
+        self.assertIn("a.txt", rc.get("resolved", []))
+        st = call_skill("system/git_status@v1",
+                        {"project_id": PROJ, "agent_id": AGENT}, WS)
+        self.assertTrue(st.get("clean"), st)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

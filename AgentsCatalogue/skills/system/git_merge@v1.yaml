@@ -33,6 +33,17 @@ outputs:
   ok:
     type: boolean
     description: "True ssi la commande git a réussi (exit_code == 0)"
+  conflict:
+    type: boolean
+    description: "True si le merge a échoué sur un conflit de contenu"
+  conflicts:
+    type: array
+    items:
+      type: string
+    description: "Fichiers en conflit (non résolus) après un merge échoué"
+  error:
+    type: string
+    description: "Message d'erreur explicite (ex. 'merge en échec (conflit de contenu)')"
 implementation:
   type: python
   function: _exec_git_merge

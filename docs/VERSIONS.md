@@ -714,6 +714,40 @@ Suite de V0.6.23 : outils pour **résoudre** concrètement un conflit de merge
   (`git_add`, `merge -X theirs/ours`, `git_resolve_conflict` par fichier,
   `merge --abort`).
 
+### V0.6.25 — Visibilité des conflits + isolation inter-agents ✅
+
+Suite de V0.6.23/24 : rendre les conflits **exploitables sans LLM** et empêcher
+toute usurpation d'identité entre agents.
+
+- **`git_status`** expose désormais `conflicts` (liste des fichiers en conflit
+  non résolus, via `git diff --name-only --diff-filter=U`) en plus de `clean`.
+- **`git_merge`** (échec) renvoie `conflicts` (liste) à côté de `conflict`/`error`.
+- **`git_resolve_conflict`** accepte `path: "all"` → résout **tous** les fichiers
+  en conflit du clone en un appel (`side: ours|theirs` par défaut `ours`).
+- **Anti-spoof FSM** : `_step_call` (et `_step_tool_call`) force
+  `agent_id = agent courant` — un `call`/`tool_call` qui fournit un `agent_id`
+  différent est ignoré (l'identité réelle de l'agent courant prime). Empêche un
+  agent de lire/écrire le dépôt d'un autre agent.
+- **YAML docs** (`AgentsCatalogue/skills/system/`) : `outputs` mis à jour pour
+  `git_status` (`conflicts`), `git_merge` (`conflicts`/`error`),
+  `git_resolve_conflict` (`path=all`, `resolved`).
+- **Total = 63 skills** (inchangé).
+- **Scénario de conflit déterministe** dans `tests/e2e_mini_entreprise.py`
+  (Phase 7) : le manager crée 2 branches éditant `src/config.py`, le merge de la
+  2e génère un conflit → branchement `on_error` → `git_resolve_conflict path=all
+  side=ours` → `git_commit`. Valide la boucle complète sans LLM.
+- **Tests** :
+  - `tests/test_git_conflict_resolution.py` : **8/8 PASS** (+ `git_status`
+    liste les conflits, `git_merge` liste les conflits, `git_resolve_conflict
+    path=all`).
+  - `tests/test_fsm_skill_failure.py` : **5/5 PASS** (+ `test_agent_id_spoof_forced`).
+  - `tests/e2e_mini_entreprise.py` : **31/31 PASS** (local + Docker
+    `run-mini-entreprise.sh`).
+  - `tests/e2e_agent_framework.py` : **51/51 PASS** (non-régression).
+- **Live test** (`tests/test_live_conflict_resolution.py`, 1/1) : toujours
+  valide (groq/llama-3.1-8b-instant, sinon ollama/mistral-small:22b).
+- Releasé : **tag v0.6.25.0**.
+
 ## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
 **Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
 

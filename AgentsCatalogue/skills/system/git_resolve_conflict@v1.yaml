@@ -12,8 +12,9 @@ inputs:
     description: "Identifiant de l'agent (injecté automatiquement par le FSM si absent)"
   path:
     type: string
-    required: true
-    description: "Fichier en conflit (relatif au clone)"
+    required: false
+    description: "Fichier en conflit (relatif au clone). 'all' résout tous les fichiers en conflit du clone."
+    enum: [all]
   side:
     type: string
     required: false
@@ -30,6 +31,11 @@ outputs:
   ok:
     type: boolean
     description: "True ssi la résolution a réussi (exit_code == 0)"
+  resolved:
+    type: array
+    items:
+      type: string
+    description: "Liste des fichiers effectivement résolus (mode 'all')"
 implementation:
   type: python
   function: _exec_git_resolve_conflict

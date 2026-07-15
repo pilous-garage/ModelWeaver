@@ -309,9 +309,14 @@ class FSMInterpreter:
         resolved = {k: self._resolve(v, result.variables) if isinstance(v, str) else v
                     for k, v in inputs.items()}
         # agent_id disponible pour les skills (memory/host/log)
+        # Anti-spoof : un 'call' ne peut pas usurper l'identité d'un autre
+        # agent — s'il fournit un agent_id différent, on force le sien.
         agent_id = result.variables.get("agent_id", "")
-        if agent_id and "agent_id" not in resolved:
-            resolved["agent_id"] = agent_id
+        if agent_id:
+            if "agent_id" in resolved and resolved["agent_id"] != agent_id:
+                resolved["agent_id"] = agent_id
+            elif "agent_id" not in resolved:
+                resolved["agent_id"] = agent_id
         try:
             from services.skill_manager import call_skill
             from services._common import mw_home
@@ -409,8 +414,11 @@ class FSMInterpreter:
                            for tool_arg, skill_arg in arg_map.items()
                            if tool_arg in resolved_args}
             agent_id = result.variables.get("agent_id", "")
-            if agent_id and "agent_id" not in mapped_args:
-                mapped_args["agent_id"] = agent_id
+            if agent_id:
+                if "agent_id" in mapped_args and mapped_args["agent_id"] != agent_id:
+                    mapped_args["agent_id"] = agent_id
+                elif "agent_id" not in mapped_args:
+                    mapped_args["agent_id"] = agent_id
             try:
                 from services.skill_manager import call_skill
                 from services._common import mw_home

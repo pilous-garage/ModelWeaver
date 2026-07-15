@@ -86,10 +86,12 @@ def sw(conds, default):
             "conditions": conds, "default": default}
 
 
-def call(sid, fn, inputs, nxt, capture=None):
+def call(sid, fn, inputs, nxt, capture=None, on_error=None):
     step = {"id": sid, "type": "call", "fn": fn, "inputs": inputs, "next": nxt}
     if capture:
         step["capture"] = capture
+    if on_error:
+        step["on_error"] = on_error
     return step
 
 
@@ -100,7 +102,8 @@ P = {"project_id": PROJECT_ID}
 def manager_wf():
     return {"steps": [
         sw([{"operator": "EQUALS", "value": "assign", "next": "a1"},
-            {"operator": "EQUALS", "value": "merge", "next": "m1"}], "a1"),
+            {"operator": "EQUALS", "value": "merge", "next": "m1"},
+            {"operator": "EQUALS", "value": "conflict", "next": "c1"}], "a1"),
         # ── phase assign : central repo + clone + roadmap ──
         call("a1", "system/repo_init@v1", dict(P), "a2"),
         call("a2", "system/git_clone@v1", dict(P), "a3"),
@@ -136,6 +139,31 @@ def manager_wf():
              {"to_agent_id": "{{analyst_id}}", "content": "Merci de reviewer main.py"}, "m9"),
         call("m9", "system/chatroom_post@v1",
              {"chatroom_id": CHATROOM_ID, "content": "[manager] integration faite"}, "end"),
+        # ── phase conflict : conflit de merge deterministe + resolution on_error ──
+        # deux branches creent src/config.py avec des contenus differents, puis
+        # la fusion de la 2e genere un conflit -> on_error resout en 'ours'.
+        call("c1", "system/git_branch@v1", {**P, "name": "conflict-a", "create": True}, "c2"),
+        call("c2", "system/git_branch@v1", {**P, "name": "conflict-b", "create": True}, "c3"),
+        call("c3", "system/git_checkout@v1", {**P, "name": "conflict-a"}, "c4"),
+        call("c4", "system/project_write@v1", {**P, "path": "src/config.py", "content": "A\n"}, "c5"),
+        call("c5", "system/git_commit@v1", {**P, "message": "config A"}, "c6"),
+        call("c6", "system/git_checkout@v1", {**P, "name": "conflict-b"}, "c7"),
+        call("c7", "system/project_write@v1", {**P, "path": "src/config.py", "content": "B\n"}, "c8"),
+        call("c8", "system/git_commit@v1", {**P, "message": "config B"}, "c9"),
+        call("c9", "system/git_checkout@v1", {**P, "name": "master"}, "c10"),
+        call("c10", "system/git_merge@v1", {**P, "name": "conflict-a"}, "c11"),
+        call("c11", "system/git_merge@v1", {**P, "name": "conflict-b"}, "c12",
+             on_error="cres"),
+        call("c12", "system/git_status@v1", dict(P), "c13",
+             capture={"conflicts": "_conflicts", "clean": "_clean_before"}),
+        call("c13", "system/project_read@v1", {**P, "path": "src/config.py"}, "c14",
+             capture={"content": "cfg"}),
+        call("c14", "system/git_commit@v1", {**P, "message": "integrate"}, "end"),
+        # handler on_error : conflit detecte -> resolution 'ours' + commit
+        call("cres", "system/git_resolve_conflict@v1", {**P, "path": "all", "side": "ours"}, "cr1"),
+        call("cr1", "system/git_commit@v1", {**P, "message": "resolve conflict config (ours)"}, "cr2"),
+        call("cr2", "system/project_read@v1", {**P, "path": "src/config.py"}, "end",
+             capture={"content": "cfg"}),
         END,
     ]}
 
@@ -319,6 +347,18 @@ def main():
     check("analyst a lu le STATUS commun (capture)",
           "assign" in (r or {}).get("variables", {}).get("status", ""),
           str((r or {}).get("variables", {}).get("status", ""))[:80])
+
+    print("\n=== 7. Manager : conflit de merge deterministe + on_error ===")
+    r = run(mw, PREFIX + "manager", "conflict")
+    check("manager conflict+resolution OK", ok_status(r), str(r)[:200])
+    cfg = (r or {}).get("variables", {}).get("cfg", "")
+    check("conflit resolu (config.py = A, side ours)", cfg.strip() == "A",
+          f"cfg={cfg!r}")
+    st = skill("git_status", project_id=PROJECT_ID, agent_id=mgr)
+    check("arbre propre apres resolution (aucun conflit)", st.get("clean", False),
+          f"conflicts={st.get('conflicts')}")
+    check("git_status liste plus aucun conflit", len(st.get("conflicts", [])) == 0,
+          f"conflicts={st.get('conflicts')}")
 
     print("\n=== Vérifications réseaux & produit ===")
     # Réseau 3 : historique git multi-commits (via le clone manager)

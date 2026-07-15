@@ -141,6 +141,27 @@ class TestFsmSurfacesFailure(unittest.TestCase):
         self.assertTrue(res.variables.get("_last_call_ok"))
         self.assertNotIn("_last_call_error", res.variables)
 
+    def test_agent_id_spoof_forced(self):
+        # agent courant (AGENT) possede x.txt ; un 'call' tente un agent_id
+        # intrus -> le FSM doit forcer l'identite courante et lire x.txt.
+        call_skill("system/project_write@v1",
+                   {"project_id": PROJ, "agent_id": AGENT, "path": "x.txt",
+                    "content": "X"}, WS)
+        wf = {
+            "max_iterations": 10,
+            "steps": [
+                {"id": "s1", "type": "call", "fn": "system/project_read@v1",
+                 "inputs": {"project_id": PROJ, "agent_id": "agent_intru",
+                            "path": "x.txt"},
+                 "capture": {"content": "_read"}, "next": "s2"},
+                {"id": "s2", "type": "end", "status": "SUCCESS"},
+            ],
+        }
+        res = self._run(wf)
+        self.assertEqual(res.status, "success", res.end_reason)
+        self.assertEqual(res.variables.get("_read"), "X",
+                         "l'agent_id intrus n'a pas ete ignore (spoof possible)")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

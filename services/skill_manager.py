@@ -1031,7 +1031,13 @@ class SkillManager:
             return err
         r = self._git_run(root, ["status", "--porcelain"])
         r["clean"] = (r["stdout"].strip() == "")
+        r["conflicts"] = self._unmerged_files(root)
         return r
+
+    def _unmerged_files(self, root: Path) -> List[str]:
+        """Liste des fichiers en conflit de merge (état non résolu)."""
+        out = self._git_run(root, ["diff", "--name-only", "--diff-filter=U"])
+        return [l.strip() for l in out.get("stdout", "").splitlines() if l.strip()]
 
     def _exec_git_merge(self, inputs: dict, ws: str) -> dict:
         root, err = self._clone_or_err(inputs)
@@ -1054,6 +1060,7 @@ class SkillManager:
             r = dict(r)
             r["conflict"] = ("CONFLICT" in r.get("stderr", "")
                              or "CONFLICT" in r.get("stdout", ""))
+            r["conflicts"] = self._unmerged_files(root)
             r["error"] = ("merge en échec (conflit de contenu)" if r["conflict"]
                           else f"merge en échec: {r.get('stderr', '')[:200]}")
         return r
@@ -1068,19 +1075,37 @@ class SkillManager:
         return self._git_run(root, ["add", "-A"])
 
     def _exec_git_resolve_conflict(self, inputs: dict, ws: str) -> dict:
-        """Résout un conflit de merge sur un fichier en choisissant un côté
-        (ours/theirs) puis stage le fichier — à faire après un merge en
-        conflit avant le commit de conclusion."""
+        """Résout un conflit de merge en choisissant un côté (ours/theirs)
+        puis stage le(s) fichier(s) — à faire après un git_merge en conflit
+        avant le commit de conclusion.
+
+        `path` :
+          - "all"  : résout tous les fichiers en conflit du clone ;
+          - sinon  : fichier unique (relatif au clone)."""
         root, err = self._clone_or_err(inputs)
         if err:
             return err
-        path = inputs.get("path", "")
-        if not path:
-            return {"stdout": "", "stderr": "path requis", "exit_code": -1,
-                    "ok": False}
         side = inputs.get("side", "ours")
         if side not in ("ours", "theirs"):
             return {"ok": False, "error": "side doit être 'ours' ou 'theirs'"}
+        path = inputs.get("path", "")
+        if path == "all":
+            files = self._unmerged_files(root)
+            if not files:
+                return {"ok": True, "resolved": [], "note": "aucun conflit"}
+            resolved = []
+            for f in files:
+                co = self._git_run(root, ["checkout", f"--{side}", "--", f])
+                if co["exit_code"] != 0:
+                    return co
+                ad = self._git_run(root, ["add", "--", f])
+                if ad["exit_code"] != 0:
+                    return ad
+                resolved.append(f)
+            return {"ok": True, "resolved": resolved}
+        if not path:
+            return {"ok": False, "error": "path requis (ou 'all')",
+                    "exit_code": -1}
         co = self._git_run(root, ["checkout", f"--{side}", "--", path])
         if co["exit_code"] != 0:
             return co

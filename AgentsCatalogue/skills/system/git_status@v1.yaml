@@ -15,6 +15,12 @@ outputs:
     type: string
   clean:
     type: boolean
+    description: "True ssi l'arbre de travail est propre (aucun changement)"
+  conflicts:
+    type: array
+    items:
+      type: string
+    description: "Liste des fichiers en conflit de merge (non résolus)"
   exit_code:
     type: integer
   ok:
