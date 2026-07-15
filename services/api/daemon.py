@@ -1098,103 +1098,103 @@ def op_agent_delete(params):
 
 
 def op_agent_execute(params):
-    """Hydrate un agent et exécute une requête LLM — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Hydrate un agent et exécute une requête LLM — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "execute",
-                            request=params.get("request", ""),
-                            provider_ref=params.get("provider_ref", ""),
-                            model_ref=params.get("model_ref", ""))
+    return get_afd_client().call(ref, "execute",
+                                 request=params.get("request", ""),
+                                 provider_ref=params.get("provider_ref", ""),
+                                 model_ref=params.get("model_ref", ""))
 
 
 def op_agent_manager_status(_params):
-    """Retourne le statut de l'AgentManager — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
-    return AgentDaemon.call(None, "manager_status")
+    """Retourne le statut de l'AgentManager — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
+    return get_afd_client().call(None, "manager_status")
 
 
 def op_agent_evaluate(params):
-    """Évalue si un agent PEUT tourner — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Évalue si un agent PEUT tourner — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "evaluate", resources=params.get("resources"))
+    return get_afd_client().call(ref, "evaluate", resources=params.get("resources"))
 
 
 def op_agent_admit(params):
-    """Admission control — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Admission control — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "admit")
+    return get_afd_client().call(ref, "admit")
 
 
 def op_agent_signal(params):
-    """Enfile un signal — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Enfile un signal — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "signal", type=params.get("type"), payload=params.get("payload"))
+    return get_afd_client().call(ref, "signal", type=params.get("type"), payload=params.get("payload"))
 
 
 def op_agent_signals(params):
-    """Liste les signaux — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Liste les signaux — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "signals", status=params.get("status"))
+    return get_afd_client().call(ref, "signals", status=params.get("status"))
 
 
 def op_agent_signal_ack(params):
-    """Acquittement d'un signal — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
-    return AgentDaemon.call(None, "signal/ack", signal_id=params.get("signal_id"))
+    """Acquittement d'un signal — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
+    return get_afd_client().call(None, "signal/ack", signal_id=params.get("signal_id"))
 
 
 def op_agent_signal_complete(params):
-    """Clôture d'un signal — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
-    return AgentDaemon.call(None, "signal/complete", signal_id=params.get("signal_id"),
-                            result=params.get("result"))
+    """Clôture d'un signal — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
+    return get_afd_client().call(None, "signal/complete", signal_id=params.get("signal_id"),
+                                 result=params.get("result"))
 
 
 def op_agent_stream(params):
-    """Retourne les chunks diffusés — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
+    """Retourne les chunks diffusés — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
     name = params.get("name")
     ref = agent_id or name
     if not ref:
         return {"status": "error", "error": "agent_id ou name requis"}
-    return AgentDaemon.call(ref, "stream", seq=params.get("seq", 0))
+    return get_afd_client().call(ref, "stream", seq=params.get("seq", 0))
 
 
 def op_agent_spawn(params):
-    """Spawn d'agent — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
-    return AgentDaemon.call(None, "spawn", **params)
+    """Spawn d'agent — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
+    return get_afd_client().call(None, "spawn", **params)
 
 
 def op_agent_handoff(params):
-    """Succession d'agent — proxy vers AgentDaemon."""
-    from services.agent_daemon import AgentDaemon
-    return AgentDaemon.call(None, "handoff", **params)
+    """Succession d'agent — proxy vers AFD."""
+    from services.api.afd_client import get_afd_client
+    return get_afd_client().call(None, "handoff", **params)
 
 
 # ── N. Chat Service (V0.6.6) : sessions = agents role_type='chat' ──
@@ -1345,10 +1345,10 @@ def op_agent_capabilities(_params):
 
 
 def _agent_dynamic_route(method: str, parts: List[str], params: dict):
-    """Route dynamique `agents/{id}/{sub}` — proxy vers AgentDaemon.call().
+    """Route dynamique `agents/{id}/{sub}` — proxy vers AFD (ou fallback local).
 
-    Le routeur AgentFrameWork.router resolve les ops autorisées par rôle+état.
-    Toute la logique métier est dans services.agent_daemon.
+    Si l'AFD est joignable (socket Unix), tous les appels agents passent par
+    le processus dédié. Sinon, fallback local (mono-process).
     """
     if len(parts) < 3 or parts[0] != "agents":
         return None
@@ -1365,16 +1365,16 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
     if sub == "routes":
         if method != "GET":
             return {"code": 405, "payload": {"error": "method_not_allowed", "method": method}}
-        from services.agent_daemon import AgentDaemon
-        routes = AgentDaemon.routes_for(agent_id)
+        from services.api.afd_client import get_afd_client
+        routes = get_afd_client()._local_routes_for(agent_id)
         return {"code": 200, "payload": {
             "agent_id": agent_id,
             "routes": routes,
         }}
 
-    # Résoudre et exécuter via AgentDaemon.call()
-    from services.agent_daemon import AgentDaemon
-    result = AgentDaemon.call(agent_id, sub, **params)
+    # Résoudre et exécuter via le proxy AFD (socket Unix ou fallback local)
+    from services.api.afd_client import get_afd_client
+    result = get_afd_client().call(agent_id, sub, **params)
     if result.get("status") == "error" and "code" in result:
         code = result["code"]
         reason = result.get("reason", "unknown")
@@ -1675,6 +1675,13 @@ def serve(port: int = 8770) -> None:
 
     # Démarre le processeur de jobs en arrière-plan (consomme install_jobs).
     _job_processor_loop(interval=3.0)
+
+    # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
+    try:
+        from AgentFrameWork.stream_bus import activate_cross_process, resolve_stream_path
+        activate_cross_process(resolve_stream_path())
+    except Exception as e:
+        print(f"⚠️  StreamBus cross-process échoué : {e}", file=sys.stderr)
 
     print(f"✅ ModelWeaver daemon — http://127.0.0.1:{port}  (api {API_VERSION})", file=sys.stderr)
     print(f"   token : {token_file}", file=sys.stderr)

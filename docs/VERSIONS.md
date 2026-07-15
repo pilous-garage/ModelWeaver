@@ -425,19 +425,24 @@ via le framework. L'appelant ne sait rien de l'implémentation derrière.
 - **Prochaine étape** : extraction de l'AFD en processus dédié + StreamBus
   cross-process (socket Unix + BDD tmpfs WAL).
 
-### V0.6.10 — Agent Framework Daemon : processus dédié 📝
-Suite V0.6.9 (AgentDaemon en-process). On extrait le runtime des agents dans
+### V0.6.10 — Agent Framework Daemon : processus dédié ✅
+Suite V0.6.9 (AgentDaemon en-process). Extraction du runtime des agents dans
 un **processus dédié** distinct du gateway REST :
 
-- **AFD en processus séparé** : exécution FSM + StreamBus + supervision
-  (Ticker/watchdog) déplacés dans un daemon propre ; le daemon REST actuel
-  devient un **gateway mince** qui proxy vers l'AFD via socket Unix.
-- **StreamBus cross-process** : passage du bus en mémoire vers une table
-  SQLite tmpfs avec WAL (single writer par agent = zero contention).
-- **Auto-régénération** : l'AFD scanne la table `agents` au démarrage,
-  nettoie les zombies, reprend les agents en cours. Pattern Phénix++.
-- **Isolation redémarrage** : une MAJ du gateway ne tue plus les agents en
-  cours.
+- **`services/afd/`** (nouveau) : processus standalone avec socket Unix IPC,
+  Ticker asynchrone, auto-régénération au démarrage (sync agents table).
+- **Socket Unix IPC** : `services/afd/ipc.py` — échange JSON ligne par ligne
+  entre gateway et AFD. `AFDProxy` avec fallback local si AFD indisponible.
+- **StreamBus cross-process** : `AgentFrameWork/stream_bus.py` — `StreamBusDB`
+  SQLite WAL sur tmpfs (`/dev/shm/`). Singleton `stream_bus` dispatch auto
+  entre mémoire et SQLite via `activate_cross_process()`. Zero contention
+  (1 writer par agent_id).
+- **Architecture 2-process** : gateway REST (daemon.py) + AFD (afd/service.py).
+  Le superviseur Rust pourra lancer les 2 comme sidecars.
+- **Résilience** : au démarrage, l'AFD appelle `AgentDaemon.sync()` (nettoie
+  zombies, reprend les agents en cours). Si l'AFD crashe, la BDD persiste.
+- **Route `GET /v1/capabilities`** déléguée à l'AFD.
+- **E2E** : 51/51 PASS (tout vert en 2-process).
 
 ### V0.6.11 — Hardening et logging structuré 📝
 - **Sandboxing des commandes** : exécution des outils et appels LLM dans
