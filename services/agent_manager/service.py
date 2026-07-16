@@ -26,6 +26,43 @@ from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
 from AgentFrameWork.stream_bus import stream_bus
 
+# Intervalle de rafraîchissement du heartbeat pendant une exécution inline.
+# Les agents s'exécutent INLINE (bloquant) dans le daemon ; un seul `llm_call`
+# peut durer > 30s. Le Ticker de supervision (AgentManager.tick ->
+# check_heartbeats, défaut 30s) tuerait l'agent à tort s'il ne voit pas de
+# heartbeat frais. On rafraîchit donc le heartbeat périodiquement PENDANT
+# l'exécution (voir _execute_with_fsm / chat_turn).
+HEARTBEAT_INTERVAL_SECONDS = 8
+
+
+def _spawn_heartbeat(agent_id: int, db) -> "threading.Event":
+    """Démarre un thread de fond qui rafraîchit le heartbeat de l'agent
+    toutes les HEARTBEAT_INTERVAL_SECONDS. Retourne l'Event de stop.
+
+    Le thread utilise sa PROPRE connexion BDD (les connexions SQLite ne sont
+    pas thread-safe) pour ne pas entrer en collision avec l'exécution
+    principale de l'agent."""
+    import threading
+    from modules.sql.db import AgentsDB
+
+    stop = threading.Event()
+
+    def _loop():
+        hb_db = AgentsDB()
+        while not stop.is_set():
+            try:
+                hb_db.conn.execute(
+                    "UPDATE agent_runtime SET heartbeat_at = datetime('now') "
+                    "WHERE agent_id = ?", (agent_id,))
+                hb_db.conn.commit()
+            except Exception:
+                pass
+            stop.wait(HEARTBEAT_INTERVAL_SECONDS)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return stop
+
 
 # ── Bridge LLM partagé : branché sur le Key Manager (clés en BDD) ──
 # Les agents s'exécutent via le daemon, dont l'environnement ne porte pas les
@@ -186,22 +223,26 @@ class Agent:
                 result = result.to_dict()
             else:
                 # Phase 1 : appel Bridge direct (signaux vérifiés avant appel)
-                signal_check(FSMResult())  # consomme pause/kill/configure en attente
-                result = self._bridge.chat(
-                    provider_ref=provider_ref,
-                    model_ref=model_ref,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                content = result.content if hasattr(result, 'content') else str(result)
-                tokens = 0
-                if hasattr(result, 'usage') and isinstance(result.usage, dict):
-                    tokens = result.usage.get("total_tokens", 0)
-                budget = getattr(result, 'budget', {}) or {}
-                stream_sink(content)
-                result = {"status": "ok", "content": content, "tokens_used": tokens,
-                          "budget": budget}
+                _hb_stop = _spawn_heartbeat(self.agent_id, self.db)
+                try:
+                    signal_check(FSMResult())  # consomme pause/kill/configure en attente
+                    result = self._bridge.chat(
+                        provider_ref=provider_ref,
+                        model_ref=model_ref,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    content = result.content if hasattr(result, 'content') else str(result)
+                    tokens = 0
+                    if hasattr(result, 'usage') and isinstance(result.usage, dict):
+                        tokens = result.usage.get("total_tokens", 0)
+                    budget = getattr(result, 'budget', {}) or {}
+                    stream_sink(content)
+                    result = {"status": "ok", "content": content, "tokens_used": tokens,
+                              "budget": budget}
+                finally:
+                    _hb_stop.set()
 
             # Enregistrer les métriques
             db = self.db
@@ -268,6 +309,7 @@ class Agent:
 
         signal_check = self._make_signal_check()
         stream_sink = lambda chunk: stream_bus.publish(self.agent_id, chunk, "token")
+        _hb_stop = _spawn_heartbeat(self.agent_id, self.db)
 
         try:
             workflow = {
@@ -322,6 +364,7 @@ class Agent:
             self._record_failure()
             return {"status": "error", "error": str(e)}
         finally:
+            _hb_stop.set()
             self._mark_idle()
 
     def _make_signal_check(self):
@@ -428,6 +471,9 @@ class Agent:
                 pass
 
         _bus.subscribe(HookType.POST_STEP, _on_post_step)
+        # Rafraîchir le heartbeat en arrière-plan pendant toute l'exécution
+        # (sinon un llm_call > 30s fait tuer l'agent par le Ticker).
+        _hb_stop = _spawn_heartbeat(_agent_id, _db)
         try:
             fsm = FSMInterpreter(
                 bridge=self._bridge,
@@ -457,6 +503,7 @@ class Agent:
             self.db.conn.commit()
             return result
         finally:
+            _hb_stop.set()
             _bus.unsubscribe(HookType.POST_STEP, _on_post_step)
 
     def _make_spawn_handler(self):

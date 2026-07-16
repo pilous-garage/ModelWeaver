@@ -24,6 +24,62 @@ from AgentFrameWork.tool_executor import ToolExecutor
 
 logger = logging.getLogger("modelweaver.fsm")
 
+import re
+
+_FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Nettoie une sortie LLM censée être du code brut.
+
+    1. Si le texte entier est un unique bloc fencé (```lang ... ```), ne
+       garde que le corps.
+    2. Sinon retire toute ligne de fence isolée (```...).
+    3. Retire un éventuel bloc de prose ajouté en fin par le LLM
+       (ex. « Note: This code is a basic implementation… ») : on tronque à
+       la dernière ligne qui ressemble à du code, si les lignes suivantes
+       ressemblent à du texte naturel.
+    """
+    if not text:
+        return text
+    m = _FENCE_RE.match(text)
+    if m:
+        text = m.group(1)
+    else:
+        text = "\n".join(ln for ln in text.splitlines()
+                         if not ln.strip().startswith("```"))
+    return _strip_trailing_prose(text)
+
+
+_PROSE_PREFIXES = (
+    "note:", "note that", "this code", "this implementation", "explanation",
+    "here is", "here's", "the above", "in this", "you can", "to use",
+    "make sure", "remember", "keep in mind", "disclaimer", "n.b.",
+)
+
+
+def _looks_like_prose(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    low = s.lower()
+    if low.startswith(_PROSE_PREFIXES):
+        return True
+    return False
+
+
+def _strip_trailing_prose(text: str) -> str:
+    lines = text.splitlines()
+    cut = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        if _looks_like_prose(lines[i]):
+            cut = i
+        elif lines[i].strip() == "":
+            continue
+        else:
+            break
+    return "\n".join(lines[:cut]).rstrip("\n")
+
 
 class AgentAbort(Exception):
     """Levée par un signal_check (kill) pour interrompre le FSM."""
@@ -252,10 +308,37 @@ class FSMInterpreter:
                 # Estimation tokens (approximation) pour compat metrics
                 tokens = max(0, len(content) // 4)
             else:
-                response = self.bridge.chat(
-                    provider_ref=p_ref, model_ref=m_ref,
-                    messages=msgs, temperature=temperature, max_tokens=max_tokens,
-                )
+                timeout = step.get("timeout")
+                use_fallback = step.get("fallback", False)
+                if timeout:
+                    # Appel LLM résilient : si le LLM ne répond pas dans
+                    # `timeout` secondes, demande un autre LLM au gestionnaire
+                    # de LLM (LLMManager.assign_llm) et réessaie.
+                    from modules.llm_manager.resilient import resilient_chat
+                    try:
+                        response = resilient_chat(
+                            p_ref, m_ref, msgs,
+                            timeout=int(timeout), fallback=use_fallback,
+                            max_tokens=max_tokens, temperature=temperature,
+                        )
+                    except BridgeError as e:
+                        result.status = "failed"
+                        result.end_reason = f"LLM error: {e}"
+                        return False
+                    except Exception as e:
+                        result.status = "failed"
+                        result.end_reason = f"LLM call error: {e}"
+                        return False
+                    p_ref, m_ref = (getattr(response, "provider_used", p_ref),
+                                    getattr(response, "model_used", m_ref))
+                    result.variables["_llm_provider"] = p_ref
+                    result.variables["_llm_model"] = m_ref
+                    result.variables["_llm_fallbacks"] = getattr(response, "fallbacks", 0)
+                else:
+                    response = self.bridge.chat(
+                        provider_ref=p_ref, model_ref=m_ref,
+                        messages=msgs, temperature=temperature, max_tokens=max_tokens,
+                    )
                 content = response.content if hasattr(response, 'content') else str(response)
                 if hasattr(response, 'usage') and isinstance(response.usage, dict):
                     tokens = response.usage.get("total_tokens", 0)
@@ -276,6 +359,8 @@ class FSMInterpreter:
             result.end_reason = f"LLM call error: {e}"
             return False
 
+        if step.get("strip_fences"):
+            content = _strip_code_fences(content)
         if output_capture:
             result.variables[output_capture] = content
         result.messages.append({"role": "assistant", "content": content})

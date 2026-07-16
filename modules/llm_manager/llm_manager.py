@@ -85,8 +85,9 @@ RECOMMENDATIONS = {
 class LLMManager:
     """Gestionnaire de catalogue LLM : consultation et recommandation."""
 
-    def __init__(self, cat):
+    def __init__(self, cat, km=None):
         self.cat = cat
+        self.km = km
 
     def list_providers(self) -> List[Dict[str, Any]]:
         cur = self.cat.conn.execute(
@@ -155,6 +156,50 @@ class LLMManager:
             "recommendations": enriched,
             "count": len(enriched),
         }
+
+    def assign_llm(self, use_case: str = "coding",
+                   exclude_provider: Optional[str] = None,
+                   exclude_model: Optional[str] = None,
+                   max_candidates: int = 8) -> Optional[Dict[str, Any]]:
+        """Demande au gestionnaire de LLM une alternative DISPONIBLE et
+        différente de ``(exclude_provider, exclude_model)``.
+
+        Parcourt les providers réellement disponibles (clé présente via le
+        KeyManager, ou provider local/ollama sans clé) et renvoie le premier
+        modèle actif différent. Retourne ``None`` si aucune alternative
+        n'est trouvée (ex. un seul LLM configuré).
+        """
+        from modules.llm_manager.litellm_bridge import LiteLLMBridge
+        from modules.key_manager.key_manager import KeyManager
+        from modules.sql.db import ModelWeaverDB
+        km = self.km or KeyManager(ModelWeaverDB())
+        bridge = LiteLLMBridge(cat=self.cat, km=km)
+        providers = [p for p in bridge.list_available_providers()
+                     if p.get("available")]
+        candidates = []
+        for p in providers:
+            if exclude_provider and p["ref"] == exclude_provider:
+                continue
+            try:
+                models = bridge.list_available_models(p["ref"])
+            except Exception:
+                continue
+            for m in models:
+                status = m.get("status")
+                if status in ("inactive", "deprecated", "disabled"):
+                    continue
+                if exclude_model and m["ref"] == exclude_model:
+                    continue
+                candidates.append({"provider_ref": p["ref"],
+                                   "model_ref": m["ref"],
+                                   "use_case": use_case})
+                if len(candidates) >= max_candidates:
+                    break
+            if len(candidates) >= max_candidates:
+                break
+        if not candidates:
+            return None
+        return candidates[0]
 
 
 # ── Seed helpers ──────────────────────────────────────────────

@@ -1,0 +1,193 @@
+# Manager — coordinateur de l'équipe « jeu d'échecs CLI »
+# Trois requêtes : setup (amorçage + brainstorm), decide (tour de table ->
+# décision finale d'interfaces), merge (fusion des branches + main.py).
+# LLM principal : groq/llama-3.1-8b-instant.
+chatroom_id: chess
+steps:
+  - id: start
+    type: switch
+    variable: request
+    conditions:
+      - {operator: EQUALS, value: setup, next: s1}
+      - {operator: EQUALS, value: decide, next: d1}
+      - {operator: EQUALS, value: merge, next: m1}
+    default: s1
+
+  # ── setup : dépôt central + ouverture du brainstorm ──
+  - id: s1
+    type: call
+    fn: system/repo_init@v1
+    inputs: {project_id: chess}
+    next: s2
+  - id: s2
+    type: call
+    fn: system/git_clone@v1
+    inputs: {project_id: chess}
+    next: s3
+  - id: s3
+    type: call
+    fn: system/project_write@v1
+    inputs:
+      project_id: chess
+      path: ROADMAP.md
+      content: |
+        # Roadmap — Jeu d'échecs en CLI (Python)
+        - engine.py  : plateau + génération/validation des coups (worker MOTEUR)
+        - cli.py     : affichage + saisie + boucle de jeu (worker CLI)
+        - main.py    : orchestration (manager)
+        - docs/SPEC.md, docs/INTERFACES.md (analyst / manager)
+    next: s4
+  - id: s4
+    type: call
+    fn: system/chatroom_post@v1
+    inputs:
+      chatroom_id: chess
+      content: "Brainstorming ouvert : architecture modulaire pour un jeu d'echecs en CLI Python. Modules ? Responsabilités ? Proposez vos idées."
+    next: s5
+  - id: s5
+    type: llm_call
+    provider_ref: groq
+    model_ref: llama-3.1-8b-instant
+    skill_prompt: "Tu es le MANAGER d'une équipe de dev. Propose une architecture INITIALE (concis, ~150 mots) pour un jeu d'echecs CLI Python : quels modules, quelles responsabilités, quelles signatures de fonctions suggérées. Texte brut, sans fences."
+    output_capture: _plan
+    max_tokens: 400
+    timeout: 60
+    fallback: true
+    next: s6
+  - id: s6
+    type: call
+    fn: system/chatroom_post@v1
+    inputs:
+      chatroom_id: chess
+      content: "{{_plan}}"
+    next: s7
+  - id: s7
+    type: call
+    fn: system/git_commit@v1
+    inputs: {project_id: chess, message: "roadmap + brainstorm initial (manager)"}
+    next: s8
+  - id: s8
+    type: call
+    fn: system/git_push@v1
+    inputs: {project_id: chess}
+    next: s9
+  - id: s9
+    type: call
+    fn: system/git_status@v1
+    inputs: {project_id: chess}
+    next: end
+    capture: {clean: _clean}
+
+  # ── decide : tour de table -> décision finale d'interfaces ──
+  - id: d1
+    type: call
+    fn: system/git_clone@v1
+    inputs: {project_id: chess}
+    next: d2
+  - id: d2
+    type: call
+    fn: system/chatroom_read@v1
+    inputs: {chatroom_id: chess, last_n: 100}
+    capture: {messages: _ideas}
+    next: d3
+  - id: d3
+    type: llm_call
+    provider_ref: groq
+    model_ref: llama-3.1-8b-instant
+    skill_prompt: "Idées du chatroom : {{_ideas}}\n\nEn tant que MANAGER, DECIDE les interfaces FINALES (signatures de fonctions EXACTES) pour engine.py et cli.py, et ce que main.py doit orchestrer. Sois concis et définitif."
+    output_capture: _decision
+    max_tokens: 500
+    timeout: 60
+    fallback: true
+    next: d4
+  - id: d4
+    type: call
+    fn: system/project_write@v1
+    inputs:
+      project_id: chess
+      path: docs/INTERFACES.md
+      content: "{{_decision}}"
+    next: d5
+  - id: d5
+    type: call
+    fn: system/chatroom_post@v1
+    inputs:
+      chatroom_id: chess
+      content: "DECISION FINALE DES INTERFACES :\n{{_decision}}"
+    next: d6
+  - id: d6
+    type: call
+    fn: system/git_commit@v1
+    inputs: {project_id: chess, message: "decision interfaces (manager)"}
+    next: d7
+  - id: d7
+    type: call
+    fn: system/git_push@v1
+    inputs: {project_id: chess}
+    next: end
+
+  # ── merge : fusion des 3 branches + main.py (LLM) ──
+  - id: m1
+    type: call
+    fn: system/git_fetch@v1
+    inputs: {project_id: chess}
+    next: m2
+  - id: m2
+    type: call
+    fn: system/git_pull@v1
+    inputs: {project_id: chess, branch: master}
+    next: m3
+  - id: m3
+    type: call
+    fn: system/git_merge@v1
+    inputs: {project_id: chess, name: origin/feature-engine}
+    next: m4
+  - id: m4
+    type: call
+    fn: system/git_merge@v1
+    inputs: {project_id: chess, name: origin/feature-cli}
+    next: m5
+  - id: m5
+    type: call
+    fn: system/git_merge@v1
+    inputs: {project_id: chess, name: origin/feature-spec}
+    next: m6
+  - id: m6
+    type: call
+    fn: system/project_read@v1
+    inputs: {project_id: chess, path: docs/INTERFACES.md}
+    capture: {content: _decision}
+    next: m7
+  - id: m7
+    type: llm_call
+    provider_ref: groq
+    model_ref: llama-3.1-8b-instant
+    skill_prompt: "Interfaces finales decidees : {{_decision}}\n\nGenere src/main.py qui importe engine et cli et lance une partie CLI de demonstration (joue quelques coups). Le code doit etre coherent avec les interfaces. Output ONLY raw Python, no markdown fences, no commentary."
+    output_capture: _main
+    max_tokens: 800
+    timeout: 60
+    fallback: true
+    strip_fences: true
+    next: m8
+  - id: m8
+    type: call
+    fn: system/project_write@v1
+    inputs:
+      project_id: chess
+      path: src/main.py
+      content: "{{_main}}"
+    next: m9
+  - id: m9
+    type: call
+    fn: system/git_commit@v1
+    inputs: {project_id: chess, message: "integrate src/main.py (LLM groq)"}
+    next: m10
+  - id: m10
+    type: call
+    fn: system/git_push@v1
+    inputs: {project_id: chess}
+    next: end
+
+  - id: end
+    type: end
+    status: SUCCESS

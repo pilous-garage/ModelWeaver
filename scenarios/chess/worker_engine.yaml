@@ -1,0 +1,100 @@
+# Worker MOTEUR — implémente engine.py (plateau + coups)
+# LLM : ollama/llama3.2:1b (LLM DIFFERENT de groq, pour verifier le
+# branchement simultane). timeout(llm) actif : si ollama ne repond pas
+# dans 60s, le gestionnaire de LLM en attribue un autre.
+chatroom_id: chess
+steps:
+  - id: start
+    type: switch
+    variable: request
+    conditions:
+      - {operator: EQUALS, value: brainstorm, next: b1}
+      - {operator: EQUALS, value: implement, next: i1}
+    default: b1
+
+  # ── brainstorm : propose sa conception dans le chatroom ──
+  - id: b1
+    type: call
+    fn: system/git_clone@v1
+    inputs: {project_id: chess}
+    next: b2
+  - id: b2
+    type: call
+    fn: system/chatroom_read@v1
+    inputs: {chatroom_id: chess, last_n: 100}
+    capture: {messages: _ctx}
+    next: b3
+  - id: b3
+    type: llm_call
+    provider_ref: ollama
+    model_ref: llama3.2:1b
+    skill_prompt: "Contexte chatroom : {{_ctx}}\n\nTu es le worker MOTEUR. Propose la conception du module engine.py : representation du plateau, generation et validation des coups (ex. deplacements tour/fou), signatures de fonctions. Texte concis, sans fences."
+    output_capture: _idea
+    max_tokens: 300
+    timeout: 60
+    fallback: true
+    next: b4
+  - id: b4
+    type: call
+    fn: system/chatroom_post@v1
+    inputs:
+      chatroom_id: chess
+      content: "[worker-engine] Idee : {{_idea}}"
+    next: b5
+  - id: b5
+    type: call
+    fn: system/git_status@v1
+    inputs: {project_id: chess}
+    next: end
+    capture: {clean: _clean}
+
+  # ── implement : code engine.py sur feature-engine ──
+  - id: i1
+    type: call
+    fn: system/git_clone@v1
+    inputs: {project_id: chess}
+    next: i2
+  - id: i2
+    type: call
+    fn: system/git_branch@v1
+    inputs: {project_id: chess, name: feature-engine, create: true}
+    next: i3
+  - id: i3
+    type: call
+    fn: system/chatroom_read@v1
+    inputs: {chatroom_id: chess, last_n: 100}
+    capture: {messages: _ctx}
+    next: i4
+  - id: i4
+    type: llm_call
+    provider_ref: ollama
+    model_ref: llama3.2:1b
+    skill_prompt: "Contexte chatroom : {{_ctx}}\n\nImplemente src/engine.py pour un jeu d'echecs : plateau 8x8, deplacement de la tour et du fou, validation des coups, fonction is_check. Respecte les interfaces decidees. Output ONLY raw Python, no markdown fences, no commentary."
+    output_capture: _code
+    max_tokens: 600
+    timeout: 90
+    fallback: true
+    strip_fences: true
+    next: i5
+  - id: i5
+    type: call
+    fn: system/project_write@v1
+    inputs:
+      project_id: chess
+      path: src/engine.py
+      content: "{{_code}}"
+    next: i6
+  - id: i6
+    type: call
+    fn: system/git_commit@v1
+    inputs: {project_id: chess, message: "add src/engine.py (LLM ollama)"}
+    next: i7
+  - id: i7
+    type: call
+    fn: system/git_push@v1
+    inputs: {project_id: chess, branch: feature-engine}
+    next: end
+
+  - id: end
+    type: end
+    status: SUCCESS

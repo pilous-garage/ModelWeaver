@@ -1,0 +1,96 @@
+# Analyst — rédige la SPEC et fait la revue finale
+# LLM : ollama/gemma2:2b (3e LLM différent dans le scénario).
+chatroom_id: chess
+steps:
+  - id: start
+    type: switch
+    variable: request
+    conditions:
+      - {operator: EQUALS, value: spec, next: a1}
+      - {operator: EQUALS, value: review, next: r1}
+    default: a1
+
+  # ── spec : docs/SPEC.md sur feature-spec ──
+  - id: a1
+    type: call
+    fn: system/git_clone@v1
+    inputs: {project_id: chess}
+    next: a2
+  - id: a2
+    type: call
+    fn: system/git_branch@v1
+    inputs: {project_id: chess, name: feature-spec, create: true}
+    next: a3
+  - id: a3
+    type: llm_call
+    provider_ref: ollama
+    model_ref: gemma2:2b
+    skill_prompt: "Redige docs/SPEC.md (Markdown) pour un jeu d'echecs en CLI Python : objectif, modules (engine, cli, main), regles du jeu, format de saisie des coups. Sois concis. Output ONLY raw Markdown, no fences."
+    output_capture: _spec
+    max_tokens: 400
+    timeout: 90
+    fallback: true
+    next: a4
+  - id: a4
+    type: call
+    fn: system/project_write@v1
+    inputs:
+      project_id: chess
+      path: docs/SPEC.md
+      content: "{{_spec}}"
+    next: a5
+  - id: a5
+    type: call
+    fn: system/git_commit@v1
+    inputs: {project_id: chess, message: "spec (LLM ollama)"}
+    next: a6
+  - id: a6
+    type: call
+    fn: system/git_push@v1
+    inputs: {project_id: chess, branch: feature-spec}
+    next: end
+
+  # ── review : lit main.py intégré + poste une revue ──
+  - id: r1
+    type: call
+    fn: system/git_fetch@v1
+    inputs: {project_id: chess}
+    next: r2
+  - id: r2
+    type: call
+    fn: system/git_pull@v1
+    inputs: {project_id: chess, branch: master}
+    next: r3
+  - id: r3
+    type: call
+    fn: system/project_read@v1
+    inputs: {project_id: chess, path: src/main.py}
+    capture: {content: _main}
+    next: r4
+  - id: r4
+    type: llm_call
+    provider_ref: ollama
+    model_ref: gemma2:2b
+    skill_prompt: "Lis ce main.py intégré : {{_main}}\n\nRédige une revue COURTE (points forts, faiblesses, bugs évidents, suggestions). Texte brut, sans fences."
+    output_capture: _review
+    max_tokens: 300
+    timeout: 90
+    fallback: true
+    next: r5
+  - id: r5
+    type: call
+    fn: system/chatroom_post@v1
+    inputs:
+      chatroom_id: chess
+      content: "[analyst] Revue finale : {{_review}}"
+    next: r6
+  - id: r6
+    type: call
+    fn: system/git_status@v1
+    inputs: {project_id: chess}
+    next: end
+    capture: {clean: _clean}
+
+  - id: end
+    type: end
+    status: SUCCESS

@@ -1,0 +1,58 @@
+name: llm/timeout_llm@v1
+category: llm
+description: "Appel LLM résilient : si le LLM ne répond pas dans `timeout` secondes (défaut 60), demande un autre LLM disponible au gestionnaire de LLM (LLMManager) et réessaie. Retourne le contenu + le LLM réellement utilisé + le nombre de replis."
+inputs:
+  provider_ref:
+    type: string
+    required: true
+    description: "Provider du LLM principal à interroger"
+  model_ref:
+    type: string
+    required: true
+    description: "Modèle du LLM principal à interroger"
+  messages:
+    type: list
+    required: false
+    default: []
+    description: "Liste de messages {role, content}. Alternative à `prompt`."
+  prompt:
+    type: string
+    required: false
+    default: ""
+    description: "Prompt simple (utilisé si `messages` est vide)"
+  system_prompt:
+    type: string
+    required: false
+    default: ""
+  max_tokens:
+    type: integer
+    required: false
+    default: 1024
+  temperature:
+    type: number
+    required: false
+    default: 0.7
+  timeout:
+    type: integer
+    required: false
+    default: 60
+    description: "Délai max (s) avant de considérer le LLM non réactif"
+  fallback:
+    type: boolean
+    required: false
+    default: true
+    description: "Si true, repli sur un autre LLM attribué par le gestionnaire"
+outputs:
+  ok:
+    type: boolean
+  content:
+    type: string
+  provider_used:
+    type: string
+  model_used:
+    type: string
+  fallbacks:
+    type: integer
+implementation:
+  type: python
+  function: _exec_timeout_llm
