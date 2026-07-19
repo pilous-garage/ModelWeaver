@@ -468,25 +468,37 @@ INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES
     ('cost_per_month','Cout / mois (USD)',       'usd',      'cost');
 
 -- ============================================================
--- 11b. CATALOGUE_ALIASES — Réconciliation des noms externes
---      (litellm, docs officiels, outils tiers) avec les refs
---      canoniques du catalogue (providers et modèles).
---      Ex: source='litellm_github', entity_type='provider',
---          alias='nvidia_nim' -> canonical_ref='nvidia'.
---      Une meme source peut avoir plusieurs alias pointant vers
---      la meme ref (1:N). La resolution prend le plus prioritaire.
+-- 11b. CATALOGUE_ALIASES — Table commune de reconciliation des noms.
+--      Traduit les noms utilises par les OUTILS et les SOURCES
+--      d'information vers la declaration canonique ModelWeaver
+--      (provider_ref / model_ref / "provider/model").
+--      Pas de lien direct source->outil : tout passe par la ref
+--      canonique ModelWeaver.
+--        source : provenance de la CONNAISSANCE (ex: github-litellm-list,
+--                 openai-docs, detection-ollama, manuel-GUI).
+--        target : outil / source d'info CONCERNEE (ex: litellm, ollama,
+--                 opencode, openrouter, github-litellm-list).
+--        scope  : niveau de l'alias — 'provider' | 'model' | 'provider-model'.
+--        alias  : nom tel qu'ecrit par `target`.
+--        canonical_ref : ref ModelWeaver (provider_ref pour scope=provider,
+--                 model_ref pour scope=model, "provider/model" pour
+--                 scope=provider-model).
+--      Declaration PASSIVE : si aucun alias ne matche, on garde le nom
+--      d'origine. Si alias == canonical_ref, on ne stocke rien (pas de bruit).
+--      Une meme (source,target,scope) peut avoir N alias -> ref.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS catalogue_aliases (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     source        TEXT NOT NULL,
-    entity_type   TEXT NOT NULL CHECK(entity_type IN ('provider','model')),
+    target        TEXT NOT NULL,
+    scope         TEXT NOT NULL CHECK(scope IN ('provider','model','provider-model')),
     alias         TEXT NOT NULL,
     canonical_ref TEXT NOT NULL,
     priority      INTEGER DEFAULT 0,
     created_at    INTEGER DEFAULT (strftime('%s','now')),
-    UNIQUE(source, entity_type, alias)
+    UNIQUE(source, target, scope, alias)
 );
-CREATE INDEX IF NOT EXISTS idx_aliases_source_entity ON catalogue_aliases(source, entity_type);
+CREATE INDEX IF NOT EXISTS idx_aliases_target_scope ON catalogue_aliases(target, scope);
 CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON catalogue_aliases(canonical_ref);
 
 -- ============================================================

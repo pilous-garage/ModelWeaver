@@ -1417,21 +1417,28 @@ class CatalogueDB:
 
         # ── Migration catalogue_aliases (réconciliation noms externes) ──
         try:
+            # Si l'ancienne structure (entity_type sans target) existe, on
+            # la recrée proprement (dev) pour adopter source/target/scope.
+            cur = self.conn.execute("PRAGMA table_info(catalogue_aliases)").fetchall()
+            cols = {row[1] for row in cur}
+            if cur and "target" not in cols:
+                self.conn.execute("DROP TABLE IF EXISTS catalogue_aliases")
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS catalogue_aliases (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     source        TEXT NOT NULL,
-                    entity_type   TEXT NOT NULL CHECK(entity_type IN ('provider','model')),
+                    target        TEXT NOT NULL,
+                    scope         TEXT NOT NULL CHECK(scope IN ('provider','model','provider-model')),
                     alias         TEXT NOT NULL,
                     canonical_ref TEXT NOT NULL,
                     priority      INTEGER DEFAULT 0,
                     created_at    INTEGER DEFAULT (strftime('%s','now')),
-                    UNIQUE(source, entity_type, alias)
+                    UNIQUE(source, target, scope, alias)
                 )
             """)
             self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_aliases_source_entity "
-                "ON catalogue_aliases(source, entity_type)")
+                "CREATE INDEX IF NOT EXISTS idx_aliases_target_scope "
+                "ON catalogue_aliases(target, scope)")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_aliases_canonical "
                 "ON catalogue_aliases(canonical_ref)")
@@ -1583,34 +1590,44 @@ class CatalogueDB:
             raise
 
     # ── Catalogue aliases : réconciliation noms externes → refs canoniques ──
-    def add_alias(self, source: str, entity_type: str, alias: str,
-                  canonical_ref: str, priority: int = 0) -> int:
-        """Ajoute ou met à jour un alias (source, entity_type, alias) unique."""
+    def add_alias(self, source: str, target: str, scope: str, alias: str,
+                  canonical_ref: str, priority: int = 0) -> Optional[int]:
+        """Ajoute ou met à jour un alias (source, target, scope, alias) unique.
+
+        Déclaration passive : si `alias == canonical_ref`, on ne stocke RIEN
+        (pas de bruit) et on renvoie None. Sinon upsert + retour de l'id.
+        """
+        if alias == canonical_ref:
+            return None
         cur = self.conn.execute("""
-            INSERT INTO catalogue_aliases (source, entity_type, alias, canonical_ref, priority)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(source, entity_type, alias) DO UPDATE SET
+            INSERT INTO catalogue_aliases (source, target, scope, alias, canonical_ref, priority)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, target, scope, alias) DO UPDATE SET
                 canonical_ref=excluded.canonical_ref,
                 priority=excluded.priority
-        """, (source, entity_type, alias, canonical_ref, priority))
+        """, (source, target, scope, alias, canonical_ref, priority))
         self.conn.commit()
         return cur.lastrowid
 
-    def resolve_alias(self, source: str, entity_type: str, alias: str) -> Optional[str]:
-        """Résout un nom externe vers la ref catalogue (priorité max puis id min)."""
+    def resolve_alias(self, target: str, scope: str, name: str) -> str:
+        """Résout un nom `target` vers la ref ModelWeaver (déclaration passive).
+
+        Retourne la ref canonique si un alias matche (priorité max puis id min),
+        sinon le `name` d'origine (aucun alias déclaré).
+        """
         row = self.conn.execute("""
             SELECT canonical_ref FROM catalogue_aliases
-            WHERE source=? AND entity_type=? AND alias=?
+            WHERE target=? AND scope=? AND alias=?
             ORDER BY priority DESC, id ASC LIMIT 1
-        """, (source, entity_type, alias)).fetchone()
-        return row["canonical_ref"] if row else None
+        """, (target, scope, name)).fetchone()
+        return row["canonical_ref"] if row else name
 
-    def alias_map(self, source: str, entity_type: str) -> Dict[str, str]:
-        """Retourne {alias: canonical_ref} pour une source/type donnés."""
+    def alias_map(self, target: str, scope: str) -> Dict[str, str]:
+        """Retourne {alias: canonical_ref} pour un target/scope donnés."""
         rows = self.conn.execute("""
             SELECT alias, canonical_ref, priority, id FROM catalogue_aliases
-            WHERE source=? AND entity_type=?
-        """, (source, entity_type)).fetchall()
+            WHERE target=? AND scope=?
+        """, (target, scope)).fetchall()
         out: Dict[str, str] = {}
         # priorité max puis id min en cas de doublon d'alias (ne devrait pas arriver)
         best: Dict[str, tuple] = {}
@@ -1623,17 +1640,21 @@ class CatalogueDB:
         return out
 
     def list_aliases(self, source: Optional[str] = None,
-                     entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
+                     target: Optional[str] = None,
+                     scope: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
         if source:
             clauses.append("source=?")
             params.append(source)
-        if entity_type:
-            clauses.append("entity_type=?")
-            params.append(entity_type)
+        if target:
+            clauses.append("target=?")
+            params.append(target)
+        if scope:
+            clauses.append("scope=?")
+            params.append(scope)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self.conn.execute(
-            f"SELECT * FROM catalogue_aliases{where} ORDER BY source, entity_type, alias"
+            f"SELECT * FROM catalogue_aliases{where} ORDER BY target, scope, alias"
         ).fetchall()
         return _rows_to_list(rows)
 

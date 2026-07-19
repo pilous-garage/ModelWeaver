@@ -320,7 +320,7 @@ def main():
     if args.show_aliases:
         print("== catalogue_aliases ==")
         for a in cat.list_aliases():
-            print(f"  [{a['source']}] {a['entity_type']}: "
+            print(f"  [{a['source']}] target={a['target']} {a['scope']}: "
                   f"{a['alias']} -> {a['canonical_ref']} (prio {a['priority']})")
 
 

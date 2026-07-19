@@ -91,22 +91,30 @@ class TestCatalogueAliases(unittest.TestCase):
     def tearDown(self):
         self.cat.close()
 
-    def test_add_and_resolve_alias(self):
-        self.cat.add_alias("litellm_github", "provider", "nvidia_nim", "nvidia")
+    def test_add_and_resolve_alias_passive(self):
+        # on part d'une table propre pour ce target
+        self.cat.conn.execute("DELETE FROM catalogue_aliases WHERE target='litellm'")
+        self.cat.conn.commit()
+        # resolve sans alias declare -> nom d'origine (declaration passive)
         self.assertEqual(
-            self.cat.resolve_alias("litellm_github", "provider", "nvidia_nim"), "nvidia")
+            self.cat.resolve_alias("litellm", "provider", "nvidia_nim"), "nvidia_nim")
+        self.cat.add_alias("github-litellm-list", "litellm", "provider", "nvidia_nim", "nvidia")
+        self.assertEqual(
+            self.cat.resolve_alias("litellm", "provider", "nvidia_nim"), "nvidia")
         # priorite : on met a jour avec une autre ref + prio plus haute
-        self.cat.add_alias("litellm_github", "provider", "nvidia_nim", "nv", priority=5)
+        self.cat.add_alias("github-litellm-list", "litellm", "provider", "nvidia_nim", "nv", priority=5)
         self.assertEqual(
-            self.cat.resolve_alias("litellm_github", "provider", "nvidia_nim"), "nv")
-        amap = self.cat.alias_map("litellm_github", "provider")
+            self.cat.resolve_alias("litellm", "provider", "nvidia_nim"), "nv")
+        # alias == canonical -> non stocke (pas de bruit)
+        rid = self.cat.add_alias("github-litellm-list", "litellm", "provider", "openai", "openai")
+        self.assertIsNone(rid)
+        amap = self.cat.alias_map("litellm", "provider")
         self.assertEqual(amap["nvidia_nim"], "nv")
 
     def test_merge_uses_alias_table(self):
         # alias gemini -> google, puis on merge un tarif sous cle 'gemini/...'
         # qui doit tomber sur le provider 'google' du catalogue.
-        self.cat.add_alias("litellm_github", "provider", "gemini", "google")
-        # on cible un provider_model_name de google existant
+        self.cat.add_alias("github-litellm-list", "litellm", "provider", "gemini", "google")
         row = self.cat.conn.execute(
             "SELECT pm.id, pm.provider_model_name FROM provider_models pm "
             "JOIN catalogue_providers p ON p.id=pm.provider_id WHERE p.ref='google' "
@@ -115,7 +123,7 @@ class TestCatalogueAliases(unittest.TestCase):
         pricing = {f"gemini/{row['provider_model_name']}": {
             "input_cost_per_token": 0, "output_cost_per_token": 0,
             "max_input_tokens": 99999}}
-        stats = merge_pricing(self.cat, pricing, dry_run=False, source="litellm_github")
+        stats = merge_pricing(self.cat, pricing, dry_run=False, target="litellm")
         self.assertEqual(stats["matched"], 1)
         r = self.cat.conn.execute(
             "SELECT context_window_tokens FROM provider_models WHERE id=?",
@@ -123,16 +131,19 @@ class TestCatalogueAliases(unittest.TestCase):
         self.assertEqual(r["context_window_tokens"], 99999)
 
     def test_seed_litellm_aliases_idempotent(self):
-        from modules.catalogue.pricing import seed_litellm_aliases, LITELLM_ALIAS_SOURCE
-        self.cat.conn.execute("DELETE FROM catalogue_aliases WHERE source=?", (LITELLM_ALIAS_SOURCE,))
+        from modules.catalogue.pricing import (
+            seed_litellm_aliases, LITELLM_ALIAS_SOURCE, LITELLM_ALIAS_TARGET)
+        self.cat.conn.execute(
+            "DELETE FROM catalogue_aliases WHERE source=? AND target=?",
+            (LITELLM_ALIAS_SOURCE, LITELLM_ALIAS_TARGET))
         self.cat.conn.commit()
         n1 = seed_litellm_aliases(self.cat)
         n2 = seed_litellm_aliases(self.cat)
         self.assertGreater(n1, 0)
         self.assertEqual(n2, 0)  # deja peuplé
         total = self.cat.conn.execute(
-            "SELECT COUNT(*) FROM catalogue_aliases WHERE source=?",
-            (LITELLM_ALIAS_SOURCE,)).fetchone()[0]
+            "SELECT COUNT(*) FROM catalogue_aliases WHERE source=? AND target=?",
+            (LITELLM_ALIAS_SOURCE, LITELLM_ALIAS_TARGET)).fetchone()[0]
         self.assertEqual(total, n1)
 
 
