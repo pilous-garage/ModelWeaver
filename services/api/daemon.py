@@ -58,7 +58,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.7.0.3"
+MW_VERSION = "0.7.0.8"
 
 
 def _mw_dir() -> Path:
@@ -76,6 +76,13 @@ def op_system_info(_params):
         "arch": platform.machine(),
         "home": str(Path.home()),
         "python": platform.python_version(),
+    }
+
+
+def op_version(_params):
+    return {
+        "version": MW_VERSION,
+        "api": API_VERSION,
     }
 
 
@@ -651,6 +658,7 @@ def op_deps_check_manifest(params):
     selon le langage (system -> dpkg, python -> pip show).
     """
     from modules.system import deps as deps_mod
+    from concurrent.futures import ThreadPoolExecutor
     target = params.get("target", "") or ""
     try:
         if not target:
@@ -658,14 +666,14 @@ def op_deps_check_manifest(params):
         if not target:
             return {"status": "error", "error": "cible non détectée"}
         m = deps_mod.load_manifest()
-        out = []
-        for dep in m.get("dependencies", []):
+        deps = [d for d in m.get("dependencies", []) if d.get("targets", {}).get(target)]
+        # Checks en parallèle (chaque check lance une commande shell) pour ne pas
+        # bloquer le daemon plusieurs secondes sur un manifeste fourni.
+        def _check(dep):
             pkg = dep.get("targets", {}).get(target)
-            if not pkg:
-                continue  # pas de paquet disponible pour cette cible
             installed = deps_mod.is_dependency_installed(dep.get("language", "system"), pkg)
             required = (not dep.get("optional")) and dep.get("safe") and dep.get("weight") == "light"
-            out.append({
+            return {
                 "name": dep["name"],
                 "description": dep.get("description", ""),
                 "language": dep.get("language", "system"),
@@ -675,7 +683,9 @@ def op_deps_check_manifest(params):
                 "required": required,
                 "target_pkg": pkg,
                 "installed": installed,
-            })
+            }
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(deps)))) as ex:
+            out = list(ex.map(_check, deps))
         return {"target": target, "dependencies": out}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -1606,6 +1616,7 @@ def _fs_auth_route(agent_id: int, method: str, sub_parts: List[str], params: dic
 ROUTES = {
     # A. Système & environnement
     "system/info":            op_system_info,
+    "version":                op_version,
     "system/deps/check":      _wrap(check_python_deps),
     "system/state/get":       _wrap(sysstate.get_system_state),
     "system/state/save":      _wrap(save_system_state),

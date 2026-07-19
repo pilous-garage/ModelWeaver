@@ -100,6 +100,31 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _pid_matches_service(pid: int, name: str) -> bool:
+    """Vrai si le processus `pid` correspond bien au service `name`.
+
+    Lit /proc/<pid>/cmdline et vérifie la présence d'un marqueur lié au
+    service (ex. 'daemon.py' pour l'api, 'catalogue', 'installer_worker', ...).
+    Évite de tuer un processus innocent en cas de réutilisation de PID.
+    """
+    try:
+        cmdline = (RUN_DIR.parent / f"../../proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        # Pas de /proc (non-unix ou process parti) : on ne peut pas confirmer,
+        # on refuse de tuer par sécurité.
+        return False
+    text = cmdline.replace(b"\x00", b" ").decode("utf-8", "replace")
+    # Marqueurs attendus par service.
+    markers = {
+        "api": ("daemon.py",),
+        "catalogue": ("catalogue",),
+        "installer": ("installer_worker",),
+        "tester": ("tester",),
+        "supervisor": ("modelweaver",),
+    }.get(name, (name,))
+    return any(m in text for m in markers)
+
+
 def acquire_instance_lock(name: str) -> bool:
     """Garantit un seul processus par `name` (single-instance).
 
@@ -113,10 +138,13 @@ def acquire_instance_lock(name: str) -> bool:
     lock = RUN_DIR / f"{name}.pid"
 
     # Kill-and-replace : si un ancien détenteur vivant détient le verrou, on le tue.
+    # Sécurité anti-PID-reuse : on ne tue que si le processus correspond bien au
+    # service attendu (vérifié via /proc/<pid>/cmdline), sinon on nettoie juste
+    # le fichier de verrou périmé sans toucher au processus étranger.
     if lock.exists():
         try:
             pid = int(lock.read_text().strip())
-            if _pid_alive(pid):
+            if _pid_alive(pid) and _pid_matches_service(pid, name):
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except OSError:

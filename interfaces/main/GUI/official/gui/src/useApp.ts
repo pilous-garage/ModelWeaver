@@ -390,7 +390,7 @@ export function useApp() {
     invoke<string>('service_log', { name, lines: 200 }).then(setSvcLogText).catch(() => setSvcLogText(''));
   };
   const fetchServiceList = () => invoke<any[]>('service_list').then(setServiceList).catch(() => {});
-  const fetchAppVersion = () => invoke<string>('app_version').then(setAppVersion).catch(() => {});
+  const fetchAppVersion = () => invoke<any>('version').then((v) => { if (v?.result?.version) setAppVersion(String(v.result.version)); }).catch(() => {});
 
   useEffect(() => {
     if (!showDebug) return;

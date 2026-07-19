@@ -75,7 +75,7 @@ fn mw_home() -> PathBuf {
 }
 
 fn log_path() -> PathBuf {
-    let home = get_home_dir();
+    let _home = get_home_dir();
     let dir = mw_home();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("gui.log")
@@ -203,62 +203,6 @@ fn proc_set_status(id: u64, status: &str) {
         p.info.status = status.to_string();
         if status != "running" {
             p.info.ended_at = Some(now_secs());
-        }
-    }
-}
-
-/// Finalize a tracked process and flush its output to the on-disk log.
-fn proc_finish(id: u64, success: bool, sout: &str, serr: &str) {
-    let mut reg = proc_reg().lock().unwrap();
-    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
-        p.info.status = if success { "done".to_string() } else { "failed".to_string() };
-        p.info.ended_at = Some(now_secs());
-        p.child = None;
-        let _ = OpenOptions::new().create(true).write(true).truncate(true).open(&p.info.log_path)
-            .and_then(|mut f| writeln!(f, "=== STDOUT ===\n{}\n=== STDERR ===\n{}", sout, serr));
-    }
-}
-
-fn proc_cancel(id: u64) {
-    let mut reg = proc_reg().lock().unwrap();
-    if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == id) {
-        if p.info.status == "running" {
-            p.info.status = "cancelled".to_string();
-            p.info.ended_at = Some(now_secs());
-        }
-    }
-}
-
-/// Fire-and-forget tracked child: stdout+stderr go to an on-disk log.
-fn track_process(name: &str, parent_id: Option<u64>, command: &str, args: &[&str]) -> u64 {
-    let id = { proc_reg().lock().unwrap().next_id };
-    let logp = logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)));
-    let log_path = logp.to_string_lossy().to_string();
-    let cmdstr = format!("{} {}", command, args.join(" "));
-    let file = OpenOptions::new().create(true).write(true).truncate(true).open(&logp);
-    let mut cmd = Command::new(command);
-    cmd.args(args);
-    #[cfg(unix)]
-    cmd.process_group(0);
-    if let Ok(f) = file {
-        if let Ok(f2) = f.try_clone() {
-            cmd.stdout(Stdio::from(f2));
-            cmd.stderr(Stdio::from(f));
-        }
-    }
-    match cmd.spawn() {
-        Ok(child) => {
-            let pid = child.id();
-            let reg_id = proc_register(name, parent_id, Some(pid), &cmdstr, log_path, "running");
-            let mut reg = proc_reg().lock().unwrap();
-            if let Some(p) = reg.procs.iter_mut().find(|p| p.info.id == reg_id) {
-                p.child = Some(child);
-            }
-            reg_id
-        }
-        Err(e) => {
-            log_to_file("PROC", &format!("spawn error {}: {}", name, e));
-            proc_register(name, parent_id, None, &cmdstr, log_path, "failed")
         }
     }
 }
@@ -723,7 +667,7 @@ fn mirror_services_to_db() {
 fn mirror_services_to_db() {}
 
 fn find_helper_path() -> PathBuf {
-    let home = get_home_dir();
+    let _home = get_home_dir();
     let production = mw_home().join("gui_helper.py");
     if production.exists() {
         return production;
@@ -824,15 +768,38 @@ fn ensure_single_supervisor() {
     }
 }
 
-/// Vrai si le PID existe (kill -0, portable Unix).
+/// Vrai si le PID existe.
+/// On lit /proc/<pid> directement (silencieux) au lieu de `kill -0` qui
+/// affiche "kill: (pid): No such process" sur stderr pour un PID mort.
 fn process_alive(pid: i32) -> bool {
     #[cfg(unix)]
     {
-        Command::new("kill").arg("-0").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+        std::fs::metadata(format!("/proc/{}", pid)).is_ok()
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
+        // Sur non-unix on ne peut pas vérifier simplement : on suppose vivant.
+        true
+    }
+}
+
+/// Vrai si le processus `pid` (Unix) a `needle` dans sa cmdline.
+/// Anti-PID-reuse : on ne tue un PID que si on confirme son identité.
+/// Retourne false si /proc est indisponible (on refuse de tuer par sécurité).
+fn process_cmdline_contains(pid: i32, needle: &str) -> bool {
+    #[cfg(unix)]
+    {
+        if let Ok(s) = std::fs::read_to_string(format!("/proc/{}/cmdline", pid)) {
+            // /proc/<pid>/cmdline sépare les args par des octets NUL.
+            s.split('\0').any(|arg| arg.contains(needle))
+        } else {
+            false
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, needle);
         true
     }
 }
@@ -969,8 +936,7 @@ fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
     Ok(deps)
 }
 
-#[tauri::command]
-fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
+fn daemon_post_once(route: &str, body: &str) -> Result<serde_json::Value, String> {
     let token = std::fs::read_to_string(mw_home().join("api.token"))
         .map_err(|_| "daemon token not found".to_string())?;
     let port = std::fs::read_to_string(mw_home().join("api.port"))
@@ -978,11 +944,35 @@ fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
     let port = port.trim();
     let url = format!("http://127.0.0.1:{}/v1/{}", port, route);
     let output = Command::new("curl")
-        .args(["-s", "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()), "-d", body, &url])
+        // --connect-timeout 3 : ne pas attendre 30s si le daemon n'écoute pas
+        // encore (démarrage concurrent de la GUI). --max-time 10 borne le total.
+        .args(["-s", "--connect-timeout", "3", "--max-time", "10",
+               "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()),
+               "-d", body, &url])
         .output()
         .map_err(|e| format!("curl failed: {}", e))?;
     let resp = String::from_utf8_lossy(&output.stdout).to_string();
     serde_json::from_str(&resp).map_err(|e| format!("parse error: {} — body: {}", e, resp))
+}
+
+/// Poste vers le daemon avec retry borné (le daemon démarre en même temps que
+/// la GUI : le 1er appel peut tomber sur un port pas encore ouvert).
+#[tauri::command]
+fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
+    let mut last = String::new();
+    for attempt in 0..20 {
+        match daemon_post_once(route, body) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last = e;
+                if attempt == 0 {
+                    log_to_file("DAEMON", &format!("post {} échoue (retry): {}", route, last));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+    Err(format!("daemon indisponible après retries: {}", last))
 }
 
 #[tauri::command]
@@ -1016,10 +1006,23 @@ async fn install_all_dependencies(include_optional: bool) -> Result<String, Stri
 }
 
 #[tauri::command]
-fn check_dependencies_manifest() -> Result<serde_json::Value, String> {
+async fn check_dependencies_manifest() -> Result<serde_json::Value, String> {
     // Liste les deps du manifeste pour la cible courante (statut installé).
+    // Exécuté en spawn_blocking pour ne pas geler le thread principal Tauri
+    // pendant l'appel curl synchrone au daemon (le check peut être long).
     log_cmd("check_dependencies_manifest");
-    daemon_post("deps/check_manifest", "{}")
+    tauri::async_runtime::spawn_blocking(move || daemon_post("deps/check_manifest", "{}"))
+        .await
+        .map_err(|e| format!("thread error: {}", e))?
+}
+
+#[tauri::command]
+async fn version() -> Result<serde_json::Value, String> {
+    // Version du backend (daemon API) affichée dans le header Logithèque.
+    log_cmd("version");
+    tauri::async_runtime::spawn_blocking(move || daemon_post("version", "{}"))
+        .await
+        .map_err(|e| format!("thread error: {}", e))?
 }
 
 #[tauri::command]
@@ -1059,7 +1062,7 @@ async fn install_dependency(name: String) -> Result<String, String> {
 #[tauri::command]
 fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonResponse, String> {
     log_cmd(&format!("run_python_script({})", script_path));
-    let home = get_home_dir();
+    let _home = get_home_dir();
     let root = mw_home();
     let full_path = root.join(&script_path);
     let output = Command::new(python_bin())
@@ -1192,8 +1195,12 @@ fn install_queue_cancel(id: u64) -> Result<(), String> {
     let rows = db_query_json(&db, &format!("SELECT pid FROM install_jobs WHERE id={} AND status='running';", id));
     if let Some(pid) = rows.first().and_then(|r| r.get("pid")).and_then(|x| x.as_u64()) {
         let pid = pid as u32;
+        // Anti-PID-reuse : on ne tue que si le processus existe et est bien un
+        // job Python d'installation (sinon on laisse tomber le kill).
         #[cfg(unix)]
-        { let neg = format!("-{}", pid); let _ = Command::new("kill").args(["-9", &neg]).status(); }
+        if process_alive(pid as i32) && process_cmdline_contains(pid as i32, "python") {
+            { let neg = format!("-{}", pid); let _ = Command::new("kill").args(["-9", &neg]).status(); }
+        }
         #[cfg(not(unix))]
         { let _ = Command::new("kill").arg(pid.to_string()).status(); }
     }
@@ -1333,26 +1340,11 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_recursive(&path, &target)?;
-        } else {
-            let _ = std::fs::copy(&path, &target);
-        }
-    }
-    Ok(())
-}
-
 /// Copie gui_helper.py depuis le dossier de ressources Tauri vers
 /// ~/.modelweaver afin que le helper Python puisse importer modules.* .
 fn ensure_bundled_resources(app: &tauri::App) {
     if let Ok(res_dir) = app.path().resource_dir() {
-        let home = get_home_dir();
+        let _home = get_home_dir();
         let dest = mw_home();
         let _ = std::fs::create_dir_all(&dest);
 
@@ -1520,7 +1512,11 @@ fn main() {
     // Chaque service est un seul processus à la fois (verrou d'instance unique
     // posé côté Python via services._common.acquire_instance_lock ; le
     // superviseur vérifie aussi le lock avant de (re)spawn).
-    let repo_root = helper_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| find_repo_root());
+    // repo_root = racine du dépôt (contient services/), résolue en remontant
+    // depuis l'exécutable. Ne PAS utiliser helper_path.parent() : en runtime le
+    // helper est copié dans ~/.modelweaver, ce qui casserait le chemin des
+    // services Python (daemon.py introuvable -> crash en boucle du superviseur).
+    let repo_root = find_repo_root();
     let cat_entry = service_entry(&repo_root, "catalogue");
     let cat_db = mw_home().join("catalogue.remote.db");
     define_service("catalogue", "loop", python_bin(),
@@ -1544,7 +1540,7 @@ fn main() {
     if autotest_enabled() {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(8));
-        let home = get_home_dir();
+        let _home = get_home_dir();
         let token_path = mw_home().join("api.token");
         let port_path = mw_home().join("api.port");
         let token = match std::fs::read_to_string(&token_path) {
@@ -1579,6 +1575,7 @@ fn main() {
             get_system_info,
             check_dependencies,
             check_dependencies_manifest,
+            version,
             install_all_dependencies,
             install_dependency,
             run_python_script,
