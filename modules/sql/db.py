@@ -1606,8 +1606,10 @@ class CatalogueDB:
                 canonical_ref=excluded.canonical_ref,
                 priority=excluded.priority
         """, (source, target, scope, alias, canonical_ref, priority))
+        rowid = cur.lastrowid
+        cur.fetchall()  # drain le curseur (sqlite reset) avant toute requete suivante
         self.conn.commit()
-        return cur.lastrowid
+        return rowid
 
     def resolve_alias(self, target: str, scope: str, name: str) -> str:
         """Résout un nom `target` vers la ref ModelWeaver (déclaration passive).
@@ -1642,19 +1644,21 @@ class CatalogueDB:
     def list_aliases(self, source: Optional[str] = None,
                      target: Optional[str] = None,
                      scope: Optional[str] = None) -> List[Dict[str, Any]]:
-        clauses, params = [], []
+        clauses = []
+        wargs: List[Any] = []
         if source:
             clauses.append("source=?")
-            params.append(source)
+            wargs.append(source)
         if target:
             clauses.append("target=?")
-            params.append(target)
+            wargs.append(target)
         if scope:
             clauses.append("scope=?")
-            params.append(scope)
+            wargs.append(scope)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self.conn.execute(
-            f"SELECT * FROM catalogue_aliases{where} ORDER BY target, scope, alias"
+            f"SELECT * FROM catalogue_aliases{where} ORDER BY target, scope, alias",
+            wargs
         ).fetchall()
         return _rows_to_list(rows)
 

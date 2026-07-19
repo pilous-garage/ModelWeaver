@@ -333,6 +333,9 @@ def main():
                     help="affiche les alias de reconciliation (catalogue_aliases)")
     ap.add_argument("--show-access", action="store_true",
                     help="classe les modeles joignables : avec cle / sans cle (public)")
+    ap.add_argument("--discover-aliases", action="store_true",
+                    help="decouvre automatiquement les alias provider/model "
+                         "litellm -> catalogue (depot GitHub litellm) et les insere")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -371,6 +374,17 @@ def main():
         for a in cat.list_aliases():
             print(f"  [{a['source']}] target={a['target']} {a['scope']}: "
                   f"{a['alias']} -> {a['canonical_ref']} (prio {a['priority']})")
+
+    if args.discover_aliases:
+        from modules.catalogue.alias_discovery import (
+            discover_litellm_aliases, discover_nvidia_official_aliases)
+        from modules.catalogue.pricing import fetch_litellm_pricing
+        print("== discover_aliases (target=litellm) ==")
+        lit = fetch_litellm_pricing()
+        stats = discover_litellm_aliases(cat, lit, dry_run=args.dry_run)
+        print(f"  [github-litellm-list] {stats}")
+        nv = discover_nvidia_official_aliases(cat, dry_run=args.dry_run)
+        print(f"  [nvidia-official] {nv}")
 
     if args.show_access:
         by = get_models_by_access(cat)
