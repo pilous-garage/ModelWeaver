@@ -1,3 +1,9 @@
-"""Contrat des DEPENDANCES du module `installer`."""
-
-CONSUMES = {}
+CONSUMES = {
+    'modules.sql.db': [
+        'CatalogueDB',
+        'TursoCatalogueDB',
+    ],
+    'services._common': [
+        'mw_home',
+    ],
+}

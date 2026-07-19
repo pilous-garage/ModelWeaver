@@ -1,6 +1,5 @@
-"""Contrat des DEPENDANCES du module `checker`.
-
-Aucune dépendance interne au projet (stdlib + psutil uniquement).
-"""
-
-CONSUMES = {}
+CONSUMES = {
+    'services._common': [
+        'mw_home',
+    ],
+}

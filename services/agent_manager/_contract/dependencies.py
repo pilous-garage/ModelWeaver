@@ -1,11 +1,31 @@
-"""Dépendances du service `agent_manager`."""
-from modules.sql.db import AgentsDB
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
-
 CONSUMES = {
-    "modules.sql.db": ["AgentsDB"],
-    "modules.llm_manager.litellm_bridge": ["LiteLLMBridge"],
-    "modules.llm_manager.base_bridge": ["BridgeError"],
-    "AgentFrameWork.fsm_interpreter": ["FSMInterpreter", "FSMResult"],
-    "services._common": ["mw_home", "acquire_instance_lock"],
+    'modules.key_manager.key_manager': [
+        'KeyManager',
+    ],
+    'modules.llm_manager.base_bridge': [
+        'BridgeError',
+    ],
+    'modules.llm_manager.litellm_bridge': [
+        'LiteLLMBridge',
+    ],
+    'modules.sql.db': [
+        'AgentsDB',
+        'CatalogueDB',
+        'ModelWeaverDB',
+    ],
+    'services._common': [
+        'acquire_instance_lock',
+        'mw_home',
+    ],
+    'services.lifecycle': [
+        'HookType',
+        'LifecycleManager',
+        'get_event_bus',
+    ],
+    'services.ressource_manager.service': [
+        'RessourceManager',
+    ],
+    'services.skill_manager': [
+        'expand_workflow',
+    ],
 }

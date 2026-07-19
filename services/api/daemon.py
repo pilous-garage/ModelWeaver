@@ -478,8 +478,8 @@ def _collector_supervisor_loop(interval: float = 30.0):
     """Boucle de supervision du rassembleur d'usage (thread daemon)."""
     import time
     try:
-        from services._common import get_logger
-        log = get_logger("daemon")
+        from services.logger import MWLogger
+        log = MWLogger("daemon")
     except Exception:
         log = None
     while True:

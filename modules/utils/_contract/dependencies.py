@@ -1,3 +1,5 @@
-"""Contrat des DEPENDANCES du module `utils`."""
-
-CONSUMES = {}
+CONSUMES = {
+    'services._common': [
+        'mw_home',
+    ],
+}
