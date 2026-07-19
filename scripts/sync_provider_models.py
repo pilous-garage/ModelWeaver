@@ -282,6 +282,8 @@ def main():
                     help="avec --pricing : ne remplit que les modeles free-tier")
     ap.add_argument("--force-pricing", action="store_true",
                     help="avec --pricing : re-telecharge la source sans cache")
+    ap.add_argument("--show-aliases", action="store_true",
+                    help="affiche les alias de reconciliation (catalogue_aliases)")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -314,6 +316,12 @@ def main():
                           only_free_tier=args.only_free)
         for src, stats in report.items():
             print(f"  [{src}] {stats}")
+
+    if args.show_aliases:
+        print("== catalogue_aliases ==")
+        for a in cat.list_aliases():
+            print(f"  [{a['source']}] {a['entity_type']}: "
+                  f"{a['alias']} -> {a['canonical_ref']} (prio {a['priority']})")
 
 
 if __name__ == "__main__":

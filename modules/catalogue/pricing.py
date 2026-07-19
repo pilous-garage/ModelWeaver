@@ -31,15 +31,40 @@ LITELLM_PRICING_URL = (
     "model_prices_and_context_window.json"
 )
 
-# Réconciliation des noms de provider litellm -> ref catalogue_model
-# (litellm utilise parfois des noms differents de notre catalogue).
-LITELLM_PROVIDER_ALIASES = {
-    "gemini": "google",
-    "google": "google",
-    "nvidia_nim": "nvidia",
-    "vertex_ai": "google-vertex",
-    "azure_ai": "azure",
-}
+# Source d'alias utilisee pour la reconciliation des noms litellm -> refs catalogue.
+LITELLM_ALIAS_SOURCE = "litellm_github"
+
+# Alias par defaut (seed) : nom provider litellm -> ref catalogue.
+# Stocke en BDD (catalogue_aliases) ; editable a chaud via la GUI / agents.
+DEFAULT_LITELLM_PROVIDER_ALIASES = [
+    ("gemini", "google"),
+    ("google", "google"),
+    ("nvidia_nim", "nvidia"),
+    ("vertex_ai", "google-vertex"),
+    ("azure_ai", "azure"),
+    ("azure", "azure"),
+    ("openrouter", "openrouter"),
+    ("github-models", "github-models"),
+    ("github_models", "github-models"),
+]
+
+
+def seed_litellm_aliases(cat, dry_run: bool = False) -> int:
+    """Peuple catalogue_aliases depuis les alias par defaut (idempotent).
+
+    Ne fait rien si la table possede deja des entrees pour la source.
+    Retourne le nombre d'alias inseres.
+    """
+    existing = cat.conn.execute(
+        "SELECT COUNT(*) FROM catalogue_aliases WHERE source=? AND entity_type='provider'",
+        (LITELLM_ALIAS_SOURCE,)).fetchone()[0]
+    if existing > 0:
+        return 0
+    if dry_run:
+        return len(DEFAULT_LITELLM_PROVIDER_ALIASES)
+    for alias, canonical in DEFAULT_LITELLM_PROVIDER_ALIASES:
+        cat.add_alias(LITELLM_ALIAS_SOURCE, "provider", alias, canonical)
+    return len(DEFAULT_LITELLM_PROVIDER_ALIASES)
 
 
 # ── Récupération (source communautaire GitHub) ──────────────────────────
@@ -98,15 +123,24 @@ def _to_str(v) -> Optional[str]:
 
 # ── Merge dans le catalogue ─────────────────────────────────────────────
 def merge_pricing(cat, pricing: Dict[str, Any], dry_run: bool = False,
-                  only_free_tier: bool = False) -> Dict[str, int]:
-    """Applique les tarifs a provider_models via link_provider.
+                  only_free_tier: bool = False, source: str = LITELLM_ALIAS_SOURCE
+                  ) -> Dict[str, int]:
+    """Applique les tarifs a provider_models.
 
-    Apparie "provider/model" (cle litellm) avec
+    Apparie "provider/model" (cle externe) avec
     (catalogue_providers.ref = provider) + provider_models.provider_model_name
-    = model (ou fin de ref). Met a jour cost/context/max_output.
+    = model (ou fin de ref). La ref provider est resolue via catalogue_aliases
+    (source donnee) ; a defaut, le nom tel quel. Met a jour cost/context/max_output.
 
     Retourne un dict de compteurs : matched, updated, free_tier, skipped.
     """
+    # Resoudre les alias provider depuis la table catalogue_aliases.
+    prov_alias = cat.alias_map(source, "provider")
+    if not prov_alias:
+        # fallback : seed par defaut si la table est vide
+        seed_litellm_aliases(cat, dry_run=dry_run)
+        prov_alias = cat.alias_map(source, "provider")
+
     rows = cat.conn.execute("""
         SELECT pm.id, pm.provider_model_name, pm.provider_id, pm.model_id,
                p.ref AS provider_ref, m.ref AS model_ref,
@@ -134,8 +168,8 @@ def merge_pricing(cat, pricing: Dict[str, Any], dry_run: bool = False,
         if "/" not in key:
             continue
         prov, model = key.split("/", 1)
-        # reconcilie le nom de provider litellm -> ref catalogue
-        prov = LITELLM_PROVIDER_ALIASES.get(prov, prov)
+        # reconcilie le nom de provider externe -> ref catalogue via alias
+        prov = prov_alias.get(prov, prov)
         norm = _normalize(entry)
         is_free = (
             norm["cost_per_input_token"] in (None, "0.0")
@@ -197,13 +231,16 @@ PRICING_SOURCES = {
 def sync_all(cat, force: bool = False, dry_run: bool = False,
              only_free_tier: bool = False) -> Dict[str, Any]:
     """Lance toutes les sources de tarifs et merge. Retourne un resume."""
+    # seed des alias provider par defaut (idempotent) avant merge
+    seed_litellm_aliases(cat, dry_run=dry_run)
     report = {}
     for name, fetcher in PRICING_SOURCES.items():
         try:
             data = fetcher()
             if force and name == "litellm_github":
                 data = fetch_litellm_pricing(force=True)
-            stats = merge_pricing(cat, data, dry_run=dry_run, only_free_tier=only_free_tier)
+            stats = merge_pricing(cat, data, dry_run=dry_run,
+                                  only_free_tier=only_free_tier, source=name)
             report[name] = stats
         except Exception as e:
             report[name] = {"error": str(e)}

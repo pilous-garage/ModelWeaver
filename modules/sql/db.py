@@ -1415,6 +1415,30 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Migration classes_outils ignorée: {e}")
 
+        # ── Migration catalogue_aliases (réconciliation noms externes) ──
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS catalogue_aliases (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source        TEXT NOT NULL,
+                    entity_type   TEXT NOT NULL CHECK(entity_type IN ('provider','model')),
+                    alias         TEXT NOT NULL,
+                    canonical_ref TEXT NOT NULL,
+                    priority      INTEGER DEFAULT 0,
+                    created_at    INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(source, entity_type, alias)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aliases_source_entity "
+                "ON catalogue_aliases(source, entity_type)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aliases_canonical "
+                "ON catalogue_aliases(canonical_ref)")
+            self.conn.commit()
+        except Exception as e:
+            print(f"⚠️  Migration catalogue_aliases ignorée: {e}")
+
         # ── Seed si tables vides ──
         # Couvre le cas d'une BDD pré-existante (tables créées) mais non
         # peuplée : le seed INSERT OR IGNORE du .sql est idempotent.
@@ -1557,6 +1581,61 @@ class CatalogueDB:
         except Exception:
             self.conn.rollback()
             raise
+
+    # ── Catalogue aliases : réconciliation noms externes → refs canoniques ──
+    def add_alias(self, source: str, entity_type: str, alias: str,
+                  canonical_ref: str, priority: int = 0) -> int:
+        """Ajoute ou met à jour un alias (source, entity_type, alias) unique."""
+        cur = self.conn.execute("""
+            INSERT INTO catalogue_aliases (source, entity_type, alias, canonical_ref, priority)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source, entity_type, alias) DO UPDATE SET
+                canonical_ref=excluded.canonical_ref,
+                priority=excluded.priority
+        """, (source, entity_type, alias, canonical_ref, priority))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def resolve_alias(self, source: str, entity_type: str, alias: str) -> Optional[str]:
+        """Résout un nom externe vers la ref catalogue (priorité max puis id min)."""
+        row = self.conn.execute("""
+            SELECT canonical_ref FROM catalogue_aliases
+            WHERE source=? AND entity_type=? AND alias=?
+            ORDER BY priority DESC, id ASC LIMIT 1
+        """, (source, entity_type, alias)).fetchone()
+        return row["canonical_ref"] if row else None
+
+    def alias_map(self, source: str, entity_type: str) -> Dict[str, str]:
+        """Retourne {alias: canonical_ref} pour une source/type donnés."""
+        rows = self.conn.execute("""
+            SELECT alias, canonical_ref, priority, id FROM catalogue_aliases
+            WHERE source=? AND entity_type=?
+        """, (source, entity_type)).fetchall()
+        out: Dict[str, str] = {}
+        # priorité max puis id min en cas de doublon d'alias (ne devrait pas arriver)
+        best: Dict[str, tuple] = {}
+        for r in rows:
+            key = r["alias"]
+            score = (r["priority"], -r["id"])
+            if key not in best or score > best[key]:
+                best[key] = score
+                out[key] = r["canonical_ref"]
+        return out
+
+    def list_aliases(self, source: Optional[str] = None,
+                     entity_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if source:
+            clauses.append("source=?")
+            params.append(source)
+        if entity_type:
+            clauses.append("entity_type=?")
+            params.append(entity_type)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM catalogue_aliases{where} ORDER BY source, entity_type, alias"
+        ).fetchall()
+        return _rows_to_list(rows)
 
     def sync_providers(self, rows: List[Dict]) -> int:
         count = 0

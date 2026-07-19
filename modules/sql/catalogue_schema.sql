@@ -468,6 +468,28 @@ INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES
     ('cost_per_month','Cout / mois (USD)',       'usd',      'cost');
 
 -- ============================================================
+-- 11b. CATALOGUE_ALIASES — Réconciliation des noms externes
+--      (litellm, docs officiels, outils tiers) avec les refs
+--      canoniques du catalogue (providers et modèles).
+--      Ex: source='litellm_github', entity_type='provider',
+--          alias='nvidia_nim' -> canonical_ref='nvidia'.
+--      Une meme source peut avoir plusieurs alias pointant vers
+--      la meme ref (1:N). La resolution prend le plus prioritaire.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS catalogue_aliases (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source        TEXT NOT NULL,
+    entity_type   TEXT NOT NULL CHECK(entity_type IN ('provider','model')),
+    alias         TEXT NOT NULL,
+    canonical_ref TEXT NOT NULL,
+    priority      INTEGER DEFAULT 0,
+    created_at    INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(source, entity_type, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_aliases_source_entity ON catalogue_aliases(source, entity_type);
+CREATE INDEX IF NOT EXISTS idx_aliases_canonical ON catalogue_aliases(canonical_ref);
+
+-- ============================================================
 -- 12. BUDGETS — Limites theoriques (catalogue, partageable).
 --     target_type : provider | model | endpoint | key
 --     window : minute | hour | day | month (periode de reset de `used`)
