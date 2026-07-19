@@ -432,6 +432,26 @@ def _job_processor_loop(interval: float = 5.0):
     t.start()
 
 
+def _start_usage_collector(log=None):
+    """Lance le rassembleur d'usage en process séparé (start_new_session),
+    isolé d'un crash du daemon. Best-effort."""
+    try:
+        import subprocess
+        script = Path(__file__).resolve().parent.parent.parent / "modules" / "usage" / "usage_collector.py"
+        if not script.exists():
+            return
+        proc = subprocess.Popen(
+            [sys.executable, str(script)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if log is not None:
+            log.info("Rassembleur d'usage démarré", pid=proc.pid)
+    except Exception as e:
+        if log is not None:
+            log.warning("Lancement rassembleur d'usage échoué", error=str(e))
+
+
 def op_jobs_list(_params):
     jobs.ensure_install_jobs()
     return jobs.list_jobs()
@@ -1840,6 +1860,12 @@ def serve(port: int = 8770) -> None:
 
     # Démarre le processeur de jobs en arrière-plan (consomme install_jobs).
     _job_processor_loop(interval=3.0)
+
+    # Démarre le rassembleur d'usage (process séparé, isolé d'un crash du
+    # daemon). Collecte le journal disque -> SQLite de façon asynchrone.
+    # Best-effort : si le lancement échoue, le logging disque continue
+    # (les données seront consolidées au prochain lancement).
+    _start_usage_collector(log)
 
     # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
     try:

@@ -500,6 +500,19 @@ CREATE TABLE IF NOT EXISTS local_model_efficacy (
     UNIQUE(model_ref, use_case)
 );
 
+-- Etat live des agents (heartbeat). Miroir d'activité pour la GUI / le
+-- rassembleur d'usage. Etat (pas un journal) → perte non critique.
+CREATE TABLE IF NOT EXISTS agent_actif (
+    agent_id        TEXT PRIMARY KEY,
+    status          TEXT,
+    current_step    TEXT,
+    last_heartbeat  INTEGER,
+    calls_count     INTEGER DEFAULT 0,
+    tokens_total    INTEGER DEFAULT 0,
+    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
+
 -- ============================================================
 -- INDEXES
 -- ============================================================

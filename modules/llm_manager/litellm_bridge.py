@@ -283,12 +283,13 @@ class LiteLLMBridge(BaseBridge):
             return {}
 
     def chat(self, provider_ref: str, model_ref: str,
-             messages: List[Dict[str, str]],
-             temperature: float = 0.7,
-             max_tokens: Optional[int] = None,
-             system_prompt: Optional[str] = None,
-             stream: bool = False,
-             **params) -> ChatResponse:
+              messages: List[Dict[str, str]],
+              temperature: float = 0.7,
+              max_tokens: Optional[int] = None,
+              system_prompt: Optional[str] = None,
+              stream: bool = False,
+              agent_id: Optional[str] = None,
+              **params) -> ChatResponse:
         self._lazy_import()
         model_id = self._build_model_id(provider_ref, model_ref)
         msgs = self._build_messages(messages, system_prompt)
@@ -334,7 +335,7 @@ class LiteLLMBridge(BaseBridge):
                 }
                 tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
             budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
-            self._log_call(provider_ref, model_ref, "ok",
+            self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                            tokens_in=response.usage.prompt_tokens or 0,
                            tokens_out=response.usage.completion_tokens or 0)
             return ChatResponse(
@@ -365,7 +366,7 @@ class LiteLLMBridge(BaseBridge):
                         }
                         tokens = (response.usage.prompt_tokens or 0) + (response.usage.completion_tokens or 0)
                     budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
-                    self._log_call(provider_ref, model_ref, "ok",
+                    self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                                    tokens_in=response.usage.prompt_tokens or 0,
                                    tokens_out=response.usage.completion_tokens or 0)
                     return ChatResponse(
@@ -381,22 +382,25 @@ class LiteLLMBridge(BaseBridge):
                     self._log_call(provider_ref, model_ref,
                                    "quota_exhausted" if be2.category == ErrorCategory.RATE_LIMIT
                                    else "error",
+                                   agent_id=agent_id,
                                    error_code=getattr(be2, "code", None),
                                    error_detail=str(e2)[:500])
                     raise be2
             self._log_call(provider_ref, model_ref,
                            "quota_exhausted" if be.category == ErrorCategory.RATE_LIMIT
                            else "error",
+                           agent_id=agent_id,
                            error_code=getattr(be, "code", None),
                            error_detail=str(e)[:500])
             raise be
 
     def chat_stream(self, provider_ref: str, model_ref: str,
-                    messages: List[Dict[str, str]],
-                    temperature: float = 0.7,
-                    max_tokens: Optional[int] = None,
-                    system_prompt: Optional[str] = None,
-                    **params) -> Iterator[str]:
+                     messages: List[Dict[str, str]],
+                     temperature: float = 0.7,
+                     max_tokens: Optional[int] = None,
+                     system_prompt: Optional[str] = None,
+                     agent_id: Optional[str] = None,
+                     **params) -> Iterator[str]:
         self._lazy_import()
         model_id = self._build_model_id(provider_ref, model_ref)
         msgs = self._build_messages(messages, system_prompt)
@@ -438,6 +442,7 @@ class LiteLLMBridge(BaseBridge):
             self._log_call(provider_ref, model_ref,
                            "quota_exhausted" if be.category == ErrorCategory.RATE_LIMIT
                            else "error",
+                           agent_id=agent_id,
                            error_code=getattr(be, "code", None),
                            error_detail=str(e)[:500])
             raise be
@@ -446,7 +451,8 @@ class LiteLLMBridge(BaseBridge):
                 tokens = max(1, char_count // 4)
                 self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
                 if ok:
-                    self._log_call(provider_ref, model_ref, "ok", tokens_out=tokens)
+                    self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
+                                   tokens_out=tokens)
 
     def get_capabilities(self, provider_ref: str,
                          model_ref: str) -> ModelCapabilities:
@@ -547,18 +553,21 @@ class LiteLLMBridge(BaseBridge):
                        model_ref: str = "") -> BridgeError:
         return self.classifier.classify(error, provider_ref, model_ref)
 
-    # ── Journalisation des appels reels (real_call_models) ─────────
+    # ── Journalisation des appels reels ──────────────────────────
+    # Les appels ne touchent PLUS SQLite directement (risque « database is
+    # locked » en concurrence) : on pousse une ligne JSON dans le journal
+    # disque append-only (modules/usage/usage_log). Le rassembleur
+    # (usage_collector.py) consolide ce journal dans real_call_models /
+    # endpoint_model_usage / agent_actif de façon asynchrone, et degrade
+    # key_endpoint_models.available sur echec.
     def _log_call(self, provider_ref, model_ref, status, agent_id=None,
                   tokens_in=0, tokens_out=0, cost=0.0, error_code=None,
                   error_detail=None, sent_at=None):
-        """Logge un appel LLM reel dans modelweaver.db (real_call_models)
-        et met a jour endpoint_model_usage + degrade available si echec.
+        """Journalise un appel LLM reel sur disque (append atomique).
         Best-effort : n'interrompt jamais le flux principal."""
         try:
-            from modules.sql.db import ModelWeaverDB
-            now = int(__import__("time").time())
-            sent = sent_at or now
-            conn = ModelWeaverDB().conn
+            import time as _t
+            now = int(_t.time())
             # endpoint utilise (api_base custom si defini)
             endpoint_id = None
             if self.cat:
@@ -575,55 +584,53 @@ class LiteLLMBridge(BaseBridge):
                 key_ref = info.get("ref") if info else None
             except Exception:
                 pass
+            from modules.usage import usage_log
+            usage_log.log_call(
+                provider_ref, model_ref, status,
+                agent_id=agent_id, endpoint_id=endpoint_id, key_ref=key_ref,
+                tokens_in=tokens_in, tokens_out=tokens_out, cost=cost,
+                error_code=error_code, error_detail=error_detail,
+                sent_at=sent_at, received_at=now,
+            )
+            # Miroir live agent (etat, non critique) — best-effort.
+            if agent_id:
+                self._touch_agent_actif(agent_id, tokens_in + tokens_out)
+        except Exception:
+            pass
+
+    def _touch_agent_actif(self, agent_id, tokens):
+        """Upsert leagre dans agent_actif (etat live). Best-effort."""
+        try:
+            import time as _t
+            now = int(_t.time())
+            conn = self._get_mw_conn()
+            if conn is None:
+                return
             conn.execute("""
-                INSERT INTO real_call_models
-                    (provider_ref, endpoint_id, key_ref, model_ref, agent_id,
-                     sent_at, received_at, tokens_in, tokens_out, cost,
-                     status, error_code, error_detail, window_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (provider_ref, endpoint_id, key_ref, model_ref, agent_id,
-                  sent, now, tokens_in, tokens_out, cost, status,
-                  error_code, error_detail,
-                  __import__("time").strftime("%Y-%m-%d-%H", __import__("time").gmtime(now)))),
-            # maj endpoint_model_usage (upsert sans contrainte UNIQUE)
-            cur = conn.execute(
-                "SELECT id FROM endpoint_model_usage WHERE model_ref = ? "
-                "ORDER BY id DESC LIMIT 1", (model_ref,))
-            row = cur.fetchone()
-            if row:
-                conn.execute("""
-                    UPDATE endpoint_model_usage SET
-                        requests = requests + 1,
-                        tokens_in = tokens_in + ?,
-                        tokens_out = tokens_out + ?,
-                        cost = cost + ?,
-                        last_call_at = ?,
-                        last_call_working = ?,
-                        error_count = error_count + ?
-                    WHERE id = ?
-                """, (tokens_in, tokens_out, cost, now,
-                      1 if status == "ok" else 0,
-                      0 if status == "ok" else 1, row["id"]))
-            else:
-                conn.execute("""
-                    INSERT INTO endpoint_model_usage
-                        (endpoint_id, model_ref, agent_id, requests, tokens_in,
-                         tokens_out, cost, last_call_at, last_call_working, error_count)
-                    VALUES (?,?,?,1,?,?,?,?,?,?)
-                """, (endpoint_id, model_ref, agent_id, tokens_in, tokens_out,
-                      cost, now, 1 if status == "ok" else 0,
-                      0 if status == "ok" else 1)),
-            # degrade available si echec (sera re-upgrade au refresh)
-            if status != "ok" and self.cat and endpoint_id is not None:
-                self.cat.conn.execute("""
-                    UPDATE key_endpoint_models SET available = 0
-                    WHERE endpoint_id = ? AND model_id = (
-                        SELECT id FROM catalogue_models WHERE ref = ?
-                    ) AND key_ref = ?
-                """, (endpoint_id, model_ref, key_ref or ""))
+                INSERT INTO agent_actif
+                    (agent_id, status, last_heartbeat, calls_count, tokens_total, updated_at)
+                VALUES (?, 'RUNNING', ?, 1, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    last_heartbeat = excluded.last_heartbeat,
+                    calls_count = calls_count + 1,
+                    tokens_total = tokens_total + excluded.tokens_total,
+                    updated_at = excluded.updated_at
+            """, (str(agent_id), now, int(tokens or 0), now))
             conn.commit()
         except Exception:
             pass
+
+    def _get_mw_conn(self):
+        """Connexion modelweaver.db reutilisee (une seule par bridge) pour
+        agent_actif. Ouverte lazy, jamais fermee explicitement (duree de vie
+        du bridge)."""
+        if getattr(self, "_mw_conn", None) is None:
+            try:
+                from modules.sql.db import ModelWeaverDB
+                self._mw_conn = ModelWeaverDB().conn
+            except Exception:
+                self._mw_conn = None
+        return self._mw_conn
 
     # ── Helpers ────────────────────────────────────────────────
 

@@ -56,6 +56,7 @@ def resilient_chat(provider_ref: str, model_ref: str,
                    messages: List[Dict[str, str]], *,
                    timeout: int = 60, fallback: bool = True,
                    max_retries: int = 3, use_case: str = "coding",
+                   agent_id: Optional[str] = None,
                    bridge: Optional[LiteLLMBridge] = None,
                    cat=None, km=None, **kwargs) -> Any:
     """Appel LLM résilient avec repli sur un autre LLM.
@@ -75,6 +76,9 @@ def resilient_chat(provider_ref: str, model_ref: str,
 
     cur_p, cur_m = provider_ref, model_ref
     last_err: Optional[BridgeError] = None
+
+    if agent_id is not None and "agent_id" not in kwargs:
+        kwargs["agent_id"] = agent_id
 
     for attempt in range(max_retries):
         try:

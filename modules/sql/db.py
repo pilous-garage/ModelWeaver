@@ -1905,6 +1905,17 @@ class RuntimeDB:
                     last_evaluated_at INTEGER,
                     UNIQUE(model_ref, use_case)
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_actif (
+                    agent_id        TEXT PRIMARY KEY,
+                    status          TEXT,
+                    current_step    TEXT,
+                    last_heartbeat  INTEGER,
+                    calls_count     INTEGER DEFAULT 0,
+                    tokens_total    INTEGER DEFAULT 0,
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
             """)
         except Exception as e:
             print(f"⚠️  Migration tables usage ignorée: {e}")

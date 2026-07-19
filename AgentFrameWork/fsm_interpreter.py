@@ -288,11 +288,15 @@ class FSMInterpreter:
         try:
             content = ""
             tokens = 0
+            # agent_id disponible pour le journal d'usage (si l'agent l'a
+            # fourni via {{agent_id}} ou le contexte d'exécution).
+            _agent_id = result.variables.get("agent_id", "")
             if stream_sink is not None:
                 # Streaming : diffusion chunk par chunk
                 for delta in self.bridge.chat_stream(
                     provider_ref=p_ref, model_ref=m_ref,
                     messages=msgs, temperature=temperature, max_tokens=max_tokens,
+                    agent_id=_agent_id or None,
                 ):
                     content += delta
                     stream_sink(delta)
@@ -320,6 +324,7 @@ class FSMInterpreter:
                             p_ref, m_ref, msgs,
                             timeout=int(timeout), fallback=use_fallback,
                             max_tokens=max_tokens, temperature=temperature,
+                            agent_id=_agent_id or None,
                         )
                     except BridgeError as e:
                         result.status = "failed"
@@ -338,6 +343,7 @@ class FSMInterpreter:
                     response = self.bridge.chat(
                         provider_ref=p_ref, model_ref=m_ref,
                         messages=msgs, temperature=temperature, max_tokens=max_tokens,
+                        agent_id=_agent_id or None,
                     )
                 content = response.content if hasattr(response, 'content') else str(response)
                 if hasattr(response, 'usage') and isinstance(response.usage, dict):
