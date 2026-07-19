@@ -221,15 +221,16 @@ def merge_pricing(cat, pricing: Dict[str, Any], dry_run: bool = False,
                 extra["context_window_tokens"] = norm["context_window_tokens"]
             if norm["max_output_tokens"] is not None:
                 extra["max_output_tokens"] = norm["max_output_tokens"]
-            if extra:
-                updates.append((r["id"], extra))
-                stats["updated"] += 1
+            # free-tier : cout nul => marque generique (tous providers)
+            extra["free_tier"] = 1 if is_free else 0
+            updates.append((r["id"], extra))
+            stats["updated"] += 1
 
     if not dry_run:
         for pm_id, extra in updates:
             sets, vals = [], []
             for col in ("cost_per_input_token", "cost_per_output_token",
-                        "context_window_tokens", "max_output_tokens"):
+                        "context_window_tokens", "max_output_tokens", "free_tier"):
                 if col in extra:
                     sets.append(f"{col}=?")
                     vals.append(extra[col])

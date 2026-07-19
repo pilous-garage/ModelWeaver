@@ -1473,6 +1473,7 @@ class CatalogueDB:
         try:
             _add_column_if_missing(self.conn, "provider_models", "context_window_effective", "INTEGER")
             _add_column_if_missing(self.conn, "provider_models", "available", "INTEGER DEFAULT 1")
+            _add_column_if_missing(self.conn, "provider_models", "free_tier", "INTEGER DEFAULT 0")
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS context_audit_log (
                     id                    INTEGER PRIMARY KEY AUTOINCREMENT,

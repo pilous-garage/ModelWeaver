@@ -109,6 +109,10 @@ def populate_provider_models(cat, pricing: Dict[str, Any],
             mid = mrow["id"]
 
         norm = _normalize(entry)
+        is_free = (
+            norm["cost_per_input_token"] in (None, "0.0")
+            and norm["cost_per_output_token"] in (None, "0.0")
+        )
         link_key = (pid, mid)
         if link_key in seen_links:
             continue
@@ -130,21 +134,25 @@ def populate_provider_models(cat, pricing: Dict[str, Any],
                 vals.append(norm["cost_per_input_token"])
                 sets.append("cost_per_output_token=?")
                 vals.append(norm["cost_per_output_token"])
-            if sets:
-                vals.append(existing["id"])
-                if not dry_run:
-                    cat.conn.execute(
-                        f"UPDATE provider_models SET {', '.join(sets)} WHERE id=?", vals)
-                stats["links_updated"] += 1
+            # free_tier recalculé à chaque passage (cout connu)
+            sets.append("free_tier=?")
+            vals.append(1 if is_free else 0)
+            vals.append(existing["id"])
+            if not dry_run:
+                cat.conn.execute(
+                    f"UPDATE provider_models SET {', '.join(sets)} WHERE id=?", vals)
+            stats["links_updated"] += 1
         else:
             if not dry_run:
                 cat.conn.execute(
                     """INSERT INTO provider_models
                        (provider_id, model_id, provider_model_name,
-                        context_window_tokens, cost_per_input_token, cost_per_output_token)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                        context_window_tokens, cost_per_input_token, cost_per_output_token,
+                        free_tier)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (pid, mid, key, norm["context_window_tokens"],
-                     norm["cost_per_input_token"], norm["cost_per_output_token"]))
+                     norm["cost_per_input_token"], norm["cost_per_output_token"],
+                     1 if is_free else 0))
             stats["links_created"] += 1
 
     if not dry_run:

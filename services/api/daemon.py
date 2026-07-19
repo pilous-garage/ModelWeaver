@@ -514,6 +514,22 @@ def _op_tarif_sync(url=None):
     return sync_tarif(url)
 
 
+def op_usage_budget(_params):
+    """Resumer du budget USD reellement consomme (persiste par le rassembleur)."""
+    from modules.usage.budget import get_budget_summary, get_budget_rows
+    limit = int(_params.get("limit", 100)) if isinstance(_params, dict) else 100
+    return {
+        "summary": get_budget_summary(),
+        "rows": get_budget_rows(limit=limit),
+    }
+
+
+def op_usage_free_tier(_params):
+    """Liste des modeles marques free-tier (cout nul) pour tous les providers."""
+    from modules.usage.budget import get_free_tier_models
+    return {"free_tier_models": get_free_tier_models()}
+
+
 def op_deps_check(_params):
     from services.depends import check_all_units
     return check_all_units(_REPO_ROOT)
@@ -1640,6 +1656,9 @@ ROUTES = {
     # O. Tarif / budget
     "tarif/info":             lambda p: _quiet(_op_tarif_info, p),
     "tarif/sync":             lambda p: _quiet(_op_tarif_sync, p.get("url")),
+    # P. Usage / budget reel (USD) + free-tier
+    "usage/budget":           op_usage_budget,
+    "usage/free_tier":        op_usage_free_tier,
 }
 
 # Routes qui reçoivent (params, wfile) au lieu de (params) -> dict

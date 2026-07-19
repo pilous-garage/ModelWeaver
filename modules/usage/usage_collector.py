@@ -162,10 +162,63 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
 
             if status != "ok":
                 _degrade_available(cat, endpoint_id, model_ref)
+
+            # consolidation budget USD reel (persiste coût + tokens par cible)
+            _record_budget(conn, provider_ref, model_ref, rec.get("agent_id"),
+                           tokens_in, tokens_out, cost)
             count += 1
     conn.commit()
     cat.conn.commit()
     return count
+
+
+def _budget_tag(target_type: str) -> str:
+    return {
+        "usd": "usd_total",
+        "tokens": "tokens_total",
+    }.get(target_type, target_type)
+
+
+def _record_budget(conn, provider_ref: str, model_ref: str,
+                   agent_id: Optional[str],
+                   tokens_in: int, tokens_out: int, cost: float) -> None:
+    """Persiste le budget reellement consomme dans really_used_budget +
+    budget_consumption (upsert incrémental). Cible = (provider, model, agent)."""
+    now = int(time.time())
+    # cibles : provider, model, provider/model, agent (si fourni)
+    targets = [
+        ("provider", provider_ref),
+        ("model", model_ref),
+        ("provider-model", f"{provider_ref}:{model_ref}"),
+    ]
+    if agent_id:
+        targets.append(("agent", agent_id))
+    for ttype, tref in targets:
+        tag = _budget_tag("usd")
+        cur = conn.execute(
+            "SELECT id FROM really_used_budget WHERE budget_tag_code=? "
+            "AND target_type=? AND target_ref=?", (tag, ttype, tref))
+        row = cur.fetchone()
+        if row:
+            bid = row["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO really_used_budget "
+                "(budget_tag_code, target_type, target_ref, window, measured_limit, method) "
+                "VALUES (?,?,?,?,?,?)", (tag, ttype, tref, "lifetime", None, "measured"))
+            bid = cur.lastrowid
+        # upsert budget_consumption
+        ccur = conn.execute(
+            "SELECT id, used FROM budget_consumption WHERE budget_id=?", (bid,))
+        crow = ccur.fetchone()
+        if crow:
+            conn.execute(
+                "UPDATE budget_consumption SET used=?, updated_at=? WHERE id=?",
+                (crow["used"] + cost, now, crow["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO budget_consumption (budget_id, used, updated_at) "
+                "VALUES (?,?,?)", (bid, cost, now))
 
 
 def _rotate_archives(log_dir: Path) -> None:
