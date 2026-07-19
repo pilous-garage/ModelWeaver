@@ -253,3 +253,81 @@ def populate_nvidia_from_api(cat, km, dry_run: bool = False,
         cat.conn.commit()
     return stats
 
+
+# ── Fusion d'un provider duplique vers un provider canonique ────────────
+def merge_duplicate_provider(cat, dup_ref: str, canonical_ref: str,
+                             dry_run: bool = False) -> Dict[str, int]:
+    """Reattribue les provider_models d'un provider duplique au provider
+    canonique, puis supprime le provider duplique.
+
+    - les liens dont le (canonical, model_id) existe deja sont fusionnes
+      (champs non-nuls combines) puis supprimes.
+    - les autres voient leur provider_id bascule sur le canonique.
+    - les aliases catalogue pointant vers dup_ref sont repointes sur
+      canonical_ref (canonical_ref mis a jour).
+    Idempotent et sans effet si dup_ref est absent.
+    """
+    stats = {"links_moved": 0, "links_merged": 0, "aliases_repointed": 0,
+             "provider_deleted": 0}
+    dup = cat.conn.execute(
+        "SELECT id FROM catalogue_providers WHERE ref=?", (dup_ref,)).fetchone()
+    if not dup:
+        return stats
+    dup_id = dup["id"]
+    canon = cat.conn.execute(
+        "SELECT id FROM catalogue_providers WHERE ref=?", (canonical_ref,)).fetchone()
+    if not canon:
+        return stats
+    canon_id = canon["id"]
+
+    dup_links = cat.conn.execute(
+        "SELECT * FROM provider_models WHERE provider_id=?", (dup_id,)).fetchall()
+    for link in dup_links:
+        existing = cat.conn.execute(
+            "SELECT id FROM provider_models WHERE provider_id=? AND model_id=?",
+            (canon_id, link["model_id"])).fetchone()
+        if existing:
+            # fusion additive des champs non-nuls
+            sets, vals = [], []
+            for col in ("context_window_tokens", "max_output_tokens",
+                        "cost_per_input_token", "cost_per_output_token"):
+                if link[col] is not None:
+                    sets.append(f"{col}=?")
+                    vals.append(link[col])
+            if sets:
+                vals.append(existing["id"])
+                if not dry_run:
+                    cat.conn.execute(
+                        f"UPDATE provider_models SET {', '.join(sets)} WHERE id=?",
+                        vals)
+            if not dry_run:
+                cat.conn.execute("DELETE FROM provider_models WHERE id=?", (link["id"],))
+            stats["links_merged"] += 1
+        else:
+            if not dry_run:
+                cat.conn.execute(
+                    "UPDATE provider_models SET provider_id=? WHERE id=?",
+                    (canon_id, link["id"]))
+            stats["links_moved"] += 1
+
+    # repointer les aliases dont le canonical_ref == dup_ref
+    aliases = cat.conn.execute(
+        "SELECT id FROM catalogue_aliases WHERE canonical_ref=?", (dup_ref,)).fetchall()
+    for a in aliases:
+        if not dry_run:
+            cat.conn.execute(
+                "UPDATE catalogue_aliases SET canonical_ref=? WHERE id=?",
+                (canonical_ref, a["id"]))
+        stats["aliases_repointed"] += 1
+
+    # supprimer le provider duplique (plus aucun lien apres fusion)
+    remaining = cat.conn.execute(
+        "SELECT COUNT(*) FROM provider_models WHERE provider_id=?", (dup_id,)).fetchone()[0]
+    if remaining == 0 and not dry_run:
+        cat.conn.execute("DELETE FROM catalogue_providers WHERE id=?", (dup_id,))
+        stats["provider_deleted"] = 1
+
+    if not dry_run:
+        cat.conn.commit()
+    return stats
+

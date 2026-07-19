@@ -8,7 +8,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from modules.catalogue.populate import (
-    populate_provider_models, populate_nvidia_from_api, _ensure_provider)
+    populate_provider_models, populate_nvidia_from_api, _ensure_provider,
+    merge_duplicate_provider)
 from modules.catalogue.pricing import fetch_litellm_pricing
 from modules.sql.db import CatalogueDB
 
@@ -100,6 +101,87 @@ class TestPopulateLitellm(unittest.TestCase):
         # cleanup
         self.cat.conn.execute("DELETE FROM provider_models WHERE provider_model_name=?", (name,))
         self.cat.conn.execute("DELETE FROM catalogue_models WHERE ref=?", (mref,))
+        self.cat.conn.commit()
+
+
+class TestMergeDuplicateProvider(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cat = CatalogueDB()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.cat.close()
+
+    def _make_provider(self, ref, model_refs):
+        self.cat.conn.execute(
+            "DELETE FROM provider_models WHERE provider_id IN "
+            "(SELECT id FROM catalogue_providers WHERE ref=?)", (ref,))
+        self.cat.conn.execute("DELETE FROM catalogue_providers WHERE ref=?", (ref,))
+        self.cat.conn.commit()
+        cur = self.cat.conn.execute(
+            "INSERT INTO catalogue_providers (ref, name, provider_type) VALUES (?,?, 'cloud')",
+            (ref, ref))
+        pid = cur.lastrowid
+        mids = []
+        for mref in model_refs:
+            self.cat.conn.execute(
+                "INSERT OR IGNORE INTO catalogue_models (ref, name, developer) VALUES (?,?,?)",
+                (mref, mref, ref))
+            mids.append(self.cat.conn.execute(
+                "SELECT id FROM catalogue_models WHERE ref=?", (mref,)).fetchone()[0])
+        return pid, mids
+
+    def test_merge_moves_and_deletes(self):
+        # canonical 'mergeprov_canon' avec modele A ; dup 'mergeprov_dup'
+        # avec modele B (distinct) -> B bascule sous canon, dup supprime.
+        _, [a] = self._make_provider("mergeprov_canon", ["mergeprov-A"])
+        dup_pid, [b] = self._make_provider("mergeprov_dup", ["mergeprov-B"])
+        self.cat.conn.execute(
+            "INSERT INTO provider_models (provider_id, model_id, provider_model_name) "
+            "VALUES (?,?, 'mergeprov-B')", (dup_pid, b))
+        self.cat.conn.commit()
+        s = merge_duplicate_provider(self.cat, "mergeprov_dup", "mergeprov_canon", dry_run=False)
+        self.assertEqual(s["links_moved"], 1)
+        self.assertEqual(s["provider_deleted"], 1)
+        self.assertEqual(self.cat.conn.execute(
+            "SELECT COUNT(*) FROM catalogue_providers WHERE ref='mergeprov_dup'").fetchone()[0], 0)
+        # B est maintenant sous canon
+        n = self.cat.conn.execute(
+            "SELECT COUNT(*) FROM provider_models pm JOIN catalogue_providers p ON p.id=pm.provider_id "
+            "WHERE p.ref='mergeprov_canon' AND pm.provider_model_name='mergeprov-B'").fetchone()[0]
+        self.assertEqual(n, 1)
+        # cleanup
+        self.cat.conn.execute("DELETE FROM provider_models WHERE model_id IN (SELECT id FROM catalogue_models WHERE ref LIKE 'mergeprov%')")
+        self.cat.conn.execute("DELETE FROM catalogue_providers WHERE ref='mergeprov_canon'")
+        self.cat.conn.execute("DELETE FROM catalogue_models WHERE ref LIKE 'mergeprov%'")
+        self.cat.conn.commit()
+
+    def test_merge_fuses_existing_link(self):
+        # dup et canon partagent le meme model_id -> fusion (dup supprime,
+        # champ non-nul de dup conserve), pas de doublon.
+        canon_pid, [a] = self._make_provider("mergeprov_canon", ["mergeprov-A"])
+        dup_pid, _ = self._make_provider("mergeprov_dup", ["mergeprov-A"])
+        self.cat.conn.execute(
+            "INSERT INTO provider_models (provider_id, model_id, provider_model_name, cost_per_input_token) "
+            "VALUES (?,?, 'mergeprov-A', '5e-08')", (canon_pid, a))
+        self.cat.conn.execute(
+            "INSERT INTO provider_models (provider_id, model_id, provider_model_name, cost_per_input_token) "
+            "VALUES (?,?, 'mergeprov-A-dup', '7e-08')", (dup_pid, a))
+        self.cat.conn.commit()
+        s = merge_duplicate_provider(self.cat, "mergeprov_dup", "mergeprov_canon", dry_run=False)
+        self.assertEqual(s["links_merged"], 1)
+        # un seul lien reste pour ce model_id sous canon
+        n = self.cat.conn.execute(
+            "SELECT COUNT(*) FROM provider_models WHERE model_id=?", (a,)).fetchone()[0]
+        self.assertEqual(n, 1)
+        r = self.cat.conn.execute(
+            "SELECT cost_per_input_token FROM provider_models WHERE model_id=?", (a,)).fetchone()
+        self.assertIn(r["cost_per_input_token"], ("5e-08", "7e-08"))
+        # cleanup
+        self.cat.conn.execute("DELETE FROM provider_models WHERE model_id IN (SELECT id FROM catalogue_models WHERE ref LIKE 'mergeprov%')")
+        self.cat.conn.execute("DELETE FROM catalogue_providers WHERE ref='mergeprov_canon'")
+        self.cat.conn.execute("DELETE FROM catalogue_models WHERE ref LIKE 'mergeprov%'")
         self.cat.conn.commit()
 
 

@@ -342,6 +342,9 @@ def main():
     ap.add_argument("--populate-nvidia", action="store_true",
                     help="peuple les provider_models NVIDIA depuis l'API "
                          "officielle /v1/models (necessite cle NVIDIA)")
+    ap.add_argument("--merge-provider", nargs=2, metavar=("DUP", "CANON"),
+                    help="fusionne un provider duplique DUP vers le canonique "
+                         "CANON (ex: --merge-provider gemini google)")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -404,6 +407,13 @@ def main():
         from modules.catalogue.populate import populate_nvidia_from_api
         print("== populate NVIDIA (API officielle /v1/models) ==")
         stats = populate_nvidia_from_api(cat, km, dry_run=args.dry_run)
+        print(f"  {stats}")
+
+    if args.merge_provider:
+        from modules.catalogue.populate import merge_duplicate_provider
+        dup, canon = args.merge_provider
+        print(f"== merge_duplicate_provider {dup} -> {canon} ==")
+        stats = merge_duplicate_provider(cat, dup, canon, dry_run=args.dry_run)
         print(f"  {stats}")
 
     if args.show_access:
