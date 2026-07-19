@@ -231,6 +231,7 @@ class KeyManager:
         if not api_key:
             return None
         return {
+            "ref": any_key["ref"],
             "api_key": api_key,
             "api_base": self._extract_base(any_key),
             "metadata": self._extract_meta(any_key),

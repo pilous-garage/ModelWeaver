@@ -36,6 +36,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from modules.sql.db import CatalogueDB, ModelWeaverDB
 from modules.key_manager.key_manager import KeyManager
 
+# key_ref sentinelle pour les modeles accessibles SANS cle requise
+# (ex: ollama local, endpoints publics). Distinct d'une vraie ref de cle.
+KEY_REF_PUBLIC = ""
+
 
 # ── endpoints liste-modeles par fournisseur ──
 # (api_base, path, extractor) ; extractor renvoie la liste des noms de modeles
@@ -183,14 +187,23 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
         print(f"  [{provider}] no endpoint defined")
         return 0
 
-    # cles de ce provider (ref)
+    # cles de ce provider (ref).
+    # - provider sans cle (ollama local, ou cloud sans key definie) :
+    #   on garde les modeles accessibles SANS cle -> KEY_REF_PUBLIC.
+    # - provider avec cle : on stocke la vraie ref de cle.
+    # On ne laisse JAMAIS key_refs vide (sinon aucune ligne key_endpoint_models
+    # n'est creee). La distinction cle/sans-cle se fait via key_ref == '' .
     key_refs = []
     if provider == "ollama":
-        key_refs = [None]
+        key_refs = [KEY_REF_PUBLIC]
     else:
         krow = km.get_key(provider) if km else None
-        if krow:
-            key_refs = [krow.get("ref")]
+        if krow and krow.get("ref"):
+            key_refs = [krow["ref"]]
+        else:
+            # pas de cle : modeles accessibles sans cle (endpoint public,
+            # ou liste-modele ouverte). On les garde en KEY_REF_PUBLIC.
+            key_refs = [KEY_REF_PUBLIC]
 
     bridge = None
     if ping and not dry_run:
@@ -206,7 +219,7 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
                 conn.execute(
                     "UPDATE key_endpoint_models SET declared=0 "
                     "WHERE endpoint_id=? AND key_ref=?",
-                    (eid, kref or ""))
+                    (eid, kref))
             seen = 0
             for md in models:
                 mname = md["name"]
@@ -237,10 +250,11 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
                         "(provider_id, endpoint_id, key_ref, model_id, "
                         " provider_model_name, declared, available, last_checked_at) "
                         "VALUES (?,?,?,?,?,1,?,strftime('%s','now'))",
-                        (pid, eid, kref or "", mid, mname, available))
+                        (pid, eid, kref, mid, mname, available))
                 if available:
                     seen += 1
-            print(f"  [{provider}] endpoint#{eid} key={kref or 'none'}: {seen} models declared")
+            key_label = "public" if kref == KEY_REF_PUBLIC else kref
+            print(f"  [{provider}] endpoint#{eid} key={key_label}: {seen} models declared")
             total += seen
     return total
 
@@ -255,7 +269,7 @@ def get_available_models(cat: CatalogueDB, provider: Optional[str] = None) -> Li
             "SELECT cp.ref AS provider, kem.provider_model_name AS model "
             "FROM key_endpoint_models kem "
             "JOIN catalogue_providers cp ON cp.id = kem.provider_id "
-            "WHERE kem.available = 1 AND cp.ref = ? "
+            "WHERE kem.available = 1 AND kem.declared = 1 AND cp.ref = ? "
             "ORDER BY kem.provider_model_name",
             (provider,),
         ).fetchall()
@@ -264,10 +278,43 @@ def get_available_models(cat: CatalogueDB, provider: Optional[str] = None) -> Li
             "SELECT cp.ref AS provider, kem.provider_model_name AS model "
             "FROM key_endpoint_models kem "
             "JOIN catalogue_providers cp ON cp.id = kem.provider_id "
-            "WHERE kem.available = 1 "
+            "WHERE kem.available = 1 AND kem.declared = 1 "
             "ORDER BY cp.ref, kem.provider_model_name",
         ).fetchall()
     return [{"provider": r["provider"], "model": r["model"]} for r in rows]
+
+
+def get_models_by_access(cat: CatalogueDB, provider: Optional[str] = None
+                         ) -> Dict[str, List[Dict[str, str]]]:
+    """Classe les modeles joignables selon l'acces requis.
+
+    Retourne {'with_key': [...], 'public': [...]} où :
+      - 'with_key' : modeles necessitant une cle (key_ref != '' , available=1).
+      - 'public'   : modeles accessibles SANS cle (key_ref = '' , available=1).
+    Chaque entree = {provider, model, key_ref}.
+    """
+    clause = "WHERE kem.available = 1 AND kem.declared = 1"
+    params = []
+    if provider:
+        clause += " AND cp.ref = ?"
+        params.append(provider)
+    rows = cat.conn.execute(f"""
+        SELECT cp.ref AS provider, kem.provider_model_name AS model,
+               kem.key_ref AS key_ref
+        FROM key_endpoint_models kem
+        JOIN catalogue_providers cp ON cp.id = kem.provider_id
+        {clause}
+        ORDER BY cp.ref, kem.provider_model_name
+    """, params).fetchall()
+    out = {"with_key": [], "public": []}
+    for r in rows:
+        entry = {"provider": r["provider"], "model": r["model"],
+                 "key_ref": r["key_ref"]}
+        if r["key_ref"] == KEY_REF_PUBLIC:
+            out["public"].append(entry)
+        else:
+            out["with_key"].append(entry)
+    return out
 
 
 def main():
@@ -284,6 +331,8 @@ def main():
                     help="avec --pricing : re-telecharge la source sans cache")
     ap.add_argument("--show-aliases", action="store_true",
                     help="affiche les alias de reconciliation (catalogue_aliases)")
+    ap.add_argument("--show-access", action="store_true",
+                    help="classe les modeles joignables : avec cle / sans cle (public)")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -322,6 +371,20 @@ def main():
         for a in cat.list_aliases():
             print(f"  [{a['source']}] target={a['target']} {a['scope']}: "
                   f"{a['alias']} -> {a['canonical_ref']} (prio {a['priority']})")
+
+    if args.show_access:
+        by = get_models_by_access(cat)
+        print(f"== acces modeles (joignables) ==")
+        print(f"  [avec cle] {len(by['with_key'])} modeles :")
+        for e in by["with_key"][:20]:
+            print(f"    {e['provider']}/{e['model']} (key={e['key_ref']})")
+        if len(by["with_key"]) > 20:
+            print(f"    ... +{len(by['with_key']) - 20} autres")
+        print(f"  [sans cle / public] {len(by['public'])} modeles :")
+        for e in by["public"][:20]:
+            print(f"    {e['provider']}/{e['model']}")
+        if len(by["public"]) > 20:
+            print(f"    ... +{len(by['public']) - 20} autres")
 
 
 if __name__ == "__main__":
