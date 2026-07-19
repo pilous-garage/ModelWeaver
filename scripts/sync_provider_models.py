@@ -345,6 +345,10 @@ def main():
     ap.add_argument("--merge-provider", nargs=2, metavar=("DUP", "CANON"),
                     help="fusionne un provider duplique DUP vers le canonique "
                          "CANON (ex: --merge-provider gemini google)")
+    ap.add_argument("--pricing-openrouter", action="store_true",
+                    help="fusionne les tarifs OpenRouter (api/v1/models) dans "
+                         "le catalogue : couts par token, context_window, "
+                         "free-tier. Requiert OPENROUTER_API_KEY.")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -414,6 +418,15 @@ def main():
         dup, canon = args.merge_provider
         print(f"== merge_duplicate_provider {dup} -> {canon} ==")
         stats = merge_duplicate_provider(cat, dup, canon, dry_run=args.dry_run)
+        print(f"  {stats}")
+
+    if args.pricing_openrouter:
+        from modules.catalogue.openrouter import fetch_openrouter_models, merge_openrouter
+        print("== fetch OpenRouter models ==")
+        data = fetch_openrouter_models(force=not args.dry_run, api_key=os.environ.get("OPENROUTER_API_KEY"))
+        print(f"  {len(data)} modeles recuperes")
+        print("== merge_openrouter ==")
+        stats = merge_openrouter(cat, data, dry_run=args.dry_run)
         print(f"  {stats}")
 
     if args.show_access:
