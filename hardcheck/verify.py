@@ -125,18 +125,28 @@ def _check_service_routes(rel, unit_dir, iface, rep):
     if not src:
         rep.fail(rel, "service sans ROUTES_SOURCE")
         return
-    mod_name, attr = src.split(":")
+    mod_name, attr_expr = src.split(":")
     try:
         mod = _load_py(unit_dir / f"{mod_name}.py", f"_impl_{unit_dir.name}_{mod_name}")
     except Exception as e:
         rep.fail(rel, f"import {mod_name}.py impossible: {e}")
         return
-    real = set(getattr(mod, attr, {}).keys())
+    # ROUTES_SOURCE peut désigner plusieurs attributs fusionnés
+    # (ex: "daemon:ROUTES + STREAMING_ROUTES").
+    real = {}
+    for part in attr_expr.split("+"):
+        part = part.strip()
+        d = getattr(mod, part, None)
+        if not isinstance(d, dict):
+            rep.fail(rel, f"{mod_name}:{part} vide ou introuvable")
+            return
+        real.update(d)
     if not real:
         rep.fail(rel, f"{src} vide ou introuvable")
         return
-    missing = exposes - real          # déclarées mais non servies
-    undeclared = real - exposes       # servies mais non déclarées
+    real_keys = set(real.keys())
+    missing = exposes - real_keys     # déclarées mais non servies
+    undeclared = real_keys - exposes  # servies mais non déclarées
     if missing:
         rep.fail(rel, f"routes déclarées mais NON servies: {sorted(missing)}")
     if undeclared:
@@ -206,7 +216,19 @@ def _project_imports(unit_dir: Path, self_prefix: str):
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 if node.module.startswith(prefixes):
-                    found.setdefault(node.module, set()).update(a.name for a in node.names)
+                    for a in node.names:
+                        target = node.module
+                        # un symbole importe peut etre un sous-module
+                        # (ex: from modules.usage import usage_log ->
+                        #      modules.usage.usage_log). On prefere le
+                        # sous-module quand il existe, sinon l'unité mere.
+                        sub = f"{node.module}.{a.name}"
+                        try:
+                            importlib.import_module(sub)
+                            target = sub
+                        except Exception:
+                            pass
+                        found.setdefault(target, set()).add(a.name)
             elif isinstance(node, ast.Import):
                 for a in node.names:
                     if a.name.startswith(prefixes):
@@ -226,7 +248,18 @@ def _check_dependencies(rel, unit_dir, deps, rep):
         except Exception as e:
             rep.fail(rel, f"dépendance '{src_name}' non importable: {e}")
             continue
-        missing = [s for s in symbols if not hasattr(src_mod, s)]
+        missing = []
+        for s in symbols:
+            if hasattr(src_mod, s):
+                continue
+            # tolere un symbole qui est en fait un sous-module
+            # (ex: from modules.usage import usage_log -> modules.usage.usage_log)
+            try:
+                importlib.import_module(f"{src_name}.{s}")
+                continue
+            except Exception:
+                pass
+            missing.append(s)
         if missing:
             rep.fail(rel, f"symboles déclarés absents de '{src_name}': {missing}")
         else:

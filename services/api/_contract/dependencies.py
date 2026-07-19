@@ -77,6 +77,13 @@ CONSUMES = {
     'services.installer_worker': [
         'jobs',
     ],
+    'services.installer_worker.jobs': [
+        'enqueue_job',
+        'ensure_install_jobs',
+        'install_tool',
+        'list_jobs',
+        'uninstall_tool',
+    ],
     'services.logger': [
         'MWLogger',
     ],
@@ -91,5 +98,8 @@ CONSUMES = {
     ],
     'services.watch_sysstate': [
         'service',
+    ],
+    'services.watch_sysstate.service': [
+        'get_system_state',
     ],
 }

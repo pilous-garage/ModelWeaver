@@ -26,10 +26,12 @@ EXPOSES = {
     # B. Bases
     "db/init": [],
     "db/check": [],
+    "db/versions": [],
     # C. Catalogue
     "catalogue/tools/list": [],
     "catalogue/seed": [],
     "catalogue/sync": ["url"],
+    "catalogue/fetch/remote": [],
     "catalogue/tools_table/update": [],
     # D. Outils installés (synchrone)
     "tools/installed/list": [],
@@ -38,6 +40,9 @@ EXPOSES = {
     "tools/install/all": [],
     # F. Dépendances (modules/services)
     "deps/check": [],
+    "deps/install": [],
+    "deps/install_target": ["target"],
+    "deps/check_manifest": [],
     # E. File de jobs (asynchrone)
     "jobs/add": ["ref", "job_type"],
     "jobs/list": [],
@@ -53,6 +58,7 @@ EXPOSES = {
     "keys/onboard": ["env_path"],
     # H. Providers (catalogue)
     "providers/list": [],
+    "provider/endpoint/add": ["provider_ref", "endpoint_url", "api_key", "name"],
     # I. LLM Manager
     "llm/models/list": ["provider_ref"],
     "llm/recommend": ["use_case", "technical_level"],
@@ -89,6 +95,12 @@ EXPOSES = {
     "agent/stream": ["agent_id", "name", "seq"],
     "agent/spawn": ["name", "role", "request", "occupation", "resources", "config", "provider_ref", "model_ref", "keep_sleeping"],
     "agent/handoff": ["from_id", "from_name", "to_id", "to_name"],
+    # O. Tarif / budget
+    "tarif/info": [],
+    "tarif/sync": ["url"],
+    # P. Usage / budget reel (USD) + free-tier
+    "usage/budget": ["limit"],
+    "usage/free_tier": [],
     # N. Chat Service (V0.6.6)
     "chat/session/create": ["name", "provider_ref", "model_ref", "system_prompt", "allow_read_others"],
     "chat/session/list": [],
