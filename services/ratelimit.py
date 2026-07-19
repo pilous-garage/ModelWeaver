@@ -90,7 +90,8 @@ def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
     ):
         rl.check(f"r:{base_key}", limit=20, window=60)
     elif route_lower.startswith("agents/"):
-        rl.check(f"r:{base_key}", limit=60, window=60)
+        # Observabilité GUI : poll fréquent multi-panneaux (Agents/Debug/Chat)
+        rl.check(f"r:{base_key}", limit=120, window=60)
     elif route_lower in ("llm/chat", "chat/session/send",
                          "llm/chat/stream", "chat/session/stream",
                          "agent/chat", "agent/stream"):
