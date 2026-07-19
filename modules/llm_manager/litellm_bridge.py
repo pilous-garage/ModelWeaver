@@ -213,6 +213,24 @@ class LiteLLMBridge(BaseBridge):
                 return row[0]
         return None
 
+    def _has_custom_endpoint(self, provider_ref: str) -> bool:
+        """True si le provider a un endpoint (api_base) personnalise defini
+        dans le catalogue (ex: nvidia integrate.api.nvidia.com). Dans ce cas
+        litellm doit etre appele en mode OpenAI-compatible (model sans prefix
+        provider, api_base fourni)."""
+        if self.cat:
+            cur = self.cat.conn.execute("""
+                SELECT pe.endpoint_url
+                FROM provider_endpoints pe
+                JOIN catalogue_providers p ON p.id = pe.provider_id
+                WHERE p.ref = ? AND pe.is_default = 1
+                LIMIT 1
+            """, (provider_ref,))
+            row = cur.fetchone()
+            if row and row[0]:
+                return True
+        return False
+
     def _build_model_id(self, provider_ref: str,
                         model_ref: str) -> str:
         """Construit l'ID LiteLLM : provider/model ou provider_model_name."""
@@ -228,6 +246,11 @@ class LiteLLMBridge(BaseBridge):
             row = cur.fetchone()
             if row:
                 pm_name, api_type = row["provider_model_name"], row["api_type"]
+                # Provider a un endpoint personnalise (OpenAI-compatible) :
+                # on retire le prefix provider pour que litellm route en
+                # mode openai vers l'api_base fourni.
+                if self._has_custom_endpoint(provider_ref):
+                    return pm_name
                 if api_type in ("anthropic", "gemini", "cohere", "bedrock",
                                 "azure", "vertex", "databricks", "ollama"):
                     return pm_name if "/" in pm_name else f"{api_type}/{pm_name}"
@@ -473,7 +496,7 @@ class LiteLLMBridge(BaseBridge):
                 FROM provider_models pm
                 JOIN catalogue_models m ON m.id = pm.model_id
                 JOIN catalogue_providers p ON p.id = pm.provider_id
-                WHERE p.ref = ?
+                WHERE p.ref = ? AND pm.available = 1
                 ORDER BY m.name
             """, (provider_ref,))
             cols = [d[0] for d in cur.description]

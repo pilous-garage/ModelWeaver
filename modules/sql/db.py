@@ -387,7 +387,7 @@ class ModelRepository:
                 UPDATE provider_models SET provider_model_name=?, context_window_tokens=?,
                     max_output_tokens=?, cost_per_input_token=?, cost_per_output_token=?,
                     cost_billing=?, pricing_rules_json=?, limits_json=?,
-                    rate_limits_json=?, metadata_json=?, updated_at=strftime('%s','now')
+                    rate_limits_json=?, metadata_json=?, available=?, updated_at=strftime('%s','now')
                 WHERE id=?
             """, (
                 provider_model_name,
@@ -400,6 +400,7 @@ class ModelRepository:
                 (extra or {}).get("limits_json"),
                 (extra or {}).get("rate_limits_json"),
                 (extra or {}).get("metadata_json"),
+                (extra or {}).get("available", 1),
                 existing["id"]
             ))
             return existing["id"]
@@ -408,8 +409,8 @@ class ModelRepository:
             INSERT INTO provider_models (provider_id, model_id, provider_model_name,
                 context_window_tokens, max_output_tokens, cost_per_input_token,
                 cost_per_output_token, cost_billing, pricing_rules_json,
-                limits_json, rate_limits_json, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                limits_json, rate_limits_json, metadata_json, available)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             provider_id, model_id, provider_model_name,
             (extra or {}).get("context_window_tokens"),
@@ -420,7 +421,8 @@ class ModelRepository:
             (extra or {}).get("pricing_rules_json"),
             (extra or {}).get("limits_json"),
             (extra or {}).get("rate_limits_json"),
-            (extra or {}).get("metadata_json")
+            (extra or {}).get("metadata_json"),
+            (extra or {}).get("available", 1)
         ))
         return cur.lastrowid
 
@@ -1431,6 +1433,7 @@ class CatalogueDB:
         # ── Migration context_window_effective + context_audit_log ──
         try:
             _add_column_if_missing(self.conn, "provider_models", "context_window_effective", "INTEGER")
+            _add_column_if_missing(self.conn, "provider_models", "available", "INTEGER DEFAULT 1")
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS context_audit_log (
                     id                    INTEGER PRIMARY KEY AUTOINCREMENT,

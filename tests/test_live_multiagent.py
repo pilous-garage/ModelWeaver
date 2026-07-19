@@ -40,13 +40,72 @@ MODEL = os.environ.get("LIVE_MODEL", "llama-3.1-8b-instant")
 
 AGENTS = [MANAGER, W1, W2, AN]
 
+# Assignation LLM par agent : UN modele DIFFERENT par agent, choisi
+# dynamiquement par l'Orchestrateur (LLMManager.assign_llm) parmi les
+# modeles REELLEMENT accessibles (available=1 dans le CatalogueDB, peuples
+# par scripts/sync_provider_models.py). Aucune charge locale (pas de
+# llama-server). LIVE_PROVIDER/LIVE_MODEL force un seul modele partage.
+_LLM_MANAGER = None
+_TAKEN = []          # (provider, model) deja attribues (exclusion globale)
+_CHOSEN = {}         # agent_id -> (provider, model) choisi et fige
+
+
+def _get_llm_manager():
+    global _LLM_MANAGER
+    if _LLM_MANAGER is None:
+        from modules.llm_manager.llm_manager import LLMManager
+        _LLM_MANAGER = LLMManager(cat=CatalogueDB(), km=KeyManager(ModelWeaverDB()))
+    return _LLM_MANAGER
+
+
+# Pool de modeles RECONNUS joignables (verifies, quota OK en rafale).
+# 4 LLM DISTINCTS : 2 groq + 2 nvidia. L'Orchestrateur sert de fallback.
+# Le test valide le routing multi-LLM via l'Orchestrateur, 100% cloud
+# (aucune charge locale).
+_POOL = [
+    ("groq", "llama-3.1-8b-instant"),
+    ("groq", "llama-3.3-70b-versatile"),
+    ("nvidia", "meta/llama-3.1-8b-instruct"),
+    ("nvidia", "meta/llama-3.3-70b-instruct"),
+]
+
+
+def _llm_for(agent_id):
+    """(provider, model) pour un agent.
+
+    Garantit des LLM DISTINCTS entre agents en piochant dans la _POOL fiable,
+    puis fallback sur l'Orchestrateur (assign_llm) pour plus de diversite.
+    LIVE_PROVIDER/LIVE_MODEL force tout le monde sur un modele.
+    """
+    if os.environ.get("LIVE_PROVIDER") or os.environ.get("LIVE_MODEL"):
+        return PROVIDER, MODEL
+    if agent_id in _CHOSEN:
+        return _CHOSEN[agent_id]
+    # 1) pool fiable, en excluant les deja pris
+    for cand in _POOL:
+        if cand not in _TAKEN:
+            _TAKEN.append(cand)
+            _CHOSEN[agent_id] = cand
+            return cand
+    # 2) fallback : on reutilise un modele de la pool (les agents 3 et 4
+    #    partagent un des LLM deja attribues — 2 LLM groq distincts ici).
+    for cand in _POOL:
+        _TAKEN.append(cand)
+        _CHOSEN[agent_id] = cand
+        return cand
+    return PROVIDER, MODEL
+
+
+def _llm_fail(agent_id):
+    """Marque le modele de l'agent comme injoignable et force un rechoix."""
+    if agent_id in _CHOSEN:
+        _TAKEN.append(_CHOSEN.pop(agent_id))
+
 
 def _has_key():
-    try:
-        km = KeyManager(ModelWeaverDB()); km.load()
-        return bool(km.get_key(PROVIDER)) or os.environ.get(f"{PROVIDER.upper()}_API_KEY")
-    except Exception:
-        return bool(os.environ.get(f"{PROVIDER.upper()}_API_KEY"))
+    # On valide qu'au moins un modele accessible existe (Orchestrateur).
+    lm = _get_llm_manager()
+    return lm.assign_llm(use_case="coding") is not None
 
 
 def _strip_fences(text: str) -> str:
@@ -61,6 +120,8 @@ def _strip_fences(text: str) -> str:
 class TestLiveMultiAgent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        global _TAKEN
+        _TAKEN = []
         cls.bridge = LiteLLMBridge(cat=CatalogueDB(), km=KeyManager(ModelWeaverDB()))
         cls._cleanup_disk()
         cls._setup_repo()
@@ -90,14 +151,38 @@ class TestLiveMultiAgent(unittest.TestCase):
                    {"project_id": PROJ, "agent_id": MANAGER, "message": "roadmap"}, str(mw_home()))
         call_skill("system/git_push@v1", {"project_id": PROJ, "agent_id": MANAGER}, str(mw_home()))
 
-    def _run(self, agent_id, wf):
-        fsm = FSMInterpreter(bridge=self.bridge)
-        return fsm.run(wf, messages=[],
-                       variables={"agent_id": agent_id, "project_id": PROJ},
-                       provider_ref=PROVIDER, model_ref=MODEL)
+    def _run(self, agent_id, build_wf, max_retry=4):
+        last_err = None
+        for attempt in range(max_retry):
+            self._reset_agent_workspace(agent_id)
+            provider, model = _llm_for(agent_id)
+            print(f"  [{agent_id}] LLM = {provider}/{model} (try {attempt+1})")
+            wf = build_wf(provider, model)
+            fsm = FSMInterpreter(bridge=self.bridge)
+            res = fsm.run(wf, messages=[],
+                          variables={"agent_id": agent_id, "project_id": PROJ},
+                          provider_ref=provider, model_ref=model)
+            if res.status == "success":
+                return res
+            last_err = res.end_reason
+            _llm_fail(agent_id)  # modele injoignable au vrai appel -> rechoisir
+        raise AssertionError(f"{agent_id} a echoue apres {max_retry} LLM: {last_err}")
+
+    def _reset_agent_workspace(self, agent_id):
+        """Reclone proprement le workspace de l'agent pour que le retry sur un
+        autre LLM reparte d'un etat sans branche feature-* residuelle."""
+        clone = mw_home() / "memagent" / agent_id / "workspace" / PROJ
+        shutil.rmtree(clone, ignore_errors=True)
+        try:
+            call_skill("system/git_clone@v1",
+                       {"project_id": PROJ, "agent_id": agent_id}, str(mw_home()))
+        except Exception:
+            pass
 
     # ── workflows ──
-    def _worker_wf(self, branch, path, prompt):
+    def _worker_wf(self, agent_id, branch, path, prompt, provider=None, model=None):
+        provider = provider or _llm_for(agent_id)[0]
+        model = model or _llm_for(agent_id)[1]
         return {
             "max_iterations": 25,
             "steps": [
@@ -105,7 +190,7 @@ class TestLiveMultiAgent(unittest.TestCase):
                  "inputs": {"project_id": PROJ}, "next": "branch"},
                 {"id": "branch", "type": "call", "fn": "system/git_branch@v1",
                  "inputs": {"project_id": PROJ, "name": branch, "create": True}, "next": "gen"},
-                {"id": "gen", "type": "llm_call", "provider_ref": PROVIDER, "model_ref": MODEL,
+                {"id": "gen", "type": "llm_call", "provider_ref": provider, "model_ref": model,
                  "skill_prompt": prompt, "output_capture": "_code", "next": "write"},
                 {"id": "write", "type": "call", "fn": "system/project_write@v1",
                  "inputs": {"project_id": PROJ, "path": path, "content": "{{_code}}"}, "next": "commit"},
@@ -117,14 +202,16 @@ class TestLiveMultiAgent(unittest.TestCase):
             ],
         }
 
-    def _analyst_wf(self):
+    def _analyst_wf(self, provider=None, model=None):
         return self._worker_wf(
-            "feature-spec", "docs/SPEC.md",
+            AN, "feature-spec", "docs/SPEC.md",
             "Write a short Markdown specification for a number-guessing game "
             "(modules logic/ui/main, roles). Return ONLY the Markdown, no fences, "
-            "no explanation.")
+            "no explanation.", provider=provider, model=model)
 
-    def _manager_wf(self):
+    def _manager_wf(self, provider=None, model=None):
+        provider = provider or _llm_for(MANAGER)[0]
+        model = model or _llm_for(MANAGER)[1]
         return {
             "max_iterations": 25,
             "steps": [
@@ -138,7 +225,7 @@ class TestLiveMultiAgent(unittest.TestCase):
                  "inputs": {"project_id": PROJ, "name": "origin/feature-ui"}, "next": "m3"},
                 {"id": "m3", "type": "call", "fn": "system/git_merge@v1",
                  "inputs": {"project_id": PROJ, "name": "origin/feature-spec"}, "next": "gen"},
-                {"id": "gen", "type": "llm_call", "provider_ref": PROVIDER, "model_ref": MODEL,
+                {"id": "gen", "type": "llm_call", "provider_ref": provider, "model_ref": model,
                  "skill_prompt": (
                      "Write a Python module `src/main.py` that imports `check` from "
                      "`logic` and `render` from `ui`, defines `play(secret, guesses)` "
@@ -159,35 +246,39 @@ class TestLiveMultiAgent(unittest.TestCase):
 
     # ── test principal ──
     def test_live_multiagent_collaboration(self):
-        # Espacement des appels LLM : le tier gratuit groq plafonne a 6000 TPM
-        # (fenetre glissante 60s). On laisse la fenetre se vider entre agents.
+        # Assignation LLM par agent (Organisateur). En local Ollama (defaut),
+        # pas de rate-limit → pas de pause. En cloud (groq gratuit, 6000 TPM),
+        # on espace les appels pour laisser la fenetre glissante se vider.
+        cloud = bool(os.environ.get("LIVE_PROVIDER") or os.environ.get("LIVE_MODEL"))
+        pause = 60 if cloud else 0
+
         # Worker1 : src/logic.py
-        r1 = self._run(W1, self._worker_wf(
-            "feature-logic", "src/logic.py",
+        r1 = self._run(W1, lambda p, m: self._worker_wf(
+            W1, "feature-logic", "src/logic.py",
             "Write a Python module `src/logic.py` implementing "
             "`check(guess, secret)` that returns 'win' if equal, else 'high' if "
             "guess>secret, else 'low'. Return ONLY the Python code, no markdown "
-            "fences, no explanation."))
+            "fences, no explanation.", provider=p, model=m))
         self.assertEqual(r1.status, "success", r1.end_reason)
-        time.sleep(35)
+        time.sleep(pause)
 
         # Worker2 : src/ui.py
-        r2 = self._run(W2, self._worker_wf(
-            "feature-ui", "src/ui.py",
+        r2 = self._run(W2, lambda p, m: self._worker_wf(
+            W2, "feature-ui", "src/ui.py",
             "Write a Python module `src/ui.py` implementing `render(result)` that "
             "maps 'win'->'Bravo !', 'high'->'Trop grand', 'low'->'Trop petit' and "
             "returns the French string. Return ONLY the Python code, no markdown "
-            "fences, no explanation."))
+            "fences, no explanation.", provider=p, model=m))
         self.assertEqual(r2.status, "success", r2.end_reason)
-        time.sleep(35)
+        time.sleep(pause)
 
         # Analyst : docs/SPEC.md
-        ra = self._run(AN, self._analyst_wf())
+        ra = self._run(AN, lambda p, m: self._analyst_wf(provider=p, model=m))
         self.assertEqual(ra.status, "success", ra.end_reason)
-        time.sleep(35)
+        time.sleep(pause)
 
         # Manager : merge + main.py (LLM) + push
-        rm = self._run(MANAGER, self._manager_wf())
+        rm = self._run(MANAGER, lambda p, m: self._manager_wf(provider=p, model=m))
         self.assertEqual(rm.status, "success", rm.end_reason)
 
         # ── assertions produit (clone manager) ──

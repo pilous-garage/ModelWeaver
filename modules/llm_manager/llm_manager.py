@@ -160,6 +160,8 @@ class LLMManager:
     def assign_llm(self, use_case: str = "coding",
                    exclude_provider: Optional[str] = None,
                    exclude_model: Optional[str] = None,
+                   exclude_providers: Optional[list] = None,
+                   exclude_models: Optional[list] = None,
                    max_candidates: int = 8) -> Optional[Dict[str, Any]]:
         """Demande au gestionnaire de LLM une alternative DISPONIBLE et
         différente de ``(exclude_provider, exclude_model)``.
@@ -169,6 +171,12 @@ class LLMManager:
         modèle actif différent. Retourne ``None`` si aucune alternative
         n'est trouvée (ex. un seul LLM configuré).
         """
+        excl_p = set(exclude_providers or [])
+        if exclude_provider:
+            excl_p.add(exclude_provider)
+        excl_m = set(exclude_models or [])
+        if exclude_model:
+            excl_m.add(exclude_model)
         from modules.llm_manager.litellm_bridge import LiteLLMBridge
         from modules.key_manager.key_manager import KeyManager
         from modules.sql.db import ModelWeaverDB
@@ -178,7 +186,7 @@ class LLMManager:
                      if p.get("available")]
         candidates = []
         for p in providers:
-            if exclude_provider and p["ref"] == exclude_provider:
+            if p["ref"] in excl_p:
                 continue
             try:
                 models = bridge.list_available_models(p["ref"])
@@ -188,7 +196,7 @@ class LLMManager:
                 status = m.get("status")
                 if status in ("inactive", "deprecated", "disabled"):
                     continue
-                if exclude_model and m["ref"] == exclude_model:
+                if m["ref"] in excl_m:
                     continue
                 candidates.append({"provider_ref": p["ref"],
                                    "model_ref": m["ref"],
