@@ -276,6 +276,12 @@ def main():
     ap.add_argument("--ping", action="store_true",
                     help="verifie la joignabilite reelle de chaque modele (chat test)")
     ap.add_argument("--provider", help="ne synchroniser qu'un fournisseur")
+    ap.add_argument("--pricing", action="store_true",
+                    help="synchronise aussi les tarifs (source GitHub litellm)")
+    ap.add_argument("--only-free", action="store_true",
+                    help="avec --pricing : ne remplit que les modeles free-tier")
+    ap.add_argument("--force-pricing", action="store_true",
+                    help="avec --pricing : re-telecharge la source sans cache")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -299,6 +305,15 @@ def main():
     if not args.dry_run:
         cat.conn.commit()
     print(f"== done: {total} model links declared/available ==")
+
+    if args.pricing:
+        from modules.catalogue.pricing import sync_all
+        print(f"== sync_pricing (force={args.force_pricing}, "
+              f"only_free={args.only_free}) ==")
+        report = sync_all(cat, force=args.force_pricing, dry_run=args.dry_run,
+                          only_free_tier=args.only_free)
+        for src, stats in report.items():
+            print(f"  [{src}] {stats}")
 
 
 if __name__ == "__main__":
