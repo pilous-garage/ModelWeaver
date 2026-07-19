@@ -84,6 +84,28 @@ class TestBudgetConsolidation(unittest.TestCase):
         self.assertTrue(any(r["target_ref"] == self.FLAG_PROV for r in rows))
         self._reset()
 
+    def test_sweep_agent_actif_ttl(self):
+        # insere un agent avec heartbeat tres ancien et un recent
+        now = int(time.time())
+        self.mw.conn.execute(
+            "INSERT OR REPLACE INTO agent_actif (agent_id, status, last_heartbeat) "
+            "VALUES ('__old__', 'running', ?)", (now - 999999,))
+        self.mw.conn.execute(
+            "INSERT OR REPLACE INTO agent_actif (agent_id, status, last_heartbeat) "
+            "VALUES ('__new__', 'running', ?)", (now,))
+        self.mw.conn.commit()
+        from modules.usage.usage_collector import _sweep_agent_actif_ttl
+        n = _sweep_agent_actif_ttl(self.mw)
+        self.assertGreaterEqual(n, 1)
+        old = self.mw.conn.execute(
+            "SELECT COUNT(*) FROM agent_actif WHERE agent_id='__old__'").fetchone()[0]
+        new = self.mw.conn.execute(
+            "SELECT COUNT(*) FROM agent_actif WHERE agent_id='__new__'").fetchone()[0]
+        self.assertEqual(old, 0)
+        self.assertEqual(new, 1)
+        self.mw.conn.execute("DELETE FROM agent_actif WHERE agent_id IN ('__old__','__new__')")
+        self.mw.conn.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

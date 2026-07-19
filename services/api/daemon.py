@@ -432,9 +432,13 @@ def _job_processor_loop(interval: float = 5.0):
     t.start()
 
 
+_collector_proc = None
+
+
 def _start_usage_collector(log=None):
     """Lance le rassembleur d'usage en process séparé (start_new_session),
     isolé d'un crash du daemon. Best-effort."""
+    global _collector_proc
     try:
         import subprocess
         script = Path(__file__).resolve().parent.parent.parent / "modules" / "usage" / "usage_collector.py"
@@ -445,11 +449,45 @@ def _start_usage_collector(log=None):
             start_new_session=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        _collector_proc = proc
         if log is not None:
             log.info("Rassembleur d'usage démarré", pid=proc.pid)
     except Exception as e:
         if log is not None:
             log.warning("Lancement rassembleur d'usage échoué", error=str(e))
+
+
+def _supervise_usage_collector(log=None):
+    """Relance le rassembleur d'usage s'il est mort (crash hors reboot daemon)."""
+    global _collector_proc
+    try:
+        if _collector_proc is None:
+            _start_usage_collector(log)
+            return
+        if _collector_proc.poll() is not None:
+            if log is not None:
+                log.warning("Rassembleur d'usage mort, relance",
+                            code=_collector_proc.returncode)
+            _collector_proc = None
+            _start_usage_collector(log)
+    except Exception:
+        pass
+
+
+def _collector_supervisor_loop(interval: float = 30.0):
+    """Boucle de supervision du rassembleur d'usage (thread daemon)."""
+    import time
+    try:
+        from services._common import get_logger
+        log = get_logger("daemon")
+    except Exception:
+        log = None
+    while True:
+        try:
+            _supervise_usage_collector(log)
+        except Exception:
+            pass
+        time.sleep(interval)
 
 
 def op_jobs_list(_params):
@@ -1885,6 +1923,11 @@ def serve(port: int = 8770) -> None:
     # Best-effort : si le lancement échoue, le logging disque continue
     # (les données seront consolidées au prochain lancement).
     _start_usage_collector(log)
+
+    # Supervise le rassembleur : le relance s'il meurt (crash hors reboot).
+    _supervisor = threading.Thread(
+        target=_collector_supervisor_loop, args=(30.0,), daemon=True)
+    _supervisor.start()
 
     # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
     try:

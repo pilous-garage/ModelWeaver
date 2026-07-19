@@ -281,6 +281,32 @@ def _enforce_agent_actif_cap(mw: ModelWeaverDB) -> None:
         pass
 
 
+def _agent_actif_heartbeat_timeout() -> int:
+    """Timeout (secondes) au-dela duquel un agent est considere mort et purge.
+    Configurable via general.heartbeat_timeout_seconds (defaut 3600)."""
+    try:
+        from modules.config.config_manager import config
+        return int(config.get("general.heartbeat_timeout_seconds", 3600))
+    except Exception:
+        return 3600
+
+
+def _sweep_agent_actif_ttl(mw: ModelWeaverDB) -> int:
+    """Purgue les agents dont le dernier heartbeat depasse le timeout TTL.
+    Retourne le nombre d'agents supprimes (0 si aucun)."""
+    timeout = _agent_actif_heartbeat_timeout()
+    try:
+        cutoff = int(time.time()) - timeout
+        cur = mw.conn.execute(
+            "DELETE FROM agent_actif WHERE last_heartbeat IS NOT NULL "
+            "AND last_heartbeat < ?", (cutoff,))
+        n = cur.rowcount
+        mw.conn.commit()
+        return n
+    except Exception:
+        return 0
+
+
 def run_once() -> int:
     """Un cycle de consolidation. Retourne le nb de lignes traitees."""
     log_dir = Path(os.path.expanduser("~")) / ".modelweaver" / usage_log.USAGE_DIR
@@ -324,6 +350,8 @@ def run_once() -> int:
         _rotate_archives(log_dir)
         # 5) borne taille table agent_actif (FIFO)
         _enforce_agent_actif_cap(mw)
+        # 6) purge TTL des agents morts (heartbeat depasse le timeout)
+        _sweep_agent_actif_ttl(mw)
     finally:
         mw.close()
         cat.close()
