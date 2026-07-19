@@ -27,9 +27,25 @@ sys.path.insert(0, str(REPO_ROOT))
 from modules.usage import usage_log  # noqa: E402
 from modules.sql.db import ModelWeaverDB, CatalogueDB  # noqa: E402
 
-POLL_INTERVAL = 5.0          # secondes entre deux cycles
+POLL_INTERVAL = 5.0          # secondes entre deux cycles (override via config)
 FLUSH_SUFFIX = ".flush"
 RETRY_SUFFIX = ".retry"
+
+
+def _poll_interval() -> float:
+    try:
+        from modules.config.config_manager import config
+        return float(config.get("usage.collector_poll_seconds", POLL_INTERVAL))
+    except Exception:
+        return POLL_INTERVAL
+
+
+def _agent_actif_max_rows() -> int:
+    try:
+        from modules.config.config_manager import config
+        return int(config.get("usage.agent_actif_max_rows", 1000))
+    except Exception:
+        return 1000
 
 
 def _cost_for(cat, provider_ref: str, model_ref: str,
@@ -153,13 +169,13 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
 
 
 def _rotate_archives(log_dir: Path) -> None:
-    """Si le fichier .flush depasse MAX_ARCHIVE_BYTES, on l'archive en
+    """Si le fichier .flush depasse MAX_ARCHIVE_BYTES(), on l'archive en
     real_call.log.N (N = prochain libre), et on nettoie les trop vieux."""
     flush = log_dir / (usage_log.LOG_FILENAME + FLUSH_SUFFIX)
     if not flush.exists():
         return
     try:
-        if flush.stat().st_size < usage_log.MAX_ARCHIVE_BYTES:
+        if flush.stat().st_size < usage_log.MAX_ARCHIVE_BYTES():
             return
     except Exception:
         return
@@ -176,17 +192,40 @@ def _rotate_archives(log_dir: Path) -> None:
         os.replace(str(flush), str(dest))
     except Exception:
         pass
-    # nettoyer les archives au-dela de MAX_ARCHIVES
+    # nettoyer les archives au-dela de MAX_ARCHIVES()
     archives = sorted(
         [p for p in log_dir.glob(usage_log.ARCHIVE_PREFIX + "*")],
         key=lambda p: p.name,
     )
-    while len(archives) > usage_log.MAX_ARCHIVES:
+    while len(archives) > usage_log.MAX_ARCHIVES():
         old = archives.pop(0)
         try:
             old.unlink()
         except Exception:
             pass
+
+
+def _enforce_agent_actif_cap(mw: ModelWeaverDB) -> None:
+    """Borne la table agent_actif (FIFO) : si elle depasse le max, on supprime
+    les plus anciens (dernier heartbeat le plus vieux). Borne configurable via
+    config usage.agent_actif_max_rows."""
+    cap = _agent_actif_max_rows()
+    try:
+        cur = mw.conn.execute("SELECT COUNT(*) FROM agent_actif").fetchone()[0]
+        if cur <= cap:
+            return
+        # supprime les (cur - cap) agents les moins recents en heartbeat
+        mw.conn.execute("""
+            DELETE FROM agent_actif
+            WHERE agent_id IN (
+                SELECT agent_id FROM agent_actif
+                ORDER BY last_heartbeat ASC
+                LIMIT ?
+            )
+        """, (cur - cap,))
+        mw.conn.commit()
+    except Exception:
+        pass
 
 
 def run_once() -> int:
@@ -230,6 +269,8 @@ def run_once() -> int:
                     pass
         # 4) rotation d'archive si besoin
         _rotate_archives(log_dir)
+        # 5) borne taille table agent_actif (FIFO)
+        _enforce_agent_actif_cap(mw)
     finally:
         mw.close()
         cat.close()
@@ -238,8 +279,8 @@ def run_once() -> int:
 
 def main() -> None:
     print(f"usage_collector demarre (poll={POLL_INTERVAL}s, "
-          f"archive_max={usage_log.MAX_ARCHIVE_BYTES//(1024*1024)}Mo, "
-          f"ram_max={usage_log.MAX_RAM_BUFFER_BYTES//(1024*1024)}Mo)")
+          f"archive_max={usage_log.MAX_ARCHIVE_BYTES()//(1024*1024)}Mo, "
+          f"ram_max={usage_log.MAX_RAM_BUFFER_BYTES()//(1024*1024)}Mo)")
     try:
         while True:
             try:
@@ -248,7 +289,7 @@ def main() -> None:
                     print(f"  [{time.strftime('%H:%M:%S')}] {n} appel(s) consolide(s)")
             except Exception as e:
                 print(f"  erreur cycle: {e}")
-            time.sleep(POLL_INTERVAL)
+            time.sleep(_poll_interval())
     except KeyboardInterrupt:
         print("usage_collector arrete")
 

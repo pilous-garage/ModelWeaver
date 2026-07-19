@@ -24,26 +24,48 @@ from typing import Any, Dict, Optional
 from services._common import mw_home
 
 
-# ── Configuration centrale (RAM / disque) ───────────────────────────────
-# Volontairement des globals simples, pensées pour être surchargées par un
-# gestionnaire de config global à l'avenir (ex: config.usage.ram_buffer_mb).
+# ── Configuration (RAM / disque) ────────────────────────────────────────
+# Les valeurs sont lues via le gestionnaire de config global
+# (modules.config.config_manager) et restent donc réglables à chaud
+# (panneau paramètres GUI / daemon). Voir modules/config/config_manager.py.
 USAGE_DIR = "usage"                 # sous-dossier de mw_home()
 LOG_FILENAME = "real_call.log"      # fichier d'entree (append-only)
 ARCHIVE_PREFIX = "real_call.log."   # archives rotatives real_call.log.1, .2, ...
 
-# Taille max d'une archive sur disque (octets). Au-dela, rotation.
-MAX_ARCHIVE_BYTES = 100 * 1024 * 1024   # 100 Mo en dur
+# Valeurs par defaut (utilisees seulement si le config manager absent).
+_DF_ARCHIVE_BYTES = 100 * 1024 * 1024
+_DF_RAM_BUFFER_BYTES = 10 * 1024 * 1024
+_DF_MAX_ARCHIVES = 10
+_DF_FSYNC_PER_LINE = True
 
-# Taille max du tampon en RAM avant flush force sur disque (octets).
-# On flush des que le buffer depasse cette taille (protection RAM).
-MAX_RAM_BUFFER_BYTES = 10 * 1024 * 1024  # 10 Mo en dur
 
-# Nombre max d'archives conservées (anciennes supprimées).
-MAX_ARCHIVES = 10
+def _cfg():
+    """Retourne le config manager si importable, sinon None (fallback defauts)."""
+    try:
+        from modules.config.config_manager import config
+        return config
+    except Exception:
+        return None
 
-# fsync par ligne ? True = survit au crash meme durant l'ecriture (plus lent
-# mais sur). False = ecriture buffered (plus rapide, risque si crash during).
-FSYNC_PER_LINE = True
+
+def MAX_ARCHIVE_BYTES() -> int:
+    c = _cfg()
+    return c.get("usage.archive_max_bytes", _DF_ARCHIVE_BYTES) if c else _DF_ARCHIVE_BYTES
+
+
+def MAX_RAM_BUFFER_BYTES() -> int:
+    c = _cfg()
+    return c.get("usage.ram_buffer_bytes", _DF_RAM_BUFFER_BYTES) if c else _DF_RAM_BUFFER_BYTES
+
+
+def MAX_ARCHIVES() -> int:
+    c = _cfg()
+    return c.get("usage.max_archives", _DF_MAX_ARCHIVES) if c else _DF_MAX_ARCHIVES
+
+
+def FSYNC_PER_LINE() -> bool:
+    c = _cfg()
+    return c.get("usage.fsync_per_line", _DF_FSYNC_PER_LINE) if c else _DF_FSYNC_PER_LINE
 
 
 # ── Etat module (singleton bas niveau) ─────────────────────────────────
@@ -85,7 +107,7 @@ def append_call(record: Dict[str, Any]) -> bool:
         try:
             fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
             os.write(fd, data)
-            if FSYNC_PER_LINE:
+            if FSYNC_PER_LINE():
                 os.fsync(fd)
             return True
         except Exception:
