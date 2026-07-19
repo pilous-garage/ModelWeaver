@@ -14,6 +14,7 @@ dist/
 **/src-tauri/target/
 **/src-tauri/Cargo.lock
 projetadmin/target/
+interfaces/**/target/
 
 # Tauri generated schemas
 **/src-tauri/gen/schemas/
