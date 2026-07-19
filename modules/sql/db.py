@@ -47,6 +47,14 @@ def _default_agents_db() -> Path:
     return mw_home() / "agents.db"
 
 
+def _default_community_db() -> Path:
+    return mw_home() / "community.db"
+
+
+def _default_user_db() -> Path:
+    return mw_home() / "user.db"
+
+
 # ──────────────────────────────────────────────
 #  Utility
 # ──────────────────────────────────────────────
@@ -1451,6 +1459,68 @@ class CatalogueDB:
         except Exception as e:
             print(f"⚠️  Migration context_audit_log ignorée: {e}")
 
+        # ── Migration : nouvelles tables d'acces modeles (V0.7.0.4+) ──
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS key_endpoint_models (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+                    endpoint_id INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
+                    key_ref TEXT NOT NULL,
+                    model_id INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    provider_model_name TEXT NOT NULL,
+                    declared INTEGER DEFAULT 0,
+                    available INTEGER DEFAULT 0,
+                    last_checked_at INTEGER,
+                    last_error TEXT,
+                    created_at INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(endpoint_id, key_ref, model_id)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_efficacy (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    use_case TEXT NOT NULL,
+                    score_quality REAL DEFAULT 0, score_speed REAL DEFAULT 0,
+                    score_cost REAL DEFAULT 0, score_reliability REAL DEFAULT 0,
+                    samples INTEGER DEFAULT 0,
+                    updated_at INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, use_case)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+                    unit TEXT, scope TEXT
+                )
+            """)
+            self.conn.execute("""
+                INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES
+                    ('req_per_min','Requetes / minute','requests','requests'),
+                    ('req_per_day','Requetes / jour','requests','requests'),
+                    ('tok_per_min','Tokens / minute','tokens','tokens'),
+                    ('tok_per_hour','Tokens / heure','tokens','tokens'),
+                    ('tok_per_day','Tokens / jour','tokens','tokens'),
+                    ('cost_per_day','Cout / jour (USD)','usd','cost'),
+                    ('cost_per_month','Cout / mois (USD)','usd','cost')
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_type TEXT NOT NULL CHECK(target_type IN ('provider','model','endpoint','key')),
+                    target_ref TEXT NOT NULL,
+                    tag_id INTEGER NOT NULL REFERENCES budget_tags(id),
+                    limit_value REAL NOT NULL,
+                    window TEXT NOT NULL DEFAULT 'day' CHECK(window IN ('minute','hour','day','month')),
+                    cost_per_unit REAL,
+                    created_at INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+        except Exception as e:
+            print(f"⚠️  Migration tables d'acces ignoree: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
@@ -1756,6 +1826,89 @@ class RuntimeDB:
                 value INTEGER NOT NULL DEFAULT 0
             )
         """)
+
+        # ── Migration : tables usage & mesure locales (V0.7.0.4+) ──
+        # modelweaver.db privé, jamais poussé au distant.
+        try:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS real_call_models (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_ref  TEXT,
+                    endpoint_id   INTEGER,
+                    key_ref       TEXT,
+                    model_ref     TEXT,
+                    agent_id      TEXT,
+                    sent_at       INTEGER NOT NULL,
+                    received_at   INTEGER,
+                    tokens_in     INTEGER DEFAULT 0,
+                    tokens_out    INTEGER DEFAULT 0,
+                    cost          REAL DEFAULT 0,
+                    status        TEXT CHECK(status IN ('ok','rate_limited','error','quota_exhausted')),
+                    error_code    TEXT,
+                    error_detail  TEXT,
+                    window_key    TEXT,
+                    created_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_rcm_model ON real_call_models(model_ref);
+                CREATE INDEX IF NOT EXISTS idx_rcm_sent ON real_call_models(sent_at);
+                CREATE INDEX IF NOT EXISTS idx_rcm_status ON real_call_models(status);
+
+                CREATE TABLE IF NOT EXISTS really_used_budget (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    budget_tag_code TEXT NOT NULL,
+                    target_type   TEXT NOT NULL,
+                    target_ref    TEXT NOT NULL,
+                    window        TEXT,
+                    measured_limit REAL,
+                    sample_count  INTEGER DEFAULT 0,
+                    first_exhausted_at INTEGER,
+                    confidence    REAL DEFAULT 0,
+                    method        TEXT,
+                    measured_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(budget_tag_code, target_type, target_ref, window)
+                );
+
+                CREATE TABLE IF NOT EXISTS endpoint_model_usage (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    endpoint_id   INTEGER,
+                    model_ref     TEXT,
+                    agent_id      TEXT,
+                    requests      INTEGER DEFAULT 0,
+                    tokens_in     INTEGER DEFAULT 0,
+                    tokens_out    INTEGER DEFAULT 0,
+                    cost          REAL DEFAULT 0,
+                    last_call_at  INTEGER,
+                    last_call_working INTEGER DEFAULT 1,
+                    error_count   INTEGER DEFAULT 0,
+                    created_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_emu_endpoint ON endpoint_model_usage(endpoint_id);
+                CREATE INDEX IF NOT EXISTS idx_emu_model ON endpoint_model_usage(model_ref);
+
+                CREATE TABLE IF NOT EXISTS budget_consumption (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    budget_id     INTEGER NOT NULL,
+                    used          REAL DEFAULT 0,
+                    updated_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS local_model_efficacy (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_ref     TEXT NOT NULL,
+                    use_case      TEXT NOT NULL,
+                    score_quality   REAL DEFAULT 0,
+                    score_speed     REAL DEFAULT 0,
+                    score_cost      REAL DEFAULT 0,
+                    score_reliability REAL DEFAULT 0,
+                    samples       INTEGER DEFAULT 0,
+                    criteria_meta TEXT,
+                    last_evaluated_at INTEGER,
+                    UNIQUE(model_ref, use_case)
+                );
+            """)
+        except Exception as e:
+            print(f"⚠️  Migration tables usage ignorée: {e}")
+
         self.conn.commit()
 
     def data_version(self) -> int:

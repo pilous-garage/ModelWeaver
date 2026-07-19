@@ -409,6 +409,81 @@ CREATE TABLE IF NOT EXISTS outils_popularite (
 );
 
 -- ============================================================
+-- 9. KEY_ENDPOINT_MODELS — Declaration joignable (key x endpoint x model)
+--    Derivee du produit (endpoints du provider) x (keys du provider).
+--    `declared` : present dans la liste-modele de l'API au dernier refresh.
+--    `available` : joignable reellement (ping optionnel / degradation runtime).
+--    On ne SUPPRIME pas : une ligne non re-declaree reste declared=0.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS key_endpoint_models (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id   INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+    endpoint_id   INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
+    key_ref       TEXT NOT NULL,
+    model_id      INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+    provider_model_name TEXT NOT NULL,
+    declared      INTEGER DEFAULT 0,
+    available     INTEGER DEFAULT 0,
+    last_checked_at INTEGER,
+    last_error    TEXT,
+    created_at    INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(endpoint_id, key_ref, model_id)
+);
+
+-- ============================================================
+-- 10. MODEL_EFFICACY — Efficacite communautaire (catalogue).
+--     Vierge au depart ; remplie plus tard (analyse commune).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS model_efficacy (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id      INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+    use_case      TEXT NOT NULL,
+    score_quality   REAL DEFAULT 0,
+    score_speed     REAL DEFAULT 0,
+    score_cost      REAL DEFAULT 0,
+    score_reliability REAL DEFAULT 0,
+    samples       INTEGER DEFAULT 0,
+    updated_at    INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id, use_case)
+);
+
+-- ============================================================
+-- 11. BUDGET_TAGS — Reference des types de budget.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS budget_tags (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    code      TEXT NOT NULL UNIQUE,
+    label     TEXT NOT NULL,
+    unit      TEXT,
+    scope     TEXT  -- requests | tokens | cost | latency
+);
+
+INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES
+    ('req_per_min',  'Requetes / minute',        'requests', 'requests'),
+    ('req_per_day',  'Requetes / jour',          'requests', 'requests'),
+    ('tok_per_min',  'Tokens / minute',          'tokens',   'tokens'),
+    ('tok_per_hour', 'Tokens / heure',           'tokens',   'tokens'),
+    ('tok_per_day',  'Tokens / jour',            'tokens',   'tokens'),
+    ('cost_per_day', 'Cout / jour (USD)',        'usd',      'cost'),
+    ('cost_per_month','Cout / mois (USD)',       'usd',      'cost');
+
+-- ============================================================
+-- 12. BUDGETS — Limites theoriques (catalogue, partageable).
+--     target_type : provider | model | endpoint | key
+--     window : minute | hour | day | month (periode de reset de `used`)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS budgets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type   TEXT NOT NULL CHECK(target_type IN ('provider','model','endpoint','key')),
+    target_ref    TEXT NOT NULL,
+    tag_id        INTEGER NOT NULL REFERENCES budget_tags(id),
+    limit_value   REAL NOT NULL,
+    window        TEXT NOT NULL DEFAULT 'day' CHECK(window IN ('minute','hour','day','month')),
+    cost_per_unit REAL,
+    created_at    INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);
@@ -417,6 +492,13 @@ CREATE INDEX IF NOT EXISTS idx_cat_models_developer ON catalogue_models(develope
 CREATE INDEX IF NOT EXISTS idx_cat_commands_ref ON catalogue_commands(ref);
 CREATE INDEX IF NOT EXISTS idx_cat_provider_models_provider ON provider_models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_cat_provider_models_model ON provider_models(model_id);
+CREATE INDEX IF NOT EXISTS idx_kem_provider ON key_endpoint_models(provider_id);
+CREATE INDEX IF NOT EXISTS idx_kem_endpoint ON key_endpoint_models(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_kem_key ON key_endpoint_models(key_ref);
+CREATE INDEX IF NOT EXISTS idx_kem_declared ON key_endpoint_models(declared);
+CREATE INDEX IF NOT EXISTS idx_kem_available ON key_endpoint_models(available);
+CREATE INDEX IF NOT EXISTS idx_me_model ON model_efficacy(model_id);
+CREATE INDEX IF NOT EXISTS idx_budgets_target ON budgets(target_type, target_ref);
 CREATE INDEX IF NOT EXISTS idx_outils_ref ON catalogue_outils(ref);
 CREATE INDEX IF NOT EXISTS idx_classes_ref ON classes_outils(ref);
 CREATE INDEX IF NOT EXISTS idx_recettes_version ON catalogue_recettes(version_id);

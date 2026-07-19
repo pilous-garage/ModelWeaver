@@ -416,7 +416,93 @@ CREATE TABLE IF NOT EXISTS tool_usage (
 );
 
 -- ============================================================
+-- USAGE & MESURE LOCAUX (modelweaver.db, privé, jamais poussé au distant)
+-- ============================================================
+
+-- Journal brut des appels LLM reels (FIFO). error_detail = JSON du corps
+-- d'erreur (pour parser quel budget a sauté). Rotation sur created_at.
+CREATE TABLE IF NOT EXISTS real_call_models (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_ref  TEXT,
+    endpoint_id   INTEGER,
+    key_ref       TEXT,
+    model_ref     TEXT,
+    agent_id      TEXT,
+    sent_at       INTEGER NOT NULL,
+    received_at   INTEGER,
+    tokens_in     INTEGER DEFAULT 0,
+    tokens_out    INTEGER DEFAULT 0,
+    cost          REAL DEFAULT 0,
+    status        TEXT CHECK(status IN ('ok','rate_limited','error','quota_exhausted')),
+    error_code    TEXT,
+    error_detail  TEXT,
+    window_key    TEXT,
+    created_at    INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rcm_model ON real_call_models(model_ref);
+CREATE INDEX IF NOT EXISTS idx_rcm_sent ON real_call_models(sent_at);
+CREATE INDEX IF NOT EXISTS idx_rcm_status ON real_call_models(status);
+
+-- Mesure réelle vs théorie (indicatif). method : explicit | correlated | pattern.
+CREATE TABLE IF NOT EXISTS really_used_budget (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    budget_tag_code TEXT NOT NULL,
+    target_type   TEXT NOT NULL,
+    target_ref    TEXT NOT NULL,
+    window        TEXT,
+    measured_limit REAL,
+    sample_count  INTEGER DEFAULT 0,
+    first_exhausted_at INTEGER,
+    confidence    REAL DEFAULT 0,
+    method        TEXT,
+    measured_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(budget_tag_code, target_type, target_ref, window)
+);
+
+-- Usage live par endpoint x model (last_call, agent, rotation 10k).
+CREATE TABLE IF NOT EXISTS endpoint_model_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint_id   INTEGER,
+    model_ref     TEXT,
+    agent_id      TEXT,
+    requests      INTEGER DEFAULT 0,
+    tokens_in     INTEGER DEFAULT 0,
+    tokens_out    INTEGER DEFAULT 0,
+    cost          REAL DEFAULT 0,
+    last_call_at  INTEGER,
+    last_call_working INTEGER DEFAULT 1,
+    error_count   INTEGER DEFAULT 0,
+    created_at    INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_emu_endpoint ON endpoint_model_usage(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_emu_model ON endpoint_model_usage(model_ref);
+
+-- Consommation locale des budgets (used/window), pointe sur budgets.id (catalogue).
+CREATE TABLE IF NOT EXISTS budget_consumption (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    budget_id     INTEGER NOT NULL,
+    used          REAL DEFAULT 0,
+    updated_at    INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- Efficacite observee PERSONNELLEMENT (critères propres de l'utilisateur).
+CREATE TABLE IF NOT EXISTS local_model_efficacy (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_ref     TEXT NOT NULL,
+    use_case      TEXT NOT NULL,
+    score_quality   REAL DEFAULT 0,
+    score_speed     REAL DEFAULT 0,
+    score_cost      REAL DEFAULT 0,
+    score_reliability REAL DEFAULT 0,
+    samples       INTEGER DEFAULT 0,
+    criteria_meta TEXT,
+    last_evaluated_at INTEGER,
+    UNIQUE(model_ref, use_case)
+);
+
+-- ============================================================
 -- INDEXES
+-- ============================================================
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_providers_ref ON providers(ref);
 CREATE INDEX IF NOT EXISTS idx_models_ref ON models(ref);

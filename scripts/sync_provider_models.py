@@ -163,7 +163,6 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
         print(f"  [{provider}] no models returned")
         return 0
 
-    # marque tous les anciens liens de ce fournisseur comme non revus
     conn = cat.conn
     cur = conn.execute("SELECT id FROM catalogue_providers WHERE ref=?", (provider,))
     row = cur.fetchone()
@@ -176,53 +175,74 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
     else:
         pid = row["id"]
 
+    # endpoints de ce provider (au moins 1 basique par defaut)
+    endpoints = conn.execute(
+        "SELECT endpoint_id, endpoint_url FROM provider_endpoints WHERE provider_id=?",
+        (pid,)).fetchall()
+    if not endpoints:
+        print(f"  [{provider}] no endpoint defined")
+        return 0
+
+    # cles de ce provider (ref)
+    key_refs = []
+    if provider == "ollama":
+        key_refs = [None]
+    else:
+        krow = km.get_key(provider) if km else None
+        if krow:
+            key_refs = [krow.get("ref")]
+
     bridge = None
     if ping and not dry_run:
         from modules.llm_manager.litellm_bridge import LiteLLMBridge
         bridge = LiteLLMBridge(cat=cat, km=km)
 
-    seen = 0
-    for md in models:
-        mname = md["name"]
-        # entree modele pur (idempotent via ref = developer/name)
-        mref = f"{md['developer']}/{mname}"
-        cur = conn.execute("SELECT id FROM catalogue_models WHERE ref=?", (mref,))
-        r = cur.fetchone()
-        if r:
-            mid = r["id"]
-        else:
-            conn.execute(
-                "INSERT INTO catalogue_models (ref, name, developer, modality) "
-                "VALUES (?, ?, ?, ?)",
-                (mref, mname, md["developer"], md.get("modality", "text")),
-            )
-            mid = conn.execute("SELECT id FROM catalogue_models WHERE ref=?", (mref,)).fetchone()[0]
-        extra = {}
-        if md.get("context_window_tokens"):
-            extra["context_window_tokens"] = md["context_window_tokens"]
-        cw = extra.get("context_window_tokens")
-
-        # ping reel : on ne marque available=1 que si le modele repond
-        available = 1
-        if ping and bridge is not None:
-            try:
-                bridge.chat(provider_ref=provider, model_ref=mname,
-                            messages=[{"role": "user", "content": "hi"}],
-                            max_tokens=1)
-            except Exception:
-                available = 0
-        if not dry_run:
-            conn.execute(
-                "INSERT OR REPLACE INTO provider_models "
-                "(provider_id, model_id, provider_model_name, context_window_tokens, "
-                " available, updated_at) VALUES (?, ?, ?, ?, ?, strftime('%s','now'))",
-                (pid, mid, mname, cw, available),
-            )
-        if available:
-            seen += 1
-
-    print(f"  [{provider}] {seen} models marked available")
-    return seen
+    total = 0
+    for ep in endpoints:
+        eid, ep_url = ep["endpoint_id"], ep["endpoint_url"]
+        for kref in key_refs:
+            # reset declared pour (endpoint, key) avant ce refresh
+            if not dry_run:
+                conn.execute(
+                    "UPDATE key_endpoint_models SET declared=0 "
+                    "WHERE endpoint_id=? AND key_ref=?",
+                    (eid, kref or ""))
+            seen = 0
+            for md in models:
+                mname = md["name"]
+                mref = f"{md['developer']}/{mname}"
+                r = conn.execute("SELECT id FROM catalogue_models WHERE ref=?",
+                                 (mref,)).fetchone()
+                if r:
+                    mid = r["id"]
+                else:
+                    conn.execute(
+                        "INSERT INTO catalogue_models (ref, name, developer, modality) "
+                        "VALUES (?, ?, ?, ?)",
+                        (mref, mname, md["developer"], md.get("modality", "text")))
+                    mid = conn.execute("SELECT id FROM catalogue_models WHERE ref=?",
+                                       (mref,)).fetchone()[0]
+                cw = md.get("context_window_tokens")
+                available = 1
+                if ping and bridge is not None:
+                    try:
+                        bridge.chat(provider_ref=provider, model_ref=mname,
+                                    messages=[{"role": "user", "content": "hi"}],
+                                    max_tokens=1)
+                    except Exception:
+                        available = 0
+                if not dry_run:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO key_endpoint_models "
+                        "(provider_id, endpoint_id, key_ref, model_id, "
+                        " provider_model_name, declared, available, last_checked_at) "
+                        "VALUES (?,?,?,?,?,1,?,strftime('%s','now'))",
+                        (pid, eid, kref or "", mid, mname, available))
+                if available:
+                    seen += 1
+            print(f"  [{provider}] endpoint#{eid} key={kref or 'none'}: {seen} models declared")
+            total += seen
+    return total
 
 
 def get_available_models(cat: CatalogueDB, provider: Optional[str] = None) -> List[Dict[str, str]]:
@@ -232,20 +252,20 @@ def get_available_models(cat: CatalogueDB, provider: Optional[str] = None) -> Li
     """
     if provider:
         rows = cat.conn.execute(
-            "SELECT cp.ref AS provider, pm.provider_model_name AS model "
-            "FROM provider_models pm "
-            "JOIN catalogue_providers cp ON cp.id = pm.provider_id "
-            "WHERE pm.available = 1 AND cp.ref = ? "
-            "ORDER BY pm.provider_model_name",
+            "SELECT cp.ref AS provider, kem.provider_model_name AS model "
+            "FROM key_endpoint_models kem "
+            "JOIN catalogue_providers cp ON cp.id = kem.provider_id "
+            "WHERE kem.available = 1 AND cp.ref = ? "
+            "ORDER BY kem.provider_model_name",
             (provider,),
         ).fetchall()
     else:
         rows = cat.conn.execute(
-            "SELECT cp.ref AS provider, pm.provider_model_name AS model "
-            "FROM provider_models pm "
-            "JOIN catalogue_providers cp ON cp.id = pm.provider_id "
-            "WHERE pm.available = 1 "
-            "ORDER BY cp.ref, pm.provider_model_name",
+            "SELECT cp.ref AS provider, kem.provider_model_name AS model "
+            "FROM key_endpoint_models kem "
+            "JOIN catalogue_providers cp ON cp.id = kem.provider_id "
+            "WHERE kem.available = 1 "
+            "ORDER BY cp.ref, kem.provider_model_name",
         ).fetchall()
     return [{"provider": r["provider"], "model": r["model"]} for r in rows]
 
@@ -269,16 +289,16 @@ def main():
         "groq", "openai", "mistral", "google", "nvidia", "ollama"
     ]
     # Reset global : tout modele non reconfirme lors de cette synchro passe
-    # a available=0 (on ne supprime pas les entrees, on marque non joignable).
+    # a declared=0 (on ne supprime pas les entrees, on marque non joignable).
     if not args.dry_run and not args.provider:
-        cat.conn.execute("UPDATE provider_models SET available=0")
+        cat.conn.execute("UPDATE key_endpoint_models SET declared=0")
     total = 0
-    print(f"== sync_provider_models (dry_run={args.dry_run}, ping={args.ping}) ==")
+    print(f"== refresh_model_access (dry_run={args.dry_run}, ping={args.ping}) ==")
     for p in providers:
         total += sync_provider(cat, km, p, dry_run=args.dry_run, ping=args.ping)
     if not args.dry_run:
         cat.conn.commit()
-    print(f"== done: {total} model links available ==")
+    print(f"== done: {total} model links declared/available ==")
 
 
 if __name__ == "__main__":
