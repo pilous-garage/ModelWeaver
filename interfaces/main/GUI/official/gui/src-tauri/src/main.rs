@@ -375,7 +375,7 @@ fn read_proc_stat(pid: u32) -> Option<(u64, u64, u64)> {
     // utime(14), stime(15), cutime, cstime, ..., rss(24)
     let utime = parts.get(12)?.parse::<u64>().ok()?;   // index 12 -> field 14
     let stime = parts.get(13)?.parse::<u64>().ok()?;   // index 13 -> field 15
-    let rss = parts.get(22)?.parse::<u64>().ok()?;     // index 22 -> field 24
+    let rss = parts.get(21)?.parse::<u64>().ok()?;     // index 21 -> field 22 (rss, in pages)
     Some((utime, stime, rss))
 }
 
@@ -552,7 +552,8 @@ fn watch_installed_tools_rust(interval: f64) {
 /// Service Rust (wrapper) : orchestre la collecte complexe en Python et cache le résultat.
 fn watch_sys_state_rust(helper: PathBuf, interval: f64) {
     std::thread::spawn(move || loop {
-        if let Ok(o) = Command::new(python_bin()).arg(&helper).arg("get_system_state").output() {
+        if let Ok(o) = Command::new(python_bin()).arg(&helper).arg("get_system_state")
+            .env("PYTHONPATH", find_repo_root()).env("MODELWEAVER_HOME", mw_home()).output() {
             if o.status.success() {
                 let s = String::from_utf8_lossy(&o.stdout);
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
@@ -845,9 +846,13 @@ fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json:
         logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)))
     };
     let log_path = logp.to_string_lossy().to_string();
+    let repo_root = find_repo_root();
+    log_to_file("PYTHON", &format!("helper={} repo_root={} mw_home={}", helper_path.display(), repo_root.display(), mw_home().display()));
     let output = Command::new(python_bin())
         .arg(helper_path)
         .args(args)
+        .env("PYTHONPATH", &repo_root)
+        .env("MODELWEAVER_HOME", mw_home())
         .output()
         .map_err(|e| { log_to_file("ERROR", &format!("python helper error: {}", e)); format!("Erreur exécution helper: {}", e) })?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -858,8 +863,14 @@ fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json:
     let status = if output.status.success() { "done" } else { "failed" };
     proc_register(name, None, None, &cmd_str, log_path, status);
     if output.status.success() {
-        serde_json::from_str(&stdout)
-            .map_err(|e| format!("Erreur parse JSON: {}", e))
+        match serde_json::from_str::<serde_json::Value>(&stdout) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                log_to_file("ERROR", &format!("helper '{}' stdout vide/invalide: {} | stdout=[{}] stderr=[{}]", name, e, stdout, stderr));
+                // Ne pas faire échouer la GUI: renvoyer un objet sûr.
+                Ok(serde_json::json!({"warning": format!("helper {} sans sortie JSON: {}", name, e), "tools": [], "count": 0}))
+            }
+        }
     } else {
         log_to_file("ERROR", &format!("python helper stderr: {}", stderr));
         Err(stderr)

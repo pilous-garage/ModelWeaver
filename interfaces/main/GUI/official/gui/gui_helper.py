@@ -11,6 +11,18 @@ import os
 import json
 from pathlib import Path
 
+# Tout ce qui est imprimé par les modules (warnings, prints de debug) doit aller
+# sur stderr pour ne pas polluer le JSON de résultat attendu sur stdout par le
+# pont Rust (serde_json::from_str). On redirige stdout vers stderr, et on utilise
+# sys.__stdout__ (le vrai stdout) uniquement pour le résultat final.
+_REAL_STDOUT = sys.stdout
+class _StderrMirror:
+    def write(self, s):
+        sys.stderr.write(s)
+    def flush(self):
+        sys.stderr.flush()
+sys.stdout = _StderrMirror()
+
 HELPER_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -139,6 +151,11 @@ def get_catalogue_tools():
     arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
     result = cat.get_catalogue_tools(os_key=os_key, arch_key=arch)
     cat.close()
+    try:
+        with open("/tmp/mw_cat_debug.json", "w") as _f:
+            _f.write(json.dumps(result))
+    except Exception:
+        pass
     return result
 
 
@@ -255,7 +272,7 @@ def run_agent_manager(interval=5.0):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No command"})); sys.exit(1)
+        print(json.dumps({"error": "No command"}), file=_REAL_STDOUT); _REAL_STDOUT.flush(); sys.exit(1)
     command = sys.argv[1]
     try:
         if command == "init_databases":
@@ -291,10 +308,10 @@ if __name__ == "__main__":
         elif command == "sync_catalogue_remote":
             result = sync_catalogue_remote(sys.argv[2] if len(sys.argv) > 2 else None)
         elif command == "install_tool" and len(sys.argv) > 2:
-            result = install_tool(sys.argv[2]); print(json.dumps(result))
+            result = install_tool(sys.argv[2]); print(json.dumps(result), file=_REAL_STDOUT); _REAL_STDOUT.flush()
             sys.exit(0 if result.get("status") == "ok" else 1)
         elif command == "uninstall_tool" and len(sys.argv) > 2:
-            result = uninstall_tool(sys.argv[2]); print(json.dumps(result))
+            result = uninstall_tool(sys.argv[2]); print(json.dumps(result), file=_REAL_STDOUT); _REAL_STDOUT.flush()
             sys.exit(0 if result.get("status") == "ok" else 1)
         elif command == "get_providers":
             result = get_providers()
@@ -302,6 +319,6 @@ if __name__ == "__main__":
             result = add_provider(sys.argv[2])
         else:
             result = {"error": f"Unknown command: {command}"}
-        print(json.dumps(result))
+        print(json.dumps(result), file=_REAL_STDOUT); _REAL_STDOUT.flush()
     except Exception as e:
-        print(json.dumps({"error": str(e)})); sys.exit(1)
+        print(json.dumps({"error": str(e)}), file=_REAL_STDOUT); _REAL_STDOUT.flush(); sys.exit(1)

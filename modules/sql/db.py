@@ -1551,7 +1551,8 @@ class CatalogueDB:
                 )
             """)
         except Exception as e:
-            print(f"⚠️  Migration tables d'acces ignoree: {e}")
+            import sys as _sys
+            print(f"⚠️  Migration tables d'acces ignoree: {e}", file=_sys.stderr)
 
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
