@@ -336,6 +336,12 @@ def main():
     ap.add_argument("--discover-aliases", action="store_true",
                     help="decouvre automatiquement les alias provider/model "
                          "litellm -> catalogue (depot GitHub litellm) et les insere")
+    ap.add_argument("--populate", action="store_true",
+                    help="pre-remplit provider_models depuis le cache litellm "
+                         "(providers non peuples : azure, anthropic, cohere...)")
+    ap.add_argument("--populate-nvidia", action="store_true",
+                    help="peuple les provider_models NVIDIA depuis l'API "
+                         "officielle /v1/models (necessite cle NVIDIA)")
     args = ap.parse_args()
 
     cat = CatalogueDB()
@@ -385,6 +391,20 @@ def main():
         print(f"  [github-litellm-list] {stats}")
         nv = discover_nvidia_official_aliases(cat, dry_run=args.dry_run)
         print(f"  [nvidia-official] {nv}")
+
+    if args.populate:
+        from modules.catalogue.populate import populate_provider_models
+        from modules.catalogue.pricing import fetch_litellm_pricing
+        print("== populate provider_models (source litellm) ==")
+        lit = fetch_litellm_pricing()
+        stats = populate_provider_models(cat, lit, dry_run=args.dry_run)
+        print(f"  {stats}")
+
+    if args.populate_nvidia:
+        from modules.catalogue.populate import populate_nvidia_from_api
+        print("== populate NVIDIA (API officielle /v1/models) ==")
+        stats = populate_nvidia_from_api(cat, km, dry_run=args.dry_run)
+        print(f"  {stats}")
 
     if args.show_access:
         by = get_models_by_access(cat)
