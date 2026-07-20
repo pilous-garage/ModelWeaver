@@ -22,7 +22,7 @@ export function SystemStatePanel({ app }: { app: AppApi }) {
             </div>
           </div>
         </div>
-      ) : <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>…</div>}
+      ) : <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Chargement…</div>}
     </div>
   );
 }

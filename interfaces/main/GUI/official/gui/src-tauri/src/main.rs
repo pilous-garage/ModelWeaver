@@ -513,8 +513,9 @@ fn spawn_service_child(entry: &mut ServiceEntry) {
     log_to_file("SUPERVISOR", &format!("spawn {}", entry.info.name));
     let mut cmd = Command::new(&entry.info.command);
     cmd.args(&entry.info.args);
-    // PYTHONPATH = racine du repo pour que `import services` / `import modules` fonctionne.
-    cmd.env("PYTHONPATH", mw_home());
+    // PYTHONPATH = racine du dépôt pour que `import services` / `import modules` fonctionne
+    // dans les services Python supervisés (installer, catalogue, etc.).
+    cmd.env("PYTHONPATH", find_repo_root());
     #[cfg(unix)]
     cmd.process_group(0);
     if entry.watch {
@@ -805,6 +806,7 @@ fn process_cmdline_contains(pid: i32, needle: &str) -> bool {
 }
 
 fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json::Value, String> {
+    let t0 = std::time::Instant::now();
     let name = args.first().copied().unwrap_or("python");
     let cmd_str = format!("python3 {} {}", helper_path.display(), args.join(" "));
     log_to_file("PYTHON", &cmd_str);
@@ -828,6 +830,8 @@ fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json:
         let _ = writeln!(f, "=== STDOUT ===\n{}\n=== STDERR ===\n{}", stdout, stderr);
     }
     let status = if output.status.success() { "done" } else { "failed" };
+    let elapsed = t0.elapsed();
+    log_to_file("TIMING", &format!("python_helper[{}]: {}ms", name, elapsed.as_millis()));
     proc_register(name, None, None, &cmd_str, log_path, status);
     if output.status.success() {
         match serde_json::from_str::<serde_json::Value>(&stdout) {
@@ -937,6 +941,7 @@ fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
 }
 
 fn daemon_post_once(route: &str, body: &str) -> Result<serde_json::Value, String> {
+    let t0 = std::time::Instant::now();
     let token = std::fs::read_to_string(mw_home().join("api.token"))
         .map_err(|_| "daemon token not found".to_string())?;
     let port = std::fs::read_to_string(mw_home().join("api.port"))
@@ -944,15 +949,16 @@ fn daemon_post_once(route: &str, body: &str) -> Result<serde_json::Value, String
     let port = port.trim();
     let url = format!("http://127.0.0.1:{}/v1/{}", port, route);
     let output = Command::new("curl")
-        // --connect-timeout 3 : ne pas attendre 30s si le daemon n'écoute pas
-        // encore (démarrage concurrent de la GUI). --max-time 10 borne le total.
         .args(["-s", "--connect-timeout", "3", "--max-time", "10",
                "-X", "POST", "-H", &format!("Authorization: Bearer {}", token.trim()),
                "-d", body, &url])
         .output()
         .map_err(|e| format!("curl failed: {}", e))?;
     let resp = String::from_utf8_lossy(&output.stdout).to_string();
-    serde_json::from_str(&resp).map_err(|e| format!("parse error: {} — body: {}", e, resp))
+    let result = serde_json::from_str(&resp).map_err(|e| format!("parse error: {} — body: {}", e, resp));
+    let elapsed = t0.elapsed();
+    log_to_file("TIMING", &format!("daemon_post_once[{}]: {}ms", route, elapsed.as_millis()));
+    result
 }
 
 /// Poste vers le daemon avec retry borné (le daemon démarre en même temps que
@@ -1007,22 +1013,26 @@ async fn install_all_dependencies(include_optional: bool) -> Result<String, Stri
 
 #[tauri::command]
 async fn check_dependencies_manifest() -> Result<serde_json::Value, String> {
-    // Liste les deps du manifeste pour la cible courante (statut installé).
-    // Exécuté en spawn_blocking pour ne pas geler le thread principal Tauri
-    // pendant l'appel curl synchrone au daemon (le check peut être long).
     log_cmd("check_dependencies_manifest");
-    tauri::async_runtime::spawn_blocking(move || daemon_post("deps/check_manifest", "{}"))
+    let t0 = std::time::Instant::now();
+    let r = tauri::async_runtime::spawn_blocking(move || daemon_post("deps/check_manifest", "{}"))
         .await
-        .map_err(|e| format!("thread error: {}", e))?
+        .map_err(|e| format!("thread error: {}", e))?;
+    let elapsed = t0.elapsed();
+    log_to_file("TIMING", &format!("check_dependencies_manifest: {}ms", elapsed.as_millis()));
+    r
 }
 
 #[tauri::command]
 async fn version() -> Result<serde_json::Value, String> {
-    // Version du backend (daemon API) affichée dans le header Logithèque.
     log_cmd("version");
-    tauri::async_runtime::spawn_blocking(move || daemon_post("version", "{}"))
+    let t0 = std::time::Instant::now();
+    let r = tauri::async_runtime::spawn_blocking(move || daemon_post("version", "{}"))
         .await
-        .map_err(|e| format!("thread error: {}", e))?
+        .map_err(|e| format!("thread error: {}", e))?;
+    let elapsed = t0.elapsed();
+    log_to_file("TIMING", &format!("version -> daemon_post: {}ms", elapsed.as_millis()));
+    r
 }
 
 #[tauri::command]
@@ -1350,7 +1360,21 @@ fn ensure_bundled_resources(app: &tauri::App) {
 
         let src_helper = res_dir.join("gui_helper.py");
         if src_helper.exists() {
-            let _ = std::fs::copy(&src_helper, dest.join("gui_helper.py"));
+            let dest_helper = dest.join("gui_helper.py");
+            // Ne pas écraser si la destination est plus récente que la source
+            // (permet de patcher à chaud sans rebuild).
+            let should_copy = match (src_helper.metadata(), dest_helper.metadata()) {
+                (Ok(sm), Ok(dm)) => {
+                    match (sm.modified(), dm.modified()) {
+                        (Ok(st), Ok(dt)) => st > dt,
+                        _ => true,
+                    }
+                },
+                _ => true,
+            };
+            if should_copy {
+                let _ = std::fs::copy(&src_helper, &dest_helper);
+            }
         }
     } else {
         log_to_file("INIT", "resource_dir unavailable, skip bundled resources");

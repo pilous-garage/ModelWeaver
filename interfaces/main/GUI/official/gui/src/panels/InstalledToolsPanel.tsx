@@ -7,7 +7,9 @@ export function InstalledToolsPanel({ app }: { app: AppApi }) {
   return (
     <div style={{ backgroundColor: '#1e293b', borderRadius: '0.5rem', border: '1px solid #334155', padding: '1rem' }}>
       <h3 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.75rem' }}>Outils installés ({app.installedTools.length})</h3>
-      {app.installedTools.length === 0 ? (
+      {app.logithequeLoading && app.installedTools.length === 0 ? (
+        <div style={{ color: '#94a3b8', fontSize: '0.78rem' }}>Chargement…</div>
+      ) : app.installedTools.length === 0 ? (
         <div style={{ color: '#94a3b8', fontSize: '0.78rem' }}>Aucun outil détecté</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>

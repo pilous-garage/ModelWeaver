@@ -47,21 +47,27 @@ REPO_ROOT = _find_repo_root()
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Imports différés (appelés à l'intérieur des fonctions) pour éviter le
+# démarrage lent de chaque sous-process Python. On importe en module-level
+# seulement les utilitaires légers.
 from services._common import _db_paths, _quiet_stdout, log_to_file
-from services.installer_worker import jobs
-from services.watch_sysstate import service as sysstate
-from modules.sql.db import ModelWeaverDB, CatalogueDB
-from modules.checker.checker import Checker
 
 
 def init_databases():
     mw_path, cat_path = _db_paths()
-    mw = ModelWeaverDB(mw_path); mw._ensure_schema(); mw.commit()
-    cat = CatalogueDB(cat_path); cat._ensure_schema(); cat.conn.commit()
+    # Si les deux DB existent avec une taille non triviale, on suppose le
+    # schéma présent (vérification rapide sans ouvrir SQLite, pour éviter
+    # le blocage si le daemon tient une transaction).
+    if mw_path.exists() and mw_path.stat().st_size > 1024 and cat_path.exists() and cat_path.stat().st_size > 1024:
+        return {"status": "ok", "cached": True}
+    from modules.sql.db import ModelWeaverDB, CatalogueDB
+    mw = ModelWeaverDB(mw_path); mw.commit()
+    cat = CatalogueDB(cat_path); cat.conn.commit()
     return {"status": "ok", "mw_db": str(mw.db_path), "cat_db": str(cat.db_path)}
 
 
 def check_databases():
+    from modules.sql.db import ModelWeaverDB, CatalogueDB
     mw_path, cat_path = _db_paths()
     result = {
         "modelweaver_db": {"path": str(mw_path), "exists": mw_path.exists()},
@@ -109,6 +115,7 @@ def check_python_deps():
 
 
 def install_pip(package_name):
+    from modules.sql.db import ModelWeaverDB
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", package_name, "--break-system-packages"],
         capture_output=True, text=True, timeout=120)
@@ -119,16 +126,23 @@ def install_pip(package_name):
 
 
 def update_tools_table():
+    from modules.sql.db import ModelWeaverDB
     mw = ModelWeaverDB(_db_paths()[0]); c = mw.scan_installed_tools(); mw.close()
     return {"status": "ok", "updated": c}
 
 
 def get_system_state():
+    from services.watch_sysstate import service as sysstate
     return sysstate.get_system_state()
 
 
 def seed_catalogue():
     _, cat_path = _db_paths()
+    # Vérification sans ouvrir SQLite : si le fichier est déjà volumineux (> 1 Mo)
+    # on considère qu'il est déjà peuplé (évite le blocage si daemon tient un lock).
+    if cat_path.exists() and cat_path.stat().st_size > 1_048_576:
+        return {"status": "ok", "seeded": False, "note": "déjà peuplé (taille)"}
+    from modules.sql.db import CatalogueDB
     cat = CatalogueDB(cat_path)
     if cat.conn.execute("SELECT COUNT(*) FROM catalogue_outils").fetchone()[0] > 0:
         cat.close(); return {"status": "ok", "seeded": False, "note": "déjà peuplé"}
@@ -144,35 +158,85 @@ def seed_catalogue():
 
 def get_catalogue_tools():
     import platform as _platform
+    import sqlite3
     _, cat_path = _db_paths()
-    cat = CatalogueDB(cat_path)
     os_key = _platform.system().lower()
     arch = _platform.machine().lower()
     arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
-    result = cat.get_catalogue_tools(os_key=os_key, arch_key=arch)
-    cat.close()
+    # Connexion directe sans passer par CatalogueDB (évite _ensure_schema
+    # qui fait des DDL writes bloqués si le daemon tient un lock).
     try:
-        with open("/tmp/mw_cat_debug.json", "w") as _f:
-            _f.write(json.dumps(result))
-    except Exception:
-        pass
-    return result
+        conn = sqlite3.connect(str(cat_path), timeout=0.1)
+        conn.execute("PRAGMA busy_timeout = 100")
+        cur = conn.execute("""
+            SELECT DISTINCT o.ref, o.nom, o.description, o.tool_type,
+                   c.ref AS classe_ref, c.nom AS classe_nom,
+                   r.manager, r.package, r.os, r.arch, r.confidence
+            FROM catalogue_outils o
+            LEFT JOIN classes_outils c ON c.classe_id = o.classe_outil_id
+            JOIN catalogue_versions v ON v.outil_id = o.outil_id
+            JOIN catalogue_recettes r ON r.version_id = v.version_id
+            WHERE r.os IN (?, 'all') AND r.arch IN (?, 'all') AND r.enabled = 1
+            ORDER BY o.nom, r.manager
+        """, (os_key, arch))
+        cols = [d[0] for d in cur.description]
+        tools_map = {}
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            ref = d["ref"]
+            if ref not in tools_map:
+                tools_map[ref] = {
+                    "ref": ref, "name": d["nom"],
+                    "description": d["description"],
+                    "tool_type": d["tool_type"],
+                    "classe_ref": d["classe_ref"] or "other",
+                    "classe": d["classe_nom"] or d["classe_ref"] or "other",
+                    "managers": [],
+                }
+            tools_map[ref]["managers"].append({
+                "manager": d["manager"], "package": d["package"],
+                "os": d["os"], "arch": d["arch"], "confidence": d["confidence"],
+            })
+        conn.close()
+        tools = list(tools_map.values())
+        return {"tools": tools, "count": len(tools)}
+    except Exception as e:
+        return {"tools": [], "count": 0, "error": str(e)}
 
 
 def get_installed_tools():
+    import sqlite3
     mw_path, _ = _db_paths()
-    mw = ModelWeaverDB(mw_path)
-    rows = mw.local_tools.list_all()
-    out = [{"ref": r.get("outil_ref"), "name": r.get("nom"),
-            "version": r.get("version_installee") or r.get("nom_version"),
-            "status": r.get("status"),
-            "install_path": r.get("install_path"),
-            "classe": r.get("classe_nom"), "classe_ref": r.get("classe_ref")} for r in rows]
-    mw.close()
-    return {"tools": out, "count": len(out)}
+    try:
+        conn = sqlite3.connect(str(mw_path), timeout=0.1)
+        conn.execute("PRAGMA busy_timeout = 100")
+        cur = conn.execute("""
+            SELECT o.outil_ref, o.nom, o.version_installee, o.nom_version,
+                   o.status, o.install_path, c.nom AS classe_nom, c.ref AS classe_ref
+            FROM outils_installes o
+            LEFT JOIN classes_outils c ON c.ref = o.classe_ref
+            ORDER BY o.nom
+        """)
+        cols = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            out.append({
+                "ref": d["outil_ref"], "name": d["nom"],
+                "version": d["version_installee"] or d["nom_version"],
+                "status": d["status"],
+                "install_path": d["install_path"],
+                "classe": d["classe_nom"], "classe_ref": d["classe_ref"],
+            })
+        conn.close()
+        return {"tools": out, "count": len(out)}
+    except Exception as e:
+        return {"tools": [], "count": 0, "error": str(e)}
 
 
 def save_system_state():
+    from modules.sql.db import ModelWeaverDB
+    from modules.checker.checker import Checker
     mw_path, _ = _db_paths()
     mw = ModelWeaverDB(mw_path); Checker().update_local_db(mw); mw.commit(); mw.close()
     return {"status": "ok"}
@@ -180,6 +244,7 @@ def save_system_state():
 
 def get_providers():
     """Liste tous les fournisseurs du catalogue (catalogue.db)."""
+    from modules.sql.db import CatalogueDB
     _, cat_path = _db_paths()
     cat = CatalogueDB(cat_path)
     cur = cat.conn.execute(
@@ -193,6 +258,7 @@ def get_providers():
 
 def add_provider(data_json):
     """Ajoute ou met à jour un fournisseur dans catalogue.db."""
+    from modules.sql.db import CatalogueDB
     import json as _json
     data = _json.loads(data_json)
     ref = data.get("ref")
@@ -223,6 +289,7 @@ def add_provider(data_json):
 
 
 def sync_catalogue_remote(url=None):
+    from modules.sql.db import CatalogueDB
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
     _, cat_path = _db_paths()
@@ -237,10 +304,12 @@ def sync_catalogue_remote(url=None):
 
 
 def install_tool(ref):
+    from services.installer_worker import jobs
     return jobs.install_tool(ref)
 
 
 def uninstall_tool(ref):
+    from services.installer_worker import jobs
     return jobs.uninstall_tool(ref)
 
 
