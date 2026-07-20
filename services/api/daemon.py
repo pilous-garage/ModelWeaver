@@ -58,7 +58,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.7.0.10"
+MW_VERSION = "0.7.0.11"
 
 
 def _mw_dir() -> Path:
@@ -659,10 +659,9 @@ _CHECK_CACHE_TTL = 30  # secondes
 def op_deps_check_manifest(params):
     """Liste les dépendances du manifeste pour la cible, avec statut installé.
 
-    Utilise le paquet DISPONIBLE pour la cible (targets.<target>) et vérifie
-    selon le langage (system -> dpkg, python -> pip show).
-    Le résultat est caché 30s pour éviter de re-lancer les commandes shell à
-    chaque cycle de polling (200ms).
+    Vérifie toutes les dépendances en 2 commandes shell (dpkg-query -l + pip list --format=json)
+    au lieu d'une commande par dépendance.
+    Le résultat est caché 30s pour éviter de re-lancer les commandes à chaque poll (200ms).
     """
     import time as _time
     now = _time.time()
@@ -670,7 +669,6 @@ def op_deps_check_manifest(params):
     if c and (now - _CHECK_CACHE.get("ts", 0)) < _CHECK_CACHE_TTL:
         return c
     from modules.system import deps as deps_mod
-    from concurrent.futures import ThreadPoolExecutor
     target = params.get("target", "") or ""
     try:
         if not target:
@@ -678,12 +676,15 @@ def op_deps_check_manifest(params):
         if not target:
             return {"status": "error", "error": "cible non détectée"}
         m = deps_mod.load_manifest()
-        deps = [d for d in m.get("dependencies", []) if d.get("targets", {}).get(target)]
-        def _check(dep):
+        deps = [dict(d, _target=target) for d in m.get("dependencies", [])
+                if d.get("targets", {}).get(target)]
+        status_map = deps_mod.batch_check_dependencies(deps)
+        out = []
+        for dep in deps:
             pkg = dep.get("targets", {}).get(target)
-            installed = deps_mod.is_dependency_installed(dep.get("language", "system"), pkg)
+            installed = status_map.get(pkg, False)
             required = (not dep.get("optional")) and dep.get("safe") and dep.get("weight") == "light"
-            return {
+            out.append({
                 "name": dep["name"],
                 "description": dep.get("description", ""),
                 "language": dep.get("language", "system"),
@@ -693,9 +694,7 @@ def op_deps_check_manifest(params):
                 "required": required,
                 "target_pkg": pkg,
                 "installed": installed,
-            }
-        with ThreadPoolExecutor(max_workers=min(16, max(1, len(deps)))) as ex:
-            out = list(ex.map(_check, deps))
+            })
         result = {"target": target, "dependencies": out}
         _CHECK_CACHE["result"] = result
         _CHECK_CACHE["ts"] = now

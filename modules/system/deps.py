@@ -95,6 +95,56 @@ def is_dependency_installed(language: str, pkg: str) -> bool:
         return False
 
 
+def batch_check_dependencies(deps: list[dict]) -> dict[str, bool]:
+    """Vérifie toutes les dépendances d'un coup : une seule commande system
+    (dpkg-query -l) et une seule requête Python (importlib.metadata).
+
+    Retourne un dict {pkg_name: bool} pour chaque dépendance.
+    """
+    import subprocess
+
+    system_pkgs = set()
+    python_pkgs = set()
+    for d in deps:
+        pkg = d.get("targets", {}).get(d.get("_target", ""), "")
+        if d.get("language") == "python":
+            python_pkgs.add(pkg)
+        else:
+            system_pkgs.add(pkg)
+
+    # Liste system en une commande
+    installed_system: set[str] = set()
+    if system_pkgs:
+        try:
+            r = subprocess.run(["dpkg-query", "-l"] + list(system_pkgs),
+                               capture_output=True, text=True, timeout=10)
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "ii":
+                    installed_system.add(parts[1])
+        except Exception:
+            pass
+
+    # Paquets pip via importlib.metadata (pas de sous-process)
+    installed_python: set[str] = set()
+    if python_pkgs:
+        try:
+            from importlib.metadata import distributions
+            for dist in distributions():
+                installed_python.add(dist.metadata.get("Name", "").lower())
+        except Exception:
+            pass
+
+    result = {}
+    for d in deps:
+        pkg = d.get("targets", {}).get(d.get("_target", ""), "")
+        if d.get("language") == "python":
+            result[pkg] = pkg.lower() in installed_python
+        else:
+            result[pkg] = pkg in installed_system
+    return result
+
+
 def install_target_dependencies(target: str = "", include_optional: bool = False) -> dict:
     """Installe les dépendances requises de la cible via le script compilé.
 
