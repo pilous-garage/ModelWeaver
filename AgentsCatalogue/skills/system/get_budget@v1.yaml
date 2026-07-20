@@ -16,4 +16,4 @@ outputs:
     description: "Infos budget (tokens/min, tokens/day, ...)"
 implementation:
   type: python
-  function: _exec_get_budget
+  function: system.agent.get_budget

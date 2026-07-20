@@ -24,4 +24,4 @@ outputs:
     description: "Valeur lue (ou null si absente)"
 implementation:
   type: python
-  function: _exec_memory_read
+  function: system.memory.memory_read

@@ -55,4 +55,4 @@ outputs:
     type: integer
 implementation:
   type: python
-  function: _exec_timeout_llm
+  function: llm.timeout.timeout

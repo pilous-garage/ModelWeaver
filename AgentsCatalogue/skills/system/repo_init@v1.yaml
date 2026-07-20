@@ -13,4 +13,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_repo_init
+  function: system.git.repo_init

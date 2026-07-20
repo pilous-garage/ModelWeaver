@@ -14,4 +14,4 @@ outputs:
     type: number
 implementation:
   type: python
-  function: _exec_timestamp
+  function: system.text.timestamp

@@ -14,4 +14,4 @@ outputs:
     description: "Chemin relatif créé"
 implementation:
   type: python
-  function: _exec_mkdir
+  function: system.file.mkdir

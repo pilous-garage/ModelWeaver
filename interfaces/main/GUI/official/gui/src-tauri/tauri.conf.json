@@ -1,6 +1,6 @@
 {
   "productName": "ModelWeaver",
-  "version": "0.7.1",
+  "version": "0.7.3",
   "identifier": "com.modelweaver.main",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,6 +14,14 @@
         "title": "ModelWeaver",
         "width": 2560,
         "height": 1440,
+        "minWidth": 800,
+        "minHeight": 600
+      },
+      {
+        "label": "sandbox",
+        "title": "ModelWeaver — Agent Sandbox",
+        "width": 1400,
+        "height": 900,
         "minWidth": 800,
         "minHeight": 600
       }

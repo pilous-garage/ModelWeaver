@@ -56,4 +56,4 @@ outputs:
     description: "Message d'erreur si échec"
 implementation:
   type: python
-  function: _exec_http_post
+  function: system.net.http_post

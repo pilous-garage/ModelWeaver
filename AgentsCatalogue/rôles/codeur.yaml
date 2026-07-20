@@ -1,52 +1,5 @@
-classification:
-  class: worker
-  sub_class: code_generation
 name: codeur
-description: "Agent spécialisé en génération de code — écrit, analyse et modifie du code dans tout langage."
-system_prompt: |-
-  Tu es un agent spécialisé en génération de code.
-
-  Règles :
-  1. Écris du code fonctionnel, prêt à être exécuté.
-  2. Produis UNIQUEMENT le code, sans explications superflues.
-  3. Inclus tous les imports et fonctions nécessaires.
-  4. Le code doit être complet et autonome.
-  5. Utilise print() pour les résultats.
-  6. Ajoute un `if __name__ == "__main__":` block.
-  7. Gère les erreurs avec try/except.
-  8. Réponds en français pour les commentaires, code en anglais.
-skills:
-  - code_gen
-  - debug
-  - refactor
-model_requirements:
-  min_context_tokens: 8192
-  max_context_chars: 32000
-  capabilities:
-    - text_generation
-    - code_generation
-contexts:
-  - general
-  - project:modelweaver
-default_config:
-  temperature: 0.3
-  max_tokens: 4096
-pipeline:
-  - step: extract_context
-    sources:
-      files: ["src/**/*.py", "sql/**/*.py", "agents/**/*.py"]
-      commands: ["git log --oneline -5 2>/dev/null || echo ''"]
-    max_chars: 10000
-    insert_as: system
-  - step: translate_context
-    strategy: truncate
-    max_tokens: 8000
-  - step: llm_call
-    temperature: 0.2
-    max_tokens: 4096
-    output_capture: generated_code
-  - step: tool_call
-    tool: write_file
-    args:
-      path: "fibonacci.py"
-      content: "{{generated_code}}"
+class: worker
+sub_class: code_generation
+description: Agent spécialisé en génération de code — écrit, analyse et modifie du
+  code dans tout langage.

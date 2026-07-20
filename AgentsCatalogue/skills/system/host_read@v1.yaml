@@ -17,4 +17,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_host_read
+  function: system.fs.host_read

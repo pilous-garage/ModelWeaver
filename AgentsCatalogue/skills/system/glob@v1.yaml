@@ -13,4 +13,4 @@ outputs:
     description: "Chemins relatifs trouvés"
 implementation:
   type: python
-  function: _exec_glob
+  function: system.file.glob

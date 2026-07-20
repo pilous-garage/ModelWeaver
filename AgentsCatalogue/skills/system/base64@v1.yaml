@@ -16,4 +16,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_base64
+  function: system.text.base64

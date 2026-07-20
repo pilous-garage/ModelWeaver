@@ -18,4 +18,4 @@ outputs:
     description: "Entier aléatoire"
 implementation:
   type: python
-  function: _exec_random
+  function: system.text.random

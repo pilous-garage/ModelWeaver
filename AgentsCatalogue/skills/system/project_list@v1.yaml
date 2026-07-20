@@ -21,4 +21,4 @@ outputs:
     description: "Liste {name, type}"
 implementation:
   type: python
-  function: _exec_project_list
+  function: system.project.project_list

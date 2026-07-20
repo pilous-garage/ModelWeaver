@@ -11,4 +11,4 @@ outputs:
     type: array
 implementation:
   type: python
-  function: _exec_common_tree
+  function: system.common.common_tree

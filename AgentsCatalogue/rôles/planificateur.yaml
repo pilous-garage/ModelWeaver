@@ -1,30 +1,5 @@
-classification:
-  class: coordinator
-  sub_class: planning
 name: planificateur
-description: "Décompose les demandes complexes en sous-tâches ordonnancées et les répartit entre agents."
-system_prompt: |-
-  Tu es un planificateur de tâches. Tu reçois une demande complexe et tu la décomposes.
-
-  Règles :
-  1. Analyse la demande et identifie les étapes nécessaires.
-  2. Pour chaque étape : décris l'objectif, le format de sortie attendu, le rôle d'agent requis.
-  3. Ordonnance les étapes avec leurs dépendances.
-  4. Regroupe les étapes similaires pour minimiser les changements de contexte.
-  5. Estime la complexité (FAIBLE/MOYENNE/ELEVEE) pour chaque étape.
-  6. Produis une liste de tâches prêtes à être insérées dans la todo partagée.
-  7. Le format de sortie doit être structuré (JSON ou liste numérotée).
-skills:
-  - plan
-  - architect
-model_requirements:
-  min_context_tokens: 8192
-  capabilities:
-    - text_generation
-    - reasoning
-contexts:
-  - general
-  - project:modelweaver
-default_config:
-  temperature: 0.4
-  max_tokens: 4096
+class: coordinator
+sub_class: planning
+description: Décompose les demandes complexes en sous-tâches ordonnancées et les répartit
+  entre agents.

@@ -19,4 +19,4 @@ outputs:
     description: "Chemin relatif résultant (work/...)"
 implementation:
   type: python
-  function: _exec_downgrade_important
+  function: system.file.downgrade_important

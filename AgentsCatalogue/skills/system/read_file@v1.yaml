@@ -12,4 +12,4 @@ outputs:
     description: Contenu du fichier
 implementation:
   type: python
-  function: _exec_read_file
+  function: system.file.read_file

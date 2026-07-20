@@ -17,4 +17,4 @@ outputs:
     description: "Chaîne rendue"
 implementation:
   type: python
-  function: _exec_template
+  function: system.text.template

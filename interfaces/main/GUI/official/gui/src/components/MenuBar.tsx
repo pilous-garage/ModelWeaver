@@ -1,5 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { AppApi } from '../useApp.ts';
+
+export function openSandboxWindow() {
+  const existing = WebviewWindow.getByLabel('sandbox');
+  if (existing) {
+    existing.show().catch(() => {});
+    existing.setFocus().catch(() => {});
+    return;
+  }
+  const w = new WebviewWindow('sandbox', {
+    title: 'ModelWeaver — Agent Sandbox',
+    width: 1400,
+    height: 900,
+    url: '/',
+  });
+  w.once('tauri://created', () => {});
+  w.once('tauri://error', (e) => console.error('sandbox window error', e));
+}
 
 interface Menu {
   label: string;
@@ -68,6 +86,12 @@ export function MenuBar({ app }: { app: AppApi }) {
             action: () => { app.togglePanelVisibility(id); setOpenMenu(null); },
           })),
         },
+      ],
+    },
+    {
+      label: 'Outils',
+      children: [
+        { type: 'item', label: '🛠️ Agent Sandbox (IDE)', action: () => { openSandboxWindow(); setOpenMenu(null); } },
       ],
     },
   ];

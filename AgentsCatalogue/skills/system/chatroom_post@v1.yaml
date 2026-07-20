@@ -20,4 +20,4 @@ outputs:
     type: boolean
 implementation:
   type: python
-  function: _exec_chatroom_post
+  function: system.agent.chatroom_post

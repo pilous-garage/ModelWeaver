@@ -25,4 +25,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_project_write
+  function: system.project.project_write

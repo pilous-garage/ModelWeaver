@@ -1,7 +1,7 @@
 {
   "name": "modelweaver",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.7.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,8 @@
     "@tauri-apps/api": "2.6.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-resizable-panels": "^4.12.2"
+    "react-resizable-panels": "^4.12.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.6.0",

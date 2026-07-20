@@ -26,4 +26,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_host_run
+  function: system.fs.host_run

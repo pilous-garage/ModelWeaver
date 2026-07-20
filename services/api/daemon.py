@@ -53,6 +53,20 @@ from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_p
 from modules.llm_manager.litellm_bridge import LiteLLMBridge
 from modules.llm_manager.local_engines import get_local_engine_manager
 from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
+from services.api.catalogue_api import (
+    op_catalogue_skills_list, op_catalogue_skills_get, op_catalogue_skills_save, op_catalogue_skills_delete,
+    op_catalogue_behaviors_list, op_catalogue_behaviors_get, op_catalogue_behaviors_save, op_catalogue_behaviors_delete,
+    op_catalogue_personalities_list, op_catalogue_personalities_get, op_catalogue_personalities_save, op_catalogue_personalities_delete,
+    op_catalogue_roles_list, op_catalogue_roles_get, op_catalogue_roles_save, op_catalogue_roles_delete,
+    op_catalogue_all,
+)
+from services.api.catalogue_agents import (
+    op_catalogue_agents_list, op_catalogue_agents_get, op_catalogue_agents_save,
+    op_catalogue_agents_delete, op_catalogue_agents_inline,
+)
+from services.api.catalogue_api import (
+    op_lib_list, op_lib_resolve, op_lib_scan,
+)
 from AgentFrameWork.router import (
     capabilities_catalog as router_capabilities,
 )
@@ -1715,11 +1729,38 @@ ROUTES = {
     "chat/session/read":      op_chat_session_read,
     "chat/session/stream":    op_chat_session_stream,
     # O. Tarif / budget
-    "tarif/info":             lambda p: _quiet(_op_tarif_info, p),
-    "tarif/sync":             lambda p: _quiet(_op_tarif_sync, p.get("url")),
+    "tarif/info":            lambda p: _quiet(_op_tarif_info, p),
+    "tarif/sync":            lambda p: _quiet(_op_tarif_sync, p.get("url")),
     # P. Usage / budget reel (USD) + free-tier
-    "usage/budget":           op_usage_budget,
-    "usage/free_tier":        op_usage_free_tier,
+    "usage/budget":         op_usage_budget,
+    "usage/free_tier":      op_usage_free_tier,
+    # Q. Catalogue Sandbox (V0.7) — skills / behaviors / personalities / roles
+    "catalogue/skills/list":    op_catalogue_skills_list,
+    "catalogue/skills/get":     op_catalogue_skills_get,
+    "catalogue/skills/save":    op_catalogue_skills_save,
+    "catalogue/skills/delete":  op_catalogue_skills_delete,
+    "catalogue/behaviors/list":    op_catalogue_behaviors_list,
+    "catalogue/behaviors/get":     op_catalogue_behaviors_get,
+    "catalogue/behaviors/save":    op_catalogue_behaviors_save,
+    "catalogue/behaviors/delete":  op_catalogue_behaviors_delete,
+    "catalogue/personalities/list":    op_catalogue_personalities_list,
+    "catalogue/personalities/get":     op_catalogue_personalities_get,
+    "catalogue/personalities/save":    op_catalogue_personalities_save,
+    "catalogue/personalities/delete":  op_catalogue_personalities_delete,
+    "catalogue/roles/list":    op_catalogue_roles_list,
+    "catalogue/roles/get":     op_catalogue_roles_get,
+    "catalogue/roles/save":    op_catalogue_roles_save,
+    "catalogue/roles/delete":  op_catalogue_roles_delete,
+    "catalogue/agents/list":    op_catalogue_agents_list,
+    "catalogue/agents/get":     op_catalogue_agents_get,
+    "catalogue/agents/save":    op_catalogue_agents_save,
+    "catalogue/agents/delete":  op_catalogue_agents_delete,
+    "catalogue/agents/inline":  op_catalogue_agents_inline,
+    "catalogue/all":           op_catalogue_all,
+    # R. Bibliothèques de fonctions (AgentsCatalogue/lib) — hover IDE
+    "lib/list":                op_lib_list,
+    "lib/resolve":             op_lib_resolve,
+    "lib/scan":                op_lib_scan,
 }
 
 # Routes qui reçoivent (params, wfile) au lieu de (params) -> dict

@@ -13,4 +13,4 @@ outputs:
     description: "Liste {name, type (dir/file), size}"
 implementation:
   type: python
-  function: _exec_list_dir
+  function: system.file.list_dir

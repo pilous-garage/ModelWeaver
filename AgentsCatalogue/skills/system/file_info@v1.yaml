@@ -17,4 +17,4 @@ outputs:
     type: number
 implementation:
   type: python
-  function: _exec_file_info
+  function: system.file.file_info

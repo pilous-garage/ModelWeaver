@@ -21,4 +21,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: _exec_common_write
+  function: system.common.common_write

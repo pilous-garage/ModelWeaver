@@ -16,4 +16,4 @@ outputs:
     type: array
 implementation:
   type: python
-  function: _exec_common_list
+  function: system.common.common_list

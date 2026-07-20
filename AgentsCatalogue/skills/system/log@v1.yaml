@@ -42,4 +42,4 @@ outputs:
     description: "True si l'écriture a réussi"
 implementation:
   type: python
-  function: _exec_log
+  function: system.log.log

@@ -38,4 +38,4 @@ outputs:
     description: "Liste des fichiers effectivement résolus (mode 'all')"
 implementation:
   type: python
-  function: _exec_git_resolve_conflict
+  function: system.git.git_resolve_conflict

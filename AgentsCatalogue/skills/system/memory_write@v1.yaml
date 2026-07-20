@@ -28,4 +28,4 @@ outputs:
     description: "Chemin du fichier écrit"
 implementation:
   type: python
-  function: _exec_memory_write
+  function: system.memory.memory_write
