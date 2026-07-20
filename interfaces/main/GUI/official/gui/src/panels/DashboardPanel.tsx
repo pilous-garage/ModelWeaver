@@ -1,8 +1,8 @@
-import React from 'react';
-import type { AppApi } from '../useApp.ts';
+import React, { useState } from 'react';
+import type { AppApi, PanelGroupData } from '../useApp.ts';
 import { invoke } from '@tauri-apps/api/core';
 import { Spinner } from '../components/ui.tsx';
-import { PanelContainer } from '../components/PanelContainer.tsx';
+import { TabbedPanel } from '../components/TabbedPanel.tsx';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { ChatPanel } from './ChatPanel.tsx';
 import { AgentsPanel } from './AgentsPanel.tsx';
@@ -15,18 +15,72 @@ import { InstallQueuePanel } from './InstallQueuePanel.tsx';
 import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
 
-const PANEL_MAP: Record<string, { title: string; render: (app: AppApi) => React.ReactNode }> = {
-  'system-state': { title: 'État du système', render: app => <SystemStatePanel app={app} /> },
-  'resources': { title: 'Ressources', render: app => <ResourcesPanel app={app} /> },
-  'installed-tools': { title: 'Outils installés', render: app => <InstalledToolsPanel app={app} /> },
-  'catalogue': { title: 'Catalogue', render: app => <CataloguePanel app={app} /> },
-  'chat': { title: 'Chat', render: app => <ChatPanel app={app} /> },
-  'install-queue': { title: "File d'installation", render: app => <InstallQueuePanel app={app} /> },
-  'agents': { title: 'Agents', render: app => <AgentsPanel app={app} /> },
-  'local-models': { title: 'LLM locaux', render: app => <LocalModelsPanel app={app} /> },
-  'keys': { title: 'Clés API', render: app => <KeysPanel app={app} /> },
-  'debug': { title: 'Debug', render: app => <DebugPanel app={app} /> },
+const PANEL_RENDER: Record<string, (app: AppApi) => React.ReactNode> = {
+  'system-state': app => <SystemStatePanel app={app} />,
+  'resources': app => <ResourcesPanel app={app} />,
+  'installed-tools': app => <InstalledToolsPanel app={app} />,
+  'catalogue': app => <CataloguePanel app={app} />,
+  'chat': app => <ChatPanel app={app} />,
+  'install-queue': app => <InstallQueuePanel app={app} />,
+  'agents': app => <AgentsPanel app={app} />,
+  'local-models': app => <LocalModelsPanel app={app} />,
+  'keys': app => <KeysPanel app={app} />,
+  'debug': app => <DebugPanel app={app} />,
 };
+
+function ColumnPanel({ app, col, groups }: { app: AppApi; col: 'left' | 'center' | 'right'; groups: PanelGroupData[] }) {
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    const raw = e.dataTransfer.types.includes('application/mw-tab');
+    if (raw) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setDragOver(true);
+    }
+  };
+
+  const handleDragLeave = () => setDragOver(false);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const raw = e.dataTransfer.getData('application/mw-tab');
+    if (!raw) return;
+    const { tabId, fromGroup } = JSON.parse(raw);
+    if (groups.some(g => g.id === fromGroup)) return;
+    app.moveTabToNewGroup(tabId, fromGroup, col);
+  };
+
+  return (
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem',
+        padding: '0.3rem',
+        overflow: 'hidden',
+        height: '100%',
+        minHeight: 0,
+        border: dragOver ? '2px dashed #60a5fa' : '2px solid transparent',
+        borderRadius: '0.5rem',
+        transition: 'border-color 0.15s',
+      }}
+    >
+      {groups.map(group => (
+        <TabbedPanel key={group.id} group={group} column={col} app={app}>
+          {tabId => {
+            const render = PANEL_RENDER[tabId];
+            return render ? render(app) : <div style={{ color: '#94a3b8' }}>Panneau inconnu: {tabId}</div>;
+          }}
+        </TabbedPanel>
+      ))}
+    </div>
+  );
+}
 
 export function DashboardPanel({ app }: { app: AppApi }) {
   return (
@@ -71,55 +125,22 @@ export function DashboardPanel({ app }: { app: AppApi }) {
         <div style={{ color: '#fca5a5', padding: '0.3rem 1rem', fontSize: '0.75rem' }}>Erreur: {app.logithequeError}</div>
       )}
 
-      {/* 3-column resizable layout */}
+      {/* 3-column resizable layout with tabbed groups */}
       <Group orientation="horizontal" style={{ flex: 1 }}>
-        {/* Left column */}
         <Panel id="left-col" defaultSize="20" minSize="12" maxSize="35">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
-            {(app.panelOrder.left || []).map(id => {
-              const info = PANEL_MAP[id];
-              if (!info) return null;
-              return (
-                <PanelContainer key={id} id={id} title={info.title} app={app}>
-                  {info.render(app)}
-                </PanelContainer>
-              );
-            })}
-          </div>
+          <ColumnPanel app={app} col="left" groups={app.panelGroups.left} />
         </Panel>
 
         <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
 
-        {/* Center column (large) */}
         <Panel id="center-col" defaultSize="60" minSize="20">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
-            {(app.panelOrder.center || []).map(id => {
-              const info = PANEL_MAP[id];
-              if (!info) return null;
-              return (
-                <PanelContainer key={id} id={id} title={info.title} app={app}>
-                  {info.render(app)}
-                </PanelContainer>
-              );
-            })}
-          </div>
+          <ColumnPanel app={app} col="center" groups={app.panelGroups.center} />
         </Panel>
 
         <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
 
-        {/* Right column */}
         <Panel id="right-col" defaultSize="20" minSize="12" maxSize="35">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
-            {(app.panelOrder.right || []).map(id => {
-              const info = PANEL_MAP[id];
-              if (!info) return null;
-              return (
-                <PanelContainer key={id} id={id} title={info.title} app={app}>
-                  {info.render(app)}
-                </PanelContainer>
-              );
-            })}
-          </div>
+          <ColumnPanel app={app} col="right" groups={app.panelGroups.right} />
         </Panel>
       </Group>
     </div>

@@ -37,6 +37,17 @@ function useDomainVersions(enabled: boolean, onChange: (domains: Domain[]) => vo
   }, [enabled]);
 }
 
+export interface PanelGroupData {
+  id: string;
+  tabs: string[];
+  activeTab: string;
+}
+
+let groupIdCounter = 0;
+function genGroupId(): string {
+  return `pg-${++groupIdCounter}-${Date.now()}`;
+}
+
 export function useApp() {
   const [requiredDeps, setRequiredDeps] = useState<Dependency[]>([]);
   const [recommendedDeps, setRecommendedDeps] = useState<Dependency[]>([]);
@@ -127,35 +138,131 @@ export function useApp() {
   const [agentStreamSeq, setAgentStreamSeq] = useState(0);
   const [agentSignals, setAgentSignals] = useState<any[]>([]);
 
-  // Panel management (collapse + drag reorder)
-  const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
-  const [panelOrder, setPanelOrder] = useState<Record<string, string[]>>({
-    left: ['system-state', 'resources', 'installed-tools'],
-    center: ['catalogue', 'chat', 'install-queue'],
-    right: ['agents', 'local-models', 'keys', 'debug'],
+  // Panel management — multi-tab groups per column (VS Code style)
+  const [panelGroups, setPanelGroups] = useState<Record<string, PanelGroupData[]>>({
+    left: [{ id: genGroupId(), tabs: ['system-state', 'resources', 'installed-tools'], activeTab: 'system-state' }],
+    center: [{ id: genGroupId(), tabs: ['catalogue', 'chat', 'install-queue'], activeTab: 'catalogue' }],
+    right: [{ id: genGroupId(), tabs: ['agents', 'local-models', 'keys', 'debug'], activeTab: 'agents' }],
   });
-  const togglePanelCollapse = (id: string) =>
-    setCollapsedPanels(prev => ({ ...prev, [id]: !prev[id] }));
-  const movePanel = (draggedId: string, targetId: string) => {
-    setPanelOrder(prev => {
-      const next: Record<string, string[]> = { left: [...prev.left], center: [...prev.center], right: [...prev.right] };
-      let draggedCol: string | null = null;
-      let targetCol: string | null = null;
-      let draggedIdx = -1;
-      let targetIdx = -1;
+
+  const activateTab = (groupId: string, tabId: string) =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
       for (const col of ['left', 'center', 'right'] as const) {
-        const idx = next[col].indexOf(draggedId);
-        if (idx !== -1) { draggedCol = col; draggedIdx = idx; }
-        const idx2 = next[col].indexOf(targetId);
-        if (idx2 !== -1) { targetCol = col; targetIdx = idx2; }
+        const g = next[col].find(g => g.id === groupId);
+        if (g) { g.activeTab = tabId; break; }
       }
-      if (!draggedCol || !targetCol) return prev;
-      next[draggedCol].splice(draggedIdx, 1);
-      const insertAt = draggedCol === targetCol && draggedIdx < targetIdx ? targetIdx - 1 : targetIdx;
-      next[targetCol].splice(insertAt + 1, 0, draggedId);
       return next;
     });
-  };
+
+  const moveTab = (tabId: string, fromGroupId: string, toGroupId: string, insertIndex?: number) =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
+      let fromCol: string | null = null;
+      let toCol: string | null = null;
+      let fromGroupIdx = -1;
+      let toGroupIdx = -1;
+      let tabIdx = -1;
+      for (const col of ['left', 'center', 'right'] as const) {
+        for (let gi = 0; gi < next[col].length; gi++) {
+          const g = next[col][gi];
+          if (g.id === fromGroupId) { fromCol = col; fromGroupIdx = gi; tabIdx = g.tabs.indexOf(tabId); }
+          if (g.id === toGroupId) { toCol = col; toGroupIdx = gi; }
+        }
+      }
+      if (fromCol === null || toCol === null || tabIdx === -1) return prev;
+      const [moved] = next[fromCol][fromGroupIdx].tabs.splice(tabIdx, 1);
+      if (next[fromCol][fromGroupIdx].tabs.length === 0) {
+        next[fromCol].splice(fromGroupIdx, 1);
+      }
+      const targetGroup = next[toCol][toGroupIdx];
+      if (insertIndex !== undefined) targetGroup.tabs.splice(insertIndex, 0, moved);
+      else targetGroup.tabs.push(moved);
+      return next;
+    });
+
+  const closeTab = (groupId: string, tabId: string) =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
+      for (const col of ['left', 'center', 'right'] as const) {
+        const g = next[col].find(g => g.id === groupId);
+        if (!g) continue;
+        const idx = g.tabs.indexOf(tabId);
+        if (idx === -1) continue;
+        g.tabs.splice(idx, 1);
+        if (g.tabs.length === 0) {
+          const gi = next[col].indexOf(g);
+          next[col].splice(gi, 1);
+        } else if (g.activeTab === tabId) {
+          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+        }
+        break;
+      }
+      return next;
+    });
+
+  const splitGroup = (groupId: string, tabId: string) =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
+      for (const col of ['left', 'center', 'right'] as const) {
+        const g = next[col].find(g => g.id === groupId);
+        if (!g) continue;
+        const idx = g.tabs.indexOf(tabId);
+        if (idx === -1) continue;
+        g.tabs.splice(idx, 1);
+        if (g.tabs.length === 0) {
+          const gi = next[col].indexOf(g);
+          next[col].splice(gi, 1);
+        } else if (g.activeTab === tabId) {
+          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+        }
+        next[col].push({ id: genGroupId(), tabs: [tabId], activeTab: tabId });
+        break;
+      }
+      return next;
+    });
+
+  const moveTabToNewGroup = (tabId: string, fromGroupId: string, toCol: 'left' | 'center' | 'right') =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
+      for (const col of ['left', 'center', 'right'] as const) {
+        const g = next[col].find(g => g.id === fromGroupId);
+        if (!g) continue;
+        const idx = g.tabs.indexOf(tabId);
+        if (idx === -1) continue;
+        g.tabs.splice(idx, 1);
+        if (g.tabs.length === 0) {
+          const gi = next[col].indexOf(g);
+          next[col].splice(gi, 1);
+        } else if (g.activeTab === tabId) {
+          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+        }
+        break;
+      }
+      next[toCol].push({ id: genGroupId(), tabs: [tabId], activeTab: tabId });
+      return next;
+    });
+
+  const moveTabToColumnAt = (tabId: string, fromGroupId: string, toCol: 'left' | 'center' | 'right', insertIdx: number) =>
+    setPanelGroups(prev => {
+      const next = structuredClone(prev);
+      for (const col of ['left', 'center', 'right'] as const) {
+        const g = next[col].find(g => g.id === fromGroupId);
+        if (!g) continue;
+        const idx = g.tabs.indexOf(tabId);
+        if (idx === -1) continue;
+        g.tabs.splice(idx, 1);
+        if (g.tabs.length === 0) {
+          const gi = next[col].indexOf(g);
+          next[col].splice(gi, 1);
+        } else if (g.activeTab === tabId) {
+          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+        }
+        break;
+      }
+      next[toCol].splice(insertIdx, 0, { id: genGroupId(), tabs: [tabId], activeTab: tabId });
+      return next;
+    });
 
   const setDebug = (v: boolean) => {
     setShowDebug(v);
@@ -935,8 +1042,7 @@ export function useApp() {
     agentStreamAgent, setAgentStreamAgent,
     agentStreamSeq, setAgentStreamSeq,
     agentSignals, setAgentSignals,
-    collapsedPanels, togglePanelCollapse,
-    panelOrder,
+    panelGroups, activateTab, moveTab, closeTab, splitGroup, moveTabToNewGroup, moveTabToColumnAt,
     installListOpen, setInstallListOpen,
     installedRef,
     installQueueRef,
