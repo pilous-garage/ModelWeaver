@@ -127,6 +127,36 @@ export function useApp() {
   const [agentStreamSeq, setAgentStreamSeq] = useState(0);
   const [agentSignals, setAgentSignals] = useState<any[]>([]);
 
+  // Panel management (collapse + drag reorder)
+  const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
+  const [panelOrder, setPanelOrder] = useState<Record<string, string[]>>({
+    left: ['system-state', 'resources', 'installed-tools'],
+    center: ['catalogue', 'chat', 'install-queue'],
+    right: ['agents', 'local-models', 'keys', 'debug'],
+  });
+  const togglePanelCollapse = (id: string) =>
+    setCollapsedPanels(prev => ({ ...prev, [id]: !prev[id] }));
+  const movePanel = (draggedId: string, targetId: string) => {
+    setPanelOrder(prev => {
+      const next: Record<string, string[]> = { left: [...prev.left], center: [...prev.center], right: [...prev.right] };
+      let draggedCol: string | null = null;
+      let targetCol: string | null = null;
+      let draggedIdx = -1;
+      let targetIdx = -1;
+      for (const col of ['left', 'center', 'right'] as const) {
+        const idx = next[col].indexOf(draggedId);
+        if (idx !== -1) { draggedCol = col; draggedIdx = idx; }
+        const idx2 = next[col].indexOf(targetId);
+        if (idx2 !== -1) { targetCol = col; targetIdx = idx2; }
+      }
+      if (!draggedCol || !targetCol) return prev;
+      next[draggedCol].splice(draggedIdx, 1);
+      const insertAt = draggedCol === targetCol && draggedIdx < targetIdx ? targetIdx - 1 : targetIdx;
+      next[targetCol].splice(insertAt + 1, 0, draggedId);
+      return next;
+    });
+  };
+
   const setDebug = (v: boolean) => {
     setShowDebug(v);
     getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
@@ -905,6 +935,8 @@ export function useApp() {
     agentStreamAgent, setAgentStreamAgent,
     agentStreamSeq, setAgentStreamSeq,
     agentSignals, setAgentSignals,
+    collapsedPanels, togglePanelCollapse,
+    panelOrder,
     installListOpen, setInstallListOpen,
     installedRef,
     installQueueRef,

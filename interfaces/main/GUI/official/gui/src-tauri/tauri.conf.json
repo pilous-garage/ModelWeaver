@@ -12,8 +12,10 @@
     "windows": [
       {
         "title": "ModelWeaver",
-        "width": 1000,
-        "height": 700
+        "width": 2560,
+        "height": 1440,
+        "minWidth": 800,
+        "minHeight": 600
       }
     ],
     "security": {

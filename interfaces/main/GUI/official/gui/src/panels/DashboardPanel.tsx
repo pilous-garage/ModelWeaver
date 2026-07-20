@@ -1,8 +1,9 @@
 import React from 'react';
 import type { AppApi } from '../useApp.ts';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { Spinner } from '../components/ui.tsx';
+import { PanelContainer } from '../components/PanelContainer.tsx';
+import { Panel, Group, Separator } from 'react-resizable-panels';
 import { ChatPanel } from './ChatPanel.tsx';
 import { AgentsPanel } from './AgentsPanel.tsx';
 import { LocalModelsPanel } from './LocalModelsPanel.tsx';
@@ -13,6 +14,19 @@ import { CataloguePanel } from './CataloguePanel.tsx';
 import { InstallQueuePanel } from './InstallQueuePanel.tsx';
 import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
+
+const PANEL_MAP: Record<string, { title: string; render: (app: AppApi) => React.ReactNode }> = {
+  'system-state': { title: 'État du système', render: app => <SystemStatePanel app={app} /> },
+  'resources': { title: 'Ressources', render: app => <ResourcesPanel app={app} /> },
+  'installed-tools': { title: 'Outils installés', render: app => <InstalledToolsPanel app={app} /> },
+  'catalogue': { title: 'Catalogue', render: app => <CataloguePanel app={app} /> },
+  'chat': { title: 'Chat', render: app => <ChatPanel app={app} /> },
+  'install-queue': { title: "File d'installation", render: app => <InstallQueuePanel app={app} /> },
+  'agents': { title: 'Agents', render: app => <AgentsPanel app={app} /> },
+  'local-models': { title: 'LLM locaux', render: app => <LocalModelsPanel app={app} /> },
+  'keys': { title: 'Clés API', render: app => <KeysPanel app={app} /> },
+  'debug': { title: 'Debug', render: app => <DebugPanel app={app} /> },
+};
 
 export function DashboardPanel({ app }: { app: AppApi }) {
   return (
@@ -26,133 +40,88 @@ export function DashboardPanel({ app }: { app: AppApi }) {
       overflow: 'hidden',
     }}>
       <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
-      {/* Header */}
+
+      {/* Top bar */}
       <div style={{
-        padding: '1rem 1.5rem',
+        padding: '0.5rem 1rem',
         borderBottom: '1px solid #334155',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: '0.6rem',
+        fontSize: '0.78rem',
+        flexShrink: 0,
       }}>
-        <div>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>ModelWeaver Logithèque</h1>
-          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
-            {app.logithequeLoading ? 'Chargement...' : 'Catalogue local + sync distante async'}
-          </div>
-          <div style={{ fontSize: '0.65rem', color: '#475569', marginTop: '0.1rem', fontFamily: 'monospace' }}>
-            {app.appVersion ? `v${app.appVersion}` : 'v…'}
-          </div>
-        </div>
-        <button
-          onClick={() => app.withFeedback('load-logitheque', async () => { app.setCatalogueTools([]); await app.refreshInstalled(); await app.loadLogitheque(); })}
+        <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>ModelWeaver</span>
+        <span style={{ color: '#64748b' }}>
+          {app.appVersion ? `v${app.appVersion}` : 'v…'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => app.withFeedback('load-logitheque', async () => { app.setCatalogueTools([]); await app.refreshInstalled(); await app.loadLogitheque(); })}
           disabled={app.loadingActions['load-logitheque']}
-          style={{ padding: '0.4rem 0.8rem', backgroundColor: app.loadingActions['load-logitheque'] ? '#1e293b' : '#334155', color: app.loadingActions['load-logitheque'] ? '#64748b' : '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: app.loadingActions['load-logitheque'] ? 'default' : 'pointer', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-        >
-          {app.loadingActions['load-logitheque'] ? <Spinner /> : '↻'} Rafraîchir
+          style={{ padding: '0.25rem 0.6rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}>
+          {app.loadingActions['load-logitheque'] ? <Spinner size={10} /> : '↻'} Rafraîchir
         </button>
-        <button
-          onClick={() => app.withFeedback('install-all', async () => {
-            app.addLog('Installation automatique de tous les outils...');
-            try { const r = await invoke<any>('install_all_tools'); app.addLog(`Résultat: ${JSON.stringify(r)}`); } catch (e) { app.addLog(`Erreur install all: ${e}`); }
-          })}
-          disabled={app.loadingActions['install-all']}
-          style={{ padding: '0.4rem 0.8rem', backgroundColor: app.loadingActions['install-all'] ? '#064e3b' : '#059669', color: 'white', border: 'none', borderRadius: '0.375rem', cursor: app.loadingActions['install-all'] ? 'default' : 'pointer', fontSize: '0.75rem', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-        >
-          {app.loadingActions['install-all'] ? <Spinner /> : '⚡'} Tout installer
-        </button>
-        <button
-          onClick={() => app.setDebug(!app.showDebug)}
-          style={{ padding: '0.4rem 0.8rem', backgroundColor: app.showDebug ? '#2563eb' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
-        >
-          🐞 Debug
-        </button>
-        <button
-          onClick={() => { app.setShowKeys(!app.showKeys); if (!app.showKeys) { app.fetchKeys(); app.fetchProviders(); } }}
-          style={{ padding: '0.4rem 0.8rem', backgroundColor: app.showKeys ? '#7c3aed' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
-        >
-          🔑 Clés
-        </button>
-        <button
-          onClick={() => {
-            const v = !app.showChat;
-            app.setShowChat(v);
-            app.setShowLocal(false);
-            getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
-            if (v) { app.fetchProviders(); app.fetchModels(); }
-          }}
-          style={{ padding: '0.4rem 0.8rem', backgroundColor: app.showChat ? '#dc2626' : '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
-        >
-          💬 Chat
-        </button>
-          <button
-            onClick={() => {
-              const v = !app.showLocal;
-              app.setShowLocal(v);
-              app.setShowChat(false);
-              if (v) { getCurrentWindow().setSize(new LogicalSize(1100, 760)).catch(() => {}); app.fetchLocalEngines(); }
-              else { getCurrentWindow().setSize(new LogicalSize(1000, 700)).catch(() => {}); }
-            }}
-            style={{ padding: '0.4rem 0.8rem', backgroundColor: app.showLocal ? '#f59e0b' : '#334155', color: '#0f172a', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
-          >
-            🖥️ LLM locaux
-          </button>
-          <button
-            onClick={() => {
-              const v = !app.showAgents;
-              app.setShowAgents(v);
-              app.setShowChat(false); app.setShowLocal(false);
-              getCurrentWindow().setSize(new LogicalSize(v ? 1200 : 1000, v ? 760 : 700)).catch(() => {});
-              if (v) app.fetchAgents();
-            }}
-            style={{ padding: '0.4rem 0.8rem', backgroundColor: app.showAgents ? '#06b6d4' : '#334155', color: '#0f172a', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '600' }}
-          >
-            🤖 Agents
-          </button>
-        <button
-          onClick={app.toggleFullscreen}
-          style={{ padding: '0.4rem 0.6rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.375rem', cursor: 'pointer', fontSize: '0.75rem' }}
-          title="Plein écran"
-        >
+        <button onClick={app.toggleFullscreen}
+          style={{ padding: '0.25rem 0.5rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}>
           {app.isFullscreen ? '🗗' : '⛶'}
         </button>
       </div>
 
       {app.logithequeError && (
-        <div style={{ color: '#fca5a5', padding: '0.5rem 1.5rem', fontSize: '0.8rem' }}>Erreur: {app.logithequeError}</div>
+        <div style={{ color: '#fca5a5', padding: '0.3rem 1rem', fontSize: '0.75rem' }}>Erreur: {app.logithequeError}</div>
       )}
 
-      {/* Body */}
-      <div style={{ flex: 1, display: 'flex', gap: '1rem', padding: '1rem 1.5rem', overflow: 'hidden' }}>
+      {/* 3-column resizable layout */}
+      <Group orientation="horizontal" style={{ flex: 1 }}>
+        {/* Left column */}
+        <Panel id="left-col" defaultSize="20" minSize="12" maxSize="35">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
+            {(app.panelOrder.left || []).map(id => {
+              const info = PANEL_MAP[id];
+              if (!info) return null;
+              return (
+                <PanelContainer key={id} id={id} title={info.title} app={app}>
+                  {info.render(app)}
+                </PanelContainer>
+              );
+            })}
+          </div>
+        </Panel>
 
-        {app.showChat ? (
-          <ChatPanel app={app} />
-        ) : app.showAgents ? (
-          <AgentsPanel app={app} />
-        ) : app.showLocal ? (
-          <LocalModelsPanel app={app} />
-        ) : (
-          <>
-        <div style={{ width: '340px', display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto' }}>
-          {/* Left: system state + installed */}
-          <SystemStatePanel app={app} />
-          <ResourcesPanel app={app} />
-          <InstalledToolsPanel app={app} />
-        </div>
+        <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
 
-        {/* Right: catalogue + install queue */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem', overflow: 'hidden' }}>
-          <CataloguePanel app={app} />
-          <InstallQueuePanel app={app} />
-        </div>
-          </>
-        )}
-        {app.showKeys && (
-          <KeysPanel app={app} />
-        )}
-        {app.showDebug && (
-          <DebugPanel app={app} />
-        )}
-      </div>
+        {/* Center column (large) */}
+        <Panel id="center-col" defaultSize="60" minSize="20">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
+            {(app.panelOrder.center || []).map(id => {
+              const info = PANEL_MAP[id];
+              if (!info) return null;
+              return (
+                <PanelContainer key={id} id={id} title={info.title} app={app}>
+                  {info.render(app)}
+                </PanelContainer>
+              );
+            })}
+          </div>
+        </Panel>
+
+        <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
+
+        {/* Right column */}
+        <Panel id="right-col" defaultSize="20" minSize="12" maxSize="35">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.3rem', overflowY: 'auto', height: '100%' }}>
+            {(app.panelOrder.right || []).map(id => {
+              const info = PANEL_MAP[id];
+              if (!info) return null;
+              return (
+                <PanelContainer key={id} id={id} title={info.title} app={app}>
+                  {info.render(app)}
+                </PanelContainer>
+              );
+            })}
+          </div>
+        </Panel>
+      </Group>
     </div>
   );
 }
