@@ -103,7 +103,12 @@ export function TabbedPanel({ group, app, children }: Props) {
     setDragOverTab(null);
     const raw = e.dataTransfer.getData('application/mw-tab');
     if (!raw) return;
-    if (zone === 'middle') return;
+    if (zone === 'middle') {
+      const { tabId, fromGroup: fromG } = JSON.parse(raw);
+      if (fromG === group.id) return;
+      app.moveTabToGroup(tabId, fromG, group.id);
+      return;
+    }
     const { tabId, fromGroup: fromG } = JSON.parse(raw);
     const dir = zone === 'top' || zone === 'bottom' ? 'vertical' : 'horizontal';
     app.splitLeafAtWithTab(group.id, dir, tabId, fromG);
@@ -166,6 +171,31 @@ export function TabbedPanel({ group, app, children }: Props) {
           }}>
             + nouveau panneau
           </div>
+        </div>
+      )}
+
+      {/* Preview for middle zone — highlight tab bar */}
+      {dropZone === 'middle' && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '1.8rem',
+          zIndex: 20,
+          pointerEvents: 'none',
+          backgroundColor: 'rgba(96, 165, 250, 0.12)',
+          borderBottom: '2px solid #60a5fa',
+          borderTopLeftRadius: '0.5rem',
+          borderTopRightRadius: '0.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '0.65rem',
+          color: '#93c5fd',
+          fontWeight: 600,
+        }}>
+          + ajouter au groupe
         </div>
       )}
 

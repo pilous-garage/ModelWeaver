@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AppApi } from '../useApp.ts';
 import { Spinner } from '../components/ui.tsx';
+import { MenuBar } from '../components/MenuBar.tsx';
 import { PanelTreeRenderer } from '../components/PanelTreeRenderer.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { AgentsPanel } from './AgentsPanel.tsx';
@@ -46,6 +47,9 @@ export function DashboardPanel({ app }: { app: AppApi }) {
       overflow: 'hidden',
     }}>
       <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
+
+      {/* Menu bar */}
+      <MenuBar app={app} />
 
       {/* Top bar */}
       <div style={{

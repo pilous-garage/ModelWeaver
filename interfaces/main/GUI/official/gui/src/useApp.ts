@@ -334,6 +334,92 @@ export function useApp() {
       return tree;
     });
 
+  // Hidden panels — show/hide from menu
+  const [hiddenPanels, setHiddenPanels] = useState<Record<string, boolean>>({});
+
+  const togglePanelVisibility = (id: string) => {
+    if (hiddenPanels[id]) {
+      setHiddenPanels(prev => { const n = { ...prev }; delete n[id]; return n; });
+      setPanelTree(prev => {
+        const tree = cloneTree(prev);
+        return addTabToDefaultGroup(tree, id);
+      });
+    } else {
+      setHiddenPanels(prev => ({ ...prev, [id]: true }));
+      setPanelTree(prev => removeTabFromTree(prev, id));
+    }
+  };
+
+  function addTabToDefaultGroup(tree: PanelNode, tabId: string): PanelNode {
+    const col = PANEL_COLUMN[tabId] || 1;
+    if (!isSplit(tree)) return tree;
+    const idx = col === 'left' ? 0 : col === 'right' ? tree.children.length - 1 : Math.floor(tree.children.length / 2);
+    const child = tree.children[idx];
+    if (!isSplit(child)) {
+      child.tabs.push(tabId);
+      return tree;
+    }
+    tree.children.push({ id: genGroupId(), tabs: [tabId], activeTab: tabId });
+    return tree;
+  }
+
+  function removeTabFromTree(node: PanelNode, tabId: string): PanelNode | null {
+    if (!isSplit(node)) {
+      if (node.tabs.includes(tabId)) {
+        node.tabs = node.tabs.filter(t => t !== tabId);
+        if (node.tabs.length === 0) return null;
+      }
+      return node;
+    }
+    const filtered: PanelNode[] = [];
+    for (const c of node.children) {
+      const removed = removeTabFromTree(c, tabId);
+      if (removed) filtered.push(removed);
+    }
+    if (filtered.length === 0) return null;
+    if (filtered.length === 1) return filtered[0];
+    return { direction: node.direction, children: filtered };
+  }
+
+  const saveLayout = async () => {
+    const data = JSON.stringify({ panelTree, hiddenPanels }, null, 2);
+    try {
+      await invoke('daemon_post', { route: 'file/save', body: JSON.stringify({ path: 'panel-conf.json', content: data }) });
+    } catch {
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'panel-conf.json'; a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const loadLayout = async () => {
+    try {
+      const res = await invoke<any>('daemon_post', { route: 'file/load', body: JSON.stringify({ path: 'panel-conf.json' }) });
+      if (res?.ok && res.result) {
+        const { panelTree: pt, hiddenPanels: hp } = JSON.parse(res.result);
+        if (pt) setPanelTree(pt);
+        if (hp) setHiddenPanels(hp);
+      }
+    } catch { /* pas de fichier */ }
+  };
+
+  const PANEL_COLUMN: Record<string, 'left' | 'center' | 'right'> = {
+    'system-state': 'left',
+    'resources': 'left',
+    'installed-tools': 'left',
+    'catalogue': 'center',
+    'chat': 'center',
+    'install-queue': 'center',
+    'agents': 'right',
+    'local-models': 'right',
+    'keys': 'right',
+    'debug': 'right',
+  };
+
+  const ALL_PANELS = ['system-state', 'resources', 'installed-tools', 'catalogue', 'chat', 'install-queue', 'agents', 'local-models', 'keys', 'debug'];
+
   const setDebug = (v: boolean) => {
     setShowDebug(v);
     getCurrentWindow().setSize(new LogicalSize(v ? 1380 : 1000, v ? 760 : 700)).catch(() => {});
@@ -1113,6 +1199,7 @@ export function useApp() {
     agentStreamSeq, setAgentStreamSeq,
     agentSignals, setAgentSignals,
     panelTree, activateTab, closeTab, moveTabToGroup, addTabToNewGroup, splitLeafAt, splitLeafAtWithTab,
+    hiddenPanels, togglePanelVisibility, saveLayout, loadLayout, ALL_PANELS,
     installListOpen, setInstallListOpen,
     installedRef,
     installQueueRef,
