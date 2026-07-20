@@ -43,6 +43,19 @@ export interface PanelGroupData {
   activeTab: string;
 }
 
+export interface PanelGroup {
+  id: string;
+  tabs: string[];
+  activeTab: string;
+}
+
+export interface PanelSplit {
+  direction: 'horizontal' | 'vertical';
+  children: PanelNode[];
+}
+
+export type PanelNode = PanelSplit | PanelGroup;
+
 let groupIdCounter = 0;
 function genGroupId(): string {
   return `pg-${++groupIdCounter}-${Date.now()}`;
@@ -138,130 +151,187 @@ export function useApp() {
   const [agentStreamSeq, setAgentStreamSeq] = useState(0);
   const [agentSignals, setAgentSignals] = useState<any[]>([]);
 
-  // Panel management — multi-tab groups per column (VS Code style)
-  const [panelGroups, setPanelGroups] = useState<Record<string, PanelGroupData[]>>({
-    left: [{ id: genGroupId(), tabs: ['system-state', 'resources', 'installed-tools'], activeTab: 'system-state' }],
-    center: [{ id: genGroupId(), tabs: ['catalogue', 'chat', 'install-queue'], activeTab: 'catalogue' }],
-    right: [{ id: genGroupId(), tabs: ['agents', 'local-models', 'keys', 'debug'], activeTab: 'agents' }],
+  // Panel management — tree-based layout (splits horizontaux/verticaux)
+  function isSplit(node: PanelNode): node is PanelSplit {
+    return 'direction' in node;
+  }
+
+  function cloneTree(node: PanelNode): PanelNode {
+    if (isSplit(node)) {
+      return { direction: node.direction, children: node.children.map(cloneTree) };
+    }
+    return { id: node.id, tabs: [...node.tabs], activeTab: node.activeTab };
+  }
+
+  function findGroupInTree(node: PanelNode, groupId: string): PanelGroup | null {
+    if (!isSplit(node)) return node.id === groupId ? node : null;
+    for (const c of node.children) {
+      const found = findGroupInTree(c, groupId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function mapTreeGroups(node: PanelNode, fn: (g: PanelGroup) => PanelGroup): PanelNode {
+    if (!isSplit(node)) return fn(node);
+    return { direction: node.direction, children: node.children.map(c => mapTreeGroups(c, fn)) };
+  }
+
+  const [panelTree, setPanelTree] = useState<PanelNode>({
+    direction: 'horizontal',
+    children: [
+      { id: genGroupId(), tabs: ['system-state', 'resources', 'installed-tools'], activeTab: 'system-state' },
+      { id: genGroupId(), tabs: ['catalogue', 'chat', 'install-queue'], activeTab: 'catalogue' },
+      { id: genGroupId(), tabs: ['agents', 'local-models', 'keys', 'debug'], activeTab: 'agents' },
+    ],
   });
 
   const activateTab = (groupId: string, tabId: string) =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      for (const col of ['left', 'center', 'right'] as const) {
-        const g = next[col].find(g => g.id === groupId);
-        if (g) { g.activeTab = tabId; break; }
-      }
-      return next;
-    });
-
-  const moveTab = (tabId: string, fromGroupId: string, toGroupId: string, insertIndex?: number) =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      let fromCol: string | null = null;
-      let toCol: string | null = null;
-      let fromGroupIdx = -1;
-      let toGroupIdx = -1;
-      let tabIdx = -1;
-      for (const col of ['left', 'center', 'right'] as const) {
-        for (let gi = 0; gi < next[col].length; gi++) {
-          const g = next[col][gi];
-          if (g.id === fromGroupId) { fromCol = col; fromGroupIdx = gi; tabIdx = g.tabs.indexOf(tabId); }
-          if (g.id === toGroupId) { toCol = col; toGroupIdx = gi; }
-        }
-      }
-      if (fromCol === null || toCol === null || tabIdx === -1) return prev;
-      const [moved] = next[fromCol][fromGroupIdx].tabs.splice(tabIdx, 1);
-      if (next[fromCol][fromGroupIdx].tabs.length === 0) {
-        next[fromCol].splice(fromGroupIdx, 1);
-      }
-      const targetGroup = next[toCol][toGroupIdx];
-      if (insertIndex !== undefined) targetGroup.tabs.splice(insertIndex, 0, moved);
-      else targetGroup.tabs.push(moved);
-      return next;
-    });
+    setPanelTree(prev => mapTreeGroups(prev, g => g.id === groupId ? { ...g, activeTab: tabId } : g));
 
   const closeTab = (groupId: string, tabId: string) =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      for (const col of ['left', 'center', 'right'] as const) {
-        const g = next[col].find(g => g.id === groupId);
-        if (!g) continue;
-        const idx = g.tabs.indexOf(tabId);
-        if (idx === -1) continue;
-        g.tabs.splice(idx, 1);
-        if (g.tabs.length === 0) {
-          const gi = next[col].indexOf(g);
-          next[col].splice(gi, 1);
-        } else if (g.activeTab === tabId) {
-          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
-        }
-        break;
+    setPanelTree(prev => {
+      const tree = cloneTree(prev);
+      const group = findGroupInTree(tree, groupId);
+      if (!group || !isSplit(tree)) return prev;
+      const idx = group.tabs.indexOf(tabId);
+      if (idx === -1) return prev;
+      group.tabs.splice(idx, 1);
+      if (group.tabs.length > 0) {
+        if (group.activeTab === tabId) group.activeTab = group.tabs[Math.min(idx, group.tabs.length - 1)];
+        return tree;
       }
-      return next;
+      return removeLeaf(tree, groupId);
     });
 
-  const splitGroup = (groupId: string, tabId: string) =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      for (const col of ['left', 'center', 'right'] as const) {
-        const g = next[col].find(g => g.id === groupId);
-        if (!g) continue;
-        const idx = g.tabs.indexOf(tabId);
-        if (idx === -1) continue;
-        g.tabs.splice(idx, 1);
-        if (g.tabs.length === 0) {
-          const gi = next[col].indexOf(g);
-          next[col].splice(gi, 1);
-        } else if (g.activeTab === tabId) {
-          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+  function removeLeaf(node: PanelNode, leafId: string): PanelNode | null {
+    if (!isSplit(node)) return node.id === leafId ? null : node;
+    const filtered: PanelNode[] = [];
+    for (const c of node.children) {
+      const removed = removeLeaf(c, leafId);
+      if (removed) filtered.push(removed);
+    }
+    if (filtered.length === 0) return null;
+    if (filtered.length === 1) return filtered[0];
+    return { direction: node.direction, children: filtered };
+  }
+
+  function findParentSplit(node: PanelNode, targetId: string): { parent: PanelSplit; idx: number } | null {
+    if (!isSplit(node)) return null;
+    for (let i = 0; i < node.children.length; i++) {
+      const c = node.children[i];
+      if (!isSplit(c) && c.id === targetId) return { parent: node, idx: i };
+      const found = findParentSplit(c, targetId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const moveTabToGroup = (tabId: string, fromGroupId: string, toGroupId: string, insertIndex?: number) =>
+    setPanelTree(prev => {
+      const tree = cloneTree(prev);
+      const fromG = findGroupInTree(tree, fromGroupId);
+      const toG = findGroupInTree(tree, toGroupId);
+      if (!fromG || !toG) return prev;
+      const ti = fromG.tabs.indexOf(tabId);
+      if (ti === -1) return prev;
+      fromG.tabs.splice(ti, 1);
+      if (fromG.activeTab === tabId) fromG.activeTab = fromG.tabs[Math.min(ti, fromG.tabs.length - 1)] || '';
+      if (fromG.tabs.length === 0) {
+        const afterRemove = removeLeaf(tree, fromGroupId);
+        if (afterRemove) {
+          const toG2 = findGroupInTree(afterRemove, toGroupId);
+          if (toG2) {
+            if (insertIndex !== undefined) toG2.tabs.splice(insertIndex, 0, tabId);
+            else toG2.tabs.push(tabId);
+          }
+          return afterRemove;
         }
-        next[col].push({ id: genGroupId(), tabs: [tabId], activeTab: tabId });
-        break;
       }
-      return next;
+      if (insertIndex !== undefined) toG.tabs.splice(insertIndex, 0, tabId);
+      else toG.tabs.push(tabId);
+      return tree;
     });
 
-  const moveTabToNewGroup = (tabId: string, fromGroupId: string, toCol: 'left' | 'center' | 'right') =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      for (const col of ['left', 'center', 'right'] as const) {
-        const g = next[col].find(g => g.id === fromGroupId);
-        if (!g) continue;
-        const idx = g.tabs.indexOf(tabId);
-        if (idx === -1) continue;
-        g.tabs.splice(idx, 1);
-        if (g.tabs.length === 0) {
-          const gi = next[col].indexOf(g);
-          next[col].splice(gi, 1);
-        } else if (g.activeTab === tabId) {
-          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
+  const addTabToNewGroup = (tabId: string, fromGroupId: string) =>
+    setPanelTree(prev => {
+      const tree = cloneTree(prev);
+      const fromG = findGroupInTree(tree, fromGroupId);
+      if (!fromG || !isSplit(tree)) return prev;
+      const ti = fromG.tabs.indexOf(tabId);
+      if (ti === -1) return prev;
+      fromG.tabs.splice(ti, 1);
+      fromG.activeTab = fromG.tabs[Math.min(ti, fromG.tabs.length - 1)] || '';
+      const newGroup: PanelGroup = { id: genGroupId(), tabs: [tabId], activeTab: tabId };
+      if (fromG.tabs.length === 0) {
+        const parent = findParentSplit(tree, fromGroupId);
+        if (parent) {
+          parent.parent.children.splice(parent.idx + 1, 0, newGroup);
+          const after = removeLeaf(tree, fromGroupId);
+          return after ?? tree;
         }
-        break;
       }
-      next[toCol].push({ id: genGroupId(), tabs: [tabId], activeTab: tabId });
-      return next;
+      tree.children.push(newGroup);
+      return tree;
     });
 
-  const moveTabToColumnAt = (tabId: string, fromGroupId: string, toCol: 'left' | 'center' | 'right', insertIdx: number) =>
-    setPanelGroups(prev => {
-      const next = structuredClone(prev);
-      for (const col of ['left', 'center', 'right'] as const) {
-        const g = next[col].find(g => g.id === fromGroupId);
-        if (!g) continue;
-        const idx = g.tabs.indexOf(tabId);
-        if (idx === -1) continue;
-        g.tabs.splice(idx, 1);
-        if (g.tabs.length === 0) {
-          const gi = next[col].indexOf(g);
-          next[col].splice(gi, 1);
-        } else if (g.activeTab === tabId) {
-          g.activeTab = g.tabs[Math.min(idx, g.tabs.length - 1)];
-        }
-        break;
+  const splitLeafAt = (leafId: string, direction: 'horizontal' | 'vertical', newGroup: PanelGroup) =>
+    setPanelTree(prev => {
+      const tree = cloneTree(prev);
+      const parent = findParentSplit(tree, leafId);
+      if (!parent) return prev;
+      const leaf = findGroupInTree(tree, leafId);
+      if (!leaf) return prev;
+
+      if (parent.parent.direction === direction) {
+        parent.parent.children.splice(parent.idx + 1, 0, newGroup);
+      } else {
+        parent.parent.children[parent.idx] = {
+          direction,
+          children: [leaf, newGroup],
+        };
       }
-      next[toCol].splice(insertIdx, 0, { id: genGroupId(), tabs: [tabId], activeTab: tabId });
-      return next;
+      return tree;
+    });
+
+  const splitLeafAtWithTab = (leafId: string, direction: 'horizontal' | 'vertical', tabId: string, fromGroupId: string) =>
+    setPanelTree(prev => {
+      const tree = cloneTree(prev);
+      const fromG = findGroupInTree(tree, fromGroupId);
+      const targetG = findGroupInTree(tree, leafId);
+      if (!fromG || !targetG) return prev;
+      const ti = fromG.tabs.indexOf(tabId);
+      if (ti === -1) return prev;
+      fromG.tabs.splice(ti, 1);
+      fromG.activeTab = fromG.tabs[Math.min(ti, fromG.tabs.length - 1)] || '';
+      const newGroup: PanelGroup = { id: genGroupId(), tabs: [tabId], activeTab: tabId };
+      if (fromG.tabs.length === 0) {
+        const afterRemove = removeLeaf(tree, fromGroupId);
+        if (afterRemove) {
+          const parent = findParentSplit(afterRemove, leafId);
+          if (!parent) return prev;
+          if (parent.parent.direction === direction) {
+            parent.parent.children.splice(parent.idx + 1, 0, newGroup);
+          } else {
+            parent.parent.children[parent.idx] = {
+              direction,
+              children: [findGroupInTree(afterRemove, leafId)!, newGroup],
+            };
+          }
+          return afterRemove;
+        }
+      }
+      const parent = findParentSplit(tree, leafId);
+      if (!parent) return prev;
+      if (parent.parent.direction === direction) {
+        parent.parent.children.splice(parent.idx + 1, 0, newGroup);
+      } else {
+        parent.parent.children[parent.idx] = {
+          direction,
+          children: [targetG, newGroup],
+        };
+      }
+      return tree;
     });
 
   const setDebug = (v: boolean) => {
@@ -1042,7 +1112,7 @@ export function useApp() {
     agentStreamAgent, setAgentStreamAgent,
     agentStreamSeq, setAgentStreamSeq,
     agentSignals, setAgentSignals,
-    panelGroups, activateTab, moveTab, closeTab, splitGroup, moveTabToNewGroup, moveTabToColumnAt,
+    panelTree, activateTab, closeTab, moveTabToGroup, addTabToNewGroup, splitLeafAt, splitLeafAtWithTab,
     installListOpen, setInstallListOpen,
     installedRef,
     installQueueRef,

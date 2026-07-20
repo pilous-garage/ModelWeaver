@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback } from 'react';
-import type { AppApi, PanelGroupData } from '../useApp.ts';
+import type { AppApi, PanelGroup as PanelGroupType } from '../useApp.ts';
 
 const PANEL_TITLES: Record<string, string> = {
   'system-state': 'Système',
@@ -17,18 +17,17 @@ const PANEL_TITLES: Record<string, string> = {
 type DropZone = 'top' | 'bottom' | 'left' | 'right' | 'middle' | null;
 
 interface Props {
-  group: PanelGroupData;
-  column: 'left' | 'center' | 'right';
+  group: PanelGroupType;
   app: AppApi;
   children: (tabId: string) => React.ReactNode;
 }
 
-export function TabbedPanel({ group, column, app, children }: Props) {
+export function TabbedPanel({ group, app, children }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [dragOverTab, setDragOverTab] = useState<string | null>(null);
   const [dropZone, setDropZone] = useState<DropZone>(null);
 
-  const EDGE_THRESHOLD = 0.10;
+  const EDGE = 0.10;
 
   const getDropZone = useCallback((e: React.DragEvent): DropZone => {
     const el = rootRef.current;
@@ -36,15 +35,15 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     const rect = el.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    if (x < EDGE_THRESHOLD) return 'left';
-    if (x > 1 - EDGE_THRESHOLD) return 'right';
-    if (y < EDGE_THRESHOLD) return 'top';
-    if (y > 1 - EDGE_THRESHOLD) return 'bottom';
+    if (x < EDGE) return 'left';
+    if (x > 1 - EDGE) return 'right';
+    if (y < EDGE) return 'top';
+    if (y > 1 - EDGE) return 'bottom';
     return 'middle';
   }, []);
 
   const handleTabDragStart = (e: React.DragEvent, tabId: string) => {
-    e.dataTransfer.setData('application/mw-tab', JSON.stringify({ tabId, fromGroup: group.id, fromCol: column }));
+    e.dataTransfer.setData('application/mw-tab', JSON.stringify({ tabId, fromGroup: group.id }));
     e.dataTransfer.effectAllowed = 'move';
   };
 
@@ -52,8 +51,7 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     if (!e.dataTransfer.types.includes('application/mw-tab')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    const zone = getDropZone(e);
-    setDropZone(zone);
+    setDropZone(getDropZone(e));
   };
 
   const handleTabDragOver = (e: React.DragEvent, tabId: string) => {
@@ -62,8 +60,7 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     e.dataTransfer.dropEffect = 'move';
     const zone = getDropZone(e);
     setDropZone(zone);
-    if (zone === 'middle') setDragOverTab(tabId);
-    else setDragOverTab(null);
+    setDragOverTab(zone === 'middle' ? tabId : null);
   };
 
   const handleBarDragOver = (e: React.DragEvent) => {
@@ -81,10 +78,10 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     setDragOverTab(null);
     const raw = e.dataTransfer.getData('application/mw-tab');
     if (!raw) return;
-    const { tabId, fromGroup } = JSON.parse(raw);
-    if (tabId === targetTabId && fromGroup === group.id) return;
+    const { tabId, fromGroup: fromG } = JSON.parse(raw);
+    if (tabId === targetTabId && fromG === group.id) return;
     const idx = group.tabs.indexOf(targetTabId);
-    app.moveTab(tabId, fromGroup, group.id, idx);
+    app.moveTabToGroup(tabId, fromG, group.id, idx);
   };
 
   const handleBarDrop = (e: React.DragEvent) => {
@@ -94,9 +91,9 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     setDragOverTab(null);
     const raw = e.dataTransfer.getData('application/mw-tab');
     if (!raw) return;
-    const { tabId, fromGroup } = JSON.parse(raw);
-    if (fromGroup === group.id) return;
-    app.moveTab(tabId, fromGroup, group.id);
+    const { tabId, fromGroup: fromG } = JSON.parse(raw);
+    if (fromG === group.id) return;
+    app.moveTabToGroup(tabId, fromG, group.id);
   };
 
   const handleRootDrop = (e: React.DragEvent) => {
@@ -106,21 +103,10 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     setDragOverTab(null);
     const raw = e.dataTransfer.getData('application/mw-tab');
     if (!raw) return;
-    const { tabId, fromGroup, fromCol } = JSON.parse(raw);
-
-    if (zone === 'top' || zone === 'bottom') {
-      const idx = app.panelGroups[column].findIndex(g => g.id === group.id);
-      if (idx === -1) return;
-      const insertIdx = zone === 'top' ? idx : idx + 1;
-      if (fromCol === column && fromGroup === group.id && group.tabs.length === 1) return;
-      app.moveTabToColumnAt(tabId, fromGroup, column, insertIdx);
-    } else if (zone === 'left' || zone === 'right') {
-      const adjCol = zone === 'left'
-        ? (column === 'center' ? 'left' : column === 'right' ? 'center' : null)
-        : (column === 'center' ? 'right' : column === 'left' ? 'center' : null);
-      if (!adjCol || (fromCol === adjCol && fromGroup)) return;
-      app.moveTabToNewGroup(tabId, fromGroup, adjCol);
-    }
+    if (zone === 'middle') return;
+    const { tabId, fromGroup: fromG } = JSON.parse(raw);
+    const dir = zone === 'top' || zone === 'bottom' ? 'vertical' : 'horizontal';
+    app.splitLeafAtWithTab(group.id, dir, tabId, fromG);
   };
 
   const handleDragLeave = () => {
@@ -128,17 +114,7 @@ export function TabbedPanel({ group, column, app, children }: Props) {
     setDragOverTab(null);
   };
 
-  const splitIndicatorStyle: React.CSSProperties = {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: '4px',
-    backgroundColor: '#60a5fa',
-    zIndex: 10,
-    borderRadius: '2px',
-    transition: 'opacity 0.1s',
-    pointerEvents: 'none',
-  };
+  const edge = dropZone === 'left' ? 'right' : dropZone === 'right' ? 'left' : dropZone === 'top' ? 'bottom' : dropZone === 'bottom' ? 'top' : null;
 
   return (
     <div
@@ -158,11 +134,40 @@ export function TabbedPanel({ group, column, app, children }: Props) {
         overflow: 'hidden',
       }}
     >
-      {/* Split indicators */}
-      {dropZone === 'top' && <div style={{ ...splitIndicatorStyle, top: 0, left: 0, right: 0, height: '4px' }} />}
-      {dropZone === 'bottom' && <div style={{ ...splitIndicatorStyle, bottom: 0, left: 0, right: 0, height: '4px' }} />}
-      {dropZone === 'left' && <div style={{ ...splitIndicatorStyle, left: 0, top: 0, bottom: 0, width: '4px' }} />}
-      {dropZone === 'right' && <div style={{ ...splitIndicatorStyle, right: 0, top: 0, bottom: 0, width: '4px' }} />}
+      {/* Preview overlay for edge splits */}
+      {dropZone && dropZone !== 'middle' && (
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 20,
+          pointerEvents: 'none',
+          display: 'flex',
+          flexDirection: edge === 'top' || edge === 'bottom' ? 'column' : 'row',
+        }}>
+          <div style={{
+            flex: 1,
+            backgroundColor: 'rgba(96, 165, 250, 0.08)',
+            border: '1px dashed #60a5fa',
+            borderRadius: '0.4rem',
+            margin: '2px',
+          }} />
+          <div style={{
+            [edge === 'top' || edge === 'bottom' ? 'height' : 'width']: '30%',
+            backgroundColor: 'rgba(96, 165, 250, 0.15)',
+            border: '1px dashed #60a5fa',
+            borderRadius: '0.4rem',
+            margin: '2px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            color: '#93c5fd',
+            fontWeight: 600,
+          }}>
+            + nouveau panneau
+          </div>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div
@@ -177,6 +182,7 @@ export function TabbedPanel({ group, column, app, children }: Props) {
           backgroundColor: '#0f172a',
           borderBottom: '1px solid #334155',
           minHeight: '1.8rem',
+          zIndex: dropZone && dropZone !== 'middle' ? 30 : 'auto',
         }}
       >
         {group.tabs.map(tabId => {
@@ -221,8 +227,8 @@ export function TabbedPanel({ group, column, app, children }: Props) {
 
       {/* Active tab content */}
       <div
-        onDragOver={e => { if (e.dataTransfer.types.includes('application/mw-tab')) { e.preventDefault(); } }}
-        style={{ flex: 1, overflow: 'auto', padding: '0.6rem' }}
+        onDragOver={e => { if (e.dataTransfer.types.includes('application/mw-tab')) e.preventDefault(); }}
+        style={{ flex: 1, overflow: 'auto', padding: '0.6rem', zIndex: dropZone && dropZone !== 'middle' ? 30 : 'auto' }}
       >
         {children(group.activeTab)}
       </div>

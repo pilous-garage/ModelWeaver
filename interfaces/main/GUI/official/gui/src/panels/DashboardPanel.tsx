@@ -1,9 +1,7 @@
-import React, { useState } from 'react';
-import type { AppApi, PanelGroupData } from '../useApp.ts';
-import { invoke } from '@tauri-apps/api/core';
+import React from 'react';
+import type { AppApi } from '../useApp.ts';
 import { Spinner } from '../components/ui.tsx';
-import { TabbedPanel } from '../components/TabbedPanel.tsx';
-import { Panel, Group, Separator } from 'react-resizable-panels';
+import { PanelTreeRenderer } from '../components/PanelTreeRenderer.tsx';
 import { ChatPanel } from './ChatPanel.tsx';
 import { AgentsPanel } from './AgentsPanel.tsx';
 import { LocalModelsPanel } from './LocalModelsPanel.tsx';
@@ -28,61 +26,15 @@ const PANEL_RENDER: Record<string, (app: AppApi) => React.ReactNode> = {
   'debug': app => <DebugPanel app={app} />,
 };
 
-function ColumnPanel({ app, col, groups }: { app: AppApi; col: 'left' | 'center' | 'right'; groups: PanelGroupData[] }) {
-  const [dragOver, setDragOver] = useState(false);
-
-  const handleDragOver = (e: React.DragEvent) => {
-    const raw = e.dataTransfer.types.includes('application/mw-tab');
-    if (raw) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      setDragOver(true);
-    }
-  };
-
-  const handleDragLeave = () => setDragOver(false);
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const raw = e.dataTransfer.getData('application/mw-tab');
-    if (!raw) return;
-    const { tabId, fromGroup } = JSON.parse(raw);
-    if (groups.some(g => g.id === fromGroup)) return;
-    app.moveTabToNewGroup(tabId, fromGroup, col);
-  };
-
-  return (
-    <div
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '0.5rem',
-        padding: '0.3rem',
-        overflow: 'hidden',
-        height: '100%',
-        minHeight: 0,
-        border: dragOver ? '2px dashed #60a5fa' : '2px solid transparent',
-        borderRadius: '0.5rem',
-        transition: 'border-color 0.15s',
-      }}
-    >
-      {groups.map(group => (
-        <TabbedPanel key={group.id} group={group} column={col} app={app}>
-          {tabId => {
-            const render = PANEL_RENDER[tabId];
-            return render ? render(app) : <div style={{ color: '#94a3b8' }}>Panneau inconnu: {tabId}</div>;
-          }}
-        </TabbedPanel>
-      ))}
-    </div>
-  );
-}
-
 export function DashboardPanel({ app }: { app: AppApi }) {
+  const renderTab = React.useCallback(
+    (tabId: string) => {
+      const fn = PANEL_RENDER[tabId];
+      return fn ? fn(app) : <div style={{ color: '#94a3b8' }}>Panneau inconnu: {tabId}</div>;
+    },
+    [app],
+  );
+
   return (
     <div style={{
       height: '100vh',
@@ -125,24 +77,10 @@ export function DashboardPanel({ app }: { app: AppApi }) {
         <div style={{ color: '#fca5a5', padding: '0.3rem 1rem', fontSize: '0.75rem' }}>Erreur: {app.logithequeError}</div>
       )}
 
-      {/* 3-column resizable layout with tabbed groups */}
-      <Group orientation="horizontal" style={{ flex: 1 }}>
-        <Panel id="left-col" defaultSize="20" minSize="12" maxSize="35">
-          <ColumnPanel app={app} col="left" groups={app.panelGroups.left} />
-        </Panel>
-
-        <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
-
-        <Panel id="center-col" defaultSize="60" minSize="20">
-          <ColumnPanel app={app} col="center" groups={app.panelGroups.center} />
-        </Panel>
-
-        <Separator style={{ width: '4px', backgroundColor: '#334155', borderRadius: '2px', margin: '0 2px', cursor: 'col-resize' }} />
-
-        <Panel id="right-col" defaultSize="20" minSize="12" maxSize="35">
-          <ColumnPanel app={app} col="right" groups={app.panelGroups.right} />
-        </Panel>
-      </Group>
+      {/* Tree-based layout */}
+      <div style={{ flex: 1, padding: '0.3rem', overflow: 'hidden', display: 'flex' }}>
+        <PanelTreeRenderer node={app.panelTree} app={app} renderTab={renderTab} />
+      </div>
     </div>
   );
 }
