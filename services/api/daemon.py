@@ -58,7 +58,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.7.0.9"
+MW_VERSION = "0.7.0.10"
 
 
 def _mw_dir() -> Path:
@@ -651,12 +651,24 @@ def op_db_versions(params):
     return out
 
 
+# Cache TTL pour check_dependencies_manifest (évite de re-lancer dpkg/pip à chaque poll)
+_CHECK_CACHE: dict = {}
+_CHECK_CACHE_TTL = 30  # secondes
+
+
 def op_deps_check_manifest(params):
     """Liste les dépendances du manifeste pour la cible, avec statut installé.
 
     Utilise le paquet DISPONIBLE pour la cible (targets.<target>) et vérifie
     selon le langage (system -> dpkg, python -> pip show).
+    Le résultat est caché 30s pour éviter de re-lancer les commandes shell à
+    chaque cycle de polling (200ms).
     """
+    import time as _time
+    now = _time.time()
+    c = _CHECK_CACHE.get("result")
+    if c and (now - _CHECK_CACHE.get("ts", 0)) < _CHECK_CACHE_TTL:
+        return c
     from modules.system import deps as deps_mod
     from concurrent.futures import ThreadPoolExecutor
     target = params.get("target", "") or ""
@@ -667,8 +679,6 @@ def op_deps_check_manifest(params):
             return {"status": "error", "error": "cible non détectée"}
         m = deps_mod.load_manifest()
         deps = [d for d in m.get("dependencies", []) if d.get("targets", {}).get(target)]
-        # Checks en parallèle (chaque check lance une commande shell) pour ne pas
-        # bloquer le daemon plusieurs secondes sur un manifeste fourni.
         def _check(dep):
             pkg = dep.get("targets", {}).get(target)
             installed = deps_mod.is_dependency_installed(dep.get("language", "system"), pkg)
@@ -686,7 +696,10 @@ def op_deps_check_manifest(params):
             }
         with ThreadPoolExecutor(max_workers=min(16, max(1, len(deps)))) as ex:
             out = list(ex.map(_check, deps))
-        return {"target": target, "dependencies": out}
+        result = {"target": target, "dependencies": out}
+        _CHECK_CACHE["result"] = result
+        _CHECK_CACHE["ts"] = now
+        return result
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
