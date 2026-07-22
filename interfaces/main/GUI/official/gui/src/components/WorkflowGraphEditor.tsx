@@ -346,6 +346,27 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, collapsed]);
 
+  // Log automatique du graphe à chaque changement
+  useEffect(() => {
+    console.log('🔄 GRAPH UPDATE — nodes:', nodes.length, 'collapsed:', collapsed.size,
+      'hidden:', hidden.size, 'renderNodes:', renderNodes.length);
+  }, [nodes, collapsed, hidden, renderNodes]);
+
+  // ── Log du graphe (état complet) ──
+  const logGraph = useCallback(() => {
+    console.log('=== GRAPH STATE ===');
+    console.log('nodes:', nodes.map(n => ({
+      id: n.id, type: n.type, stepType: n.data?.step?.type, stepFn: n.data?.step?.fn,
+      parentId: (n as any).parentId, style: n.style,
+    })));
+    console.log('collapsed:', [...collapsed]);
+    console.log('hidden:', [...hidden]);
+    console.log('skillInfo keys:', Object.keys(skillInfo));
+    console.log('fetchedNodes:', [...fetchedNodes.current]);
+    console.log('fetchQueue:', [...fetchQueue.current]);
+    console.log('===================');
+  }, [nodes, collapsed, hidden, skillInfo]);
+
   // ── Nœuds masqués (descendants d'une boucle repliée) ──
   const hidden = useMemo(() => {
     const h = new Set<string>();
@@ -557,6 +578,9 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
           <div style={{ flex: 1 }} />
           <button onClick={expandAll} style={{ ...toolBtn, background: '#a6e3a122', color: '#a6e3a1' }} title="Tout déplier (récursif, max 5 niveaux)">
             ⤢ Tout déplier
+          </button>
+          <button onClick={logGraph} style={{ ...toolBtn, background: '#f9e2af22', color: '#f9e2af' }} title="Logger l'état du graphe dans la console">
+            🪵 Log
           </button>
           <button onClick={() => relayout(direction === 'TB' ? 'LR' : 'TB')} style={{ ...toolBtn, background: '#89b4fa22', color: '#89b4fa', fontWeight: 600 }} title="Auto-organiser le graphe">
             {direction === 'TB' ? '⬇' : '➡'} Auto
