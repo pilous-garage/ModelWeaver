@@ -1,0 +1,16 @@
+name: coding/test_runner@v1
+category: coding
+description: "Exécution de tests et génération de rapport via LLM"
+inputs:
+  request:
+    type: string
+    required: true
+    description: "Tests à exécuter ou analyser"
+outputs:
+  result:
+    type: string
+    description: "Rapport de test"
+uses_llm: true
+implementation:
+  type: llm
+  engine: coding.test_runner

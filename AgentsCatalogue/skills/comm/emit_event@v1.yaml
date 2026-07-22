@@ -1,0 +1,20 @@
+name: comm/emit_event@v1
+category: comm
+description: Émet un événement custom sur l'EventBus + journal agent (ctx/events.jsonl).
+inputs:
+  event_type:
+    type: string
+    required: false
+    default: custom
+    description: Type d'événement (canal)
+  payload:
+    type: object
+    required: false
+    default: {}
+    description: Charge utile de l'événement
+outputs:
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: system.agent.emit_event

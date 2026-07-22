@@ -1,0 +1,22 @@
+name: comm/message_recv@v1
+category: comm
+description: Lit (et optionnellement vide) la inbox de messages directs de l'agent.
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant de l'agent (sa propre inbox)
+  clear:
+    type: boolean
+    required: false
+    default: false
+    description: Si true, supprime les messages après lecture
+outputs:
+  messages:
+    type: array
+    description: Liste {from, content, ts}
+  count:
+    type: integer
+implementation:
+  type: python
+  function: system.agent.message_recv

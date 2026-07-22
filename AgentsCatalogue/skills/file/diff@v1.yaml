@@ -1,0 +1,24 @@
+name: file/diff@v1
+category: file
+description: Calcule le diff ligne-à-ligne de deux textes (ajouts/suppressions).
+inputs:
+  a:
+    type: string
+    required: true
+    description: Texte original
+  b:
+    type: string
+    required: true
+    description: Texte modifié
+outputs:
+  added:
+    type: array
+  removed:
+    type: array
+  added_count:
+    type: integer
+  removed_count:
+    type: integer
+implementation:
+  type: python
+  function: system.text.diff

@@ -53,6 +53,7 @@ outputs:
     type: string
   fallbacks:
     type: integer
+uses_llm: true
 implementation:
   type: python
   function: llm.timeout.timeout

@@ -1,0 +1,30 @@
+name: git/git_pull@v1
+category: git
+description: Intègre une branche source dans la branche courante (pull local).
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du projet
+  agent_id:
+    type: string
+    required: false
+    description: Identifiant de l'agent (injecté automatiquement par le FSM si absent)
+  name:
+    type: string
+    required: false
+    default: ''
+    description: Branche source à tirer (vide = pull remote si présent)
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+  ok:
+    type: boolean
+    description: True ssi la commande git a réussi (exit_code == 0)
+implementation:
+  type: python
+  function: system.git.git_pull

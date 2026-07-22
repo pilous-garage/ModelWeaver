@@ -1,0 +1,29 @@
+name: context/reset_context@v1
+category: context
+description: "Nettoie le contexte de l'agent. Si clear=true, vide tout le contexte. Par défaut, conserve les messages system."
+inputs:
+  messages:
+    type: list[message]
+    required: true
+    description: Historique des messages à nettoyer
+  clear:
+    type: bool
+    default: false
+    description: Si true, vide tout sans condition
+  keep_system:
+    type: bool
+    default: true
+    description: Conserve les messages de rôle system
+outputs:
+  messages:
+    type: list[message]
+    description: Contexte nettoyé
+  cleared:
+    type: bool
+    description: true si un nettoyage a eu lieu
+  kept:
+    type: int
+    description: Nombre de messages conservés
+implementation:
+  type: python
+  function: system.context.reset_context

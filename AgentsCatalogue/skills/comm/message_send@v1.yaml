@@ -1,0 +1,25 @@
+name: comm/message_send@v1
+category: comm
+description: Envoie un message direct (1:1) à un autre agent (dépôté dans son inbox).
+inputs:
+  to_agent_id:
+    type: string
+    required: true
+    description: Agent destinataire
+  from_agent_id:
+    type: string
+    required: false
+    default: ''
+    description: 'Agent expéditeur (défaut: agent_id courant)'
+  content:
+    type: string
+    required: true
+    description: Contenu du message
+outputs:
+  ok:
+    type: boolean
+  message_id:
+    type: string
+implementation:
+  type: python
+  function: system.agent.message_send

@@ -300,6 +300,7 @@ class AgentDaemon:
                     model_ref=model_ref,
                     temperature=float(kwargs.get("temperature", 0.7)),
                     max_tokens=int(kwargs.get("max_tokens", 4096)),
+                    entrypoint=kwargs.get("entrypoint", "main"),
                 )
         finally:
             a.dehydrate()
@@ -345,6 +346,7 @@ class AgentDaemon:
                 model_ref=model_ref,
                 temperature=float(kwargs.get("temperature", 0.7)),
                 max_tokens=int(kwargs.get("max_tokens", 4096)),
+                entrypoint=kwargs.get("entrypoint", "main"),
             )
             a.dehydrate()
             return result

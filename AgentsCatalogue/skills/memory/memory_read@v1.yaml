@@ -1,0 +1,28 @@
+name: memory/memory_read@v1
+category: memory
+description: Lit une valeur JSON depuis la mémoire long-terme de l'agent (dossier
+  mem/).
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant de l'agent (cible du stockage mem/)
+  namespace:
+    type: string
+    required: false
+    default: default
+    description: Espace de noms logique
+  key:
+    type: string
+    required: true
+    description: Clé de la mémoire
+outputs:
+  found:
+    type: boolean
+    description: True si la clé existe
+  value:
+    type: object
+    description: Valeur lue (ou null si absente)
+implementation:
+  type: python
+  function: system.memory.memory_read

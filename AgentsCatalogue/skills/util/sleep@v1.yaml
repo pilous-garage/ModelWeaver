@@ -1,0 +1,19 @@
+name: util/sleep@v1
+category: util
+description: Met l'exécution en pause pendant N secondes (max 3600).
+inputs:
+  seconds:
+    type: number
+    required: false
+    default: 1
+    description: Durée de la pause en secondes
+outputs:
+  ok:
+    type: boolean
+    description: True si la pause s'est exécutée
+  slept:
+    type: number
+    description: Secondes réellement attendues
+implementation:
+  type: python
+  function: system.sleep.sleep

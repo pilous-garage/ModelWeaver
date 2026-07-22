@@ -1,0 +1,21 @@
+name: util/json_query@v1
+category: util
+description: 'Extrait une valeur d''un objet JSON par chemin pointé (ex: ''a.b.0.c'').'
+inputs:
+  data:
+    type: object
+    required: true
+    description: Objet JSON à interroger
+  path:
+    type: string
+    required: true
+    description: Chemin (points, indices de tableau)
+outputs:
+  found:
+    type: boolean
+  value:
+    type: object
+    description: Valeur extraite
+implementation:
+  type: python
+  function: system.text.json_query

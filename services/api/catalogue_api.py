@@ -71,13 +71,16 @@ def _slug(name: str) -> str:
 
 def _skill_meta(path: Path) -> Dict[str, Any]:
     data = _read_yaml(path)
+    impl = data.get("implementation", {})
+    uses_llm = data.get("uses_llm", impl.get("type") == "llm")
     return {
         "name": data.get("name") or path.stem,
         "category": data.get("category", path.parent.name),
         "description": data.get("description", ""),
         "inputs": data.get("inputs", {}),
         "outputs": data.get("outputs", {}),
-        "implementation": data.get("implementation", {}),
+        "implementation": impl,
+        "uses_llm": uses_llm,
         "file": str(path.relative_to(_CATALOGUE)),
     }
 
@@ -280,6 +283,8 @@ def op_catalogue_roles_list(params: dict) -> Dict[str, Any]:
         roles.append({
             "name": r.name,
             "description": r.description,
+            "class": r.raw.get("class", ""),
+            "sub_class": r.raw.get("sub_class", ""),
             "classification": r.raw.get("classification", {}),
             "skills": r.skills,
             "model_requirements": r.model_requirements,

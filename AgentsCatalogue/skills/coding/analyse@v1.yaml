@@ -1,0 +1,16 @@
+name: coding/analyse@v1
+category: coding
+description: "Analyse de code ou de spécifications via LLM"
+inputs:
+  request:
+    type: string
+    required: true
+    description: "Sujet à analyser"
+outputs:
+  result:
+    type: string
+    description: "Résultat de l'analyse"
+uses_llm: true
+implementation:
+  type: llm
+  engine: coding.analyse

@@ -1,0 +1,11 @@
+name: util/get_all_skills@v1
+category: util
+description: "Récupère la liste complète des skills disponibles dans le catalogue, avec leur nom, descriptif et méthode d'appel."
+inputs:
+outputs:
+  skills:
+    type: list[object]
+    description: Liste des skills disponibles (name, fn, description)
+implementation:
+  type: python
+  function: system.catalogue.get_all_skills

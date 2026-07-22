@@ -776,13 +776,33 @@ rendre le framework observable panneau par panneau pendant un live test.
   collaboration multi-agents + le FSM + la génération LLM de bout en bout.
 - Prochaine étape : observation du même scénario via la GUI modulaire.
 
-## V0.7 — Sandbox de Création d'Agent (📝 Planifié)
-**Objectif** : Studio visuel pour concevoir des workflows d'agents sans code.
+### V0.7.1 — Sandbox IDE (backend + GUI) ✅
 
-- Éditeur de rôles low-code (designer de prompt, mapping de capacités)
-- Factory d'agents (orchestrateur d'instances, health check)
-- Branchements visuels (chatrooms, todo-lists, inter-agents)
-- Déploiement et monitoring
+- Fenêtre Tauri dédiée `sandbox` (1400×900), `MenuBar` « Outils » → openSandboxWindow, `App.tsx` route par `getCurrentWindow().label`.
+- Backend : `catalogue_api.py` (22 routes), `catalogue_agents.py` (agents list/get/save/delete + inline), routes `lib/list|resolve|scan` (daemon).
+- GUI : `AgentSandboxIDE.tsx` (5 onglets skills/behaviors/personalities/roles/agents), `useSandbox.ts` (crud + inline), bouton delete masqué sur skills.
+- Migration 12 rôles → agents complets + rôles purs (classification). Agent normal (refs) vs inline (self-contained, FSM lit `.inline.yaml`).
+- `SkillManager.call` : support `implementation.code` (fonction `run(inputs, ws)`), résolution via registre `AgentsCatalogue/lib`.
+
+### V0.7.2 — Migration skills 64 → lib + éditeur maison ✅
+
+- Migration des 64 YAML `AgentsCatalogue/skills/**` vers réfs qualifiées lib (`system.fs.host_read`, etc.) — plus aucun `function: _exec_*`. Méthodes `_exec_*` + bloc fallback supprimés (1414→457 lignes). Bibliothèque `lib/` (64 fonctions Python).
+- `CodeEditor.tsx` maison (PAS Monaco) : overlay highlight `<pre>` + textarea transparente, mouseover réfs lib → tooltip `lib/resolve`. `DEBUG=true` (panneau debug orange) — TODO retirer avant release.
+- Tests : `e2e_mini_entreprise.py` 31/31 PASS ; `e2e_agent_framework.py` 37/52 (15 FAIL = Ollama absent).
+
+### V0.7.3 — Release ✅
+
+- Bump version (package.json, tauri.conf.json, Cargo.toml). Commit, tag v0.7.3, build .deb, GitHub release.
+
+### V0.7.4 — Éditeur graphe FSM + CatalogTree + Entrypoints 🔧
+
+- **Graphe FSM** (react-flow @xyflow 12 + dagre 0.8.5) : 14 types de steps (llm_call, call, tool_call, switch, set_variable, sleep, spawn, handoff, end, for, while, break, continue, **agent_call**). `stepsToGraph`/`graphToSteps` avec imbrication body (boucles). Layout dagre récursif, collectSkillRefs/collectAgentRefs.
+- **WorkflowGraphEditor.tsx** : canvas ReactFlow, LoopNodeView repliable, palette drag, inspecteur latéral NodeInspector (formulaire par type, MapField capture, TargetField next/on_error).
+- **NodeInspector.tsx** : 15 sections de step (dont `agent_call` : agent + entrypoint + inputs + capture).
+- **FSM Interpreter étendu** : `for`/`while`/`break`/`continue`, `_branch_on_error` sur `llm_call`, `_step_agent_call` avec handler, `agent_call_handler` injecté. Garde `max_iterations` anti-boucle infinie.
+- **CatalogTree.tsx** + **fuzzy.ts** : module commun de liste repliable avec recherche floue (fzf + Levenshtein), expension/repli tout, nesting arbitraire, persistance localStorage. Câblé sur CataloguePanel, InstalledToolsPanel, et les 5 onglets sandbox (skills groupés par catégorie, rôles par class/sub_class, agents par rôle).
+- **Entrypoints agents** : format YAML `entrypoints.<name>.steps` (rétrocompatible `workflow.steps`). Sélecteur par onglets dans GraphView. Sauvegarde inline via `catalogue_agents.py`. Appel synchrone via `agent_call` step (→ sub-FSM avec handler AFD).
+- Backend service.py/daemon.py : param `entrypoint` propagé jusqu'à `Agent.execute()`.
 
 ## V0.8 — Organisateur Global & Framework (📝 Planifié)
 **Objectif** : Dashboard central et tour de contrôle.

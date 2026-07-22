@@ -1,0 +1,33 @@
+name: context/add_context@v1
+category: context
+description: "Ajoute un objet au contexte de l'agent : fichier, résultat, etc."
+inputs:
+  messages:
+    type: list[message]
+    required: true
+    description: Contexte existant
+  entry:
+    type: object
+    required: false
+    description: Objet message complet à ajouter
+  role:
+    type: string
+    default: system
+    description: Rôle du message (system, user, assistant)
+  content:
+    type: string
+    required: false
+    description: Contenu textuel du message
+outputs:
+  messages:
+    type: list[message]
+    description: Contexte enrichi
+  added:
+    type: bool
+    description: true si l'ajout a eu lieu
+  total:
+    type: int
+    description: Nombre total de messages après ajout
+implementation:
+  type: python
+  function: system.context.add_context

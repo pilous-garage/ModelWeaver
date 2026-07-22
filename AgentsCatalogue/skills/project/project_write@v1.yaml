@@ -1,0 +1,28 @@
+name: project/project_write@v1
+category: project
+description: Écrit un fichier dans l'espace projet partagé (chemin relatif au projet).
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du projet
+  agent_id:
+    type: string
+    required: false
+    description: Identifiant de l'agent (injecté automatiquement par le FSM si absent)
+  path:
+    type: string
+    required: true
+    description: 'Chemin relatif dans le projet (ex: src/game.py)'
+  content:
+    type: string
+    required: true
+    description: Contenu à écrire
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+implementation:
+  type: python
+  function: system.project.project_write

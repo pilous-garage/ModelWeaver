@@ -1261,7 +1261,8 @@ def op_agent_execute(params):
     return get_afd_client().call(ref, "execute",
                                  request=params.get("request", ""),
                                  provider_ref=params.get("provider_ref", ""),
-                                 model_ref=params.get("model_ref", ""))
+                                 model_ref=params.get("model_ref", ""),
+                                 entrypoint=params.get("entrypoint", "main"))
 
 
 def op_agent_manager_status(_params):

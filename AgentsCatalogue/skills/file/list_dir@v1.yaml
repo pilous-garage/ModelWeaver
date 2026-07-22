@@ -1,0 +1,17 @@
+name: file/list_dir@v1
+category: file
+description: Liste le contenu d'un dossier de l'espace personnel de l'agent (relatif
+  au home).
+inputs:
+  path:
+    type: string
+    required: false
+    default: ''
+    description: Dossier relatif au home (vide = racine). Alias d'index acceptés.
+outputs:
+  entries:
+    type: array
+    description: Liste {name, type (dir/file), size}
+implementation:
+  type: python
+  function: system.file.list_dir

@@ -1,0 +1,25 @@
+name: host/host_write@v1
+category: host
+description: Écrit un fichier par CHEMIN ABSOLU sur l'hôte. Gate par FsAuthManager
+  (allowlist rw).
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant de l'agent (vérifié contre agent_fs_auth)
+  path:
+    type: string
+    required: true
+    description: Chemin absolu à écrire (doit être sous une racine autorisée en écriture)
+  content:
+    type: string
+    required: true
+    description: Contenu à écrire
+outputs:
+  ok:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: system.fs.host_write

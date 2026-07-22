@@ -1,0 +1,17 @@
+name: util/timestamp@v1
+category: util
+description: Renvoie la date/heure courante (ISO, epoch ou date simple).
+inputs:
+  format:
+    type: string
+    required: false
+    default: iso
+    description: iso | epoch | date
+outputs:
+  value:
+    type: string
+  epoch:
+    type: number
+implementation:
+  type: python
+  function: system.text.timestamp

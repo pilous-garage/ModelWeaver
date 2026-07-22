@@ -1,0 +1,24 @@
+name: project/project_list@v1
+category: project
+description: Liste le contenu d'un dossier de l'espace projet partagé.
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du projet
+  agent_id:
+    type: string
+    required: false
+    description: Identifiant de l'agent (injecté automatiquement par le FSM si absent)
+  path:
+    type: string
+    required: false
+    default: ''
+    description: Sous-dossier relatif (vide = racine)
+outputs:
+  entries:
+    type: array
+    description: Liste {name, type}
+implementation:
+  type: python
+  function: system.project.project_list

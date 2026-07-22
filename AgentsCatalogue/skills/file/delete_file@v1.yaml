@@ -1,0 +1,15 @@
+name: file/delete_file@v1
+category: file
+description: Supprime un fichier ou dossier de l'espace personnel (relatif au home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif au home (alias d'index accepté)
+outputs:
+  ok:
+    type: boolean
+    description: True si supprimé
+implementation:
+  type: python
+  function: system.file.delete_file

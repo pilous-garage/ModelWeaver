@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
+import { collectSkillRefs, type Step } from './lib/workflowGraph.ts';
 
 export type CatalogueType = 'skills' | 'behaviors' | 'personalities' | 'roles' | 'agents';
+export type DocView = 'code' | 'graph';
 
 export interface CatalogueItem {
   name: string;
@@ -20,6 +22,8 @@ export interface OpenDoc {
   showInline: boolean;
   dirty: boolean;
   isNew: boolean;
+  view?: DocView;         // vue éditeur : code (défaut) ou graphe
+  activeEntrypoint?: string;  // entrypoint sélectionné pour l'édition graphe (agents)
 }
 
 const LS_KEY = 'mw_sandbox_docs';
@@ -62,7 +66,7 @@ const TEMPLATES: Record<CatalogueType, string> = {
   behaviors: 'name: \ndescription: ""\nworkflow:\n  steps:\n    - id: start\n      type: llm_call\n      request: ""\n      next: end\n    - id: end\n      type: end\n      status: SUCCESS\n',
   personalities: 'name: \ndescription: ""\ntone: neutre\nsystem_prompt: ""\n',
   roles: 'name: \nclass: worker\nsub_class: general\ndescription: ""\n',
-  agents: 'name: \nrole: \npersonality:\n  tone: neutre\n  system_prompt: ""\nskills: []\nworkflow:\n  steps:\n    - id: start\n      type: llm_call\n      request: ""\n      next: end\n    - id: end\n      type: end\n      status: SUCCESS\n',
+  agents: 'name: \nrole: \npersonality:\n  tone: neutre\n  system_prompt: ""\nskills: []\nentrypoints:\n  main:\n    steps:\n      - id: start\n        type: llm_call\n        request: ""\n        next: end\n      - id: end\n        type: end\n        status: SUCCESS\n',
 };
 
 function extractName(yamlText: string): string | null {
@@ -315,6 +319,39 @@ export function useSandbox() {
     return null;
   }, []);
 
+  const setDocView = useCallback((id: string, view: DocView) => {
+    patchDoc(id, { view });
+  }, [patchDoc]);
+
+  // ── Entrypoint (agents multi-workflow) ──
+  const setActiveEntrypoint = useCallback((id: string, entrypoint: string) => {
+    patchDoc(id, { activeEntrypoint: entrypoint });
+  }, [patchDoc]);
+
+  // ── Graphe → YAML : applique les steps sur le bon entrypoint ──
+  const setWorkflowSteps = useCallback((id: string, steps: Step[], entrypointName?: string) => {
+    setOpenDocs(docs => docs.map(d => {
+      if (d.id !== id) return d;
+      let obj: any;
+      try { obj = yamlParse(d.text) || {}; } catch { return d; }
+      if (typeof obj !== 'object' || obj === null) obj = {};
+      const ep = entrypointName || d.activeEntrypoint || 'main';
+      if (obj.entrypoints) {
+        if (!obj.entrypoints[ep]) obj.entrypoints[ep] = { steps: [] };
+        obj.entrypoints[ep].steps = steps;
+      } else {
+        obj.workflow = { ...(obj.workflow || {}), steps };
+      }
+      // Inclusion minimale : skills = réfs uniques des nœuds `call`.
+      if (d.type === 'agents') {
+        obj.skills = Array.from(new Set(collectSkillRefs(steps)));
+      }
+      let text = d.text;
+      try { text = yamlStringify(obj); } catch { return d; }
+      return { ...d, text, dirty: true };
+    }));
+  }, []);
+
   const rescanLib = useCallback(async () => {
     setMsg('');
     try {
@@ -334,10 +371,12 @@ export function useSandbox() {
     // documents
     openDocs, activeDocId, activeDoc,
     openItem, newDoc, activateDoc, closeDoc,
-    setDocText, setDocInline, toggleInline,
+    setDocText, setDocInline, toggleInline, setDocView,
     saveDoc, saveActive, saveAll, generateInline,
     // lego ↔ yaml
-    patchActiveDoc, fetchItemParsed,
+    patchActiveDoc, fetchItemParsed, setWorkflowSteps,
+    // entrypoints
+    setActiveEntrypoint,
     // outils
     rescanLib,
   };

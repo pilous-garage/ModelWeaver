@@ -1,0 +1,21 @@
+name: chat/chatroom_read@v1
+category: chat
+description: Lit les derniers messages d'un chatroom N:N (comms/{chatroom_id}).
+inputs:
+  chatroom_id:
+    type: string
+    required: true
+    description: Identifiant du salon (groupe d'agents)
+  last_n:
+    type: integer
+    required: false
+    default: 50
+    description: Nombre de messages récents à retourner
+outputs:
+  messages:
+    type: array
+  count:
+    type: integer
+implementation:
+  type: python
+  function: system.agent.chatroom_read

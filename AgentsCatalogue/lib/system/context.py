@@ -30,4 +30,29 @@ def optimize(inputs: dict, ws: str) -> dict:
     return {"messages": kept, "compression_ratio": ratio}
 
 
-__skills__ = ["optimize"]
+def reset_context(inputs: dict, ws: str) -> dict:
+    messages = inputs.get("messages", [])
+    clear = inputs.get("clear", False)
+    keep_system = inputs.get("keep_system", True)
+    if clear:
+        return {"messages": [], "cleared": True, "kept": 0}
+    kept = []
+    for m in messages:
+        if keep_system and m.get("role") == "system":
+            kept.append(m)
+    return {"messages": kept, "cleared": len(kept) < len(messages), "kept": len(kept)}
+
+
+def add_context(inputs: dict, ws: str) -> dict:
+    messages = list(inputs.get("messages", []))
+    entry = inputs.get("entry")
+    role = inputs.get("role", "system")
+    content = inputs.get("content", "")
+    if entry is not None:
+        messages.append(entry)
+    elif content:
+        messages.append({"role": role, "content": content})
+    return {"messages": messages, "added": True, "total": len(messages)}
+
+
+__skills__ = ["optimize", "reset_context", "add_context"]

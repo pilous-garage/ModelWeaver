@@ -1,0 +1,16 @@
+name: coding/code_gen@v1
+category: coding
+description: "Génération de code via LLM"
+inputs:
+  request:
+    type: string
+    required: true
+    description: "Description du code à générer"
+outputs:
+  result:
+    type: string
+    description: "Code généré"
+uses_llm: true
+implementation:
+  type: llm
+  function: coding.code_gen

@@ -1,0 +1,228 @@
+name: worker
+role: worker
+description: "Agent worker autonome : boucle sur todo.txt, routage code/analyse/test, écriture projet partagé, commit git"
+personality:
+  tone: professionnel
+  system_prompt: |
+    Tu es un agent worker autonome. Tu executes une boucle de travail :
+    1. Lis la prochaine tâche depuis todo.txt (espace projet partagé)
+    2. Détermine son type : code, analyse, ou test
+    3. Exécute via un skill adapté
+    4. Écrit les résultats dans l'espace projet
+    5. Commit et push git
+    6. Passe à la tâche suivante
+skills:
+  - project/project_read@v1
+  - project/project_write@v1
+  - system/run_shell@v1
+  - coding/code_gen@v1
+  - coding/analyse@v1
+  - coding/test_runner@v1
+entrypoints:
+  start:
+    steps:
+      - id: init
+        type: set_variable
+        name: project_id
+        value: "default"
+        next: first_read
+
+      - id: first_read
+        type: call
+        fn: project/project_read@v1
+        inputs:
+          project_id: "{{project_id}}"
+          path: "todo.txt"
+        capture:
+          content: todo_raw
+        next: loop_start
+
+      - id: loop_start
+        type: while
+        condition:
+          variable: todo_raw
+          operator: TRUTHY
+        next: end_ok
+        body:
+          steps:
+            - id: parse_task
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'printf "%s" "{{todo_raw}}" | head -1 | sed -n "s/^\[[^]]*\]\[\([^]]*\)\]{\([^}]*\)}\[\([^]]*\)\]$/TYPE:\1\nDESC:\2\nFILES:\3/p;s/^\[[^]]*\]\[\([^]]*\)\]{\([^}]*\)}\]$/TYPE:\1\nDESC:\2\nFILES:/p"'
+              capture:
+                stdout: task_block
+              next: extract_type
+
+            - id: extract_type
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'echo "{{task_block}}" | grep "^TYPE:" | cut -d: -f2- | sed "s/^ *//;s/ *$//"'
+              capture:
+                stdout: task_type
+              next: extract_title
+
+            - id: extract_title
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'echo "{{task_block}}" | grep "^DESC:" | cut -d: -f2- | sed "s/^ *//;s/ *$//" | head -c 40'
+              capture:
+                stdout: task_title
+              next: extract_desc
+
+            - id: extract_desc
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'echo "{{task_block}}" | grep "^DESC:" | cut -d: -f2- | sed "s/^ *//"'
+              capture:
+                stdout: task_desc
+              next: route_task
+
+            - id: route_task
+              type: switch
+              variable: "{{task_type}}"
+              conditions:
+                - operator: EQUALS
+                  value: code
+                  next: exec_code
+                - operator: EQUALS
+                  value: analyse
+                  next: exec_analyse
+                - operator: EQUALS
+                  value: test
+                  next: exec_test
+              default: log_skip
+
+            - id: log_skip
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'echo "skip: {{task_type}}/{{task_title}}" >> error.log'
+              capture:
+                stdout: skip_logged
+              next: remove_task
+
+            - id: exec_code
+              type: call
+              uses_llm: true
+              fn: coding/code_gen@v1
+              inputs:
+                request: "{{task_desc}}"
+              capture:
+                result: code_output
+              next: write_output
+              on_error: log_error
+
+            - id: write_output
+              type: call
+              fn: project/project_write@v1
+              inputs:
+                project_id: "{{project_id}}"
+                path: "output/{{task_title}}.txt"
+                content: "{{code_output}}"
+              capture:
+                ok: output_written
+              next: remove_task
+
+            - id: exec_analyse
+              type: call
+              uses_llm: true
+              fn: coding/analyse@v1
+              inputs:
+                request: "{{task_desc}}"
+              capture:
+                result: analysis_output
+              next: read_report
+              on_error: log_error
+
+            - id: read_report
+              type: call
+              fn: project/project_read@v1
+              inputs:
+                project_id: "{{project_id}}"
+                path: "report.txt"
+              capture:
+                content: report_existing
+              next: build_report
+
+            - id: build_report
+              type: set_variable
+              name: report_new
+              value: "{{report_existing}}\n---\n## {{task_title}}\n{{analysis_output}}\n"
+              next: write_report
+
+            - id: write_report
+              type: call
+              fn: project/project_write@v1
+              inputs:
+                project_id: "{{project_id}}"
+                path: "report.txt"
+                content: "{{report_new}}"
+              capture:
+                ok: report_updated
+              next: remove_task
+
+            - id: exec_test
+              type: call
+              uses_llm: true
+              fn: coding/test_runner@v1
+              inputs:
+                request: "{{task_desc}}"
+              capture:
+                result: test_output
+              next: write_test_report
+              on_error: log_error
+
+            - id: write_test_report
+              type: call
+              fn: project/project_write@v1
+              inputs:
+                project_id: "{{project_id}}"
+                path: "reports/test_{{task_title}}.txt"
+                content: "{{test_output}}"
+              capture:
+                ok: test_reported
+              next: remove_task
+
+            - id: log_error
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'echo "ERR: {{task_type}}/{{task_title}} failed" >> error.log'
+              capture:
+                stdout: err_logged
+              next: remove_task
+
+            - id: remove_task
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'tail -n +2 todo.txt > todo.tmp && mv todo.tmp todo.txt'
+              capture:
+                stdout: removed
+              next: git_substep
+
+            - id: git_substep
+              type: call
+              fn: system/run_shell@v1
+              inputs:
+                command: 'git add -A && git commit -m "worker: {{task_type}} - {{task_title}}" && git push'
+              capture:
+                stdout: git_result
+              next: read_todo
+
+            - id: read_todo
+              type: call
+              fn: project/project_read@v1
+              inputs:
+                project_id: "{{project_id}}"
+                path: "todo.txt"
+              capture:
+                content: todo_raw
+
+      - id: end_ok
+        type: end
+        status: SUCCESS

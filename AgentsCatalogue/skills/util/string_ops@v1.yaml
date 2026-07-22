@@ -1,0 +1,43 @@
+name: util/string_ops@v1
+category: util
+description: 'Opérations sur chaîne: trim, upper, lower, len, split, replace, slice.'
+inputs:
+  op:
+    type: string
+    required: true
+    description: trim | upper | lower | len | split | replace | slice
+  text:
+    type: string
+    required: true
+    description: Chaîne source
+  sep:
+    type: string
+    required: false
+    default: ' '
+    description: Séparateur pour split
+  old:
+    type: string
+    required: false
+    default: ''
+    description: Ancienne sous-chaîne pour replace
+  new:
+    type: string
+    required: false
+    default: ''
+    description: Nouvelle sous-chaîne pour replace
+  start:
+    type: integer
+    required: false
+    default: 0
+    description: Début pour slice
+  end:
+    type: integer
+    required: false
+    description: Fin pour slice (None = jusqu'au bout)
+outputs:
+  result:
+    type: object
+    description: Résultat de l'opération
+implementation:
+  type: python
+  function: system.text.string_ops

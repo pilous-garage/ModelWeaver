@@ -33,7 +33,7 @@ const EDITOR_STYLE: React.CSSProperties = {
 const LIBREF_RE = /\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,}\b/g;
 
 // Mode debug : affiche un panneau à l'écran (utile sans devtools Tauri).
-const DEBUG = true;
+const DEBUG = false;
 
 function tokenAt(text: string, offset: number): { text: string; start: number; end: number } | null {
   LIBREF_RE.lastIndex = 0;

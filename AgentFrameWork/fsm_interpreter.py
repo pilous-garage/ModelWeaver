@@ -11,6 +11,10 @@ délègue au ToolExecutor.
   sleep        → Pause déportée (retour SLEEPING)
   end          → Fin du workflow
   set_variable → Définit une variable
+  for          → Boucle bornée (range ou liste) sur un corps imbriqué
+  while        → Boucle conditionnelle sur un corps imbriqué
+  break        → Sort de la boucle en cours
+  continue     → Passe à l'itération suivante de la boucle en cours
 """
 
 import json
@@ -101,6 +105,8 @@ class FSMResult:
         self.budget: Dict[str, Any] = {}
         # Flags de contrôle (Phase 4 : signaux)
         self._paused: bool = False
+        # Contrôle de boucle : 'break' | 'continue' | None (consommé par for/while)
+        self._loop_ctl: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -150,6 +156,7 @@ class FSMInterpreter:
         stream_sink: Optional[Any] = None,
         spawn_handler: Optional[Any] = None,
         handoff_handler: Optional[Any] = None,
+        agent_call_handler: Optional[Any] = None,
         lifecycle_mgr: Optional[Any] = None,
     ) -> FSMResult:
         """Exécute le workflow."""
@@ -159,11 +166,13 @@ class FSMInterpreter:
         self._signal_check = signal_check
         self._spawn_handler = spawn_handler
         self._handoff_handler = handoff_handler
+        self._agent_call_handler = agent_call_handler
         self._lifecycle_mgr = lifecycle_mgr
 
         steps = workflow.get("steps", [])
         steps_by_id = {s["id"]: s for s in steps}
         max_iter = workflow.get("max_iterations", self.max_iterations)
+        self._max_iter = max_iter
 
         current_id = start_step_id or self._find_entry_point(steps)
         if not current_id:
@@ -327,13 +336,9 @@ class FSMInterpreter:
                             agent_id=_agent_id or None,
                         )
                     except BridgeError as e:
-                        result.status = "failed"
-                        result.end_reason = f"LLM error: {e}"
-                        return False
+                        return self._branch_on_error(step, result, f"LLM error: {e}")
                     except Exception as e:
-                        result.status = "failed"
-                        result.end_reason = f"LLM call error: {e}"
-                        return False
+                        return self._branch_on_error(step, result, f"LLM call error: {e}")
                     p_ref, m_ref = (getattr(response, "provider_used", p_ref),
                                     getattr(response, "model_used", m_ref))
                     result.variables["_llm_provider"] = p_ref
@@ -353,17 +358,13 @@ class FSMInterpreter:
                 if stream_sink:
                     stream_sink(content)
         except BridgeError as e:
-            result.status = "failed"
-            result.end_reason = f"LLM error: {e}"
-            return False
+            return self._branch_on_error(step, result, f"LLM error: {e}")
         except AgentAbort:
             result.status = "aborted"
             result.end_reason = "Interrompu par signal kill"
             return False
         except Exception as e:
-            result.status = "failed"
-            result.end_reason = f"LLM call error: {e}"
-            return False
+            return self._branch_on_error(step, result, f"LLM call error: {e}")
 
         if step.get("strip_fences"):
             content = _strip_code_fences(content)
@@ -706,6 +707,274 @@ class FSMInterpreter:
             result.end_reason = f"handoff error: {e}"
             return False
         result.variables["_handoff"] = out
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_agent_call(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """Appel synchrone d'un entrypoint d'un autre agent.
+
+        step: {type: agent_call, agent, entrypoint, inputs, capture, on_error}.
+        Délègue à `agent_call_handler` fourni par l'Agent (service.py).
+        """
+        if self._agent_call_handler is None:
+            result.status = "failed"
+            result.end_reason = "agent_call_handler non configuré"
+            return False
+        agent_name = step.get("agent")
+        if not agent_name:
+            result.status = "failed"
+            result.end_reason = "agent_call: 'agent' requis"
+            return False
+        ep = step.get("entrypoint", "main")
+        inputs = {
+            k: self._resolve(v, result.variables)
+            for k, v in step.get("inputs", {}).items()
+        }
+        try:
+            out = self._agent_call_handler(agent_name, ep, inputs)
+        except Exception as e:
+            if step.get("on_error"):
+                return self._branch_on_error(step, result, f"agent_call error: {e}")
+            result.status = "failed"
+            result.end_reason = f"agent_call error: {e}"
+            return False
+
+        if out.get("status") not in ("ok", "success"):
+            if step.get("on_error"):
+                return self._branch_on_error(step, result,
+                                             out.get("error", "agent_call failed"))
+            result.status = "failed"
+            result.end_reason = f"agent_call échoué: {out.get('error', 'inconnu')}"
+            return False
+
+        # Capture la sortie dans les variables
+        capture = step.get("capture", {})
+        for out_key, var_name in capture.items():
+            result.variables[var_name] = out.get(out_key, out.get("content", ""))
+
+        result.next_step_id = step.get("next")
+        return True
+
+    # ── Gestion d'erreur commune (llm_call / call / tool_call) ──
+
+    def _branch_on_error(self, step: Dict, result: "FSMResult", msg: str) -> bool:
+        """Échec d'un step : branche vers `on_error` si défini, sinon échoue.
+
+        Expose `_last_error` (+ `_last_call_ok=False`) pour l'étape suivante.
+        Retourne True si le FSM doit continuer (branche on_error), False sinon."""
+        result.variables["_last_error"] = msg
+        result.variables["_last_call_ok"] = False
+        on_error = step.get("on_error")
+        if on_error:
+            result.next_step_id = on_error
+            return True
+        result.status = "failed"
+        result.end_reason = msg
+        return False
+
+    # ── Contrôle de boucle ─────────────────────────────
+
+    def _step_break(self, step: Dict, result: "FSMResult", **kwargs: Any) -> bool:
+        """Sort de la boucle englobante (consommé par _run_body/for/while)."""
+        result._loop_ctl = "break"
+        return False
+
+    def _step_continue(self, step: Dict, result: "FSMResult", **kwargs: Any) -> bool:
+        """Passe à l'itération suivante de la boucle englobante."""
+        result._loop_ctl = "continue"
+        return False
+
+    # ── Boucles (corps imbriqué) ───────────────────────
+
+    @staticmethod
+    def _eval_condition(cond: Dict, variables: Dict) -> bool:
+        """Évalue une condition {variable, operator, value}.
+
+        operator ∈ EQUALS | NOT_EQUALS | CONTAINS | GREATER | LESS | TRUTHY.
+        TRUTHY (défaut si pas de value) : la variable est non vide / non nulle.
+        """
+        if not cond:
+            return False
+        raw = variables.get(cond.get("variable", ""), "")
+        operator = cond.get("operator", "TRUTHY" if "value" not in cond else "EQUALS")
+        if operator == "TRUTHY":
+            return bool(raw) and str(raw).lower() not in ("false", "0", "")
+        var_value = str(raw)
+        cond_value = str(cond.get("value", ""))
+        if operator == "EQUALS":
+            return var_value == cond_value
+        if operator == "NOT_EQUALS":
+            return var_value != cond_value
+        if operator == "CONTAINS":
+            return cond_value in var_value
+        if operator in ("GREATER", "LESS"):
+            try:
+                a, b = float(var_value), float(cond_value)
+            except (ValueError, TypeError):
+                return False
+            return a > b if operator == "GREATER" else a < b
+        return False
+
+    @staticmethod
+    def _body_steps(step: Dict) -> List[Dict]:
+        """Extrait les steps du corps d'une boucle (body: {steps:[...]} ou [...])."""
+        body = step.get("body")
+        if isinstance(body, dict):
+            return body.get("steps", []) or []
+        if isinstance(body, list):
+            return body
+        return []
+
+    def _run_body(
+        self, body_steps: List[Dict], result: "FSMResult",
+        provider_ref: str, model_ref: str, stream_sink: Optional[Any],
+    ) -> str:
+        """Exécute une passe du corps de boucle (partage variables/messages).
+
+        Retourne un code de contrôle :
+          - 'normal'   : le corps est « tombé » à court d'étapes (itération OK) ;
+          - 'break'    : un step `break` a été rencontré → sortir de la boucle ;
+          - 'continue' : un step `continue` → itération suivante ;
+          - 'stop'     : le workflow doit s'arrêter (status ≠ running / `end`)."""
+        if not body_steps:
+            return "normal"
+        sub_by_id = {s["id"]: s for s in body_steps}
+        cur = self._find_entry_point(body_steps)
+        max_iter = getattr(self, "_max_iter", self.max_iterations)
+        while cur:
+            if result.iterations >= max_iter:
+                result.status = "failed"
+                result.end_reason = f"Limite d'itérations atteinte ({max_iter})"
+                return "stop"
+            step = sub_by_id.get(cur)
+            if not step:
+                result.status = "failed"
+                result.end_reason = f"Étape '{cur}' introuvable (corps de boucle)"
+                return "stop"
+            result.iterations += 1
+            stype = step.get("type", "")
+            result.next_step_id = None
+            handler = getattr(self, f"_step_{stype}", None)
+            if handler is None:
+                result.status = "failed"
+                result.end_reason = f"Type d'étape inconnu: {stype}"
+                return "stop"
+            cont = handler(step, result, provider_ref=provider_ref,
+                           model_ref=model_ref, stream_sink=stream_sink)
+            if result._loop_ctl:
+                ctl = result._loop_ctl
+                result._loop_ctl = None
+                return ctl
+            if result.status != "running":
+                return "stop"
+            if not cont:
+                return "stop"
+            if self._lifecycle_mgr:
+                self._lifecycle_mgr.publish("post_step", step=step, step_id=cur,
+                                            status=result.status,
+                                            variables=dict(result.variables))
+            cur = result.next_step_id
+        return "normal"
+
+    def _step_while(
+        self, step: Dict, result: "FSMResult",
+        provider_ref: str = "", model_ref: str = "",
+        stream_sink: Optional[Any] = None, **kwargs: Any,
+    ) -> bool:
+        """Boucle conditionnelle : exécute le corps tant que `condition` est vraie."""
+        body_steps = self._body_steps(step)
+        cond = step.get("condition", {})
+        max_iter = getattr(self, "_max_iter", self.max_iterations)
+        while self._eval_condition(cond, result.variables):
+            if result.iterations >= max_iter:
+                result.status = "failed"
+                result.end_reason = f"Limite d'itérations atteinte ({max_iter})"
+                return False
+            code = self._run_body(body_steps, result, provider_ref, model_ref, stream_sink)
+            if code == "stop":
+                return False
+            if code == "break":
+                break
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_for(
+        self, step: Dict, result: "FSMResult",
+        provider_ref: str = "", model_ref: str = "",
+        stream_sink: Optional[Any] = None, **kwargs: Any,
+    ) -> bool:
+        """Boucle bornée : itère sur une plage (start/end/step) ou une liste (items).
+
+        La variable `var` reçoit la valeur courante à chaque itération et est
+        disponible dans le corps via {{var}}."""
+        body_steps = self._body_steps(step)
+        var = step.get("var", "i")
+        # Mode liste
+        if "items" in step:
+            items = step.get("items")
+            if isinstance(items, str):
+                name = items.strip().strip("{}").strip()
+                items = result.variables.get(name, [])
+            if not isinstance(items, (list, tuple)):
+                items = []
+            values: List[Any] = list(items)
+        else:
+            # Mode plage
+            def _num(v, default):
+                try:
+                    return int(v)
+                except (ValueError, TypeError):
+                    return default
+            start = _num(step.get("start", 0), 0)
+            end = _num(step.get("end", 0), 0)
+            stride = _num(step.get("step", 1), 1) or 1
+            values = list(range(start, end, stride))
+        max_iter = getattr(self, "_max_iter", self.max_iterations)
+        for val in values:
+            if result.iterations >= max_iter:
+                result.status = "failed"
+                result.end_reason = f"Limite d'itérations atteinte ({max_iter})"
+                return False
+            result.variables[var] = val
+            code = self._run_body(body_steps, result, provider_ref, model_ref, stream_sink)
+            if code == "stop":
+                return False
+            if code == "break":
+                break
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_if(
+        self, step: Dict, result: "FSMResult",
+        provider_ref: str = "", model_ref: str = "",
+        stream_sink: Optional[Any] = None, **kwargs: Any,
+    ) -> bool:
+        """Condition simple : si vrai → exécute le corps ; sinon → next."""
+        cond = step.get("condition", {})
+        if self._eval_condition(cond, result.variables):
+            body_steps = self._body_steps(step)
+            if body_steps:
+                code = self._run_body(body_steps, result, provider_ref, model_ref, stream_sink)
+                if code == "stop":
+                    return False
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_group(
+        self, step: Dict, result: "FSMResult",
+        provider_ref: str = "", model_ref: str = "",
+        stream_sink: Optional[Any] = None, **kwargs: Any,
+    ) -> bool:
+        """Groupe : exécute le corps séquentiellement, puis next."""
+        body_steps = self._body_steps(step)
+        if body_steps:
+            code = self._run_body(body_steps, result, provider_ref, model_ref, stream_sink)
+            if code == "stop":
+                return False
         result.next_step_id = step.get("next")
         return True
 

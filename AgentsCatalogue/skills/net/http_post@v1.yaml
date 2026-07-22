@@ -1,0 +1,59 @@
+name: net/http_post@v1
+category: net
+description: Effectue une requête HTTP POST/PUT/PATCH/DELETE avec corps JSON ou texte.
+inputs:
+  url:
+    type: string
+    required: true
+    description: URL cible (https:// ou http://)
+  method:
+    type: string
+    required: false
+    default: POST
+    description: Méthode HTTP (POST, PUT, PATCH, DELETE)
+  headers:
+    type: object
+    required: false
+    default: {}
+    description: En-têtes HTTP additionnels
+  body:
+    type: object
+    required: false
+    default: null
+    description: Corps de la requête (objet JSON) ; ignoré pour DELETE sauf précisé
+  body_text:
+    type: string
+    required: false
+    default: ''
+    description: Corps texte brut (prioritaire sur body si fourni)
+  timeout:
+    type: number
+    required: false
+    default: 15
+    description: Timeout en secondes
+  max_bytes:
+    type: number
+    required: false
+    default: 1048576
+    description: Taille maximale de la réponse en octets (1 Mo)
+  verify_ssl:
+    type: boolean
+    required: false
+    default: true
+    description: Vérifie le certificat TLS
+outputs:
+  status_code:
+    type: integer
+    description: Code de statut HTTP
+  headers:
+    type: object
+    description: En-têtes de réponse
+  body:
+    type: string
+    description: Corps de la réponse (tronqué si > max_bytes)
+  error:
+    type: string
+    description: Message d'erreur si échec
+implementation:
+  type: python
+  function: system.net.http_post

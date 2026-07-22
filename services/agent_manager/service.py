@@ -172,11 +172,13 @@ class Agent:
         return self
 
     def execute(self, request: str, provider_ref: str = "", model_ref: str = "",
-                 temperature: float = 0.7, max_tokens: int = 4096) -> Dict[str, Any]:
+                 temperature: float = 0.7, max_tokens: int = 4096,
+                 entrypoint: str = "main") -> Dict[str, Any]:
         """Exécute une requête via le Bridge LLM ou le FSM Interpreter.
 
-        Si l'agent a un workflow défini (config.workflow ou role.pipeline),
-        le FSM Interpreter est utilisé. Sinon, appel Bridge direct (Phase 1).
+        Si l'agent a un workflow défini (config.workflow, config.entrypoints,
+        ou role.pipeline), le FSM Interpreter est utilisé. Sinon, appel
+        Bridge direct (Phase 1).
         Phase 4 : consomme les signaux (pause/kill/configure/...) et diffuse
         les chunks via le StreamBus.
         """
@@ -187,9 +189,14 @@ class Agent:
         if not self._bridge:
             self._bridge = make_bridge()
 
-        # Résoudre le workflow (FSM)
+        # Résoudre le workflow (FSM) — priorité aux entrypoints
         config = json.loads(self._data.get("config_json") or "{}")
-        workflow = config.get("workflow") or config.get("pipeline")
+        if "entrypoints" in config and entrypoint in config["entrypoints"]:
+            workflow = config["entrypoints"][entrypoint]
+        elif entrypoint == "main":
+            workflow = config.get("workflow") or config.get("pipeline")
+        else:
+            workflow = None
         if workflow and isinstance(workflow, dict):
             from services.skill_manager import expand_workflow
             try:
@@ -204,8 +211,10 @@ class Agent:
         signal_check = self._make_signal_check()
         stream_sink = lambda chunk: stream_bus.publish(self.agent_id, chunk, "token")
         # Phase 5 : orchestration (spawn d'enfants, handoff de session)
+        # Phase 5b : agent_call (appel synchrone d'un entrypoint d'un autre agent)
         spawn_handler = self._make_spawn_handler()
         handoff_handler = self._make_handoff_handler()
+        agent_call_handler = self._make_agent_call_handler()
 
         try:
             if workflow and len(workflow.get("steps", [])) > 0:
@@ -218,6 +227,7 @@ class Agent:
                     stream_sink=stream_sink,
                     spawn_handler=spawn_handler,
                     handoff_handler=handoff_handler,
+                    agent_call_handler=agent_call_handler,
                     lifecycle_mgr=self._lifecycle,
                 )
                 result = result.to_dict()
@@ -434,7 +444,7 @@ class Agent:
         provider_ref: str = "", model_ref: str = "",
         signal_check: Any = None, stream_sink: Any = None,
         spawn_handler: Any = None, handoff_handler: Any = None,
-        lifecycle_mgr: Any = None,
+        agent_call_handler: Any = None, lifecycle_mgr: Any = None,
     ) -> "FSMResult":
         """Exécution via FSM Interpreter (Phase 4 : signaux + streaming,
         Phase 5 : spawn + handoff)."""
@@ -489,6 +499,7 @@ class Agent:
                 stream_sink=stream_sink,
                 spawn_handler=spawn_handler,
                 handoff_handler=handoff_handler,
+                agent_call_handler=agent_call_handler,
                 lifecycle_mgr=lifecycle_mgr,
             )
             # Persister les variables (survit à configure / spawn / handoff)
@@ -542,6 +553,24 @@ class Agent:
                 to_id = row["agent_id"]
             return mgr.handoff(from_id, to_id)
         return _handoff
+
+    def _make_agent_call_handler(self):
+        """Closure : résout un agent par son nom, exécute un entrypoint
+        et retourne le résultat. Utilisé par le step `agent_call`."""
+        db = self.db
+        parent_bridge = self._bridge
+
+        def _call(agent_name: str, entrypoint: str, inputs: dict) -> Dict[str, Any]:
+            from services.api.afd_client import get_afd_client
+            client = get_afd_client()
+            return client.call(
+                agent_name, "execute",
+                request=inputs.get("request", ""),
+                entrypoint=entrypoint,
+                provider_ref=inputs.get("provider_ref", ""),
+                model_ref=inputs.get("model_ref", ""),
+            )
+        return _call
 
     def _record_failure(self):
         """Enregistre une tâche échouée dans les métriques."""

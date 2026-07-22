@@ -1,0 +1,19 @@
+name: comm/ask_user@v1
+category: comm
+description: Pose une question à l'utilisateur (human-in-the-loop). Stocke la question
+  dans ctx/ask/ et renvoie un id.
+inputs:
+  question:
+    type: string
+    required: true
+    description: Question posée à l'utilisateur
+outputs:
+  question_id:
+    type: string
+    description: Identifiant de la question (à lire plus tard)
+  answered:
+    type: boolean
+    description: False à la création
+implementation:
+  type: python
+  function: system.agent.ask_user

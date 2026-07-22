@@ -62,17 +62,32 @@ def resolve_behavior_steps(ref_or_dict):
     return []
 
 
-def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
-    """Produit la forme inline (self-contained) à partir de la forme normale."""
-    personality = resolve_personality(normal.get("personality"))
+def _migrate_entrypoints(normal: Dict[str, Any]) -> Dict[str, Any]:
+    """Si le YAML a encore l'ancien format `workflow.steps`, le migre vers
+    `entrypoints.main.steps`. Renvoie le dict entrypoints."""
+    entrypoints = normal.get("entrypoints")
+    if isinstance(entrypoints, dict) and len(entrypoints) > 0:
+        return entrypoints
     steps = resolve_behavior_steps(normal.get("behavior")) or normal.get("workflow", {}).get("steps", [])
+    if steps:
+        return {"main": {"steps": steps}}
+    return {"main": {"steps": []}}
+
+
+def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
+    """Produit la forme inline (self-contained) à partir de la forme normale.
+
+    Si le YAML source a `entrypoints`, on les préserve. Sinon on migre
+    l'ancien `workflow.steps` vers `entrypoints.main.steps`.
+    """
+    personality = resolve_personality(normal.get("personality"))
 
     inline: Dict[str, Any] = {
         "name": normal.get("name", ""),
         "role": normal.get("role", ""),
         "personality": personality,
         "skills": normal.get("skills", []),
-        "workflow": {"steps": steps},
+        "entrypoints": _migrate_entrypoints(normal),
     }
     # Champs optionnels préservés
     for k in ("description", "contexts", "default_config", "model_requirements", "hooks"):

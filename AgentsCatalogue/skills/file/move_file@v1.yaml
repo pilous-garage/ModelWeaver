@@ -1,0 +1,22 @@
+name: file/move_file@v1
+category: file
+description: Déplace/renomme un fichier dans l'espace personnel (chemins relatifs
+  au home).
+inputs:
+  src:
+    type: string
+    required: true
+    description: Source relative au home
+  dst:
+    type: string
+    required: true
+    description: Destination (relatif au home ; sans sous-dossier -> work/)
+outputs:
+  ok:
+    type: boolean
+  dst:
+    type: string
+    description: Chemin relatif résultant
+implementation:
+  type: python
+  function: system.file.move_file

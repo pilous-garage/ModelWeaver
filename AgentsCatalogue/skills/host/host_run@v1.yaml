@@ -1,0 +1,31 @@
+name: host/host_run@v1
+category: host
+description: Exécute une commande shell par CHEMIN ABSOLU cwd sur l'hôte. Gate par
+  FsAuthManager.
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant de l'agent (vérifié contre agent_fs_auth)
+  command:
+    type: string
+    required: true
+    description: Commande à exécuter (sandboxée)
+  cwd:
+    type: string
+    required: false
+    default: /
+    description: Répertoire de travail absolu (doit être sous une racine autorisée
+      rw)
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: system.fs.host_run

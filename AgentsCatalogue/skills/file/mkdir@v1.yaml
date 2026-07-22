@@ -1,0 +1,17 @@
+name: file/mkdir@v1
+category: file
+description: Crée un dossier dans l'espace personnel (relatif au home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Dossier à créer (sans sous-dossier -> work/)
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+    description: Chemin relatif créé
+implementation:
+  type: python
+  function: system.file.mkdir

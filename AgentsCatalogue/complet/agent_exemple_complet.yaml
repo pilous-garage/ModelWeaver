@@ -31,7 +31,7 @@ workflow:
 
     - id: fetch
       type: call
-      fn: system/http_get@v1
+      fn: net/http_get@v1
       inputs:
         url: "{{url}}"
       capture:
@@ -41,7 +41,7 @@ workflow:
 
     - id: store
       type: call
-      fn: system/memory_write@v1
+      fn: memory/memory_write@v1
       inputs:
         agent_id: "{{agent_id}}"
         namespace: facts
@@ -61,7 +61,7 @@ workflow:
 
     - id: recall
       type: call
-      fn: system/memory_read@v1
+      fn: memory/memory_read@v1
       inputs:
         agent_id: "{{agent_id}}"
         namespace: facts

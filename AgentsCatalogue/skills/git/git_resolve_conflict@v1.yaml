@@ -1,0 +1,47 @@
+name: git/git_resolve_conflict@v1
+category: git
+description: Résout un conflit de merge sur un fichier en choisissant un côté (ours/theirs)
+  puis stage le fichier. À utiliser après un git_merge en conflit, avant le commit
+  de conclusion.
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du projet
+  agent_id:
+    type: string
+    required: false
+    description: Identifiant de l'agent (injecté automatiquement par le FSM si absent)
+  path:
+    type: string
+    required: false
+    description: Fichier en conflit (relatif au clone). 'all' résout tous les fichiers
+      en conflit du clone.
+    enum:
+    - all
+  side:
+    type: string
+    required: false
+    default: ours
+    enum:
+    - ours
+    - theirs
+    description: Côté conservé pour résoudre le conflit
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: integer
+  ok:
+    type: boolean
+    description: True ssi la résolution a réussi (exit_code == 0)
+  resolved:
+    type: array
+    items:
+      type: string
+    description: Liste des fichiers effectivement résolus (mode 'all')
+implementation:
+  type: python
+  function: system.git.git_resolve_conflict
