@@ -98,6 +98,24 @@ def op_catalogue_skills_list(params: dict) -> Dict[str, Any]:
     return {"skills": skills}
 
 
+def _skill_workflow_yaml(data: dict) -> list:
+    """Génère un workflow synthétique pour l'affichage dans le graphe."""
+    wf = data.get("workflow")
+    if wf and isinstance(wf, dict) and wf.get("steps"):
+        return wf["steps"]
+    impl = data.get("implementation", {})
+    itype = impl.get("type", "")
+    name = data.get("name", "")
+    if itype == "llm":
+        return [{
+            "id": "prompt", "type": "llm_call",
+            "skill_prompt": impl.get("prompt", ""),
+            "output_capture": "result",
+        }]
+    # python ou autre : single call vers lui-même (affichage graphique)
+    return [{"id": "exec", "type": "call", "fn": name}]
+
+
 def op_catalogue_skills_get(params: dict) -> Dict[str, Any]:
     name = params.get("name") or params.get("ref")
     if not name:
@@ -116,7 +134,16 @@ def op_catalogue_skills_get(params: dict) -> Dict[str, Any]:
         if not found:
             raise FileNotFoundError(f"skill introuvable: {name}")
         candidate = found
-    return {"skill": _skill_meta(candidate), "yaml": candidate.read_text(encoding="utf-8")}
+    raw = candidate.read_text(encoding="utf-8")
+    try:
+        data = yaml.safe_load(raw) or {}
+        steps = _skill_workflow_yaml(data)
+        if not data.get("workflow"):
+            data = {**data, "workflow": {"steps": steps}}
+            raw = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    except Exception:
+        pass
+    return {"skill": _skill_meta(candidate), "yaml": raw}
 
 
 def op_catalogue_skills_save(params: dict) -> Dict[str, Any]:
