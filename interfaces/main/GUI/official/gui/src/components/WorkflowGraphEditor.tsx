@@ -346,27 +346,6 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, collapsed]);
 
-  // Log automatique du graphe à chaque changement
-  useEffect(() => {
-    console.log('🔄 GRAPH UPDATE — nodes:', nodes.length, 'collapsed:', collapsed.size,
-      'hidden:', hidden.size, 'renderNodes:', renderNodes.length);
-  }, [nodes, collapsed, hidden, renderNodes]);
-
-  // ── Log du graphe (état complet) ──
-  const logGraph = useCallback(() => {
-    console.log('=== GRAPH STATE ===');
-    console.log('nodes:', nodes.map(n => ({
-      id: n.id, type: n.type, stepType: n.data?.step?.type, stepFn: n.data?.step?.fn,
-      parentId: (n as any).parentId, style: n.style,
-    })));
-    console.log('collapsed:', [...collapsed]);
-    console.log('hidden:', [...hidden]);
-    console.log('skillInfo keys:', Object.keys(skillInfo));
-    console.log('fetchedNodes:', [...fetchedNodes.current]);
-    console.log('fetchQueue:', [...fetchQueue.current]);
-    console.log('===================');
-  }, [nodes, collapsed, hidden, skillInfo]);
-
   // ── Nœuds masqués (descendants d'une boucle repliée) ──
   const hidden = useMemo(() => {
     const h = new Set<string>();
@@ -402,6 +381,26 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
     const curSteps = graphToSteps(nodes);
     return stepsToGraph(curSteps).edges.filter(e => !hidden.has(e.source) && !hidden.has(e.target));
   }, [nodes, hidden]);
+
+  // ── Log du graphe ──
+  useEffect(() => {
+    console.log('🔄 GRAPH UPDATE — nodes:', nodes.length, 'collapsed:', collapsed.size,
+      'hidden:', hidden.size, 'renderNodes:', renderNodes.length);
+  }, [nodes, collapsed, hidden, renderNodes]);
+
+  const logGraph = useCallback(() => {
+    console.log('=== GRAPH STATE ===');
+    console.log('nodes:', nodes.map(n => ({
+      id: n.id, type: n.type, stepType: n.data?.step?.type, stepFn: n.data?.step?.fn,
+      parentId: (n as any).parentId, style: n.style,
+    })));
+    console.log('collapsed:', [...collapsed]);
+    console.log('hidden:', [...hidden]);
+    console.log('skillInfo keys:', Object.keys(skillInfo));
+    console.log('fetchedNodes:', [...fetchedNodes.current]);
+    console.log('fetchQueue:', [...fetchQueue.current]);
+    console.log('===================');
+  }, [nodes, collapsed, hidden, skillInfo]);
 
   const selectedStep = nodes.find(n => n.id === selectedId)?.data.step ?? null;
   const nodeIds = nodes.map(n => n.id);
