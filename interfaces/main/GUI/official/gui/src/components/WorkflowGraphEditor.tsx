@@ -257,7 +257,14 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
         parentId,
         extent: 'parent' as const,
       }));
-      setNodes(prev => [...prev, ...childNodes]);
+      // Dimensionner le parent pour contenir ses enfants
+      const nRows = childNodes.length;
+      const parentW = 280;
+      const parentH = Math.max(80, 44 + nRows * 80 + 20);
+      setNodes(prev => prev.map(n => n.id === parentId
+        ? { ...n, style: { ...(n.style || {}), width: parentW, height: parentH } }
+        : n
+      ).concat(childNodes));
       setSkillInfo(p => ({ ...p, [fn]: res.skill || true }));
     } catch(e) { console.error(`injectSkillChildren: erreur ${fn}`, e); }
   }, []);
@@ -355,10 +362,17 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
       const isAnyContainer = n.type === 'loop' || (st && ['if', 'group', 'for', 'while', 'call', 'agent_call', 'llm_call'].includes(st));
       const step = n.data?.step as any;
       const info = step?.type === 'call' && step?.fn ? skillInfo[step.fn] : undefined;
+      // Taille minimale pour les conteneurs dépliés qui ont des enfants
+      const hasChildren = nodes.some(x => (x as any).parentId === n.id);
+      const existW = n.style && 'width' in n.style ? Number((n.style as any).width) : 0;
+      const existH = n.style && 'height' in n.style ? Number((n.style as any).height) : 0;
+      const minW = existW || (isC ? 220 : hasChildren ? 280 : 0);
+      const minH = existH || (isC ? 44 : hasChildren ? 120 : 0);
+      const style = minW ? { ...(n.style || {}), width: minW, height: minH } : n.style;
       return {
         ...n,
         data: { ...n.data, collapsed: isC, onToggleCollapse: isAnyContainer ? toggleCollapse : undefined, skillInfo: info },
-        style: isC ? { ...(n.style || {}), width: 220, height: 44 } : n.style,
+        style: isC ? { ...(style || {}), width: 220, height: 44 } : style,
       };
     }), [nodes, hidden, collapsed, toggleCollapse, skillInfo]);
 

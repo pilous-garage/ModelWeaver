@@ -99,21 +99,26 @@ def op_catalogue_skills_list(params: dict) -> Dict[str, Any]:
 
 
 def _skill_workflow_yaml(data: dict) -> list:
-    """Génère un workflow synthétique pour l'affichage dans le graphe."""
+    """Génère un workflow synthétique pour l'affichage dans le graphe.
+    
+    Retourne une liste vide pour les skills sans workflow interne
+    (le frontend affiche alors les métadonnées : description, inputs,…).
+    """
     wf = data.get("workflow")
     if wf and isinstance(wf, dict) and wf.get("steps"):
         return wf["steps"]
     impl = data.get("implementation", {})
     itype = impl.get("type", "")
-    name = data.get("name", "")
+    desc = (data.get("description") or "").strip()
     if itype == "llm":
+        prompt = impl.get("prompt") or desc or f"Appel LLM : {data.get('name', '')}"
         return [{
             "id": "prompt", "type": "llm_call",
-            "skill_prompt": impl.get("prompt", ""),
+            "skill_prompt": prompt,
             "output_capture": "result",
         }]
-    # python ou autre : single call vers lui-même (affichage graphique)
-    return [{"id": "exec", "type": "call", "fn": name}]
+    # python ou autre : pas de sous-workflow → le frontend affiche les métadonnées
+    return []
 
 
 def op_catalogue_skills_get(params: dict) -> Dict[str, Any]:
