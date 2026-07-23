@@ -13,7 +13,7 @@ import {
 import { loadPositions, savePositions, clearPositions } from '../lib/graphLayoutStore.ts';
 import { NodeInspector } from './NodeInspector.tsx';
 import { CATALOGUE_MIME } from './AgentLegoPanel.tsx';
-import { daemonPost } from '../useSandbox.ts';
+import { daemonPost } from '../bridge.ts';
 
 interface Props {
   docId: string;
@@ -560,6 +560,39 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
     } catch { /* ignore */ }
   }, [addNode, nodes, collapsed]);
 
+  // ── Export YAML du graphe ──
+  const exportGraph = useCallback(() => {
+    const data = {
+      _docId: docId,
+      nodes: nodes.map(n => ({
+        id: n.id,
+        type: n.type,
+        stepType: n.data?.step?.type,
+        stepId: n.data?.step?.id,
+        parentId: (n as any).parentId,
+        position: n.position,
+        step: { ...n.data?.step, id: undefined },
+      })),
+      edges: edges.map(e => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle,
+      })),
+    };
+    const yaml = YAML.stringify(data, { lineWidth: 200 });
+    const blob = new Blob([yaml], { type: 'application/x-yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `graph_${docId.replace(/[^a-zA-Z0-9_-]/g, '_')}.yaml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [docId, nodes, edges]);
+
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0 }}>
       <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, flex: 1 }}>
@@ -580,6 +613,9 @@ export function WorkflowGraphEditor({ docId, steps, onStepsChange }: Props) {
           </button>
           <button onClick={logGraph} style={{ ...toolBtn, background: '#f9e2af22', color: '#f9e2af' }} title="Logger l'état du graphe dans la console">
             🪵 Log
+          </button>
+          <button onClick={exportGraph} style={{ ...toolBtn, background: '#89dceb22', color: '#89dceb' }} title="Exporter le graphe en YAML">
+            ⬇ Exporter .yaml
           </button>
           <button onClick={() => relayout(direction === 'TB' ? 'LR' : 'TB')} style={{ ...toolBtn, background: '#89b4fa22', color: '#89b4fa', fontWeight: 600 }} title="Auto-organiser le graphe">
             {direction === 'TB' ? '⬇' : '➡'} Auto

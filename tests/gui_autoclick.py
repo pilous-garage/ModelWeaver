@@ -39,8 +39,8 @@ class AutoClicker:
         self._ctx = self._browser.new_context(viewport={"width": 1400, "height": 900})
         self._page = self._ctx.new_page()
         self._page.set_default_timeout(self.timeout)
-        self._page.goto(self.url)
-        self._page.wait_for_load_state("networkidle")
+        self._page.goto(self.url, wait_until="domcontentloaded")
+        self._page.wait_for_timeout(2000)
 
     def close(self):
         if self._browser:
@@ -102,19 +102,61 @@ class TauriAutoClicker(AutoClicker):
     """Variante pour Tauri — ajoute des helpers spécifiques."""
 
     def switch_to_sandbox(self):
-        """Ouvre le panneau sandbox (suppose un bouton 'Sandbox')."""
-        self.click_text("Sandbox")
+        """Navigue vers le sandbox IDE via le paramètre d'URL ?sandbox."""
+        sandbox_url = self.url.rstrip("/") + "?sandbox"
+        self.page.goto(sandbox_url, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(2000)
 
     def open_agent_graph(self, agent_name: str = "worker"):
-        """Sélectionne un agent puis passe en vue graphe."""
-        self.click_text("Agents")
-        self.wait(0.3)
-        self.click_text(agent_name)
-        self.wait(0.3)
-        self.click_text("Graphe")
+        """Ouvre un agent depuis le catalogue puis passe en vue graphe.
+
+        Flow actuel :
+          1. Clique sur l'onglet catalogue '🤖 Agents'
+          2. Clique sur '⤢' (Tout déplier) pour étendre tous les groupes
+          3. Clique sur le nom de l'agent via JS ciblant l'item.
+             **Fallback** : si aucun div[draggable] n'est trouvé (ex. nouvelle version React qui ne
+             pose pas l'attribut), cherche TOUS les divs sur la page dont le texte
+             commence par l'agent_name.
+          4. Clique sur '🔀 Graphe' dans la barre d'onglets de l'éditeur
+        """
+        self.click_text("🤖 Agents")
+        self.wait(0.5)
+        self.click("button[title='Tout déplier']", wait_after=0.5)
+
+        # JS : trouve le div de l'agent worker. Plusieurs sélecteurs tentés.
+        js_code = (
+            '() => { '
+            'var selector = "div[draggable=true]"; '
+            'var items = document.querySelectorAll(selector); '
+            'if (items.length === 0) items = document.querySelectorAll("div"); '
+            'var name = "' + agent_name + '"; '
+            'for (var i=0; i<items.length; i++) { '
+            ' var t = items[i].textContent.trim(); '
+            ' if (t.indexOf(name) === 0 || t == name) { '
+            '  items[i].click(); return "found item " + i + " with selector=" + selector; '
+            ' } } '
+            'return "not_found"; '
+            '}')
+        result = self.eval(js_code)
+        print(f"      🖱️  [open_agent_graph] clic agent result={result}")
+        self.wait(1)
+
+        if "not_found" in str(result):
+            # Dernier recours : search box
+            self.fill("input[placeholder='Rechercher…']", agent_name)
+            self.wait(0.4)
+            try:
+                self.click_text(agent_name)
+            except Exception:
+                # clic sur le group header possible post search
+                pass
+            self.wait(1)
+
+        self.click_text("🔀 Graphe")
+        self.wait(1)
 
     def expand_all(self):
-        """Clique sur le bouton 'Tout déplier'."""
+        """Clique sur le bouton 'Tout déplier' du WorkflowGraphEditor."""
         self.click("button:has-text('Tout déplier')", wait_after=3)
 
     def get_console_logs(self):

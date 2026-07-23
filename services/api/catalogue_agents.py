@@ -101,20 +101,20 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
 def op_catalogue_agents_list(params: dict) -> Dict[str, Any]:
     agents: List[Dict[str, Any]] = []
     _AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    for p in sorted(_AGENTS_DIR.glob("*.yaml")):
-        if p.name.startswith(".") or p.name.endswith(".inline.yaml"):
+    for p in sorted(_AGENTS_DIR.glob("*.agent.yaml")):
+        if p.name.startswith(".") or p.name.endswith(".inline.agent.yaml"):
             continue
         try:
             data = _read_yaml(p)
             agents.append({
-                "name": data.get("name") or p.stem,
+                "name": data.get("name") or p.stem.removesuffix(".agent"),
                 "role": data.get("role", ""),
                 "description": data.get("description", ""),
-                "has_inline": (p.with_suffix(".inline.yaml")).exists(),
+                "has_inline": (p.with_suffix(".inline.agent.yaml")).exists(),
                 "file": str(p.relative_to(_CATALOGUE)),
             })
         except Exception as e:
-            agents.append({"name": p.stem, "error": str(e)})
+            agents.append({"name": p.stem.removesuffix(".agent"), "error": str(e)})
     return {"agents": agents}
 
 
@@ -122,10 +122,10 @@ def op_catalogue_agents_get(params: dict) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
         raise ValueError("name requis")
-    path = _AGENTS_DIR / f"{_slug(name)}.yaml"
+    path = _AGENTS_DIR / f"{_slug(name)}.agent.yaml"
     if not path.exists():
         raise FileNotFoundError(f"agent introuvable: {name}")
-    inline_path = path.with_suffix(".inline.yaml")
+    inline_path = _AGENTS_DIR / f"{_slug(name)}.inline.agent.yaml"
     return {
         "agent": _read_yaml(path),
         "yaml": path.read_text(encoding="utf-8"),
@@ -141,11 +141,11 @@ def op_catalogue_agents_save(params: dict) -> Dict[str, Any]:
         raise ValueError("name + yaml requis")
     data = yaml.safe_load(content)
     fname = data.get("name") or name
-    path = _AGENTS_DIR / f"{_slug(fname)}.yaml"
+    path = _AGENTS_DIR / f"{_slug(fname)}.agent.yaml"
     _write_yaml(path, data)
     # Génère toujours l'inline à côté
     inline = inline_agent(data)
-    inline_path = path.with_suffix(".inline.yaml")
+    inline_path = _AGENTS_DIR / f"{_slug(fname)}.inline.agent.yaml"
     _write_yaml(inline_path, inline)
     return {"status": "ok", "file": str(path.relative_to(_CATALOGUE)),
             "inline_file": str(inline_path.relative_to(_CATALOGUE))}
@@ -155,11 +155,11 @@ def op_catalogue_agents_delete(params: dict) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
         raise ValueError("name requis")
-    path = _AGENTS_DIR / f"{_slug(name)}.yaml"
+    path = _AGENTS_DIR / f"{_slug(name)}.agent.yaml"
     if not path.exists():
         raise FileNotFoundError(f"agent introuvable: {name}")
     path.unlink()
-    inline_path = path.with_suffix(".inline.yaml")
+    inline_path = _AGENTS_DIR / f"{_slug(name)}.inline.agent.yaml"
     if inline_path.exists():
         inline_path.unlink()
     return {"status": "ok", "deleted": str(path.relative_to(_CATALOGUE))}
@@ -170,12 +170,12 @@ def op_catalogue_agents_inline(params: dict) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
         raise ValueError("name requis")
-    path = _AGENTS_DIR / f"{_slug(name)}.yaml"
+    path = _AGENTS_DIR / f"{_slug(name)}.agent.yaml"
     if not path.exists():
         raise FileNotFoundError(f"agent introuvable: {name}")
     data = _read_yaml(path)
     inline = inline_agent(data)
-    inline_path = path.with_suffix(".inline.yaml")
+    inline_path = _AGENTS_DIR / f"{_slug(name)}.inline.agent.yaml"
     _write_yaml(inline_path, inline)
     return {"status": "ok", "inline_yaml": inline_path.read_text(encoding="utf-8"),
             "inline_file": str(inline_path.relative_to(_CATALOGUE))}

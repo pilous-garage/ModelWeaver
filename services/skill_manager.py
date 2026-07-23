@@ -53,7 +53,7 @@ class SkillManager:
                     continue
                 cat = cat_dir.name
                 self._categories.setdefault(cat, [])
-                for f in sorted(cat_dir.glob("*.yaml")):
+                for f in sorted(cat_dir.glob("*.skill.yaml")):
                     self._load_file(cat, f)
             self._loaded = True
 

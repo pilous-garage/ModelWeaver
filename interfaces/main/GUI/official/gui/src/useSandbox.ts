@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 import { collectSkillRefs, type Step } from './lib/workflowGraph.ts';
+import { daemonPost } from './bridge.ts';
 
 export type CatalogueType = 'skills' | 'behaviors' | 'personalities' | 'roles' | 'agents';
 export type DocView = 'code' | 'graph';
@@ -27,10 +27,6 @@ export interface OpenDoc {
 }
 
 const LS_KEY = 'mw_sandbox_docs';
-
-export async function daemonPost(route: string, body: any): Promise<any> {
-  return invoke<any>('daemon_post', { route, body: JSON.stringify(body) });
-}
 
 const listRoute: Record<CatalogueType, string> = {
   skills: 'catalogue/skills/list',
@@ -71,7 +67,12 @@ const TEMPLATES: Record<CatalogueType, string> = {
 
 function extractName(yamlText: string): string | null {
   const m = yamlText.match(/^name:\s*(.+)$/m);
-  if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+  if (m) {
+    let name = m[1].trim().replace(/^["']|["']$/g, '');
+    // Remove any .format.type extensions
+    name = name.replace(/(\.(graph|inline))?\.(agent|skill|behavior|personality|role)$/, '');
+    return name;
+  }
   return null;
 }
 

@@ -131,14 +131,14 @@ class RoleManager:
         errors = definition.validate()
         if errors:
             raise RoleValidationError(f"Rôle '{definition.name}' invalide: {'; '.join(errors)}")
-        path = self.roles_dir / f"{definition.name}.yaml"
+        path = self.roles_dir / f"{definition.name}.role.yaml"
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(definition.to_dict(), f, default_flow_style=False, allow_unicode=True)
         self._cache[definition.name] = definition
         return path
 
     def delete_role(self, name: str) -> bool:
-        path = self.roles_dir / f"{name}.yaml"
+        path = self.roles_dir / f"{name}.role.yaml"
         if path.exists():
             path.unlink()
             self._cache.pop(name, None)
@@ -146,7 +146,7 @@ class RoleManager:
         return False
 
     def _refresh_cache(self):
-        for path in sorted(self.roles_dir.glob("*.yaml")):
+        for path in sorted(self.roles_dir.glob("*.role.yaml")):
             if path.stem not in self._cache:
                 try:
                     role = RoleDefinition.from_file(path)

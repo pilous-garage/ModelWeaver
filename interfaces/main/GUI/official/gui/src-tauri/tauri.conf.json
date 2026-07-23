@@ -3,7 +3,7 @@
   "version": "0.7.4",
   "identifier": "com.modelweaver.main",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "fuser -k 8770/tcp 2>/dev/null; npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"

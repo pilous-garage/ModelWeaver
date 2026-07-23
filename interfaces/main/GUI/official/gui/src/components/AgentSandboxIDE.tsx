@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect, useRef } from 'react';
 import { parse as yamlParse } from 'yaml';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-import { useSandbox, CatalogueType, daemonPost } from '../useSandbox.ts';
+import { useSandbox, CatalogueType } from '../useSandbox.ts';
+import { daemonPost } from '../bridge.ts';
 import { CodeEditor, LibResolveResult } from './CodeEditor.tsx';
 import { SandboxMenuBar } from './SandboxMenuBar.tsx';
 import { AgentLegoPanel, CATALOGUE_MIME } from './AgentLegoPanel.tsx';
@@ -28,6 +29,80 @@ const TABS: { id: CatalogueType; label: string }[] = [
 
 export function AgentSandboxIDE() {
   const s = useSandbox();
+  const smokeRan = useRef(false);
+
+  // ── Mode smoke auto (?smoke=1) ──
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!new URLSearchParams(window.location.search).get('smoke')) return;
+    if (smokeRan.current) return;
+    smokeRan.current = true;
+
+    const log = (...args: any[]) => console.log('[smoke]', ...args);
+    (window as any).__smoke_result = null;
+
+    const run = async () => {
+      log('=== SMOKE AUTO START ===');
+      try {
+        // 1. Switch to agents tab & open worker
+        s.setActiveTab('agents');
+        await new Promise(r => setTimeout(r, 2000));
+        log('tab agents activé');
+
+        await s.openItem('worker');
+        await new Promise(r => setTimeout(r, 3000));
+        log('worker ouvert');
+
+        // 2. Switch to graph view
+        const workerId = s.openDocs.find(d => d.name === 'worker')?.id;
+        if (workerId) {
+          s.setDocView(workerId, 'graph');
+          await new Promise(r => setTimeout(r, 2000));
+          log('vue graphe activée, docId=' + workerId);
+        }
+
+        // 3. Wait for graph to render, then extract nodes/edges
+        await new Promise(r => setTimeout(r, 4000));
+
+        const graphState = evalNodeEdge();
+        log(`nœuds=${graphState.nodes.length}, arêtes=${graphState.edges.length}`);
+        (window as any).__smoke_result = graphState;
+
+        // 4. Export YAML via API (save le .graph)
+        const doc = s.openDocs.find(d => d.name === 'worker');
+        if (doc) {
+          const res = await daemonPost('catalogue/agents/get', { name: 'worker' });
+          if (res?.ok && res?.result) {
+            log('agent YAML récupéré', Object.keys(res.result));
+            (window as any).__smoke_yaml = res.result.yaml;
+          }
+        }
+
+        log('=== SMOKE AUTO OK ===');
+      } catch (e: any) {
+        log('❌ SMOKE FAIL:', e.message || e);
+        (window as any).__smoke_result = { error: String(e) };
+      }
+    };
+
+    run();
+  }, [s.openDocs.length]);
+
+  function evalNodeEdge() {
+    try {
+      const nodes = Array.from(document.querySelectorAll('.react-flow__node')).map((n: any) => ({
+        id: n.getAttribute('data-id') || '',
+        label: (n.querySelector('div') || n).textContent?.trim()?.substring(0, 80) || '',
+      }));
+      const edges = Array.from(document.querySelectorAll('.react-flow__edge')).map((e: any) => ({
+        from: e.getAttribute('data-sourceid') || '',
+        to: e.getAttribute('data-targetid') || '',
+      }));
+      return { nodes, edges };
+    } catch {
+      return { nodes: [], edges: [] };
+    }
+  }
 
   const resolveRef = async (ref: string): Promise<LibResolveResult | null> => {
     try {

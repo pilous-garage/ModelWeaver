@@ -88,7 +88,8 @@ def _skill_meta(path: Path) -> Dict[str, Any]:
 def op_catalogue_skills_list(params: dict) -> Dict[str, Any]:
     skills: List[Dict[str, Any]] = []
     if _SKILLS_DIR.exists():
-        for p in sorted(_SKILLS_DIR.rglob("*.yaml")):
+        for p in sorted(_SKILLS_DIR.rglob("*.skill.yaml")):
+
             if p.name.startswith("."):
                 continue
             try:
@@ -128,11 +129,12 @@ def op_catalogue_skills_get(params: dict) -> Dict[str, Any]:
     candidate = _SKILLS_DIR
     for part in name.split("/"):
         candidate = candidate / part
-    if not str(candidate).endswith(".yaml"):
-        candidate = candidate.with_suffix(".yaml")
+    if not str(candidate).endswith(".skill.yaml"):
+        candidate = candidate.with_suffix(".skill.yaml")
+
     if not candidate.exists():
         found = None
-        for p in _SKILLS_DIR.rglob("*.yaml"):
+        for p in _SKILLS_DIR.rglob("*.skill.yaml"):
             if p.stem == name.split("/")[-1]:
                 found = p
                 break
@@ -161,7 +163,7 @@ def op_catalogue_skills_save(params: dict) -> Dict[str, Any]:
     fname = data.get("name") or name
     if "@" not in Path(fname).stem:
         fname = f"{Path(fname).stem}@v1"
-    path = _SKILLS_DIR / category / f"{fname}.yaml"
+    path = _SKILLS_DIR / category / f"{fname}.skill.yaml"
     _write_yaml(path, data)
     return {"status": "ok", "file": str(path.relative_to(_CATALOGUE))}
 
@@ -196,7 +198,8 @@ def _behavior_meta(path: Path) -> Dict[str, Any]:
 def op_catalogue_behaviors_list(params: dict) -> Dict[str, Any]:
     behaviors: List[Dict[str, Any]] = []
     _BEHAVIORS_DIR.mkdir(parents=True, exist_ok=True)
-    for p in sorted(_BEHAVIORS_DIR.glob("*.yaml")):
+    for p in sorted(_BEHAVIORS_DIR.glob("*.behavior.yaml")):
+
         if p.name.startswith("."):
             continue
         try:
@@ -223,7 +226,7 @@ def op_catalogue_behaviors_save(params: dict) -> Dict[str, Any]:
         raise ValueError("name + yaml requis")
     data = yaml.safe_load(content)
     fname = data.get("name") or name
-    path = _BEHAVIORS_DIR / f"{_slug(fname)}.yaml"
+    path = _BEHAVIORS_DIR / f"{_slug(fname)}.behavior.yaml"
     _write_yaml(path, data)
     return {"status": "ok", "file": str(path.relative_to(_CATALOGUE))}
 
@@ -255,7 +258,8 @@ def _personality_meta(path: Path) -> Dict[str, Any]:
 def op_catalogue_personalities_list(params: dict) -> Dict[str, Any]:
     personalities: List[Dict[str, Any]] = []
     _PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
-    for p in sorted(_PERSONALITIES_DIR.glob("*.yaml")):
+    for p in sorted(_PERSONALITIES_DIR.glob("*.personality.yaml")):
+
         if p.name.startswith("."):
             continue
         try:
@@ -269,7 +273,7 @@ def op_catalogue_personalities_get(params: dict) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
         raise ValueError("name requis")
-    path = _PERSONALITIES_DIR / f"{_slug(name)}.yaml"
+    path = _PERSONALITIES_DIR / f"{_slug(name)}.personality.yaml"
     if not path.exists():
         raise FileNotFoundError(f"personality introuvable: {name}")
     return {"personality": _personality_meta(path), "yaml": path.read_text(encoding="utf-8")}
@@ -282,7 +286,7 @@ def op_catalogue_personalities_save(params: dict) -> Dict[str, Any]:
         raise ValueError("name + yaml requis")
     data = yaml.safe_load(content)
     fname = data.get("name") or name
-    path = _PERSONALITIES_DIR / f"{_slug(fname)}.yaml"
+    path = _PERSONALITIES_DIR / f"{_slug(fname)}.personality.yaml"
     _write_yaml(path, data)
     return {"status": "ok", "file": str(path.relative_to(_CATALOGUE))}
 
@@ -291,7 +295,7 @@ def op_catalogue_personalities_delete(params: dict) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
         raise ValueError("name requis")
-    path = _PERSONALITIES_DIR / f"{_slug(name)}.yaml"
+    path = _PERSONALITIES_DIR / f"{_slug(name)}.personality.yaml"
     if not path.exists():
         raise FileNotFoundError(f"personality introuvable: {name}")
     path.unlink()
@@ -332,7 +336,7 @@ def op_catalogue_roles_get(params: dict) -> Dict[str, Any]:
     r = rm.get_role(name)
     if not r:
         raise FileNotFoundError(f"rôle introuvable: {name}")
-    path = _ROLES_DIR / f"{name}.yaml"
+    path = _ROLES_DIR / f"{name}.role.yaml"
     return {"role": r.to_dict(), "yaml": path.read_text(encoding="utf-8")}
 
 
@@ -347,7 +351,7 @@ def op_catalogue_roles_save(params: dict) -> Dict[str, Any]:
     definition = RoleDefinition(data)
     rm = _get_role_manager()
     rm.save_role(definition)
-    return {"status": "ok", "file": f"rôles/{definition.name}.yaml"}
+    return {"status": "ok", "file": f"rôles/{definition.name}.role.yaml"}
 
 
 def op_catalogue_roles_delete(params: dict) -> Dict[str, Any]:
@@ -356,7 +360,7 @@ def op_catalogue_roles_delete(params: dict) -> Dict[str, Any]:
         raise ValueError("name requis")
     rm = _get_role_manager()
     if rm.delete_role(name):
-        return {"status": "ok", "deleted": f"rôles/{name}.yaml"}
+        return {"status": "ok", "deleted": f"rôles/{name}.role.yaml"}
     raise FileNotFoundError(f"rôle introuvable: {name}")
 
 

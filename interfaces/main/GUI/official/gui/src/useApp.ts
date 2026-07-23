@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { invoke, getWindowLabel, getCurrentWindow, LogicalSize } from './bridge.ts';
 import type { Dependency, PackageManager, PythonPackageManager } from './types.ts';
 
 // Refresh paresseux : on poll /v1/db/versions (PRAGMA data_version par DB +
