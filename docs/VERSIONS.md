@@ -838,9 +838,10 @@ rendre le framework observable panneau par panneau pendant un live test.
 ## V0.8 — Organisateur Global & Dashboard (📝 Planifié)
 **Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
-### V0.8.0 — Dashboard — Nouvelle fenêtre 🖥️
-- **Fenêtre Tauri dédiée** `dashboard` (1400×900), route dédiée dans `App.tsx`
-- Onglets multiples : **État système** / **Agents** / **Services** / **LLM locaux** / **Clés** / **Logs**
+### V0.8.0 — Dashboard — Nouvelle fenêtre dédiée 🖥️
+- **Fenêtre Tauri séparée** `dashboard` (1400×900), **indépendante de la fenêtre installateur** `main` — nouveau window Tauri, lancement par le superviseur ou via `openDashboardWindow`
+- Route dédiée dans `App.tsx` (`getCurrentWindow().label === 'dashboard'`), pas de conflit avec l'installateur
+- Onglets multiples : **État système** / **Agents** / **Services** / **LLM locaux** / **Clés** / **Activité**
 - **Panneau État système** : CPU, RAM, Disque, Swap, uptime (via `RessourceManager.hardware_snapshot`)
 - **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill (signaux)
 - **Panneau Services** : liste des services actifs (installer_worker, tester, watch_installed, watch_sysstate, daemon AFD), statut, uptime
