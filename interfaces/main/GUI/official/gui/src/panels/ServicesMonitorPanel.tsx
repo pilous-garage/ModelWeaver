@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { AppApi } from '../useApp.ts';
+import { invoke } from '../bridge.ts';
 
 type TabId = 'processors' | 'services' | 'logs';
 
@@ -100,7 +101,15 @@ export function ServicesMonitorPanel({ app }: { app: AppApi }) {
             <tbody>
               {(app.serviceList || []).map((s: any) => (
                 <tr key={s.name} style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
-                  <td style={{ padding: '0.15rem 0.4rem', fontWeight: '600' }}>{s.name}</td>
+                   <td style={{ padding: '0.15rem 0.4rem', fontWeight: '600' }}>
+                     {s.name}
+                     <button onClick={async () => {
+                       try { await invoke<any>('service_restart', { name: s.name }); } catch {}
+                     }}
+                       style={{ marginLeft: '0.3rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#1d4ed8', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
+                       ⟳
+                     </button>
+                   </td>
                   <td style={{ padding: '0.15rem 0.4rem' }}>{s.mode}</td>
                   <td style={{ padding: '0.15rem 0.4rem', textAlign: 'center' }}>
                     <span style={{
@@ -127,11 +136,9 @@ export function ServicesMonitorPanel({ app }: { app: AppApi }) {
           {(app.serviceList || []).map((s: any) => (
             <div key={s.name} style={{ marginBottom: '0.3rem', borderBottom: '1px solid #1e293b', paddingBottom: '0.3rem' }}>
               <div style={{ fontWeight: '600', color: '#93c5fd', marginBottom: '0.15rem' }}>{s.name} <span style={{ color: '#64748b', fontWeight: 'normal' }}>· {s.status}</span></div>
-              <button onClick={async () => {
-                try {
-                  await app.invoke('service_log', { name: s.name, lines: 20 });
-                } catch {}
-              }}
+               <button onClick={async () => {
+                 try { await invoke<any>('service_log', { name: s.name, lines: 20 }); } catch {}
+               }}
                 style={{ fontSize: '0.6rem', padding: '0.1rem 0.4rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
                 Voir log
               </button>

@@ -1269,6 +1269,25 @@ fn service_log(name: String, lines: usize) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn service_restart(name: String) -> Result<String, String> {
+    let reg = services_reg().lock().unwrap();
+    let entry = reg.iter_mut().find(|s| s.info.name == name);
+    if let Some(entry) = entry {
+        entry.info.status = "restarting".to_string();
+        if let Some(child) = entry.child.take() {
+            let _ = child.kill();
+        }
+        drop(reg);
+        let mut reg2 = services_reg().lock().unwrap();
+        let entry2 = reg2.iter_mut().find(|s| s.info.name == name).unwrap();
+        spawn_service_child(entry2);
+        Ok(format!("{} restarted", name))
+    } else {
+        Err(format!("service '{}' introuvable", name))
+    }
+}
+
+#[tauri::command]
 fn watch_get(name: String) -> Result<String, String> {
     // api_token vit dans le fichier ~/.modelweaver/api.token (écrit par le
     // daemon), pas dans le cache watch en mémoire. On le lit directement.
@@ -1623,9 +1642,10 @@ fn main() {
             process_list,
             process_log,
             install_all_tools,
-            service_list,
-            service_log,
-            watch_get,
+             service_list,
+             service_log,
+             service_restart,
+             watch_get,
             run_command,
             get_platform,
             check_dependencies_with_config,
