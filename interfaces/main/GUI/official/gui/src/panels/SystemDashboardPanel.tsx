@@ -100,6 +100,12 @@ export function SystemDashboardPanel({ app }: { app: AppApi }) {
             </SectionCard>
           </div>
         </div>
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <SectionCard title=" Débogage (services, processus, logs)">
+            <DebugPanel app={app} />
+          </SectionCard>
+        </div>
       </div>
     </div>
   );
