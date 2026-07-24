@@ -835,14 +835,43 @@ rendre le framework observable panneau par panneau pendant un live test.
 - Bump version (package.json, Cargo.toml, tauri.conf.json).
 - Commit, tag v0.7.7, build .deb, GitHub release.
 
-## V0.8 — Organisateur Global & Framework (📝 Planifié)
-**Objectif** : Dashboard central et tour de contrôle.
+## V0.8 — Organisateur Global & Dashboard (📝 Planifié)
+**Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
-- Vue graphique (topologie, éditeur de pipeline)
-- Monitoring temps réel (CPU/RAM, tokens, statut)
-- Contrôles Play/Stop/Restart
-- Logs en temps réel par agent/session
-- Gestion des dépendances entre agents
+### V0.8.0 — Dashboard central ✅ (base existante)
+- `DashboardPanel` existant (V0.7.0, refactor modulaire)
+- `AgentsPanel` : liste agents, statut, heartbeat, boutons Pause/Kill/Resume
+- `ResourcesPanel` : vue CPU/RAM/Mémoire en temps réel
+- Remplacement du wrapper monolithique `App.tsx`
+
+### V0.8.1 — Monitoring étendu 📊
+- CPU/RAM/Disque par agent (via `RessourceManager.hardware_snapshot`)
+- Consommation tokens par agent/session (via `AgentMetrics` BDD)
+- Latence LLM par provider (via `LiteLLMBridge` stats)
+- Graphique temps réel (mise à jour auto, refresh 2s)
+
+### V0.8.2 — Contrôles Play / Stop / Restart ▶⏹🔄
+- **Play** : reprendre un agent en pause (signal `resume`)
+- **Stop** : stop propre (signal `pause` puis `kill` si nécessaire)
+- **Restart** : `kill` + `hydrate` + re-exécution du step courant
+- Boutons dans `AgentsPanel` côte à côte avec feedback visuel
+
+### V0.8.3 — Logs en temps réel par agent 📋
+- `StreamBus` cross-process déjà fonctionnel (V0.6.10)
+- Côté GUI : `LogsPanel` avec poll `agent/stream` (séquence)
+- Filtrage par agent, par niveau (info/warn/error)
+- Auto-scroll, pause/replay
+
+### V0.8.4 — Vue topologie & dépendances 🗺️
+- **Graphe des agents** : visualisation des relations (manager → workers, handoffs)
+- **Dépendances** : arbre de succession (`agent.successor_id`), affichage des blocages
+- **Éditeur de pipeline** : drag-and-drop pour créer des workflows multi-agents
+- Layout dagre (comme le FSM graph editor V0.7.4)
+
+### V0.8.5 — Orchestrateur visuel 🎛️
+- **Pipeline DAG** : créer, éditer, tester des pipelines d'agents
+- **Gestion des ressources** : allocation LLM manuelle ou auto par l'Organisateur
+- **Préemption visuelle** : voir les agents préemptibles et les conflits d'allocation
 
 ## V0.9 — Mini-Entreprise de Création de Projet (📝 Planifié)
 **Objectif** : Test réel complet : un projet logiciel conçu, développé et livré
