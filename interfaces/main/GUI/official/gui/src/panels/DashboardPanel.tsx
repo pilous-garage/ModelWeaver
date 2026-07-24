@@ -67,3 +67,6 @@ export function DashboardPanel({ app }: { app: AppApi }) {
       <div style={{ flex: 1, padding: '0.3rem', overflow: 'hidden', display: 'flex' }}>
         <PanelTreeRenderer node={app.panelTree} app={app} renderTab={renderTab} />
       </div>
+    </div>
+  );
+}
