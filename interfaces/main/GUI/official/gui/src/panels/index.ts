@@ -1,0 +1,12 @@
+export { DashboardPanel } from './DashboardPanel.tsx';
+export { DependenciesPanel } from './DependenciesPanel.tsx';
+export { AgentsPanel } from './AgentsPanel.tsx';
+export { ResourcesPanel } from './ResourcesPanel.tsx';
+export { SystemStatePanel } from './SystemStatePanel.tsx';
+export { ChatPanel } from './ChatPanel.tsx';
+export { CataloguePanel } from './CataloguePanel.tsx';
+export { KeysPanel } from './KeysPanel.tsx';
+export { LocalModelsPanel } from './LocalModelsPanel.tsx';
+export { InstalledToolsPanel } from './InstalledToolsPanel.tsx';
+export { InstallQueuePanel } from './InstallQueuePanel.tsx';
+export { DebugPanel } from './DebugPanel.tsx';

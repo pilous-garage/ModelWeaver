@@ -79,7 +79,6 @@ __pycache__/
 *.zip
 
 gui-defunct/
-gui/
 gemini/
 gemma/
 mistral/

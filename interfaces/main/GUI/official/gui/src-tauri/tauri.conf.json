@@ -18,6 +18,14 @@
         "minHeight": 600
       },
       {
+        "label": "dashboard",
+        "title": "ModelWeaver — Dashboard",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600
+      },
+      {
         "label": "sandbox",
         "title": "ModelWeaver — Agent Sandbox",
         "width": 1400,

@@ -10,7 +10,6 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
 
   useEffect(() => {
-    // En mode navigateur, ?sandbox force l'affichage du sandbox
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('sandbox') !== null) {
       setWindowLabel('sandbox');
       return;
@@ -20,6 +19,10 @@ export default function App() {
 
   if (windowLabel === 'sandbox') {
     return <AgentSandboxIDE />;
+  }
+
+  if (windowLabel === 'dashboard') {
+    return <DashboardPanel app={app} />;
   }
 
   return app.showDashboard ? <DashboardPanel app={app} /> : <DependenciesPanel app={app} />;
