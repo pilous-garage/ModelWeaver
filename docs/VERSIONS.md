@@ -838,11 +838,16 @@ rendre le framework observable panneau par panneau pendant un live test.
 ## V0.8 — Organisateur Global & Dashboard (📝 Planifié)
 **Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
-### V0.8.0 — Dashboard central ✅ (base existante)
-- `DashboardPanel` existant (V0.7.0, refactor modulaire)
-- `AgentsPanel` : liste agents, statut, heartbeat, boutons Pause/Kill/Resume
-- `ResourcesPanel` : vue CPU/RAM/Mémoire en temps réel
-- Remplacement du wrapper monolithique `App.tsx`
+### V0.8.0 — Dashboard — Nouvelle fenêtre 🖥️
+- **Fenêtre Tauri dédiée** `dashboard` (1400×900), route dédiée dans `App.tsx`
+- Onglets multiples : **État système** / **Agents** / **Services** / **LLM locaux** / **Clés** / **Logs**
+- **Panneau État système** : CPU, RAM, Disque, Swap, uptime (via `RessourceManager.hardware_snapshot`)
+- **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill (signaux)
+- **Panneau Services** : liste des services actifs (installer_worker, tester, watch_installed, watch_sysstate, daemon AFD), statut, uptime
+- **Panneau LLM locaux** : détection moteurs (Ollama :11434, LM Studio :1234, llama.cpp :8080), start/stop, modèles disponibles
+- **Panneau Clés** : santé des clés (grade, provider, dernière utilisation)
+- **Panneau Activité** : logs temps réel, stream bus, inter-agent messages
+- Remplacement du `DashboardPanel` actuel (simple wrapper) par cette fenêtre dédiée
 
 ### V0.8.1 — Monitoring étendu 📊
 - CPU/RAM/Disque par agent (via `RessourceManager.hardware_snapshot`)
@@ -872,6 +877,11 @@ rendre le framework observable panneau par panneau pendant un live test.
 - **Pipeline DAG** : créer, éditer, tester des pipelines d'agents
 - **Gestion des ressources** : allocation LLM manuelle ou auto par l'Organisateur
 - **Préemption visuelle** : voir les agents préemptibles et les conflits d'allocation
+
+### V0.8.6 — Orchestrateur global ✅ (merge AFD + Organisateur dans la GUI)
+- L'Organisateur global est intégré au Dashboard : vue d'allocation LLM, préemption, admission control
+- L'AFD (Agent Framework Daemon) est visible et contrôlable depuis le dashboard
+- Le dashboard est le point de contrôle unique pour tout le runtime
 
 ## V0.9 — Mini-Entreprise de Création de Projet (📝 Planifié)
 **Objectif** : Test réel complet : un projet logiciel conçu, développé et livré
