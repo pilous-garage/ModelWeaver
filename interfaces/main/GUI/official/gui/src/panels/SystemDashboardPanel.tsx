@@ -8,6 +8,8 @@ import { ResourcesPanel } from './ResourcesPanel.tsx';
 import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
 import AgentLauncherPanel from './AgentLauncherPanel.tsx';
+import { ServicesMonitorPanel } from './ServicesMonitorPanel.tsx';
+import AgentLauncherPanel from './AgentLauncherPanel.tsx';
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -102,7 +104,13 @@ export function SystemDashboardPanel({ app }: { app: AppApi }) {
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>
-          <SectionCard title=" Débogage (services, processus, logs)">
+          <SectionCard title=" Moniteur de services">
+            <ServicesMonitorPanel app={app} />
+          </SectionCard>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <SectionCard title=" Débogage">
             <DebugPanel app={app} />
           </SectionCard>
         </div>
