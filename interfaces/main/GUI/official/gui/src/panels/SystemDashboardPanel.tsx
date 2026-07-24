@@ -9,7 +9,6 @@ import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
 import AgentLauncherPanel from './AgentLauncherPanel.tsx';
 import { ServicesMonitorPanel } from './ServicesMonitorPanel.tsx';
-import AgentLauncherPanel from './AgentLauncherPanel.tsx';
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
