@@ -1,32 +1,30 @@
 import React from 'react';
 import type { AppApi } from '../useApp.ts';
 import { MenuBar } from '../components/MenuBar.tsx';
-import { PanelTreeRenderer } from '../components/PanelTreeRenderer.tsx';
 import { AgentsPanel } from './AgentsPanel.tsx';
 import { LocalModelsPanel } from './LocalModelsPanel.tsx';
 import { SystemStatePanel } from './SystemStatePanel.tsx';
 import { ResourcesPanel } from './ResourcesPanel.tsx';
 import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
+import AgentLauncherPanel from './AgentLauncherPanel.tsx';
 
-const PANEL_RENDER: Record<string, (app: AppApi) => React.ReactNode> = {
-  'system-state': app => <SystemStatePanel app={app} />,
-  'resources': app => <ResourcesPanel app={app} />,
-  'agents': app => <AgentsPanel app={app} />,
-  'local-models': app => <LocalModelsPanel app={app} />,
-  'keys': app => <KeysPanel app={app} />,
-  'debug': app => <DebugPanel app={app} />,
-};
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      backgroundColor: '#1e293b',
+      borderRadius: '0.5rem',
+      border: '1px solid #334155',
+      padding: '0.75rem',
+      overflow: 'auto',
+    }}>
+      <h3 style={{ fontSize: '0.82rem', fontWeight: '600', marginBottom: '0.5rem', color: '#94a3b8' }}>{title}</h3>
+      {children}
+    </div>
+  );
+}
 
 export function SystemDashboardPanel({ app }: { app: AppApi }) {
-  const renderTab = React.useCallback(
-    (tabId: string) => {
-      const fn = PANEL_RENDER[tabId];
-      return fn ? fn(app) : <div style={{ color: '#94a3b8' }}>Panneau inconnu: {tabId}</div>;
-    },
-    [app],
-  );
-
   return (
     <div style={{
       height: '100vh',
@@ -55,6 +53,7 @@ export function SystemDashboardPanel({ app }: { app: AppApi }) {
           {app.appVersion ? `v${app.appVersion}` : 'v…'}
         </span>
         <span style={{ color: '#475569', marginLeft: '0.5rem' }}>— Dashboard</span>
+        <span style={{ color: '#6ee7b7', marginLeft: '0.5rem' }}>● {app.agentMgr.active_agents} actifs</span>
         <div style={{ flex: 1 }} />
         <button onClick={app.toggleFullscreen}
           style={{ padding: '0.25rem 0.5rem', backgroundColor: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.3rem', cursor: 'pointer', fontSize: '0.7rem' }}>
@@ -62,8 +61,45 @@ export function SystemDashboardPanel({ app }: { app: AppApi }) {
         </button>
       </div>
 
-      <div style={{ flex: 1, padding: '0.3rem', overflow: 'hidden', display: 'flex' }}>
-        <PanelTreeRenderer node={app.panelTree} app={app} renderTab={renderTab} />
+      <div style={{ flex: 1, padding: '0.3rem', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" État système">
+              <SystemStatePanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Ressources">
+              <ResourcesPanel app={app} />
+            </SectionCard>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Agents">
+              <AgentsPanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" LLM locaux">
+              <LocalModelsPanel app={app} />
+            </SectionCard>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Clés API">
+              <KeysPanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Lanceur d'agents solo">
+              <AgentLauncherPanel app={app} />
+            </SectionCard>
+          </div>
+        </div>
       </div>
     </div>
   );

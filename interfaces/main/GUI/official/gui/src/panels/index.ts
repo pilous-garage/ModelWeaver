@@ -1,5 +1,6 @@
 export { DashboardPanel } from './DashboardPanel.tsx';
 export { SystemDashboardPanel } from './SystemDashboardPanel.tsx';
+export { AgentLauncherPanel } from './AgentLauncherPanel.tsx';
 export { DependenciesPanel } from './DependenciesPanel.tsx';
 export { AgentsPanel } from './AgentsPanel.tsx';
 export { ResourcesPanel } from './ResourcesPanel.tsx';
