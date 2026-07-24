@@ -8,4 +8,4 @@ outputs:
     description: UUID généré
 implementation:
   type: python
-  function: system.text.uuid
+  function: util.text.uuid

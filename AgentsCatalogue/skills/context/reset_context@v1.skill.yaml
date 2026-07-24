@@ -26,4 +26,4 @@ outputs:
     description: Nombre de messages conservés
 implementation:
   type: python
-  function: system.context.reset_context
+  function: context.ops.reset_context

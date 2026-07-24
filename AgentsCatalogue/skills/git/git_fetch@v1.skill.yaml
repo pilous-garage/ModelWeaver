@@ -24,4 +24,4 @@ outputs:
     description: True ssi la commande git a réussi (exit_code == 0)
 implementation:
   type: python
-  function: system.git.git_fetch
+  function: git.git_fetch

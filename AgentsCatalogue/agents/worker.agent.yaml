@@ -1,228 +1,300 @@
 name: worker
 role: worker
-description: "Agent worker autonome : boucle sur todo.txt, routage code/analyse/test, écriture projet partagé, commit git"
+description: "Agent worker autonome : boucle sur workspace DB, routage code/analyse/test, commit git"
 personality:
   tone: professionnel
   system_prompt: |
     Tu es un agent worker autonome. Tu executes une boucle de travail :
-    1. Lis la prochaine tâche depuis todo.txt (espace projet partagé)
-    2. Détermine son type : code, analyse, ou test
-    3. Exécute via un skill adapté
-    4. Écrit les résultats dans l'espace projet
-    5. Commit et push git
-    6. Passe à la tâche suivante
+    1. Liste les tâches pending depuis le workspace DB
+    2. Claim la première tâche disponible
+    3. Détermine son type : code, analyse, ou test (via son titre/tag)
+    4. Exécute via un skill adapté
+    5. Écrit les résultats dans l'espace projet
+    6. Git add + commit + push
+    7. Marque la tâche comme done (avec branch + commit_hash)
+    8. Poste un message dans le chat du workspace
+    9. Passe à la tâche suivante
 skills:
+  - workspace/task_list@v1
+  - workspace/task_claim@v1
+  - workspace/task_done@v1
+  - workspace/task_file_add@v1
+  - workspace/task_get@v1
+  - workspace/chat_post@v1
   - project/project_read@v1
   - project/project_write@v1
-  - system/run_shell@v1
   - coding/code_gen@v1
   - coding/analyse@v1
   - coding/test_runner@v1
+  - git/git_status@v1
+  - git/git_add@v1
+  - git/git_commit@v1
 entrypoints:
   start:
     steps:
       - id: init
         type: set_variable
-        name: project_id
-        value: "default"
-        next: first_read
+        name: workspace_id
+        value: "{{request.workspace_id}}"
+        next: agent_name_init
 
-      - id: first_read
+      - id: agent_name_init
+        type: set_variable
+        name: agent_name
+        value: "{{agent_name}}"
+        next: first_list
+
+      - id: first_list
         type: call
-        fn: project/project_read@v1
+        fn: workspace/task_list@v1
         inputs:
-          project_id: "{{project_id}}"
-          path: "todo.txt"
+          workspace_id: "{{workspace_id}}"
         capture:
-          content: todo_raw
-        next: loop_start
+          tasks: pending_tasks
+          count: task_count
+        next: check_tasks
 
-      - id: loop_start
+      - id: check_tasks
         type: while
         condition:
-          variable: todo_raw
-          operator: TRUTHY
-        next: end_ok
+          variable: task_count
+          operator: GT
+          value: 0
+        next: end_done
         body:
           steps:
-            - id: parse_task
+            # --- Claim first pending task
+            - id: claim_task
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/task_claim@v1
               inputs:
-                command: 'printf "%s" "{{todo_raw}}" | head -1 | sed -n "s/^\[[^]]*\]\[\([^]]*\)\]{\([^}]*\)}\[\([^]]*\)\]$/TYPE:\1\nDESC:\2\nFILES:\3/p;s/^\[[^]]*\]\[\([^]]*\)\]{\([^}]*\)}\]$/TYPE:\1\nDESC:\2\nFILES:/p"'
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{pending_tasks.0.id}}"
+                agent_name: "{{agent_name}}"
               capture:
-                stdout: task_block
-              next: extract_type
+                ok: claimed_ok
+              next: check_claimed
+              on_error: skip_claim
 
-            - id: extract_type
+            - id: skip_claim
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/chat_post@v1
               inputs:
-                command: 'echo "{{task_block}}" | grep "^TYPE:" | cut -d: -f2- | sed "s/^ *//;s/ *$//"'
+                workspace_id: "{{workspace_id}}"
+                content: "⚠️ {{agent_name}}: tâche {{pending_tasks.0.id}} déjà prise ou indisponible"
+                msg_type: system
               capture:
-                stdout: task_type
-              next: extract_title
+                ok: skp_posted
+              next: list_next
 
-            - id: extract_title
-              type: call
-              fn: system/run_shell@v1
-              inputs:
-                command: 'echo "{{task_block}}" | grep "^DESC:" | cut -d: -f2- | sed "s/^ *//;s/ *$//" | head -c 40'
-              capture:
-                stdout: task_title
-              next: extract_desc
-
-            - id: extract_desc
-              type: call
-              fn: system/run_shell@v1
-              inputs:
-                command: 'echo "{{task_block}}" | grep "^DESC:" | cut -d: -f2- | sed "s/^ *//"'
-              capture:
-                stdout: task_desc
-              next: route_task
-
-            - id: route_task
+            - id: check_claimed
               type: switch
-              variable: "{{task_type}}"
+              variable: "{{claimed_ok}}"
               conditions:
                 - operator: EQUALS
-                  value: code
-                  next: exec_code
-                - operator: EQUALS
-                  value: analyse
-                  next: exec_analyse
-                - operator: EQUALS
-                  value: test
-                  next: exec_test
-              default: log_skip
+                  value: "true"
+                  next: route_task
+              default: skip_claim
 
-            - id: log_skip
+            # --- Route according to task title hints
+            - id: route_task
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/task_get@v1
               inputs:
-                command: 'echo "skip: {{task_type}}/{{task_title}}" >> error.log'
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{pending_tasks.0.id}}"
               capture:
-                stdout: skip_logged
-              next: remove_task
+                task: current_task
+              next: detect_type
+
+            - id: detect_type
+              type: switch
+              variable: "{{current_task.title}}"
+              conditions:
+                - operator: CONTAINS
+                  value: "[code]"
+                  next: exec_code
+                - operator: CONTAINS
+                  value: "[analyse]"
+                  next: exec_analyse
+                - operator: CONTAINS
+                  value: "[test]"
+                  next: exec_test
+              default: exec_code
 
             - id: exec_code
               type: call
               uses_llm: true
               fn: coding/code_gen@v1
               inputs:
-                request: "{{task_desc}}"
+                request: "{{current_task.description}}"
               capture:
                 result: code_output
-              next: write_output
+              next: write_code_output
               on_error: log_error
 
-            - id: write_output
+            - id: write_code_output
               type: call
               fn: project/project_write@v1
               inputs:
-                project_id: "{{project_id}}"
-                path: "output/{{task_title}}.txt"
+                project_id: "{{workspace_id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}.py"
                 content: "{{code_output}}"
               capture:
-                ok: output_written
-              next: remove_task
+                ok: file_written
+              next: add_file_code
+
+            - id: add_file_code
+              type: call
+              fn: workspace/task_file_add@v1
+              inputs:
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{current_task.id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}.py"
+                role: source
+              capture:
+                ok: file_added
+              next: git_commit_task
 
             - id: exec_analyse
               type: call
               uses_llm: true
               fn: coding/analyse@v1
               inputs:
-                request: "{{task_desc}}"
+                request: "{{current_task.description}}"
               capture:
                 result: analysis_output
-              next: read_report
+              next: write_analysis
               on_error: log_error
 
-            - id: read_report
-              type: call
-              fn: project/project_read@v1
-              inputs:
-                project_id: "{{project_id}}"
-                path: "report.txt"
-              capture:
-                content: report_existing
-              next: build_report
-
-            - id: build_report
-              type: set_variable
-              name: report_new
-              value: "{{report_existing}}\n---\n## {{task_title}}\n{{analysis_output}}\n"
-              next: write_report
-
-            - id: write_report
+            - id: write_analysis
               type: call
               fn: project/project_write@v1
               inputs:
-                project_id: "{{project_id}}"
-                path: "report.txt"
-                content: "{{report_new}}"
+                project_id: "{{workspace_id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}.md"
+                content: "{{analysis_output}}"
               capture:
-                ok: report_updated
-              next: remove_task
+                ok: file_written
+              next: add_analysis_file
+
+            - id: add_analysis_file
+              type: call
+              fn: workspace/task_file_add@v1
+              inputs:
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{current_task.id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}.md"
+                role: doc
+              capture:
+                ok: file_added
+              next: git_commit_task
 
             - id: exec_test
               type: call
               uses_llm: true
               fn: coding/test_runner@v1
               inputs:
-                request: "{{task_desc}}"
+                request: "{{current_task.description}}"
               capture:
                 result: test_output
-              next: write_test_report
+              next: write_test
               on_error: log_error
 
-            - id: write_test_report
+            - id: write_test
               type: call
               fn: project/project_write@v1
               inputs:
-                project_id: "{{project_id}}"
-                path: "reports/test_{{task_title}}.txt"
+                project_id: "{{workspace_id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}_test.py"
                 content: "{{test_output}}"
               capture:
-                ok: test_reported
-              next: remove_task
+                ok: file_written
+              next: add_test_file
+
+            - id: add_test_file
+              type: call
+              fn: workspace/task_file_add@v1
+              inputs:
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{current_task.id}}"
+                path: "output/task_{{current_task.id}}_{{current_task.title | sanitize_filename}}_test.py"
+                role: test
+              capture:
+                ok: file_added
+              next: git_commit_task
+
+            - id: git_commit_task
+              type: call
+              fn: git/git_add@v1
+              inputs:
+                project_id: "{{workspace_id}}"
+              capture:
+                ok: git_added
+              next: git_commit
+
+            - id: git_commit
+              type: call
+              fn: git/git_commit@v1
+              inputs:
+                project_id: "{{workspace_id}}"
+                message: "{{agent_name}}: t{{current_task.id}} - {{current_task.title}}"
+              capture:
+                ok: committed
+              next: mark_done
+
+            - id: mark_done
+              type: call
+              fn: workspace/task_done@v1
+              inputs:
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{current_task.id}}"
+              capture:
+                ok: task_done
+              next: chat_report
+
+            - id: chat_report
+              type: call
+              fn: workspace/chat_post@v1
+              inputs:
+                workspace_id: "{{workspace_id}}"
+                content: "✅ {{agent_name}}: tâche #{{current_task.id}} terminée — {{current_task.title}}"
+                msg_type: task_ref
+              capture:
+                ok: posted
+              next: list_next
 
             - id: log_error
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/chat_post@v1
               inputs:
-                command: 'echo "ERR: {{task_type}}/{{task_title}} failed" >> error.log'
+                workspace_id: "{{workspace_id}}"
+                content: "❌ {{agent_name}}: tâche #{{current_task.id}} ({{current_task.title}}) a échoué"
+                msg_type: system
               capture:
-                stdout: err_logged
-              next: remove_task
+                ok: err_posted
+              next: mark_done_error
 
-            - id: remove_task
+            - id: mark_done_error
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/task_done@v1
               inputs:
-                command: 'tail -n +2 todo.txt > todo.tmp && mv todo.tmp todo.txt'
+                workspace_id: "{{workspace_id}}"
+                task_id: "{{current_task.id}}"
+                branch: failed
               capture:
-                stdout: removed
-              next: git_substep
+                ok: task_done_err
+              next: list_next
 
-            - id: git_substep
+            - id: list_next
               type: call
-              fn: system/run_shell@v1
+              fn: workspace/task_list@v1
               inputs:
-                command: 'git add -A && git commit -m "worker: {{task_type}} - {{task_title}}" && git push'
+                workspace_id: "{{workspace_id}}"
               capture:
-                stdout: git_result
-              next: read_todo
+                tasks: pending_tasks
+                count: task_count
 
-            - id: read_todo
-              type: call
-              fn: project/project_read@v1
-              inputs:
-                project_id: "{{project_id}}"
-                path: "todo.txt"
-              capture:
-                content: todo_raw
-
-      - id: end_ok
+      - id: end_done
         type: end
         status: SUCCESS

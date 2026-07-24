@@ -1,0 +1,22 @@
+name: workspace/task_list@v1
+category: workspace
+description: Liste les tâches d'un workspace (pending seulement ou toutes).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  all:
+    type: boolean
+    required: false
+    default: false
+    description: true = toutes (incl. done/failed), false = pending seulement
+outputs:
+  ok:
+    type: boolean
+  tasks:
+    type: array
+  count:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.task.list_tasks

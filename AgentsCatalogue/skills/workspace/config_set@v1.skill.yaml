@@ -1,0 +1,19 @@
+name: workspace/config_set@v1
+category: workspace
+description: Écrit une config clef/valeur pour un workspace.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  key:
+    type: string
+    required: true
+  value:
+    type: string
+    required: true
+outputs:
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: workspacedb.project.config_set

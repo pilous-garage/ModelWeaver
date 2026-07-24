@@ -21,4 +21,4 @@ outputs:
     type: integer
 implementation:
   type: python
-  function: system.text.diff
+  function: util.text.diff

@@ -28,4 +28,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.fs.host_run
+  function: host.fs.host_run

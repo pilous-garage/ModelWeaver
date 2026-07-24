@@ -1,0 +1,24 @@
+name: workspace/task_file_add@v1
+category: workspace
+description: Associe un fichier à une tâche.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  path:
+    type: string
+    required: true
+  role:
+    type: string
+    required: false
+    default: source
+    description: source | test | doc | review
+outputs:
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: workspacedb.task.add_file

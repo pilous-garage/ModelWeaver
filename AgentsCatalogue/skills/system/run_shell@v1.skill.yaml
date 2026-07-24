@@ -18,4 +18,4 @@ outputs:
     description: Code de retour
 implementation:
   type: python
-  function: system.shell.run_shell
+  function: host.shell.run_shell

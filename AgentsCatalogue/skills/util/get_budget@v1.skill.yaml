@@ -16,4 +16,4 @@ outputs:
     description: Infos budget (tokens/min, tokens/day, ...)
 implementation:
   type: python
-  function: system.agent.get_budget
+  function: agent.ops.get_budget

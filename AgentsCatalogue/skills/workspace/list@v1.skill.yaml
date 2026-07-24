@@ -1,0 +1,12 @@
+name: workspace/list@v1
+category: workspace
+description: Liste tous les workspaces (ordre dernière activité).
+inputs: {}
+outputs:
+  ok:
+    type: boolean
+  workspaces:
+    type: array
+implementation:
+  type: python
+  function: workspacedb.project.list_workspaces

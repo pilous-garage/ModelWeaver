@@ -41,4 +41,4 @@ outputs:
     description: Message d'erreur si échec
 implementation:
   type: python
-  function: system.net.http_get
+  function: net.ops.http_get

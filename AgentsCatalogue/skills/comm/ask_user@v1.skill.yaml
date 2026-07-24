@@ -16,4 +16,4 @@ outputs:
     description: False à la création
 implementation:
   type: python
-  function: system.agent.ask_user
+  function: agent.ops.ask_user

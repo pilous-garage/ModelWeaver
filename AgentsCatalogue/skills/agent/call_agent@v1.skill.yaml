@@ -26,4 +26,4 @@ outputs:
     description: Résultat de l'agent cible
 implementation:
   type: python
-  function: system.agent.call_agent
+  function: agent.ops.call_agent

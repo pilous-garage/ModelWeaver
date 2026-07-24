@@ -21,4 +21,4 @@ outputs:
     description: Liste {name, type}
 implementation:
   type: python
-  function: system.project.project_list
+  function: project.ops.project_list

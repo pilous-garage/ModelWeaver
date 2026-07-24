@@ -25,4 +25,4 @@ outputs:
     description: Valeur lue (ou null si absente)
 implementation:
   type: python
-  function: system.memory.memory_read
+  function: memory.ops.memory_read

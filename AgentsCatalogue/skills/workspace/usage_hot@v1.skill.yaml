@@ -1,0 +1,19 @@
+name: workspace/usage_hot@v1
+category: workspace
+description: Retourne les fichiers les plus accédés d'un workspace (pour chargement dans le contexte).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  limit:
+    type: integer
+    required: false
+    default: 10
+outputs:
+  ok:
+    type: boolean
+  files:
+    type: array
+implementation:
+  type: python
+  function: workspacedb.usage.hot

@@ -30,4 +30,4 @@ outputs:
     description: Nombre total de messages après ajout
 implementation:
   type: python
-  function: system.context.add_context
+  function: context.ops.add_context

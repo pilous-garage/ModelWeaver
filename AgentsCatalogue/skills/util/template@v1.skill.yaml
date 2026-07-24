@@ -17,4 +17,4 @@ outputs:
     description: Chaîne rendue
 implementation:
   type: python
-  function: system.text.template
+  function: util.text.template

@@ -18,4 +18,4 @@ outputs:
     type: integer
 implementation:
   type: python
-  function: system.agent.chatroom_read
+  function: agent.ops.chatroom_read

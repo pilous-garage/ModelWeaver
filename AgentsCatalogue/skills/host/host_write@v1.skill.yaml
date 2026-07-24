@@ -22,4 +22,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.fs.host_write
+  function: host.fs.host_write

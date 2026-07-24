@@ -16,4 +16,4 @@ outputs:
     description: Secondes réellement attendues
 implementation:
   type: python
-  function: system.sleep.sleep
+  function: util.sleep.sleep

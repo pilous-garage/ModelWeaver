@@ -23,4 +23,4 @@ outputs:
     description: True ssi la commande git a réussi (exit_code == 0)
 implementation:
   type: python
-  function: system.git.git_push
+  function: git.git_push

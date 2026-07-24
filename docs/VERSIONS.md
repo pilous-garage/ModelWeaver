@@ -794,7 +794,7 @@ rendre le framework observable panneau par panneau pendant un live test.
 
 - Bump version (package.json, tauri.conf.json, Cargo.toml). Commit, tag v0.7.3, build .deb, GitHub release.
 
-### V0.7.4 — Éditeur graphe FSM + CatalogTree + Entrypoints 🔧
+### V0.7.4 — Éditeur graphe FSM + CatalogTree + Entrypoints ✅
 
 - **Graphe FSM** (react-flow @xyflow 12 + dagre 0.8.5) : 14 types de steps (llm_call, call, tool_call, switch, set_variable, sleep, spawn, handoff, end, for, while, break, continue, **agent_call**). `stepsToGraph`/`graphToSteps` avec imbrication body (boucles). Layout dagre récursif, collectSkillRefs/collectAgentRefs.
 - **WorkflowGraphEditor.tsx** : canvas ReactFlow, LoopNodeView repliable, palette drag, inspecteur latéral NodeInspector (formulaire par type, MapField capture, TargetField next/on_error).
@@ -803,6 +803,37 @@ rendre le framework observable panneau par panneau pendant un live test.
 - **CatalogTree.tsx** + **fuzzy.ts** : module commun de liste repliable avec recherche floue (fzf + Levenshtein), expension/repli tout, nesting arbitraire, persistance localStorage. Câblé sur CataloguePanel, InstalledToolsPanel, et les 5 onglets sandbox (skills groupés par catégorie, rôles par class/sub_class, agents par rôle).
 - **Entrypoints agents** : format YAML `entrypoints.<name>.steps` (rétrocompatible `workflow.steps`). Sélecteur par onglets dans GraphView. Sauvegarde inline via `catalogue_agents.py`. Appel synchrone via `agent_call` step (→ sub-FSM avec handler AFD).
 - Backend service.py/daemon.py : param `entrypoint` propagé jusqu'à `Agent.execute()`.
+
+### V0.7.5 — Équipe multi-agents (manager + worker) ✅
+
+- **Agents `manager` et `worker`** : implémentés en FSM YAML, utilisant
+  le workspace DB (`workspace/*` skills) au lieu de `todo.txt` + shell.
+- **Manager** : reçoit la requête utilisateur, LLM décompose en JSON,
+  crée le workspace (`workspace/create@v1`), ajoute les tâches, lance les
+  workers via `agent/call_agent@v1`, surveille via `workspace/task_list` +
+  `workspace/chat_recent`.
+- **Worker** : boucle `task_list → task_claim → exec(code/analyse/test)
+  via skills LLM → `project/project_write` → `git_add` + `git_commit` →
+  `task_done` + `task_file_add` → `chat_post` → boucle suivante.
+- **Fin de l'ère `todo.txt`** : le format `[status][type]{desc}[files]`
+  (`docs/todo_format.md`) supprimé ; TODO format = workspace DB.
+- Refactor libs : `lib/system/*` vidé des doublons (consolidation `lib/*` :
+  16 fichiers supprimés, 3 conservés : `_fs.py`, `catalogue.py`, `log.py`).
+  `lib/__init__.py` docstring mis à jour.
+- **Total = 91 skills** sur 18 catégories.
+- E2E : worker + manager testés bout-en-bout (qwen2.5:7b, CPU).
+
+### V0.7.6 — Nettoyage docs + lib consolidation ✅
+
+- `docs/todo_format.md` supprimé (ancien format `todo.txt` remplacé par workspace DB).
+- `lib/system/*` vidé des doublons (consolidation `lib/*` : 16 fichiers supprimés, 3 conservés).
+- `lib/__init__.py` docstring mis à jour.
+- `docs/VERSIONS.md` mis à jour (cette section).
+
+### V0.7.7 — Release ✅
+
+- Bump version (package.json, Cargo.toml, tauri.conf.json).
+- Commit, tag v0.7.7, build .deb, GitHub release.
 
 ## V0.8 — Organisateur Global & Framework (📝 Planifié)
 **Objectif** : Dashboard central et tour de contrôle.

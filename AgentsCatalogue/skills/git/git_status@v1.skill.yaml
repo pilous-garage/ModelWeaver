@@ -28,4 +28,4 @@ outputs:
     description: True ssi la commande git a réussi (exit_code == 0)
 implementation:
   type: python
-  function: system.git.git_status
+  function: git.git_status

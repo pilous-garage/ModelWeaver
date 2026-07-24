@@ -19,4 +19,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.project.project_read
+  function: project.ops.project_read

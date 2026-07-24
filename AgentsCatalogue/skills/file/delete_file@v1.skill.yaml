@@ -12,4 +12,4 @@ outputs:
     description: True si supprimé
 implementation:
   type: python
-  function: system.file.delete_file
+  function: file.ops.delete_file

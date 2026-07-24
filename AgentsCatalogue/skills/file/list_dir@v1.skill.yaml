@@ -14,4 +14,4 @@ outputs:
     description: Liste {name, type (dir/file), size}
 implementation:
   type: python
-  function: system.file.list_dir
+  function: file.ops.list_dir

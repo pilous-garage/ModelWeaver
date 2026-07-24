@@ -284,10 +284,16 @@ class FSMInterpreter:
         )
         output_capture = step.get("output_capture")
 
-        # Construire les messages
-        msgs = list(result.messages)
+        # Construire les messages : le skill_prompt devient le message
+        # utilisateur principal, pour éviter qu'un user message précédent
+        # (ex: "request") noie l'instruction.
+        msgs = []
+        if result.messages and result.messages[0].get("role") == "system":
+            msgs.append(result.messages[0])
         if skill_prompt:
-            msgs.append({"role": "system", "content": skill_prompt})
+            msgs.append({"role": "user", "content": skill_prompt})
+        else:
+            msgs.extend(result.messages)
 
         p_ref = step.get("provider_ref") or provider_ref
         m_ref = step.get("model_ref") or model_ref
@@ -320,6 +326,9 @@ class FSMInterpreter:
                             return False
                 # Estimation tokens (approximation) pour compat metrics
                 tokens = max(0, len(content) // 4)
+                result.variables["_llm_provider"] = p_ref
+                result.variables["_llm_model"] = m_ref
+                result.variables["_llm_fallbacks"] = 0
             else:
                 timeout = step.get("timeout")
                 use_fallback = step.get("fallback", False)
@@ -350,6 +359,9 @@ class FSMInterpreter:
                         messages=msgs, temperature=temperature, max_tokens=max_tokens,
                         agent_id=_agent_id or None,
                     )
+                    result.variables["_llm_provider"] = p_ref
+                    result.variables["_llm_model"] = m_ref
+                    result.variables["_llm_fallbacks"] = 0
                 content = response.content if hasattr(response, 'content') else str(response)
                 if hasattr(response, 'usage') and isinstance(response.usage, dict):
                     tokens = response.usage.get("total_tokens", 0)
@@ -570,7 +582,7 @@ class FSMInterpreter:
     ) -> bool:
         """Branchement conditionnel."""
         var_name = step.get("variable", "")
-        var_value = str(result.variables.get(var_name, ""))
+        var_value = str(result.variables.get(var_name.strip("{}").strip(), ""))
 
         for cond in step.get("conditions", []):
             operator = cond.get("operator", "EQUALS")
@@ -799,7 +811,7 @@ class FSMInterpreter:
         """
         if not cond:
             return False
-        raw = variables.get(cond.get("variable", ""), "")
+        raw = variables.get(cond.get("variable", "").strip("{}").strip(), "")
         operator = cond.get("operator", "TRUTHY" if "value" not in cond else "EQUALS")
         if operator == "TRUTHY":
             return bool(raw) and str(raw).lower() not in ("false", "0", "")

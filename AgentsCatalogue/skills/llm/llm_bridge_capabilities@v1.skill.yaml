@@ -1,0 +1,34 @@
+name: llm/bridge_capabilities@v1
+category: llm
+description: Retourne les capacités d'un modèle LLM (fenêtre de contexte, max output, coûts, features).
+inputs:
+  provider_ref:
+    type: string
+    required: true
+    description: "Provider (ex: ollama, groq)"
+  model_ref:
+    type: string
+    required: true
+    description: "Modèle (ex: qwen2.5:7b)"
+outputs:
+  provider:
+    type: string
+  model:
+    type: string
+  context_window:
+    type: integer
+  max_output:
+    type: integer
+  cost_input_per_1k:
+    type: number
+  cost_output_per_1k:
+    type: number
+  supports_vision:
+    type: boolean
+  supports_function_calling:
+    type: boolean
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.bridge.capabilities

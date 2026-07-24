@@ -18,4 +18,4 @@ outputs:
     description: Valeur extraite
 implementation:
   type: python
-  function: system.text.json_query
+  function: util.text.json_query

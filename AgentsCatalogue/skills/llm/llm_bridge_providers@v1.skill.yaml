@@ -1,0 +1,13 @@
+name: llm/bridge_providers@v1
+category: llm
+description: Liste les providers LLM disponibles (via le bridge litellm).
+inputs: {}
+outputs:
+  providers:
+    type: list
+    description: "Liste des providers disponibles"
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.bridge.list_providers

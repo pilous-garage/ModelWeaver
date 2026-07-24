@@ -1,0 +1,185 @@
+name: manager
+role: manager
+description: "Manager d'équipe : décompose une requête, crée workspace + tâches, délègue aux workers"
+personality:
+  tone: professionnel
+  system_prompt: |
+    Tu es un manager d'équipe d'agents IA. Ton rôle :
+    1. Analyse la requête utilisateur et la décompose en tâches
+    2. Crée un workspace (projet) pour héberger le travail
+    3. Ajoute les tâches dans le workspace DB
+    4. Lance les workers qui exécutent les tâches
+    5. Surveille l'avancement via le chatroom
+
+    Format de sortie pour la décomposition :
+    Pour chaque étape, produis un bloc structuré JSON :
+    {
+      "tasks": [
+        {"title": "[type] Nom court", "description": "Description détaillée de la tâche", "type": "code|analyse|test", "priority": 0},
+        ...
+      ],
+      "workspace_name": "Nom court du projet",
+      "workspace_desc": "Description courte du projet"
+    }
+
+    Règles :
+    - Titre formaté avec tag : [code] Nom, [analyse] Nom, [test] Nom
+    - Les dépendances sont implicites (ordre = priorité)
+    - Priorité 0 = première, 1 = deuxième, etc.
+skills:
+  - llm/call@v1
+  - workspace/create@v1
+  - workspace/task_create@v1
+  - workspace/config_set@v1
+  - workspace/chat_post@v1
+  - workspace/chat_recent@v1
+  - workspace/task_list@v1
+  - agent/call_agent@v1
+  - util/json_query@v1
+  - util/uuid@v1
+  - util/timestamp@v1
+entrypoints:
+  start:
+    steps:
+      # --- Step 1: Generate workspace_id
+      - id: gen_wsid
+        type: call
+        fn: util/timestamp@v1
+        inputs: {}
+        capture:
+          timestamp: ts
+        next: set_wsid
+
+      - id: set_wsid
+        type: set_variable
+        name: workspace_id
+        value: "ws_{{ts | sanitize_filename}}"
+        next: set_manager_name
+
+      - id: set_manager_name
+        type: set_variable
+        name: manager_name
+        value: "{{agent_name}}"
+        next: decompose
+
+      # --- Step 2: LLM decomposes request into tasks
+      - id: decompose
+        type: call
+        fn: llm/call@v1
+        uses_llm: true
+        inputs:
+          request: |
+            Décompose cette requête en tâches (JSON) :
+            "{{request}}"
+
+            Format attendu :
+            {
+              "tasks": [
+                {"title": "[type] Nom court", "description": "Description", "type": "code|analyse|test", "priority": N},
+                ...
+              ],
+              "workspace_name": "nom court",
+              "workspace_desc": "description"
+            }
+
+            Réponds UNIQUEMENT avec le JSON, sans markdown ni commentaire.
+        capture:
+          result: raw_json
+        next: extract_json
+
+      # --- Step 3: Create workspace
+      - id: create_ws
+        type: call
+        fn: workspace/create@v1
+        inputs:
+          workspace_id: "{{workspace_id}}"
+          name: "{{raw_json | json_query: $.workspace_name}}"
+          description: "{{raw_json | json_query: $.workspace_desc}}"
+          director: "{{agent_id}}"
+        capture:
+          ok: ws_created
+        next: post_ws_msg
+        on_error: msg_fail_create
+
+      - id: msg_fail_create
+        type: end
+        status: FAILURE
+        status_message: "Échec création workspace"
+
+      - id: post_ws_msg
+        type: call
+        fn: workspace/config_set@v1
+        inputs:
+          workspace_id: "{{workspace_id}}"
+          key: "request_originale"
+          value: "{{request}}"
+        capture:
+          ok: cfg_set
+        next: spawn_workers
+
+      - id: spawn_task_loop
+        type: set_variable
+        name: task_count
+        value: "{{raw_json | json_query: $.tasks.length()}}"
+        next: create_loop
+
+      # --- Step 4: Add task entries in DB
+      # Pas de "for" dans le DSL — on délègue ça au LLM via run_shell
+      # Alternative: on dit au LLM de faire les task_create
+      - id: spawn_workers
+        type: call
+        fn: agent/call_agent@v1
+        inputs:
+          target: worker
+          request: workspace_id={{workspace_id}}
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+        capture:
+          ok: worker1_started
+        next: wait_chat
+
+      # --- Step 4: Wait for workers via chatroom poll
+      - id: wait_chat
+        type: call
+        fn: workspace/chat_recent@v1
+        inputs:
+          workspace_id: "{{workspace_id}}"
+          limit: 10
+        capture:
+          messages: recent_msgs
+          count: msg_count
+        next: check_pending
+
+      - id: check_pending
+        type: call
+        fn: workspace/task_list@v1
+        inputs:
+          workspace_id: "{{workspace_id}}"
+        capture:
+          tasks: pending_tasks
+          count: remaining
+        next: check_done
+
+      - id: check_done
+        type: switch
+        variable: "{{remaining}}"
+        conditions:
+          - operator: EQUALS
+            value: 0
+            next: end_success
+        default: wait_chat
+
+      - id: end_success
+        type: call
+        fn: workspace/chat_post@v1
+        inputs:
+          workspace_id: "{{workspace_id}}"
+          content: "🎯 {{manager_name}}: toutes les tâches sont terminées. Workspace {{workspace_id}}."
+          msg_type: system
+        capture:
+          ok: final_posted
+        next: end_ok
+
+      - id: end_ok
+        type: end
+        status: SUCCESS

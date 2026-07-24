@@ -1,0 +1,18 @@
+name: workspace/task_get@v1
+category: workspace
+description: Retourne une tâche avec ses fichiers associés.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.task.get

@@ -1,0 +1,26 @@
+name: workspace/task_done@v1
+category: workspace
+description: Marque une tâche comme terminée (status → done) avec branche et commit.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  branch:
+    type: string
+    required: false
+    default: ''
+  commit_hash:
+    type: string
+    required: false
+    default: ''
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.task.done

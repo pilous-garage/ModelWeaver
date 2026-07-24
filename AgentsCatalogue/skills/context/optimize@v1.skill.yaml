@@ -23,4 +23,4 @@ outputs:
     description: Ratio de compression atteint
 implementation:
   type: python
-  function: system.context.optimize
+  function: context.ops.optimize

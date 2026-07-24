@@ -1,13 +1,12 @@
 """Registre des bibliothèques de fonctions (V0.7 — Agent Sandbox).
 
 Arborescence : AgentsCatalogue/lib/{domaine}/{fichier}.py
-Référence qualifiée (relative à lib/) : system.file.read_file
-  -> module AgentsCatalogue.lib.system.file, fonction read_file
+Référence qualifiée (relative à lib/) : file.ops.read_file
 
 Chaque module liste ses fonctions-skills dans __skills__ = [...].
 Les fonctions ont la signature (inputs: dict, ws: str) -> dict.
 
-Résolution pour le hover IDE : resolve("system.file.read_file")
+Résolution pour le hover IDE : resolve("system.log.log")
 renvoie {source, module, func, file}. Aucun dispatch OS/archi (YAGNI) :
 les fonctions sont codées proprement et restent portables.
 """
@@ -19,7 +18,7 @@ from typing import Dict, List, Optional
 
 _LIB_ROOT = Path(__file__).resolve().parent
 
-# ref qualifié (ex: "system.file.read_file") -> callable
+# ref qualifié (ex: "system.log.log") -> callable
 _REGISTRY: Dict[str, callable] = {}
 # ref qualifié -> source de la fonction (pour le hover)
 _SOURCES: Dict[str, str] = {}

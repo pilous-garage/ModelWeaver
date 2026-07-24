@@ -1,0 +1,29 @@
+name: llm/model@v1
+category: llm
+description: |
+  Retourne les infos du modèle LLM utilisé (provider + model + capacités).
+  Utile pour enregistrer le contexte de génération dans les QA/tests.
+inputs:
+  provider_ref:
+    type: string
+    required: false
+    description: "Provider utilisé (ex: ollama, groq)"
+  model_ref:
+    type: string
+    required: false
+    description: "Modèle utilisé (ex: qwen2.5:7b)"
+outputs:
+  provider:
+    type: string
+    description: "Provider effectif"
+  model:
+    type: string
+    description: "Modèle effectif"
+  capabilities:
+    type: object
+    description: "Capacités du modèle (context_window, max_output, etc.)"
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.model.llm_model

@@ -1,0 +1,22 @@
+name: workspace/task_claim@v1
+category: workspace
+description: S'approprie une tâche (atomique, status pending → running). Échoue si déjà prise.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  agent_name:
+    type: string
+    required: true
+    description: "Nom de l'agent qui prend la tâche"
+outputs:
+  ok:
+    type: boolean
+  task_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.task.claim

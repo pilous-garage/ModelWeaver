@@ -16,4 +16,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.text.base64
+  function: util.text.base64

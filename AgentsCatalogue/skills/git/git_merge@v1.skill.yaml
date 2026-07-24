@@ -49,4 +49,4 @@ outputs:
     description: Message d'erreur explicite (ex. 'merge en échec (conflit de contenu)')
 implementation:
   type: python
-  function: system.git.git_merge
+  function: git.git_merge

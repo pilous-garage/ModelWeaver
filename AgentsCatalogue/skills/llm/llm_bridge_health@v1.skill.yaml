@@ -1,0 +1,21 @@
+name: llm/bridge_health@v1
+category: llm
+description: Vérifie si un provider/modèle LLM est joignable et fonctionnel.
+inputs:
+  provider_ref:
+    type: string
+    required: true
+    description: "Provider à tester (ex: ollama, groq)"
+  model_ref:
+    type: string
+    required: true
+    description: "Modèle à tester"
+outputs:
+  healthy:
+    type: boolean
+    description: "True si le LLM répond"
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.bridge.health

@@ -19,4 +19,4 @@ outputs:
     description: Chemin relatif résultant
 implementation:
   type: python
-  function: system.file.move_file
+  function: file.ops.move_file

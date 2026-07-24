@@ -1,0 +1,36 @@
+name: llm/call@v1
+category: llm
+description: Appelle un LLM via le Bridge (litellm). Provider et model sont requis.
+inputs:
+  provider_ref:
+    type: string
+    required: true
+    description: "Référence du provider (ex: ollama, groq)"
+  model_ref:
+    type: string
+    required: true
+    description: "Identifiant du modèle (ex: qwen2.5:7b)"
+  messages:
+    type: list
+    required: true
+    description: "Liste de messages [{role: system|user|assistant, content: ...}]"
+  temperature:
+    type: number
+    required: false
+    default: 0.7
+  max_tokens:
+    type: integer
+    required: false
+    default: 4096
+outputs:
+  result:
+    type: string
+    description: Contenu généré par le LLM
+  tokens:
+    type: integer
+    description: Nombre de tokens utilisés
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.call.llm_call

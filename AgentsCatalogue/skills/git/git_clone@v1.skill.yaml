@@ -19,4 +19,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.git.git_clone
+  function: git.git_clone

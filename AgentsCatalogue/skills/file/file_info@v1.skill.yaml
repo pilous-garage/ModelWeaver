@@ -17,4 +17,4 @@ outputs:
     type: number
 implementation:
   type: python
-  function: system.file.file_info
+  function: file.ops.file_info

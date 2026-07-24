@@ -1,0 +1,21 @@
+name: workspace/chat_recent@v1
+category: workspace
+description: Récupère les messages récents du chat d'un workspace.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  limit:
+    type: integer
+    required: false
+    default: 50
+outputs:
+  ok:
+    type: boolean
+  messages:
+    type: array
+  count:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.chat.recent

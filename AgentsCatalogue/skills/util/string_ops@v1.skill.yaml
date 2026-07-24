@@ -40,4 +40,4 @@ outputs:
     description: Résultat de l'opération
 implementation:
   type: python
-  function: system.text.string_ops
+  function: util.text.string_ops

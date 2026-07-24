@@ -18,4 +18,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.fs.host_read
+  function: host.fs.host_read

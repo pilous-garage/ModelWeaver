@@ -1,0 +1,29 @@
+name: workspace/chat_post@v1
+category: workspace
+description: Poste un message dans le chat du workspace.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  content:
+    type: string
+    required: true
+  msg_type:
+    type: string
+    required: false
+    default: text
+    description: text | task_ref | review | system
+  sender_agent_id:
+    type: integer
+    required: false
+  parent_id:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  message:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.chat.post

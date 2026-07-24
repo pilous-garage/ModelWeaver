@@ -22,4 +22,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.agent.message_send
+  function: agent.ops.message_send

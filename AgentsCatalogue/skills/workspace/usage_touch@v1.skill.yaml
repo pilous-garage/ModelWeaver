@@ -1,0 +1,22 @@
+name: workspace/usage_touch@v1
+category: workspace
+description: Enregistre un accès à un fichier (read ou write) dans le workspace.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  path:
+    type: string
+    required: true
+    description: Chemin relatif depuis la racine du projet
+  mode:
+    type: string
+    required: false
+    default: read
+    description: read | write
+outputs:
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: workspacedb.usage.touch

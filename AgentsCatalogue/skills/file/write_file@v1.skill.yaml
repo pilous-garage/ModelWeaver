@@ -16,4 +16,4 @@ outputs:
     description: Message de confirmation
 implementation:
   type: python
-  function: system.file.write_file
+  function: file.ops.write_file

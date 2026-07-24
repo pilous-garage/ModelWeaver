@@ -16,4 +16,4 @@ outputs:
     description: Chemins relatifs de tous les fichiers
 implementation:
   type: python
-  function: system.project.project_tree
+  function: project.ops.project_tree

@@ -1,0 +1,30 @@
+name: workspace/create@v1
+category: workspace
+description: Crée un nouveau workspace (projet) avec dépôt git partagé et clone pour le director.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+    description: Identifiant unique du workspace
+  name:
+    type: string
+    required: true
+    description: Nom du projet
+  description:
+    type: string
+    required: false
+    default: ''
+  director:
+    type: integer
+    required: false
+    description: agent_id du manager/créateur (reçoit un clone git)
+outputs:
+  ok:
+    type: boolean
+  workspace_id:
+    type: string
+  git_shared:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.project.create

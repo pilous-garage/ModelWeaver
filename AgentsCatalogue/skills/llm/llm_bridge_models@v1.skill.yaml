@@ -1,0 +1,18 @@
+name: llm/bridge_models@v1
+category: llm
+description: Liste les modèles disponibles pour un provider (ou tous si non spécifié).
+inputs:
+  provider_ref:
+    type: string
+    required: false
+    default: ""
+    description: "Filtrer par provider (optionnel)"
+outputs:
+  models:
+    type: list
+    description: "Liste des modèles disponibles"
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: llm.bridge.list_models

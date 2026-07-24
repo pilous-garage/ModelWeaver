@@ -18,4 +18,4 @@ outputs:
     description: Chemin relatif créé
 implementation:
   type: python
-  function: system.file.copy_file
+  function: file.ops.copy_file

@@ -9,7 +9,7 @@ import os
 import shutil
 from pathlib import Path
 
-from ._fs import (
+from ..system._fs import (
     safe_path,
     classify_write_path,
     resolve_read_path,

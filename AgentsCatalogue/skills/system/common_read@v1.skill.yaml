@@ -15,4 +15,4 @@ outputs:
     type: string
 implementation:
   type: python
-  function: system.common.common_read
+  function: file.common.common_read

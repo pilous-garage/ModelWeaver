@@ -19,4 +19,4 @@ outputs:
     description: Hash hexadécimal
 implementation:
   type: python
-  function: system.text.hash
+  function: util.text.hash

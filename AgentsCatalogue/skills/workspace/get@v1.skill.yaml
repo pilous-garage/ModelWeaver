@@ -1,0 +1,15 @@
+name: workspace/get@v1
+category: workspace
+description: Retourne les infos d'un workspace.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+outputs:
+  ok:
+    type: boolean
+  workspace:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.project.get

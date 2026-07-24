@@ -133,6 +133,8 @@ class Agent:
         self.role_type = agent_data["role_type"]
         self.occupation = agent_data["occupation"]
         self.status = agent_data["status"]
+        self._call_provider_ref = ""
+        self._call_model_ref = ""
 
         # Lifecycle hooks
         config = json.loads(self._data.get("config_json") or "{}")
@@ -216,6 +218,9 @@ class Agent:
         handoff_handler = self._make_handoff_handler()
         agent_call_handler = self._make_agent_call_handler()
 
+        # Stocker provider/model pour que agent_call_handler les propage
+        self._call_provider_ref = provider_ref
+        self._call_model_ref = model_ref
         try:
             if workflow and len(workflow.get("steps", [])) > 0:
                 # Phase 2 : FSM Interpreter
@@ -562,13 +567,14 @@ class Agent:
 
         def _call(agent_name: str, entrypoint: str, inputs: dict) -> Dict[str, Any]:
             from services.api.afd_client import get_afd_client
+            import json as _json
             client = get_afd_client()
             return client.call(
                 agent_name, "execute",
-                request=inputs.get("request", ""),
+                request=_json.dumps(inputs),
                 entrypoint=entrypoint,
-                provider_ref=inputs.get("provider_ref", ""),
-                model_ref=inputs.get("model_ref", ""),
+                provider_ref=inputs.get("provider_ref", self._call_provider_ref),
+                model_ref=inputs.get("model_ref", self._call_model_ref),
             )
         return _call
 

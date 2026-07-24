@@ -14,4 +14,4 @@ outputs:
     type: number
 implementation:
   type: python
-  function: system.text.timestamp
+  function: util.text.timestamp

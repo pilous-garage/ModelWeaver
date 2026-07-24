@@ -19,4 +19,4 @@ outputs:
     type: integer
 implementation:
   type: python
-  function: system.agent.message_recv
+  function: agent.ops.message_recv
