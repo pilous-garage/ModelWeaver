@@ -1553,7 +1553,7 @@ fn main() {
             vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false);
     }
     // Daemon API (backend unique, consommé par toute interface).
-    define_service("api", "loop", python_bin(),
+    define_service("daemon-api", "loop", python_bin(),
         vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false);
     start_service_supervisor();
     write_services_summary();
