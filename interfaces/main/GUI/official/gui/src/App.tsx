@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from './useApp.ts';
 import { getWindowLabel } from './bridge.ts';
 import { DashboardPanel } from './panels/DashboardPanel.tsx';
+import { SystemDashboardPanel } from './panels/SystemDashboardPanel.tsx';
 import { DependenciesPanel } from './panels/DependenciesPanel.tsx';
 import { AgentSandboxIDE } from './components/AgentSandboxIDE.tsx';
 
@@ -22,7 +23,7 @@ export default function App() {
   }
 
   if (windowLabel === 'dashboard') {
-    return <DashboardPanel app={app} />;
+    return <SystemDashboardPanel app={app} />;
   }
 
   return app.showDashboard ? <DashboardPanel app={app} /> : <DependenciesPanel app={app} />;
