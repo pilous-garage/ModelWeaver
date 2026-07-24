@@ -839,9 +839,11 @@ rendre le framework observable panneau par panneau pendant un live test.
 **Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
 ### V0.8.0 — Dashboard — Nouvelle fenêtre dédiée 🖥️
-- **Fenêtre Tauri séparée** `dashboard` (1400×900), **indépendante de la fenêtre installateur** `main` — nouveau window Tauri, lancement par le superviseur ou via `openDashboardWindow`
-- Route dédiée dans `App.tsx` (`getCurrentWindow().label === 'dashboard'`), pas de conflit avec l'installateur
-- Onglets multiples : **État système** / **Agents** / **Services** / **LLM locaux** / **Clés** / **Activité**
+- **Fenêtre Tauri séparée** `dashboard` (1400×900), indépendante de l'installateur — window Tauri dédié, lancée via `openDashboardWindow`
+- **Module panneaux** (`panels/index.ts`) : un fichier = un panneau, exporté centralement — n'importe quelle fenêtre peut importer n'importe quel panneau simplement
+- `App.tsx` gère maintenant 3 fenêtres : `main` (installateur/dashboard), `dashboard` (dashboard dédié), `sandbox` (IDE agent)
+- `tauri.conf.json` : 3 windows : `main` (2560×1440), `dashboard` (1400×900), `sandbox` (1400×900)
+- `.gitignore` corrigé : `gui/` → `/gui/` (ancien pattern bloquait le nouveau GUI)
 - **Panneau État système** : CPU, RAM, Disque, Swap, uptime (via `RessourceManager.hardware_snapshot`)
 - **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill (signaux)
 - **Panneau Services** : liste des services actifs (installer_worker, tester, watch_installed, watch_sysstate, daemon AFD), statut, uptime
