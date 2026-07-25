@@ -685,6 +685,28 @@ fn write_services_summary() {
     log_to_file("INIT", &format!("services summary written: {}", path.display()));
 }
 
+/// Parse une version semver "X.Y.Z" en (major, minor, patch).
+fn parse_version(v: &str) -> (u32, u32, u32) {
+    let parts: Vec<&str> = v.split('.').collect();
+    let major = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
+}
+
+/// Compare deux versions semver. Retourne :
+///   -1 si a < b
+///    0 si a == b
+///    1 si a > b
+fn cmp_version(a: &str, b: &str) -> i32 {
+    let (ma, mia, pa) = parse_version(a);
+    let (mb, mib, pb) = parse_version(b);
+    if ma != mb { return if ma > mb { 1 } else { -1 }; }
+    if mia != mib { return if mia > mib { 1 } else { -1 }; }
+    if pa != pb { return if pa > pb { 1 } else { -1 }; }
+    0
+}
+
 // Vérifie dans runtime.db si un service est déjà en cours d'exécution avec la
 // bonne version. Si oui, on l'adopte sans le respawn (préservation des services
 // entre redémarrages du superviseur ou des interfaces multiples).
@@ -701,15 +723,28 @@ fn reuse_existing_services() {
         for row in &rows {
             let old_version = row.get("version").and_then(|v| v.as_str()).unwrap_or("");
             let old_pid = row.get("pid").and_then(|p| p.as_i64()).unwrap_or(-1);
-            if old_pid > 0 && process_alive(old_pid as i32) && old_version == entry.info.version
-                && pid_matches_service(old_pid as i32, &entry.info.name)
-            {
-                entry.info.status = "running".to_string();
-                entry.info.pid = Some(old_pid as u32);
-                entry.info.started_at = now_secs();
-                entry.info.restarts = 0;
-                entry.child = None;
-                log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+            if old_pid <= 0 || !process_alive(old_pid as i32) { continue; }
+            if !pid_matches_service(old_pid as i32, &entry.info.name) { continue; }
+            match cmp_version(old_version, &entry.info.version) {
+                0 => {
+                    // Même version → réutilisation.
+                    entry.info.status = "running".to_string();
+                    entry.info.pid = Some(old_pid as u32);
+                    entry.info.started_at = now_secs();
+                    entry.info.restarts = 0;
+                    entry.child = None;
+                    log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+                }
+                1 => {
+                    // Running plus récent que le manifest → erreur de versioning.
+                    log_to_file("SUPERVISOR", &format!("VERSION ERROR: {} running v{} > manifest v{} — reboot avec la dernière version disponible",
+                        entry.info.name, old_version, entry.info.version));
+                }
+                -1 => {
+                    // Running obsolète → mise à jour.
+                    log_to_file("SUPERVISOR", &format!("update {} v{} → v{}", entry.info.name, old_version, entry.info.version));
+                }
+                _ => {}
             }
         }
     }
