@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""File d'installation + opérations d'install/désinstall réelles.
+    """File d'installation + opérations d'install/désinstall réelles.
 
-Extraits de l'ancien gui_helper pour devenir la source de vérité du service
-`installer_worker` (et consommés directement par le daemon API). La concurrence
-est gérée par SQLite (WAL + busy_timeout) ; voir CARNET (RBAC data-layer).
-"""
+Implémente la source de vérité du service
+`installer_worker` (consommé directement par le daemon API).
+La concurrence est gérée par SQLite (WAL + busy_timeout) ; voir CARNET (RBAC data-layer)."""
 import sys
 import os
 import json

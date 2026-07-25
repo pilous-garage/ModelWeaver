@@ -44,7 +44,7 @@ from modules.system.deps import install_system_package, install_target_dependenc
 
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
 # directement les modules (source de vérité) et le service installer_worker
-# (file de jobs + install/uninstall). Aucune dépendance à gui_helper.
+# (file de jobs + install/uninstall). Service autonome, aucune dépendance à un script Python externe de compatibilité Tauri.
 from services.installer_worker import jobs
 from services.watch_sysstate import service as sysstate
 from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, AgentsDB, read_db_version, fetch_remote_to_local
@@ -72,7 +72,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.8.0"
+MW_VERSION = "0.8.1"
 
 
 def _mw_dir() -> Path:
@@ -101,7 +101,7 @@ def op_version(_params):
 
 
 def check_python_deps():
-    """Vérifie les dépendances pip requises (extrait de l'ancien gui_helper)."""
+    """Vérifie les dépendances pip requises (auto-suffisant, aucun pont Tauri)."""
     import subprocess
     import json as _json
     required = [
@@ -1190,6 +1190,66 @@ def _get_agent_db() -> AgentsDB:
     return d
 
 
+def op_agent_metrics(params):
+    """Métriques par agent : tâches, tokens, latence.
+    Retourne tous les agents si aucun agent_id spécifié."""
+    db = _get_agent_db()
+    agent_id = params.get("agent_id") if params else None
+    if agent_id:
+        row = db.conn.execute(
+            "SELECT agent_id, total_tasks, total_tokens, failed_tasks, "
+            "       total_runtime_ms, avg_latency_ms, last_updated "
+            "FROM agent_metrics WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        if not row:
+            return {"status": "error", "error": "aucune métrique pour cet agent"}
+        return {"agent_id": agent_id, "metrics": dict(row)}
+    else:
+        rows = db.conn.execute(
+            "SELECT agent_id, total_tasks, total_tokens, failed_tasks, "
+            "       total_runtime_ms, avg_latency_ms, last_updated "
+            "FROM agent_metrics ORDER BY agent_id"
+        ).fetchall()
+        return {"agents": [dict(r) for r in rows], "count": len(rows)}
+
+
+def op_service_resources(params):
+    """CPU/RAM par service via psutil (best-effort).
+    Retourne les métriques pour les services actifs avec PID valide."""
+    try:
+        import psutil
+    except ImportError:
+        return {"status": "error", "error": "psutil non disponible"}
+    db = _get_mw()
+    rows = db.conn.execute(
+        "SELECT name, pid, status FROM services WHERE pid IS NOT NULL"
+    ).fetchall()
+    resources = []
+    for r in rows:
+        pid = r["pid"]
+        try:
+            proc = psutil.Process(pid)
+            cpu = round(proc.cpu_percent(interval=0.1), 1)
+            mem = proc.memory_info()
+            rss_mb = round(mem.rss / (1024 * 1024), 1)
+            resources.append({
+                "name": r["name"],
+                "pid": pid,
+                "status": r["status"],
+                "cpu_percent": cpu,
+                "memory_rss_mb": rss_mb,
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            resources.append({
+                "name": r["name"],
+                "pid": pid,
+                "status": r["status"],
+                "cpu_percent": None,
+                "memory_rss_mb": None,
+            })
+    return {"services": resources, "count": len(resources)}
+
+
 def op_agent_list(_params):
     """Liste tous les agents (vivants et morts)."""
     db = _get_agent_db()
@@ -1823,10 +1883,12 @@ ROUTES = {
     "agent/spawn":            op_agent_spawn,
     "agent/handoff":          op_agent_handoff,
     "agent/launch":           op_agent_launch,
+    "agent/metrics":          op_agent_metrics,
     # N. Service Manager (pont DB partagée avec le superviseur Rust)
     "service/list":           op_service_list,
     "service/restart":        op_service_restart,
     "service/stop":           op_service_stop,
+    "service/resources":      op_service_resources,
     # N. Chat Service (V0.6.6)
     "chat/session/create":    op_chat_session_create,
     "chat/session/list":      op_chat_session_list,

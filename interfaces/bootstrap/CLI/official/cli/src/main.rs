@@ -320,7 +320,7 @@ fn install_systemwide(archive: &PathBuf) -> Result<(), String> {
         INSTALL_ROOT, BIN_LINK, CLI_LINK
     );
     root_run("mkdir", &["-p", INSTALL_ROOT])?;
-    // Extraction de l'archive (binaires + services/ + modules/ + gui_helper.py) dans INSTALL_ROOT
+    // Extraction de l'archive (binaires + services/ + modules/) dans INSTALL_ROOT
     root_run("tar", &["-xzf", archive.to_str().unwrap(), "-C", INSTALL_ROOT])?;
     // Liens globaux : GUI (modelweaver) + CLI headless (modelweaver-cli)
     root_run("ln", &["-sf", &format!("{}/modelweaver", INSTALL_ROOT), BIN_LINK])?;
@@ -452,13 +452,12 @@ fn main() {
     // Validation rapide du backend déployé
     let root = PathBuf::from(INSTALL_ROOT);
     let backend_ok = root.join("services").join("api").join("daemon.py").exists()
-        && root.join("modules").join("sql").exists()
-        && root.join("gui_helper.py").exists();
+        && root.join("modules").join("sql").exists();
     if backend_ok {
         println!("[bootstrap-cli] ✅ backend Python déployé dans {}", INSTALL_ROOT);
     } else {
         println!(
-            "[bootstrap-cli] ⚠ backend incomplet dans {} (services/modules/gui_helper manquants)",
+            "[bootstrap-cli] ⚠ backend incomplet dans {} (services/modules manquants)",
             INSTALL_ROOT
         );
     }

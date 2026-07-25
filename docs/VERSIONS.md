@@ -839,31 +839,41 @@ rendre le framework observable panneau par panneau pendant un live test.
 **Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
 ### V0.8.0 — Dashboard + CLI + Services Manifest (✅ Livrée)
-- **Fenêtre Tauri séparée** `dashboard` (1400×900), indépendante de l'installateur — window Tauri dédié, lancée via `openDashboardWindow`
-- **Module panneaux** (`panels/index.ts`) : un fichier = un panneau, exporté centralement — n'importe quelle fenêtre peut importer n'importe quel panneau simplement
-- `App.tsx` gère maintenant 3 fenêtres : `main` (installateur/dashboard), `dashboard` (dashboard dédié), `sandbox` (IDE agent)
-- `tauri.conf.json` : 3 windows : `main` (2560×1440), `dashboard` (1400×900), `sandbox` (1400×900)
-- `.gitignore` corrigé : `gui/` → `/gui/` (ancien pattern bloquait le nouveau GUI)
-- **Panneau État système** : CPU, RAM, Disque, Swap, uptime
-- **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill/Restart/Stop
-- **Panneau Services** : liste des services actifs, statut, uptime, boutons Restart/Stop
-- **Panneau LLM locaux** : détection moteurs (Ollama, LM Studio, llama.cpp), start/stop
-- **Panneau Clés** : santé des clés (grade, provider, dernière utilisation)
-- **Panneau Activité** : logs temps réel, stream bus, inter-agent messages
-- `service_stop` Tauri command + `service_restart` Rust fix
-- **Services Manifest** : `ServiceInfo.start_order`, `depends_on`, résumé dans `~/.modelweaver/services-boot.txt`
-- **Bus de commandes Rust↔Python** : table `service_commands` dans `runtime.db`, polling par le supervisor
-- Routes daemon : `service/list`, `service/restart`, `service/stop`
-- `agent/launch` route dans daemon.py (create + execute one-shot)
-- `handlerAgentRestart` dans `useApp.ts` (boutons ⟳/■)
-- **Boot agents** : `BOOT_AGENTS` crée `installer` + `sandbox` au démarrage
-- **CLI Dashboard** : `cli/dashboard.py` — 7 subcommands : `agents`, `services`, `system`, `keys`, `providers`, `launch`, `signal`
+ - **Fenêtre Tauri séparée** `dashboard` (1400×900), indépendante de l'installateur — window Tauri dédié, lancée via `openDashboardWindow`
+ - **Module panneaux** (`panels/index.ts`) : un fichier = un panneau, exporté centralement — n'importe quelle fenêtre peut importer n'importe quel panneau simplement
+ - `App.tsx` gère maintenant 3 fenêtres : `main` (installateur/dashboard), `dashboard` (dashboard dédié), `sandbox` (IDE agent)
+ - `tauri.conf.json` : 3 windows : `main` (2560×1440), `dashboard` (1400×900), `sandbox` (1400×900)
+ - `.gitignore` corrigé : `gui/` → `/gui/` (ancien pattern bloquait le nouveau GUI)
+ - **Panneau État système** : CPU, RAM, Disque, Swap, uptime
+ - **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill/Restart/Stop
+ - **Panneau Services** : liste des services actifs, statut, uptime, boutons Restart/Stop
+ - **Panneau LLM locaux** : détection moteurs (Ollama, LM Studio, llama.cpp), start/stop
+ - **Panneau Clés** : santé des clés (grade, provider, dernière utilisation)
+ - **Panneau Activité** : logs temps réel, stream bus, inter-agent messages
+ - `service_stop` Tauri command + `service_restart` Rust fix
+ - **Services Manifest** : `ServiceInfo.start_order`, `depends_on`, résumé dans `~/.modelweaver/services-boot.txt`
+ - **Bus de commandes Rust↔Python** : table `service_commands` dans `runtime.db`, polling par le supervisor
+ - Routes daemon : `service/list`, `service/restart`, `service/stop`
+ - `agent/launch` route dans daemon.py (create + execute one-shot)
+ - `handlerAgentRestart` dans `useApp.ts` (boutons ⟳/■)
+ - **Boot agents** : `BOOT_AGENTS` crée `installer` + `sandbox` au démarrage
+ - **CLI Dashboard** : `cli/dashboard.py` — 7 subcommands : `agents`, `services`, `system`, `keys`, `providers`, `launch`, `signal`
+ - **Architecture HTTP uniforme** : GUI et CLI passent maintenant par `http://127.0.0.1:8770/v1/{route}` directement plus de détour Tauri `daemon_post`
+ - **Suppression de `gui_helper.py`** : `gui_helper.py` était un shim Tauri obsolète déléguant aux modules/services. Depuis V0.5.x tout passe par le daemon API. Le fichier a été supprimé du repo et de `~/.modelweaver/`, les Tauri commands morts (check_databases, init_databases, etc.) et `ensure_bundled_resources` ont été retirés de `main.rs`, `tauri.conf.json` (ressource gui_helper) nettoyé, les scripts `test-gui.sh` et `test-cli.sh` réécrits pour l'API daemon directe.
 
-### V0.8.1 — Monitoring étendu 📊
-- CPU/RAM/Disque par agent (via `RessourceManager.hardware_snapshot`)
-- Consommation tokens par agent/session (via `AgentMetrics` BDD)
-- Latence LLM par provider (via `LiteLLMBridge` stats)
-- Graphique temps réel (mise à jour auto, refresh 2s)
+### V0.8.1 — Monitoring étendu 📊 + Refactor architecture migration (🔄 En cours)
+- **CPU/RAM par service** : route `service/resources` — utilise `psutil.Process(pid)` pour collecter CPU% et RSS mémoire par PID des services actifs dans la table `services`
+- **Consommation tokens par agent** : route `agent/metrics` — interroge la table `agent_metrics` (total_tasks, total_tokens, failed_tasks, avg_latency_ms, total_runtime_ms)
+- **Latence LLM** : timing ajouté dans `litellm_bridge.py` (`chat()` et `chat_stream()`) — `elapsed_ms` propagé via `_log_call()` → `usage_log.make_record()` → journal `real_call.log`
+- **agent_metrics enrichi** : `avg_latency_ms` et `total_runtime_ms` désormais peuplés dans la boucle FSM de `agent_manager/service.py`
+- **Panneau temps réel** : `AgentMonitoringPanel.tsx` dans le dashboard — affiche métriques agents (tâches, tokens, latence) + ressources services (CPU, RAM) avec refresh 2s via `daemonPost` HTTP direct
+- **Migration architecture** (en cours) :
+  - Refactoring de `services/api/daemon.py` vers un système de routes namespacées `daemon:module:fonction`
+  - Création de `services/api/router.py` avec ROUTES centralisé, `register()` et `dispatch()` pour appels intra-processus sans HTTP
+  - Introduction de fichiers `_module.py` (interfaces publiques) pour chaque module `modules/*`
+  - Création de services manquants sous `services/` (sql, key_manager, usage, system, llm_manager)
+  - Routes dynamiques runtime pour agent-as-service (`service/register`, `service/unregister`)
+  - Objectif : services → daemon → modules uniquement, plus d'accès direct daemon → modules
 
 ### V0.8.2 — Contrôles Play / Stop / Restart ▶⏹🔄
 - **Play** : reprendre un agent en pause (signal `resume`)

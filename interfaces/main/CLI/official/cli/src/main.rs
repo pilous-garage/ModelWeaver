@@ -31,14 +31,6 @@ fn python_bin() -> &'static str {
     if std::env::consts::OS == "windows" { "python" } else { "python3" }
 }
 
-fn find_helper_path() -> PathBuf {
-    let production = mw_home().join("gui_helper.py");
-    if production.exists() {
-        return production;
-    }
-    production
-}
-
 fn find_repo_root() -> PathBuf {
     let mw = mw_home();
     if mw.join("services").is_dir() {
@@ -322,7 +314,6 @@ fn cmd_info() {
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "mw_home": mw_home().to_string_lossy(),
-        "helper": find_helper_path().to_string_lossy(),
         "repo_root": find_repo_root().to_string_lossy(),
     });
     println!("{}", serde_json::to_string_pretty(&info).unwrap());
@@ -375,8 +366,7 @@ fn cmd_start() {
     // enfants héritent de ce pgid et soient tués avec le superviseur.
     #[cfg(unix)]
     become_group_leader();
-    let helper = find_helper_path();
-    let repo_root = helper.parent().map(|p| p.to_path_buf()).unwrap_or_else(find_repo_root);
+    let repo_root = find_repo_root();
     // Même processus que la GUI : installer les dépendances requises (safe+light)
     // du manifeste avant de démarrer les services.
     install_system_dependencies(false);

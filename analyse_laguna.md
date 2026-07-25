@@ -283,7 +283,8 @@ Le contrat `EXPOSES` déclare 76 routes, mais 26 sont manquantes (voir §3.1.2).
 **Documenté** (`VERSIONS.md:101-106`) :
 - ✅ Superviseur Rust repointé vers `services/*/service.py`
 - ⚠️ Bundling Tauri — à vérifier si `modules/` + `services/` sont embarqués
-- ⚠️ `gui_helper.py` — décomposition en cours, wrappers encore présents
+- ⚠️ Bundling Tauri — à vérifier si `modules/` + `services/` sont embarqués
+- 🗑️ `gui_helper.py` — supprimé (plus aucune interface ne l'utilise, tout passe par le daemon HTTP direct)
 
 ---
 

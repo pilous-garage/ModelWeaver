@@ -30,8 +30,8 @@ def _ref(prefix: str = "key") -> str:
 def _project_root() -> Path:
     # `sql/` est à la racine du repo. Les chemins DB par défaut (appels
     # ModelWeaverDB()/CatalogueDB() sans argument) pointent sur le répertoire
-    # utilisateur ~/.modelweaver — même emplacement que le flux GUI (gui_helper
-    # passe des chemins explicites sous ~/.modelweaver) et que les vraies bases.
+    # utilisateur ~/.modelweaver — même emplacement que les bases de données
+    # du daemon API et que les vraies bases.
     return Path.home()
 
 

@@ -135,10 +135,11 @@ def make_record(
     window_key: Optional[str] = None,
     sent_at: Optional[int] = None,
     received_at: Optional[int] = None,
+    latency_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Construit un enregistrement normalisé prêt à être appendé."""
     now = int(time.time())
-    return {
+    record = {
         "ts": now,
         "sent_at": sent_at or now,
         "received_at": received_at or now,
@@ -156,6 +157,9 @@ def make_record(
         "window_key": window_key
         or time.strftime("%Y-%m-%d-%H", time.gmtime(now)),
     }
+    if latency_ms is not None:
+        record["latency_ms"] = latency_ms
+    return record
 
 
 def log_call(provider_ref: str, model_ref: str, status: str, **kwargs) -> bool:

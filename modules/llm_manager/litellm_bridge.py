@@ -323,8 +323,10 @@ class LiteLLMBridge(BaseBridge):
         if effective and max_tokens is None:
             kwargs["max_tokens"] = effective
 
+        t0 = time.time()
         try:
             response = self._litellm.completion(**kwargs)
+            elapsed_ms = int((time.time() - t0) * 1000)
             tokens = 0
             usage = {}
             if response.usage:
@@ -337,7 +339,8 @@ class LiteLLMBridge(BaseBridge):
             budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
             self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                            tokens_in=response.usage.prompt_tokens or 0,
-                           tokens_out=response.usage.completion_tokens or 0)
+                           tokens_out=response.usage.completion_tokens or 0,
+                           latency_ms=elapsed_ms)
             return ChatResponse(
                 content=response.choices[0].message.content or "",
                 model=response.model,
@@ -356,6 +359,7 @@ class LiteLLMBridge(BaseBridge):
                 kwargs["max_tokens"] = new_limit
                 try:
                     response = self._litellm.completion(**kwargs)
+                    elapsed_ms = int((time.time() - t0) * 1000)
                     tokens = 0
                     usage = {}
                     if response.usage:
@@ -368,7 +372,8 @@ class LiteLLMBridge(BaseBridge):
                     budget = self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
                     self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                                    tokens_in=response.usage.prompt_tokens or 0,
-                                   tokens_out=response.usage.completion_tokens or 0)
+                                   tokens_out=response.usage.completion_tokens or 0,
+                                   latency_ms=elapsed_ms)
                     return ChatResponse(
                         content=response.choices[0].message.content or "",
                         model=response.model,
@@ -379,19 +384,23 @@ class LiteLLMBridge(BaseBridge):
                     )
                 except Exception as e2:
                     be2 = self.classifier.classify(e2, provider_ref, model_ref)
+                    elapsed_ms = int((time.time() - t0) * 1000)
                     self._log_call(provider_ref, model_ref,
                                    "quota_exhausted" if be2.category == ErrorCategory.RATE_LIMIT
                                    else "error",
                                    agent_id=agent_id,
                                    error_code=getattr(be2, "code", None),
-                                   error_detail=str(e2)[:500])
+                                   error_detail=str(e2)[:500],
+                                   latency_ms=elapsed_ms)
                     raise be2
+            elapsed_ms = int((time.time() - t0) * 1000)
             self._log_call(provider_ref, model_ref,
                            "quota_exhausted" if be.category == ErrorCategory.RATE_LIMIT
                            else "error",
                            agent_id=agent_id,
                            error_code=getattr(be, "code", None),
-                           error_detail=str(e)[:500])
+                           error_detail=str(e)[:500],
+                           latency_ms=elapsed_ms)
             raise be
 
     def chat_stream(self, provider_ref: str, model_ref: str,
@@ -428,6 +437,7 @@ class LiteLLMBridge(BaseBridge):
             kwargs["max_tokens"] = max_tokens
         kwargs.update(params)
 
+        t0 = time.time()
         char_count = 0
         ok = True
         try:
@@ -438,21 +448,24 @@ class LiteLLMBridge(BaseBridge):
                     yield delta.content
         except Exception as e:
             ok = False
+            elapsed_ms = int((time.time() - t0) * 1000)
             be = self.classifier.classify(e, provider_ref, model_ref)
             self._log_call(provider_ref, model_ref,
                            "quota_exhausted" if be.category == ErrorCategory.RATE_LIMIT
                            else "error",
                            agent_id=agent_id,
                            error_code=getattr(be, "code", None),
-                           error_detail=str(e)[:500])
+                           error_detail=str(e)[:500],
+                           latency_ms=elapsed_ms)
             raise be
         finally:
+            elapsed_ms = int((time.time() - t0) * 1000)
             if char_count:
                 tokens = max(1, char_count // 4)
                 self._budget_record(provider_ref, model_ref, tokens=tokens, requests=1)
                 if ok:
                     self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
-                                   tokens_out=tokens)
+                                   tokens_out=tokens, latency_ms=elapsed_ms)
 
     def get_capabilities(self, provider_ref: str,
                          model_ref: str) -> ModelCapabilities:
@@ -562,7 +575,7 @@ class LiteLLMBridge(BaseBridge):
     # key_endpoint_models.available sur echec.
     def _log_call(self, provider_ref, model_ref, status, agent_id=None,
                   tokens_in=0, tokens_out=0, cost=0.0, error_code=None,
-                  error_detail=None, sent_at=None):
+                  error_detail=None, sent_at=None, latency_ms=None):
         """Journalise un appel LLM reel sur disque (append atomique).
         Best-effort : n'interrompt jamais le flux principal."""
         try:
@@ -591,6 +604,7 @@ class LiteLLMBridge(BaseBridge):
                 tokens_in=tokens_in, tokens_out=tokens_out, cost=cost,
                 error_code=error_code, error_detail=error_detail,
                 sent_at=sent_at, received_at=now,
+                latency_ms=latency_ms,
             )
             # Miroir live agent (etat, non critique) — best-effort.
             if agent_id:

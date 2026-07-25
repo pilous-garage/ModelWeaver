@@ -57,7 +57,6 @@ Règle mnémotechnique : **« si ça survit à un changement de GUI, c'est dans 
 
 Consolidation des 3 surfaces actuelles :
 - **[T]** commande Tauri (`invoke_handler!`, `main.rs`)
-- **[P]** sous-commande CLI de `gui_helper.py`
 - **[H]** endpoint HTTP existant (`catalogue_server.py`)
 
 Colonne « Impl. actuelle » = où vit réellement la logique aujourd'hui.
@@ -134,8 +133,8 @@ Ce sont des **processus**, pas des endpoints. Le daemon les supervise.
 ### J. À NE PAS exposer / à sécuriser (portes dérobées génériques)
 | Élément | Risque | Décision proposée |
 |---|---|---|
-| [T] `run_command(command, args)` | exécution shell arbitraire via API locale | **supprimer** ou restreindre à une allow-list |
-| [T] `run_python_script(path, args)` | exécution Python arbitraire | **supprimer** ou restreindre |
+| [T] `run_command(command, args)` | — | **supprimé** (gui_helper.py retiré, tout passe HTTP) |
+| [T] `run_python_script(path, args)` | — | **supprimé** (gui_helper.py retiré, tout passe HTTP) |
 | [T] `close_splashscreen` | — | **reste GUI pure** (pas dans l'API) |
 
 ---
@@ -176,7 +175,7 @@ Un objet unique encapsule l'appel API, réutilisé par **toutes** les interfaces
   mêmes méthodes, même contrat.
 
 La GUI remplace ses `invoke(...)` par `mw.<domaine>.<action>(...)`.
-Le CLI remplace ses appels directs à `gui_helper` par le même SDK.
+Le CLI utilise directement `mw.<domaine>.<action>(...)` via le SDK HTTP.
 → **Aucune logique métier dans les interfaces.**
 
 ---
@@ -184,15 +183,15 @@ Le CLI remplace ses appels directs à `gui_helper` par le même SDK.
 ## 6. Chemin de migration (incrémental, sans big-bang)
 
 1. **Créer le daemon** = généraliser `catalogue_server.py` en `mw_daemon.py`
-   (routing, token, health) et y **importer** les fonctions déjà présentes dans
-   `gui_helper.py` (elles existent quasi toutes).
+   (routing, token, health).
 2. **Porter les 4 ops `jobs.*` et proc/service** de Rust → Python (equivalents déjà
    là via le service installeur & watchers).
 3. **Écrire le SDK** TS + Python.
 4. **Router 2-3 commandes** GUI via le SDK (ex. `tools.installed.list`, `catalogue.tools.list`)
    pour valider le pattern de bout en bout.
 5. **Basculer le reste** commande par commande ; la GUI Tauri devient coquille.
-6. **Retirer** `run_command` / `run_python_script`, vider `invoke_handler!`.
+6. `run_command` / `run_python_script` / 14 commands Tauri déjà retirés de `invoke_handler!`.
+   Reste : migrer les commandes restantes (version, install_all_dependencies, etc.) vers `daemonPost` HTTP direct.
 7. **Le bootstrap** démarre le daemon ; le superviseur migre dans le daemon.
 8. Dès lors : décliner les coquilles (Tauri v1 pour 20.04, web, etc.).
 

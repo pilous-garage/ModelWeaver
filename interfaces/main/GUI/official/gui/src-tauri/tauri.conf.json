@@ -41,9 +41,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb"],
-    "resources": {
-      "../gui_helper.py": "gui_helper.py"
-    },
+    "resources": {},
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -7,18 +7,10 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
 use std::io::{Write, Read};
-use serde::{Serialize, Deserialize};
-use tauri::Manager;
+use serde::Serialize;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-
-#[derive(Serialize, Deserialize, Clone)]
-struct PythonResponse {
-    status: String,
-    data: serde_json::Value,
-    error: Option<String>,
-}
 
 #[derive(Serialize, Clone)]
 struct DependencyStatus {
@@ -509,18 +501,42 @@ fn watch_installed_tools_rust(interval: f64) {
 }
 
 /// Service Rust (wrapper) : orchestre la collecte complexe en Python et cache le résultat.
-fn watch_sys_state_rust(helper: PathBuf, interval: f64) {
-    std::thread::spawn(move || loop {
-        if let Ok(o) = Command::new(python_bin()).arg(&helper).arg("get_system_state")
-            .env("PYTHONPATH", find_repo_root()).env("MODELWEAVER_HOME", mw_home()).output() {
-            if o.status.success() {
-                let s = String::from_utf8_lossy(&o.stdout);
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-                    set_watch_cache("sys-state", &v.to_string());
+fn watch_sys_state_rust(interval: f64) {
+    std::thread::spawn(move || {
+        let token_path = mw_home().join("api.token");
+        let port_path = mw_home().join("api.port");
+        // Laisser le daemon démarrer avant la première requête.
+        std::thread::sleep(Duration::from_secs(3));
+        loop {
+            let token = match std::fs::read_to_string(&token_path) {
+                Ok(t) => t,
+                Err(_) => { std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64)); continue; }
+            };
+            let port_str = match std::fs::read_to_string(&port_path) {
+                Ok(p) => p,
+                Err(_) => { std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64)); continue; }
+            };
+            let token = token.trim();
+            let port = port_str.trim();
+            match Command::new("curl")
+                .args(["-s", "-X", "POST", "-H", "Content-Type: application/json",
+                       "-H", &format!("Authorization: Bearer {}", token),
+                       "-d", "{}",
+                       "--max-time", "5",
+                       &format!("http://127.0.0.1:{}/v1/system/state/get", port)])
+                .output()
+            {
+                Ok(o) if o.status.success() => {
+                    let s = String::from_utf8_lossy(&o.stdout);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                        set_watch_cache("sys-state", &v.to_string());
+                    }
                 }
+                Ok(_) => {} // daemon pas encore répondu, on réessaie
+                Err(_) => {} // curl injoignable, daemon pas prêt
             }
+            std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64));
         }
-        std::thread::sleep(Duration::from_millis((interval * 1000.0) as u64));
     });
 }
 
@@ -725,24 +741,26 @@ fn reuse_existing_services() {
             let old_pid = row.get("pid").and_then(|p| p.as_i64()).unwrap_or(-1);
             if old_pid <= 0 || !process_alive(old_pid as i32) { continue; }
             if !pid_matches_service(old_pid as i32, &entry.info.name) { continue; }
-            match cmp_version(old_version, &entry.info.version) {
-                0 => {
-                    // Même version → réutilisation.
-                    entry.info.status = "running".to_string();
-                    entry.info.pid = Some(old_pid as u32);
-                    entry.info.started_at = now_secs();
-                    entry.info.restarts = 0;
-                    entry.child = None;
-                    log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
-                }
-                1 => {
-                    // Running plus récent que le manifest → erreur de versioning.
-                    log_to_file("SUPERVISOR", &format!("VERSION ERROR: {} running v{} > manifest v{} — reboot avec la dernière version disponible",
-                        entry.info.name, old_version, entry.info.version));
-                }
-                -1 => {
-                    // Running obsolète → mise à jour.
-                    log_to_file("SUPERVISOR", &format!("update {} v{} → v{}", entry.info.name, old_version, entry.info.version));
+                match cmp_version(old_version, &entry.info.version) {
+                    0 => {
+                        // Même version → réutilisation.
+                        entry.info.status = "running".to_string();
+                        entry.info.pid = Some(old_pid as u32);
+                        entry.info.started_at = now_secs();
+                        entry.info.restarts = 0;
+                        entry.child = None;
+                        log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+                    }
+                    1 => {
+                        // Running plus récent que le manifest → erreur de versioning.
+                        log_to_file("SUPERVISOR", &format!("VERSION ERROR: {} running v{} > manifest v{} — kill + reboot",
+                            entry.info.name, old_version, entry.info.version));
+                        kill_process(old_pid as i32);
+                    }
+                    -1 => {
+                        // Running obsolète → mise à jour.
+                        log_to_file("SUPERVISOR", &format!("update {} v{} → v{} — kill + reboot", entry.info.name, old_version, entry.info.version));
+                        kill_process(old_pid as i32);
                 }
                 _ => {}
             }
@@ -818,29 +836,9 @@ fn mirror_services_to_db() {
 #[cfg(not(unix))]
 fn mirror_services_to_db() {}
 
-fn find_helper_path() -> PathBuf {
-    let _home = get_home_dir();
-    let production = mw_home().join("gui_helper.py");
-    if production.exists() {
-        return production;
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let p = exe.parent().and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent());
-        if let Some(ref path) = p {
-            let guess = path.join("gui_helper.py");
-            if guess.exists() {
-                return guess;
-            }
-        }
-    }
-    production
-}
-
 /// Racine du dépôt : on préfère MODELWEAVER_HOME (mw_home) si `services/` y est
 /// présent, sinon on remonte depuis l'exécutable jusqu'à trouver `services/`,
-/// repli sur le parent de gui_helper, puis le dossier courant.
+/// puis le dossier courant.
 fn find_repo_root() -> PathBuf {
     let mw = mw_home();
     if mw.join("services").is_dir() {
@@ -936,6 +934,21 @@ fn process_alive(pid: i32) -> bool {
     }
 }
 
+/// Tue un processus par PID (SIGTERM puis SIGKILL si nécessaire).
+#[cfg(unix)]
+fn kill_process(pid: i32) {
+    use std::process::Command;
+    let _ = Command::new("kill").arg(&pid.to_string()).status();
+    for _ in 0..50 {
+        if !process_alive(pid) { return; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+}
+
+#[cfg(not(unix))]
+fn kill_process(_pid: i32) {}
+
 /// Vrai si le processus `pid` (Unix) a `needle` dans sa cmdline.
 /// Anti-PID-reuse : on ne tue un PID que si on confirme son identité.
 /// Retourne false si /proc est indisponible (on refuse de tuer par sécurité).
@@ -953,49 +966,6 @@ fn process_cmdline_contains(pid: i32, needle: &str) -> bool {
     {
         let _ = (pid, needle);
         true
-    }
-}
-
-fn run_python_helper(helper_path: &PathBuf, args: &[&str]) -> Result<serde_json::Value, String> {
-    let t0 = std::time::Instant::now();
-    let name = args.first().copied().unwrap_or("python");
-    let cmd_str = format!("python3 {} {}", helper_path.display(), args.join(" "));
-    log_to_file("PYTHON", &cmd_str);
-    let logp = {
-        let id = { proc_reg().lock().unwrap().next_id };
-        logs_dir().join(format!("proc-{}-{}.log", id, safe_name(name)))
-    };
-    let log_path = logp.to_string_lossy().to_string();
-    let repo_root = find_repo_root();
-    log_to_file("PYTHON", &format!("helper={} repo_root={} mw_home={}", helper_path.display(), repo_root.display(), mw_home().display()));
-    let output = Command::new(python_bin())
-        .arg(helper_path)
-        .args(args)
-        .env("PYTHONPATH", &repo_root)
-        .env("MODELWEAVER_HOME", mw_home())
-        .output()
-        .map_err(|e| { log_to_file("ERROR", &format!("python helper error: {}", e)); format!("Erreur exécution helper: {}", e) })?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&logp) {
-        let _ = writeln!(f, "=== STDOUT ===\n{}\n=== STDERR ===\n{}", stdout, stderr);
-    }
-    let status = if output.status.success() { "done" } else { "failed" };
-    let elapsed = t0.elapsed();
-    log_to_file("TIMING", &format!("python_helper[{}]: {}ms", name, elapsed.as_millis()));
-    proc_register(name, None, None, &cmd_str, log_path, status);
-    if output.status.success() {
-        match serde_json::from_str::<serde_json::Value>(&stdout) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                log_to_file("ERROR", &format!("helper '{}' stdout vide/invalide: {} | stdout=[{}] stderr=[{}]", name, e, stdout, stderr));
-                // Ne pas faire échouer la GUI: renvoyer un objet sûr.
-                Ok(serde_json::json!({"warning": format!("helper {} sans sortie JSON: {}", name, e), "tools": [], "count": 0}))
-            }
-        }
-    } else {
-        log_to_file("ERROR", &format!("python helper stderr: {}", stderr));
-        Err(stderr)
     }
 }
 
@@ -1229,113 +1199,6 @@ async fn install_dependency(name: String) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
-fn run_python_script(script_path: String, args: Vec<String>) -> Result<PythonResponse, String> {
-    log_cmd(&format!("run_python_script({})", script_path));
-    let _home = get_home_dir();
-    let root = mw_home();
-    let full_path = root.join(&script_path);
-    let output = Command::new(python_bin())
-        .arg(&full_path)
-        .args(&args)
-        .current_dir(&root)
-        .output()
-        .map_err(|e| { log_to_file("ERROR", &format!("python script error: {}", e)); format!("Erreur exécution Python: {}", e) })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
-        match serde_json::from_str::<PythonResponse>(&stdout) {
-            Ok(json) => Ok(json),
-            Err(_) => Ok(PythonResponse {
-                status: "success".to_string(),
-                data: serde_json::Value::String(stdout.to_string()),
-                error: None,
-            }),
-        }
-    } else {
-        log_to_file("ERROR", &format!("python script stderr: {}", stderr));
-        Err(stderr.to_string())
-    }
-}
-
-#[tauri::command]
-fn check_databases() -> Result<serde_json::Value, String> {
-    log_cmd("check_databases");
-    run_python_helper(&find_helper_path(), &["check_databases"])
-}
-
-#[tauri::command]
-fn init_databases() -> Result<serde_json::Value, String> {
-    log_cmd("init_databases");
-    run_python_helper(&find_helper_path(), &["init_databases"])
-}
-
-#[tauri::command]
-fn check_python_deps() -> Result<serde_json::Value, String> {
-    log_cmd("check_python_deps");
-    run_python_helper(&find_helper_path(), &["check_python_deps"])
-}
-
-#[tauri::command]
-fn get_system_state() -> Result<serde_json::Value, String> {
-    log_cmd("get_system_state");
-    run_python_helper(&find_helper_path(), &["get_system_state"])
-}
-
-#[tauri::command]
-fn seed_catalogue() -> Result<serde_json::Value, String> {
-    log_cmd("seed_catalogue");
-    run_python_helper(&find_helper_path(), &["seed_catalogue"])
-}
-
-#[tauri::command]
-fn get_catalogue_tools() -> Result<serde_json::Value, String> {
-    log_cmd("get_catalogue_tools");
-    run_python_helper(&find_helper_path(), &["get_catalogue_tools"])
-}
-
-#[tauri::command]
-fn get_installed_tools() -> Result<serde_json::Value, String> {
-    log_cmd("get_installed_tools");
-    run_python_helper(&find_helper_path(), &["get_installed_tools"])
-}
-
-#[tauri::command]
-fn save_system_state() -> Result<serde_json::Value, String> {
-    log_cmd("save_system_state");
-    run_python_helper(&find_helper_path(), &["save_system_state"])
-}
-
-#[tauri::command]
-fn sync_catalogue(url: String) -> Result<serde_json::Value, String> {
-    log_cmd(&format!("sync_catalogue({})", url));
-    run_python_helper(&find_helper_path(), &["sync_catalogue_remote", &url])
-}
-
-#[tauri::command]
-fn install_tool(ref_: String) -> Result<serde_json::Value, String> {
-    log_cmd(&format!("install_tool({})", ref_));
-    run_python_helper(&find_helper_path(), &["install_tool", &ref_])
-}
-
-#[tauri::command]
-fn uninstall_tool(ref_: String) -> Result<serde_json::Value, String> {
-    log_cmd(&format!("uninstall_tool({})", ref_));
-    run_python_helper(&find_helper_path(), &["uninstall_tool", &ref_])
-}
-
-#[tauri::command]
-fn get_providers() -> Result<serde_json::Value, String> {
-    log_cmd("get_providers");
-    run_python_helper(&find_helper_path(), &["get_providers"])
-}
-
-#[tauri::command]
-fn add_provider(data_json: String) -> Result<serde_json::Value, String> {
-    log_cmd("add_provider");
-    run_python_helper(&find_helper_path(), &["add_provider", &data_json])
-}
-
 fn install_db_path() -> PathBuf {
     mw_home().join("runtime.db")
 }
@@ -1544,37 +1407,6 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Copie gui_helper.py depuis le dossier de ressources Tauri vers
-/// ~/.modelweaver afin que le helper Python puisse importer modules.* .
-fn ensure_bundled_resources(app: &tauri::App) {
-    if let Ok(res_dir) = app.path().resource_dir() {
-        let _home = get_home_dir();
-        let dest = mw_home();
-        let _ = std::fs::create_dir_all(&dest);
-
-        let src_helper = res_dir.join("gui_helper.py");
-        if src_helper.exists() {
-            let dest_helper = dest.join("gui_helper.py");
-            // Ne pas écraser si la destination est plus récente que la source
-            // (permet de patcher à chaud sans rebuild).
-            let should_copy = match (src_helper.metadata(), dest_helper.metadata()) {
-                (Ok(sm), Ok(dm)) => {
-                    match (sm.modified(), dm.modified()) {
-                        (Ok(st), Ok(dt)) => st > dt,
-                        _ => true,
-                    }
-                },
-                _ => true,
-            };
-            if should_copy {
-                let _ = std::fs::copy(&src_helper, &dest_helper);
-            }
-        }
-    } else {
-        log_to_file("INIT", "resource_dir unavailable, skip bundled resources");
-    }
-}
-
 #[tauri::command]
 async fn check_dependencies_with_config(config: serde_json::Value) -> Result<serde_json::Value, String> {
     log_cmd("check_dependencies_with_config");
@@ -1704,9 +1536,8 @@ fn autotest_enabled_cmd() -> bool {
 }
 
 fn main() {
-    let helper_path = find_helper_path();
     let db_path = mw_home().join("runtime.db");
-    log_to_file("INIT", &format!("ModelWeaver main starting, helper={}", helper_path.display()));
+    log_to_file("INIT", &format!("ModelWeaver main starting, db={}", db_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
     // Un seul superviseur à la fois (single-instance, y compris le superviseur).
@@ -1729,7 +1560,7 @@ fn main() {
     // Services légers codés en Rust (watch/cache).
     watch_installed_tools_rust(2.0);
     register_thread_service("watch:installed-tools");
-    watch_sys_state_rust(helper_path.clone(), 2.0);
+    watch_sys_state_rust(2.0);
     register_thread_service("watch:sys-state");
 
     // Services complexes/distants : enfants Python supervisés (auto-restart).
@@ -1753,8 +1584,6 @@ fn main() {
             vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![], "0.1.0");
     }
     // Daemon API (backend unique, consommé par toute interface).
-    define_service("daemon-api", "loop", python_bin(),
-        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false, vec![], "0.8.0");
 
     // Réutilise les services déjà en cours avec la bonne version (évite les
     // redémarrages inutiles et les conflits de ports entre interfaces).
@@ -1794,8 +1623,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            ensure_bundled_resources(app);
+        .setup(|_app| {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1808,20 +1636,6 @@ fn main() {
             version,
             install_all_dependencies,
             install_dependency,
-            run_python_script,
-            check_databases,
-            init_databases,
-            check_python_deps,
-            get_system_state,
-            seed_catalogue,
-            get_catalogue_tools,
-            get_installed_tools,
-            save_system_state,
-            sync_catalogue,
-            install_tool,
-            uninstall_tool,
-            get_providers,
-            add_provider,
             install_queue_add,
             install_queue_cancel,
             install_queue_status,

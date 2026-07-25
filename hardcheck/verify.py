@@ -54,7 +54,7 @@ def _load_py(path: Path, mod_name: str):
 
 
 def _import_source(name: str):
-    """Importe une unité-source par son nom d'import (ex. 'gui_helper')."""
+    """Importe une unité-source par son nom d'import (ex. 'services.api.daemon')."""
     return importlib.import_module(name)
 
 

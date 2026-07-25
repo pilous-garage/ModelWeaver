@@ -1,21 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HELPER="$SCRIPT_DIR/gui-main/gui_helper.py"
-DOCKER_DIR="$SCRIPT_DIR/docker-cli"
+SHELL_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DOCKER_DIR="$SHELL_SCRIPT_DIR/docker-cli"
 IMAGE="modelweaver-cli-test"
 CONTAINER="modelweaver-cli-test"
-LAST_FILE="$SCRIPT_DIR/.last-test-cli-time"
+LAST_FILE="$SHELL_SCRIPT_DIR/.last-test-cli-time"
 
-TIMEOUT_DEFAULT=30
+TIMEOUT_DEFAULT=60
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 TAG=""
 
 ts() { date '+%H:%M:%S'; }
 log() { echo "[$(ts)] $*"; }
 
-# --- Parse arguments ---
 MODE="docker"
 for arg in "$@"; do
     case "$arg" in
@@ -25,7 +23,6 @@ for arg in "$@"; do
     esac
 done
 
-# --- Calcul du timeout ---
 if [ -z "${TIMEOUT:-}" ]; then
     if [ -f "$LAST_FILE" ]; then
         LAST=$(cat "$LAST_FILE")
@@ -41,11 +38,10 @@ else
 fi
 
 START=$(date +%s)
-LOG_FILE="$SCRIPT_DIR/log-test-cli-${TIMESTAMP}.log"
+LOG_FILE="$SHELL_SCRIPT_DIR/log-test-cli-${TIMESTAMP}.log"
 
-# Write header (duration will be inserted at the end)
 {
-    echo "ModelWeaver — test-cli.sh"
+    echo "ModelWeaver — test-cli.sh (API daemon)"
     echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "Timeout: ${TIMEOUT}s"
     echo ""
@@ -58,69 +54,135 @@ cleanup() {
     return "$ec"
 }
 
+DAEMON_URL="http://127.0.0.1:8770/v1"
+
+wait_for_daemon() {
+    local max_wait=30
+    local waited=0
+    log "Attente du daemon..."
+    while [ $waited -lt $max_wait ]; do
+        if curl -s -o /dev/null -w "" "$DAEMON_URL/version" 2>/dev/null; then
+            log "  ✓ daemon prêt"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    log "  ✗ daemon non prêt après ${max_wait}s"
+    return 1
+}
+
+api_call() {
+    local method="$1"
+    local route="$2"
+    local body="$3"
+    curl -s -X POST "${DAEMON_URL}/${route}" \
+        -H "Content-Type: application/json" \
+        -d "${body}" 2>&1
+}
 
 run_host() {
-    log "Mode hôte"
-    log "Python..."
-    if command -v python3 &>/dev/null; then
-        log "  ✓ $(python3 --version 2>&1)"
-    else
-        log "  ✗ python3 → installation..."
-        sudo apt install -y python3 python3-pip 2>&1 | tail -1
+    log "Mode hôte — API daemon directe"
+    log "Démarrage de modelweaver en arrière-plan..."
+    "$SHELL_SCRIPT_DIR/../gui-main/src-tauri/target/release/modelweaver" &
+    local mw_pid=$!
+    trap "kill $mw_pid 2>/dev/null || true" EXIT
+    sleep 3
+
+    if ! wait_for_daemon; then
+        kill "$mw_pid" 2>/dev/null || true
+        return 1
     fi
-    log "SQLite..."
-    if command -v sqlite3 &>/dev/null; then
-        log "  ✓ $(sqlite3 --version 2>&1 | head -1)"
-    else
-        log "  ✗ sqlite3 → installation..."
-        sudo apt install -y sqlite3 2>&1 | tail -1
-    fi
-    log "Init DB..."
-    python3 "$HELPER" init_databases 2>&1
-    log "Dépendances Python..."
-    python3 "$HELPER" check_python_deps 2>&1
-    log "Vérification finale..."
-    python3 "$HELPER" check_databases 2>&1
+
+    log "1/3 : Init DB (db/init)"
+    local r1
+    r1=$(api_call POST "db/init" '{}')
+    log "  $r1"
+
+    log "2/3 : Dépendances (system/deps/check)"
+    local r2
+    r2=$(api_call POST "system/deps/check" '{}')
+    log "  $r2"
+
+    log "3/3 : Vérification finale (db/check)"
+    local r3
+    r3=$(api_call POST "db/check" '{}')
+    log "  $r3"
+
+    kill "$mw_pid" 2>/dev/null || true
+    wait "$mw_pid" 2>/dev/null || true
 }
 
 run_docker() {
-    log "Mode Docker vierge"
+    log "Mode Docker — API daemon directe"
 
-    mkdir -p "$DOCKER_DIR"
-    cp "$HELPER" "$DOCKER_DIR/gui_helper.py"
-    mkdir -p "$DOCKER_DIR/projetclient/sql"
-    cp "$SCRIPT_DIR/../projetclient/sql/"*.py "$DOCKER_DIR/projetclient/sql/" 2>/dev/null || true
-    cp "$SCRIPT_DIR/../projetclient/sql/"*.sql "$DOCKER_DIR/projetclient/sql/" 2>/dev/null || true
-    touch "$DOCKER_DIR/projetclient/sql/__init__.py"
+    cat > "$DOCKER_DIR/Dockerfile" << 'DOCKERFILE'
+FROM ubuntu:24.04
+RUN apt-get update -qq && apt-get install -y -qq \
+    libgtk-3-0 libgdk-pixbuf-2.0-0 libpango-1.0-0 \
+    libcairo2 libatk1.0-0 \
+    libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 \
+    libsoup-3.0-0 librsvg2-common \
+    libayatana-appindicator3-1 \
+    libgl1-mesa-dri dbus-x11 xdg-utils curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /root/.modelweaver
+COPY modelweaver /root/.modelweaver/modelweaver
+RUN chmod +x /root/.modelweaver/modelweaver
+ENV HOME=/root
+WORKDIR /root/.modelweaver
+CMD ["./modelweaver"]
+DOCKERFILE
 
     cat > "$DOCKER_DIR/entrypoint.sh" << 'ENTRYPOINT'
 #!/bin/bash
 set -e
 ts() { date '+%H:%M:%S'; }
 log() { echo "[$(ts)] $*"; }
-log "=== ModelWeaver CLI Test (Docker vierge) ==="
+log "=== ModelWeaver CLI Test (Docker, API daemon) ==="
 log ""
-log "1/5 : Python"
-if command -v python3 &>/dev/null; then log "  ✓ $(python3 --version 2>&1)"; else log "  ✗ → installation..."; apt-get update -qq && apt-get install -y -qq python3 python3-pip 2>&1 | tail -1; log "  ✓ installé"; fi
-log ""
-log "2/5 : SQLite"
-if command -v sqlite3 &>/dev/null; then log "  ✓ $(sqlite3 --version 2>&1 | head -1)"; else log "  ✗ → installation..."; apt-get install -y -qq sqlite3 2>&1 | tail -1; log "  ✓ installé"; fi
-log ""
-log "3/5 : Initialisation des bases"; python3 /app/gui_helper.py init_databases; log ""
-log "4/5 : Dépendances Python"; python3 /app/gui_helper.py check_python_deps; log ""
-log "5/5 : Vérification finale"; python3 /app/gui_helper.py check_databases; log ""
+log "Démarrage modelweaver..."
+/root/.modelweaver/modelweaver &
+MW_PID=$!
+sleep 4
+
+DAEMON_URL="http://127.0.0.1:8770/v1"
+wait_for() {
+    for i in $(seq 1 30); do
+        if curl -s -o /dev/null "$DAEMON_URL/version" 2>/dev/null; then
+            log "  ✓ daemon prêt"; return 0
+        fi
+        sleep 1
+    done
+    log "  ✗ daemon injoignable"; return 1
+}
+
+if ! wait_for; then
+    log "ERREUR: daemon non prêt"
+    kill $MW_PID 2>/dev/null || true
+    exit 1
+fi
+
+log "1/3 : Init DB (db/init)"
+curl -s -X POST "$DAEMON_URL/db/init" -H "Content-Type: application/json" -d '{}' | log "  réponse:"
+
+log "2/3 : Dépendances (system/deps/check)"
+curl -s -X POST "$DAEMON_URL/system/deps/check" -H "Content-Type: application/json" -d '{}' | log "  réponse:"
+
+log "3/3 : Vérification finale (db/check)"
+curl -s -X POST "$DAEMON_URL/db/check" -H "Content-Type: application/json" -d '{}' | log "  réponse:"
+
 log "=== Test CLI terminé ==="
+kill $MW_PID 2>/dev/null || true
 ENTRYPOINT
     chmod +x "$DOCKER_DIR/entrypoint.sh"
 
-    cat > "$DOCKER_DIR/Dockerfile" << 'DOCKERFILE'
-FROM ubuntu:24.04
-COPY gui_helper.py /app/gui_helper.py
-COPY projetclient /app/projetclient
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-CMD ["/entrypoint.sh"]
-DOCKERFILE
+    cp "$SHELL_SCRIPT_DIR/../gui-main/src-tauri/target/release/modelweaver" "$DOCKER_DIR/modelweaver" 2>/dev/null || {
+        log "✗ Binaire modelweaver introuvable, build requis"
+        log "  → Build : cd gui-main && npm run tauri build"
+        return 1
+    }
+    chmod +x "$DOCKER_DIR/modelweaver"
 
     log "Build image Docker..."
     docker build -t "$IMAGE" "$DOCKER_DIR" 2>&1
@@ -138,7 +200,6 @@ DOCKERFILE
     return "$ec"
 }
 
-# --- MAIN ---
 trap cleanup EXIT
 docker rm -f "$CONTAINER" 2>/dev/null || true
 
@@ -153,13 +214,12 @@ fi
 DURATION=$(( $(date +%s) - START ))
 set -e
 
-# Determine tag from exit code
 if [ "$EXIT_CODE" -eq 124 ]; then
     TAG="timeout"
 elif [ "$EXIT_CODE" -eq 0 ]; then
     if [ -t 0 ]; then
         echo "" | tee -a "$LOG_FILE"
-        echo -n "Test réussi ? (Y/n/u) ➜ " | tee /dev/stderr
+        echo -n "Test réussi ? (Y/n/u) › " | tee /dev/stderr
         read -r answer < /dev/tty
         echo ""
         case "${answer,,}" in
@@ -176,7 +236,6 @@ fi
 
 [ "$EXIT_CODE" -eq 0 ] && echo "$DURATION" > "$LAST_FILE"
 
-# Finalisation
 {
     echo ""
     echo "========================================"
@@ -187,7 +246,7 @@ fi
     echo "========================================"
 } | tee -a "$LOG_FILE"
 
-NEW_LOG="$SCRIPT_DIR/log-test-cli-${TAG}-${TIMESTAMP}.log"
+NEW_LOG="$SHELL_SCRIPT_DIR/log-test-cli-${TAG}-${TIMESTAMP}.log"
 mv "$LOG_FILE" "$NEW_LOG" 2>/dev/null || true
 echo "  Log: $NEW_LOG"
 

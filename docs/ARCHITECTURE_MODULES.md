@@ -55,11 +55,13 @@ EXPOSES = {
 }
 ```
 
-### `_contract/dependencies.py` — dépendances consommées
+### Routes daemon (`services/api/daemon.py`) — endpoints HTTP consommés par GUI/CLI
 ```python
-# unité source -> symboles consommés
-CONSUMES = {
-    "gui_helper": ["install_tool", "uninstall_tool", "_enqueue_job", ...],
+# route -> handler
+ROUTES = {
+    "tools/install":    ...,
+    "tools/uninstall":  ...,
+    ...
 }
 ```
 
@@ -95,15 +97,13 @@ Sortie : rapport `PASS/FAIL` par unité + code de sortie non nul si échec.
    (racine + `projetclient` sur `sys.path`) → churn d'imports minimal, `modules.X`
    inchangé.
 3. ✅ **6 services** sous `services/*` avec `_contract/` : `api`, `catalogue`,
-   `installer_worker`, `tester`, `watch_installed`, `watch_sysstate`. Les 5
-   derniers sont des **wrappers runnable** (logique encore dans `gui_helper` /
-   `sql.catalogue_server`, dépendance déclarée) — additifs et non-cassants.
+   `installer_worker`, `tester`, `watch_installed`, `watch_sysstate`. Tous
+   sont des wrappers runnable autonomes (dépendances déclarées, additifs
+   et non-cassants). Aucune dépendance restante à un script de pont Tauri.
 4. ⏳ **Reste à faire (au prochain build de release, de façon coordonnée)** :
    - repointer le **superviseur Rust** vers `services/*/service.py` ;
    - mettre à jour le **bundling Tauri** (`tauri.conf.json`) pour embarquer
      `modules/` + `sql/` (+ `services/`) en plus de `projetclient/` ;
-   - décomposer `gui_helper.py` : déplacer les corps des fonctions dans les
-     services/modules concernés (retirer les wrappers).
 5. Brancher `hardcheck/verify.py` en **pre-commit + CI**.
 6. Générer le SDK TS depuis les `EXPOSES` (contrat multi-langage).
 

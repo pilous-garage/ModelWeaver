@@ -241,6 +241,7 @@ class Agent:
                 _hb_stop = _spawn_heartbeat(self.agent_id, self.db)
                 try:
                     signal_check(FSMResult())  # consomme pause/kill/configure en attente
+                    t0 = time.time()
                     result = self._bridge.chat(
                         provider_ref=provider_ref,
                         model_ref=model_ref,
@@ -248,6 +249,7 @@ class Agent:
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
+                    elapsed_ms = int((time.time() - t0) * 1000)
                     content = result.content if hasattr(result, 'content') else str(result)
                     tokens = 0
                     if hasattr(result, 'usage') and isinstance(result.usage, dict):
@@ -255,25 +257,28 @@ class Agent:
                     budget = getattr(result, 'budget', {}) or {}
                     stream_sink(content)
                     result = {"status": "ok", "content": content, "tokens_used": tokens,
-                              "budget": budget}
+                              "budget": budget, "elapsed_ms": elapsed_ms}
                 finally:
                     _hb_stop.set()
 
             # Enregistrer les métriques
             db = self.db
             tokens = result.get("tokens_used", 0)
+            elapsed_ms = result.get("elapsed_ms", 0)
             success = result.get("status") in ("ok", "success")
             db.conn.execute("""
                 INSERT INTO agent_metrics (agent_id, total_tasks, total_tokens,
-                                           failed_tasks)
-                VALUES (?, 1, ?, ?)
+                                            failed_tasks, total_runtime_ms, avg_latency_ms)
+                VALUES (?, 1, ?, ?, ?, ?)
                 ON CONFLICT(agent_id) DO UPDATE SET
                     total_tasks = total_tasks + 1,
                     total_tokens = total_tokens + ?,
                     failed_tasks = failed_tasks + ?,
+                    total_runtime_ms = total_runtime_ms + ?,
+                    avg_latency_ms = (total_runtime_ms + ?) * 1.0 / (total_tasks + 1),
                     last_updated = datetime('now')
-            """, (self.agent_id, tokens, 0 if success else 1,
-                  tokens, 0 if success else 1))
+            """, (self.agent_id, tokens, 0 if success else 1, elapsed_ms, elapsed_ms,
+                  tokens, 0 if success else 1, elapsed_ms, elapsed_ms))
             db.conn.commit()
 
             return result

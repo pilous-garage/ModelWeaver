@@ -26,7 +26,6 @@ if [ "$APP" = "bootstrap" ]; then
     APP_LABEL="Bootstrap"
 else
     MAIN_BIN="$SCRIPT_DIR/gui-main/src-tauri/target/release/modelweaver"
-    HELPER="$SCRIPT_DIR/gui-main/gui_helper.py"
     IMAGE="modelweaver-gui-test"
     CONTAINER="modelweaver-gui-test"
     LAST_FILE="$SCRIPT_DIR/.last-test-gui-time"
@@ -79,10 +78,6 @@ exec > >(tee -a "$LOG_FILE" >&5)
 # --- Vérifications préalables ---
 log "Vérification des prérequis... (app: ${APP_LABEL})"
 [ -f "$MAIN_BIN" ] || { log "✗ Binaire ${APP_LABEL} introuvable: $MAIN_BIN"; log "  → Build : cd gui-${APP} && npm run tauri build"; exit 1; }
-if [ -n "$HELPER" ]; then
-    [ -f "$HELPER" ] || { log "✗ Helper introuvable: $HELPER"; exit 1; }
-    log "  ✓ Helper: présent"
-fi
 log "  ✓ Binaire ${APP_LABEL}: $(ls -lh "$MAIN_BIN" | awk '{print $5}')"
 log ""
 
@@ -126,14 +121,9 @@ ENV GALLIUM_DRIVER=llvmpipe
 WORKDIR /root/.modelweaver
 CMD ["/root/.modelweaver/modelweaver"]
 DOCKERFILE
+    log "  ✓ Helper: non requis (API HTTP directe)"
 else
-    # Main : helper + projetclient
-    cp "$HELPER" "$DOCKER_DIR/gui_helper.py"
-    mkdir -p "$DOCKER_DIR/projetclient/sql"
-    cp "$SCRIPT_DIR/../projetclient/sql/"*.py "$DOCKER_DIR/projetclient/sql/" 2>/dev/null || true
-    cp "$SCRIPT_DIR/../projetclient/sql/"*.sql "$DOCKER_DIR/projetclient/sql/" 2>/dev/null || true
-    touch "$DOCKER_DIR/projetclient/sql/__init__.py"
-
+    # Main : API HTTP directe (plus de gui_helper.py)
     cat > "$DOCKER_DIR/Dockerfile" << 'DOCKERFILE'
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
@@ -148,9 +138,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /root/.modelweaver
 COPY modelweaver /root/.modelweaver/modelweaver
-COPY gui_helper.py /root/.modelweaver/gui_helper.py
 RUN chmod +x /root/.modelweaver/modelweaver
-COPY projetclient /root/.modelweaver/projetclient
 ENV HOME=/root
 ENV GDK_BACKEND=x11
 ENV GTK_MODULES=
