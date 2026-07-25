@@ -1090,6 +1090,7 @@ def op_llm_local_models(params):
 # ── Agent Manager ──────────────────────────────────────────
 
 def _get_agent_db():
+    from modules.sql.sql_module import AgentsDB
     d = getattr(_get_agent_db, "_db", None)
     if d is None:
         d = AgentsDB()
