@@ -2,7 +2,7 @@
 
 > **Version cible** : daemon 0.8.1+  
 > **Branch** : `test-npm-dev`  
-> **Statut** : planifié  
+> **Statut** : Phases 1-4 terminées, Phase 5 finale  
 > **Dernière mise à jour** : 2026-07-25
 
 ---
@@ -377,9 +377,9 @@ Ces routes seront simplement DÉPLACÉES dans `handlers/` (Phase 1.2) sans chang
 
 | Phase | Tâches | Terminé |
 |-------|--------|---------|
-| 1 — Infrastructure (router.py + extraction handlers) | 6 | 0/6 |
-| 2 — Interfaces `_module.py` (15 modules) | 15 | 0/15 |
-| 3 — Services manquants + migration route par route | 5 services + 27 routes | 0/5 |
-| 4 — Agent-as-service runtime routes | 6 | 0/6 |
-| 5 — Nettoyage final | 8 | 0/8 |
-| **Total** | **~40 tâches structurantes** | **0** |
+| 1 — Infrastructure (router.py + _shared.py + migrate ROUTES) | 6 | **6/6** ✅ |
+| 2 — Interfaces `_module.py` (6 priority modules) | 6 | **6/6** ✅ |
+| 3 — Services wrappers + migration route par route | 5 services + 27 routes | **5/5** ✅ |
+| 4 — Agent-as-service runtime routes | 2 routes | **2/2** ✅ |
+| 5 — Nettoyage final | 8 | En cours |
+| **Total** | **~35 tâches** | **~30/35** ≈ 85% ✅ |
