@@ -7,6 +7,9 @@ let _hasTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTER
 let _tauriCore: any = null;
 let _tauriWindow: any = null;
 
+let _daemonToken = '';
+let _daemonPort = 8770;
+
 async function loadModules() {
   if (!_hasTauri) return;
   if (_tauriCore === null) {
@@ -21,30 +24,42 @@ async function loadModules() {
   }
 }
 
-const DAEMON_URL = 'http://127.0.0.1:8771';
+// Récupère token + port depuis la config Rust (lecture api.token/api.port).
+async function ensureDaemonConfig(): Promise<void> {
+  if (_daemonToken) return;
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) {
+        const cfg = await _tauriCore.invoke('daemon_config');
+        _daemonToken = cfg.token || '';
+        _daemonPort = cfg.port || 8770;
+        return;
+      }
+    } catch { /* fallback defaults */ }
+  }
+  _daemonPort = 8770;
+}
 
-async function httpPost(route: string, body: unknown): Promise<any> {
-  const res = await fetch(`${DAEMON_URL}/${route}`, {
+export async function daemonPost(route: string, body: any): Promise<any> {
+  await ensureDaemonConfig();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+  const res = await fetch(`http://127.0.0.1:${_daemonPort}/v1/${route}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${route}`);
   return res.json();
 }
 
-export async function daemonPost(route: string, body: any): Promise<any> {
-  if (!_hasTauri) return httpPost(route, body);
-  await loadModules();
-  if (_tauriCore) return _tauriCore.invoke('daemon_post', { route, body: JSON.stringify(body) });
-  return httpPost(route, body);
-}
-
 export async function invoke(cmd: string, args?: Record<string, unknown>): Promise<any> {
   if (!_hasTauri) {
+    // En mode web, daemon_post = appel HTTP direct
     if (cmd === 'daemon_post') {
       const r = args as any;
-      return httpPost(r.route, JSON.parse(r.body));
+      return daemonPost(r.route, JSON.parse(r.body));
     }
     console.warn(`[bridge] invoke("${cmd}") sans Tauri — ignoré`);
     return undefined;

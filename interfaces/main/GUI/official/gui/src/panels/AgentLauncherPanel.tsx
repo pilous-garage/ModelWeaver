@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { AppApi } from '../useApp.ts';
-import { invoke } from '../bridge.ts';
+import { invoke, daemonPost } from '../bridge.ts';
 
 const SOLO_AGENTS = [
   { name: 'codeur', role: 'codeur', desc: 'Génère du code à partir d\'une description' },
@@ -28,7 +28,7 @@ function AgentLauncherPanel({ app }: { app: AppApi }) {
       const body = { target: selected, request };
       if (providerRef) body.provider_ref = providerRef;
       if (modelRef) body.model_ref = modelRef;
-      const res = await invoke<any>('daemon_post', { route: 'agent/launch', body: JSON.stringify(body) });
+      const res = await daemonPost('agent/launch', body);
       setResult(res);
     } catch (e: any) {
       setResult({ error: e.message });

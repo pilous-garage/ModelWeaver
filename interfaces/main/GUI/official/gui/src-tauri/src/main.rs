@@ -1048,6 +1048,15 @@ fn daemon_post(route: &str, body: &str) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn daemon_config() -> serde_json::Value {
+    let home = mw_home();
+    let token = std::fs::read_to_string(home.join("api.token")).unwrap_or_default();
+    let port = std::fs::read_to_string(home.join("api.port"))
+        .unwrap_or_else(|_| "8770".to_string());
+    serde_json::json!({"token": token.trim(), "port": port.trim().parse::<u16>().unwrap_or(8770)})
+}
+
+#[tauri::command]
 async fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
     // (manifeste + install-dependencies-<target>.sh). Délégation au daemon.
@@ -1695,6 +1704,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             daemon_post,
+            daemon_config,
             log_message,
             get_system_info,
             check_dependencies,

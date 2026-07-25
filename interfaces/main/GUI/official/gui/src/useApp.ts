@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { invoke, getWindowLabel, getCurrentWindow, LogicalSize } from './bridge.ts';
+import { invoke, daemonPost, getWindowLabel, getCurrentWindow, LogicalSize } from './bridge.ts';
 import type { Dependency, PackageManager, PythonPackageManager } from './types.ts';
 
 // Refresh paresseux : on poll /v1/db/versions (PRAGMA data_version par DB +
@@ -16,7 +16,7 @@ function useDomainVersions(enabled: boolean, onChange: (domains: Domain[]) => vo
     const poll = async () => {
       if (cancelled) return;
       try {
-        const data = await invoke<any>('daemon_post', { route: 'db/versions', body: '{}' });
+        const data = await daemonPost('db/versions', {});
         if (!data.ok) return;
         const v = (data.result || {}) as Record<string, number>;
         const prev = prevRef.current;
@@ -383,7 +383,7 @@ export function useApp() {
   const saveLayout = async () => {
     const data = JSON.stringify({ panelTree, hiddenPanels }, null, 2);
     try {
-      await invoke('daemon_post', { route: 'file/save', body: JSON.stringify({ path: 'panel-conf.json', content: data }) });
+      await daemonPost('file/save', { path: 'panel-conf.json', content: data });
     } catch {
       const blob = new Blob([data], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -395,7 +395,7 @@ export function useApp() {
 
   const loadLayout = async () => {
     try {
-      const res = await invoke<any>('daemon_post', { route: 'file/load', body: JSON.stringify({ path: 'panel-conf.json' }) });
+      const res = await daemonPost('file/load', { path: 'panel-conf.json' });
       if (res?.ok && res.result) {
         const { panelTree: pt, hiddenPanels: hp } = JSON.parse(res.result);
         if (pt) setPanelTree(pt);
@@ -426,7 +426,7 @@ export function useApp() {
 
   const fetchKeys = async () => {
     try {
-      const data = await invoke<any>('daemon_post', { route: 'keys/list', body: '{}' });
+      const data = await daemonPost('keys/list', {});
       if (data.ok) setKeysList(data.result.keys || []);
     } catch { /* daemon pas encore prêt */ }
   };
@@ -447,7 +447,7 @@ export function useApp() {
   const fetchModels = async () => {
     setModelsLoading(true);
     try {
-      const data = await invoke<any>('daemon_post', { route: 'llm/models/list', body: '{}' });
+      const data = await daemonPost('llm/models/list', {});
       if (data && data.ok) setModelsList(data.result.models || []);
       else setModelsList([]);
     } catch { setModelsList([]); }
@@ -458,7 +458,7 @@ export function useApp() {
     setLocalLoading(true);
     setLocalMsg('');
     try {
-      const data = await invoke<any>('daemon_post', { route: 'llm/local/list', body: '{}' });
+      const data = await daemonPost('llm/local/list', {});
       if (data && data.ok) setLocalEngines(data.result.engines || []);
       else setLocalEngines([]);
     } catch (e: any) { setLocalEngines([]); setLocalMsg(`Erreur: ${e}`); }
@@ -471,10 +471,7 @@ export function useApp() {
     setLocalBusy(engine);
     setLocalMsg('');
     try {
-      const data = await invoke<any>('daemon_post', {
-        route: `llm/local/${action}`,
-        body: JSON.stringify({ engine }),
-      });
+      const data = await daemonPost(`llm/local/${action}`, { engine });
       if (data?.status !== 'ok') setLocalMsg(`⚠️ ${data?.error || 'échec'}`);
       await fetchLocalEngines();
     } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
@@ -485,10 +482,10 @@ export function useApp() {
   const fetchAgents = async () => {
     setAgentLoading(true);
     try {
-      const data = await invoke<any>('daemon_post', { route: 'agent/list', body: '{}' });
+      const data = await daemonPost('agent/list', {});
       if (data?.ok || data?.agents) setAgentList(data.agents || []);
       try {
-        const m = await invoke<any>('daemon_post', { route: 'agent/manager/status', body: '{}' });
+        const m = await daemonPost('agent/manager/status', {});
         if (m) setAgentMgr({ active_agents: m.active_agents || 0, zombies: m.zombies || [] });
       } catch { /* ignore */ }
     } catch { /* ignore */ }
@@ -497,19 +494,14 @@ export function useApp() {
 
   const sendAgentSignal = async (agentId: number, type: string, payload?: any) => {
     try {
-      await invoke<any>('daemon_post', {
-        route: 'agent/signal',
-        body: JSON.stringify({ agent_id: agentId, type, payload }),
-      });
+      await daemonPost('agent/signal', { agent_id: agentId, type, payload });
       await fetchAgentSignals(agentId);
     } catch (e: any) { /* ignore */ }
   };
 
   const fetchAgentSignals = async (agentId: number) => {
     try {
-      const data = await invoke<any>('daemon_post', {
-        route: 'agent/signals', body: JSON.stringify({ agent_id: agentId }),
-      });
+      const data = await daemonPost('agent/signals', { agent_id: agentId });
       setAgentSignals(data?.signals || []);
     } catch { setAgentSignals([]); }
   };
@@ -528,10 +520,7 @@ export function useApp() {
 
   const handleAgentRestart = async (agentId: number) => {
     try {
-      await invoke<any>('daemon_post', {
-        route: 'agent/execute',
-        body: JSON.stringify({ agent_id: agentId }),
-      });
+      await daemonPost('agent/execute', { agent_id: agentId });
       await fetchAgents();
     } catch (e: any) { /* ignore */ }
   };
@@ -548,7 +537,7 @@ export function useApp() {
     let daemonToken = '';
     let daemonPort = 8770;
     try {
-      const info = await invoke<any>('daemon_post', { route: 'auth/info', body: '{}' });
+      const info = await daemonPost('auth/info', {});
       if (info?.ok) {
         daemonToken = info.result.token;
         daemonPort = info.result.port;
@@ -604,10 +593,7 @@ export function useApp() {
     } else {
       // 3. Fallback JSON synchrone
       try {
-        const data = await invoke<any>('daemon_post', {
-          route: 'llm/chat',
-          body: JSON.stringify({ provider_ref: chatProvider, model_ref: chatModel, messages: allMessages }),
-        });
+        const data = await daemonPost('llm/chat', { provider_ref: chatProvider, model_ref: chatModel, messages: allMessages });
         const content = (data && data.status === 'ok')
           ? (data.content || '(réponse vide)')
           : `⚠️ ${data?.error || 'no response'}`;
@@ -626,10 +612,7 @@ export function useApp() {
     }
     setKeyMsg('');
     try {
-      const data = await invoke<any>('daemon_post', {
-        route: 'keys/set',
-        body: JSON.stringify({ provider_ref: keysNewProvider, api_key: keysNewValue, tag: keysNewTag })
-      });
+      const data = await daemonPost('keys/set', { provider_ref: keysNewProvider, api_key: keysNewValue, tag: keysNewTag });
       if (!data || !data.ok) { setKeyMsg('⚠️ Échec: ' + (data?.error || 'inconnu')); return; }
       setKeysNewProvider(''); setKeysNewValue(''); setKeysNewTag('free');
       setKeyMsg('✅ Clé enregistrée pour ' + keysNewProvider);
@@ -666,14 +649,14 @@ export function useApp() {
 
   const handleDeleteKey = async (providerRef: string) => {
     try {
-      await invoke<any>('daemon_post', { route: 'keys/delete', body: JSON.stringify({ provider_ref: providerRef }) });
+      await daemonPost('keys/delete', { provider_ref: providerRef });
       await fetchKeys();
     } catch { /* ignore */ }
   };
 
   const handleToggleLock = async (ref: string, locked: boolean) => {
     try {
-      await invoke<any>('daemon_post', { route: 'keys/set_lock', body: JSON.stringify({ ref, locked: !locked }) });
+      await daemonPost('keys/set_lock', { ref, locked: !locked });
       await fetchKeys();
     } catch { /* ignore */ }
   };
@@ -693,7 +676,7 @@ export function useApp() {
   };
   const fetchServiceList = async () => {
     try {
-      const data = await invoke<any>('daemon_post', { route: 'service/list', body: '{}' });
+      const data = await daemonPost('service/list', {});
       if (data?.ok && data?.result?.services) setServiceList(data.result.services);
     } catch { /* daemon indisponible */ }
   };
@@ -759,10 +742,7 @@ export function useApp() {
     if (agentStreamAgent == null) return;
     const poll = async () => {
       try {
-        const data = await invoke<any>('daemon_post', {
-          route: 'agent/stream',
-          body: JSON.stringify({ agent_id: agentStreamAgent, seq: agentStreamSeq }),
-        });
+        const data = await daemonPost('agent/stream', { agent_id: agentStreamAgent, seq: agentStreamSeq });
         if (data?.chunks?.length) {
           const text = data.chunks.map((c: any) => c.chunk).join('');
           setAgentStreamText(prev => prev + text);

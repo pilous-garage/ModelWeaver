@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { AppApi } from '../useApp.ts';
-import { invoke } from '../bridge.ts';
+import { invoke, daemonPost } from '../bridge.ts';
 
 type TabId = 'processors' | 'services' | 'logs';
 
@@ -104,13 +104,13 @@ export function ServicesMonitorPanel({ app }: { app: AppApi }) {
 <td style={{ padding: '0.15rem 0.4rem', fontWeight: '600' }}>
                       {s.name}
                       <button onClick={async () => {
-                        try { await invoke<any>('daemon_post', { route: 'service/restart', body: JSON.stringify({ name: s.name }) }); } catch {}
+                        try { await daemonPost('service/restart', { name: s.name }); } catch {}
                       }}
                         style={{ marginLeft: '0.3rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#1d4ed8', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
                         ⟳
                       </button>
                       <button onClick={async () => {
-                        try { await invoke<any>('daemon_post', { route: 'service/stop', body: JSON.stringify({ name: s.name }) }); } catch {}
+                        try { await daemonPost('service/stop', { name: s.name }); } catch {}
                       }}
                         style={{ marginLeft: '0.2rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
                         ■
