@@ -456,21 +456,64 @@ def _job_processor_loop(interval: float = 5.0):
 _collector_proc = None
 
 
+def _collector_pidfile() -> Path:
+    return _mw_dir() / "run" / "usage_collector.pid"
+
+
+def _kill_old_collector():
+    """Tue le rassembleur d'usage précédent (même fichier PID) s'il est encore
+    vivant. Évite l'accumulation de processes orphelins entre redémarrages."""
+    pidfile = _collector_pidfile()
+    if not pidfile.exists():
+        return
+    try:
+        old_pid = int(pidfile.read_text().strip())
+        import subprocess
+        # Vérifie que le PID correspond bien à usage_collector.py
+        try:
+            import os, signal
+            with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+            if "usage_collector" not in cmdline:
+                return  # PID recyclé, ne pas tuer
+        except OSError:
+            return  # déjà mort
+        os.kill(old_pid, signal.SIGTERM)
+        for _ in range(50):
+            try:
+                os.kill(old_pid, 0)
+                time.sleep(0.1)
+            except OSError:
+                return  # mort
+        os.kill(old_pid, signal.SIGKILL)
+    except (ValueError, OSError):
+        pass
+    finally:
+        try:
+            pidfile.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _start_usage_collector(log=None):
     """Lance le rassembleur d'usage en process séparé (start_new_session),
-    isolé d'un crash du daemon. Best-effort."""
+    isolé d'un crash du daemon. Tue tout collecteur précédent."""
     global _collector_proc
     try:
         import subprocess
         script = Path(__file__).resolve().parent.parent.parent / "modules" / "usage" / "usage_collector.py"
         if not script.exists():
             return
+        # Tue l'ancien collecteur avant d'en spawner un nouveau
+        _kill_old_collector()
         proc = subprocess.Popen(
             [sys.executable, str(script)],
             start_new_session=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         _collector_proc = proc
+        _collector_pidfile().parent.mkdir(parents=True, exist_ok=True)
+        _collector_pidfile().write_text(str(proc.pid))
         if log is not None:
             log.info("Rassembleur d'usage démarré", pid=proc.pid)
     except Exception as e:

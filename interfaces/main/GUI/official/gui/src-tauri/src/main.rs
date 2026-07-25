@@ -390,6 +390,7 @@ struct ServiceInfo {
     proc_id: u64,
     start_order: u32,        // ordre défini dans le manifest
     depends_on: Vec<String>, // services requis avant démarrage
+    version: String,         // version sémantique du service
 }
 
 struct ServiceEntry {
@@ -412,7 +413,7 @@ fn watch_cache() -> &'static Mutex<HashMap<String, String>> {
     WATCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, parent: Option<String>, restart: bool, watch: bool, depends_on: Vec<String>) {
+fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, parent: Option<String>, restart: bool, watch: bool, depends_on: Vec<String>, version: &str) {
     let mut reg = services_reg().lock().unwrap();
     if reg.iter().any(|s| s.info.name == name) { return; }
     let proc_id = proc_begin(name, None, &format!("{} {}", command, args.join(" ")));
@@ -433,6 +434,7 @@ fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, pare
             proc_id,
             start_order: order,
             depends_on: depends_on.clone(),
+            version: version.to_string(),
         },
         child: None,
         watch,
@@ -465,6 +467,7 @@ fn register_thread_service(name: &str) -> u64 {
             proc_id,
             start_order: order,
             depends_on: vec![],
+            version: String::new(),
         },
         child: None,
         watch: false,
@@ -596,7 +599,7 @@ fn start_service_supervisor() {
                         Ok(None) => false,
                         Err(_) => { entry.info.last_exit = Some(-1); true }
                     },
-                    None => true,
+                    None => entry.info.status != "running", // adopté : pas exited si marked running
                 };
                 if exited {
                     entry.child = None;
@@ -667,7 +670,8 @@ fn write_services_summary() {
     out.push_str(&format!("{} services définis\n\n", reg.len()));
     for s in reg.iter() {
         let deps = if s.depends_on.is_empty() { String::new() } else { format!(" requires=[{}]", s.depends_on.join(",")) };
-        out.push_str(&format!("#{} {}  [mode: {}]{}", s.info.start_order, s.info.name, s.info.mode, deps));
+        let ver = if s.info.version.is_empty() { String::new() } else { format!(" [v{}]", s.info.version) };
+        out.push_str(&format!("#{} {} [mode: {}]{}{}", s.info.start_order, s.info.name, s.info.mode, ver, deps));
         out.push('\n');
         out.push_str(&format!("    command: {} {}\n", s.info.command, s.info.args.join(" ")));
         out.push_str(&format!("    auto-restart: {} | managed: {} | watch: {}\n",
@@ -680,6 +684,51 @@ fn write_services_summary() {
     }
     log_to_file("INIT", &format!("services summary written: {}", path.display()));
 }
+
+// Vérifie dans runtime.db si un service est déjà en cours d'exécution avec la
+// bonne version. Si oui, on l'adopte sans le respawn (préservation des services
+// entre redémarrages du superviseur ou des interfaces multiples).
+fn reuse_existing_services() {
+    let db = mw_home().join("runtime.db");
+    db_run(&db, "CREATE TABLE IF NOT EXISTS services (version TEXT);");
+    let mut reg = services_reg().lock().unwrap();
+    for entry in reg.iter_mut() {
+        if !entry.managed { continue; }
+        let rows = db_query_json(&db, &format!(
+            "SELECT pid, version FROM services WHERE name = '{}' AND status = 'running'",
+            entry.info.name.replace('\'', "''")
+        ));
+        for row in &rows {
+            let old_version = row.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            let old_pid = row.get("pid").and_then(|p| p.as_i64()).unwrap_or(-1);
+            if old_pid > 0 && process_alive(old_pid as i32) && old_version == entry.info.version
+                && pid_matches_service(old_pid as i32, &entry.info.name)
+            {
+                entry.info.status = "running".to_string();
+                entry.info.pid = Some(old_pid as u32);
+                entry.info.started_at = now_secs();
+                entry.info.restarts = 0;
+                entry.child = None;
+                log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn pid_matches_service(pid: i32, name: &str) -> bool {
+    if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{}/cmdline", pid)) {
+        let s = cmdline.replace('\0', " ");
+        if name == "catalogue" { return s.contains("catalogue"); }
+        if name == "installer" { return s.contains("installer_worker"); }
+        if name == "daemon-api" { return s.contains("daemon.py"); }
+        return true;
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn pid_matches_service(_pid: i32, _name: &str) -> bool { true }
 
 fn read_watch_cache(name: &str) -> Option<String> {
     watch_cache().lock().unwrap().get(name).cloned()
@@ -702,6 +751,7 @@ fn mirror_services_to_db() {
         restarts INTEGER DEFAULT 0,\n\
         last_exit INTEGER,\n\
         started_at INTEGER,\n\
+        version TEXT DEFAULT '',\n\
         updated_at INTEGER DEFAULT (strftime('%s','now'))\n\
     );");
     for s in reg.iter() {
@@ -709,10 +759,10 @@ fn mirror_services_to_db() {
         let args = s.info.args.join("\u{1}").replace('\'', "''");
         let pid = s.info.pid.map(|v| v as i64).unwrap_or(-1);
         let parent = s.info.parent.clone().unwrap_or_default().replace('\'', "''");
-        let _ = writeln!(sql, "INSERT INTO services (name,mode,command,args,status,pid,parent,restart,restarts,last_exit,started_at) \
-            VALUES ('{}','{}','{}','{}','{}',{},'{}',{},{},{},{}) \
-            ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,updated_at=strftime('%s','now');",
-            esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64);
+        let _ = writeln!(sql, "INSERT INTO services (name,mode,command,args,status,pid,parent,restart,restarts,last_exit,started_at,version) \
+            VALUES ('{}','{}','{}','{}','{}',{},'{}',{},{},{},{},'{}') \
+            ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,version=excluded.version,updated_at=strftime('%s','now');",
+            esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64, esc(&s.info.version));
     }
     // Nettoie les entrées orphelines (services supprimés du manifest)
     let names: Vec<String> = reg.iter().map(|s| s.info.name.clone()).collect();
@@ -1629,6 +1679,12 @@ fn main() {
 
     ensure_install_jobs(&db_path);
 
+    // Migration silencieuse : ajoute les colonnes manquantes aux tables existantes.
+    let _ = std::process::Command::new("sqlite3")
+        .arg(&db_path)
+        .arg("ALTER TABLE services ADD COLUMN version TEXT DEFAULT ''")
+        .status();
+
     // Root of the process tree: the main calling process ("modelweaver-main").
     let root_pid = std::process::id();
     proc_register("modelweaver-main", None, Some(root_pid), "modelweaver", String::new(), "running");
@@ -1653,17 +1709,22 @@ fn main() {
     let cat_entry = service_entry(&repo_root, "catalogue");
     let cat_db = mw_home().join("catalogue.remote.db");
     define_service("catalogue", "loop", python_bin(),
-        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false, vec![]);
+        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false, vec![], "0.1.0");
     define_service("installer", "loop", python_bin(),
-        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false, vec![]);
+        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false, vec![], "0.1.0");
     // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut.
     if autotest_enabled() {
         define_service("tester", "loop", python_bin(),
-            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![]);
+            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![], "0.1.0");
     }
     // Daemon API (backend unique, consommé par toute interface).
     define_service("daemon-api", "loop", python_bin(),
-        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false, vec![]);
+        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false, vec![], "0.8.0");
+
+    // Réutilise les services déjà en cours avec la bonne version (évite les
+    // redémarrages inutiles et les conflits de ports entre interfaces).
+    reuse_existing_services();
+
     start_service_supervisor();
     write_services_summary();
 
