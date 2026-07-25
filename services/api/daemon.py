@@ -41,19 +41,13 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from services._common import mw_home
-from modules.system.deps import install_system_package, install_target_dependencies
 
 # Le daemon est le backend unique et indépendant de toute GUI. Il consomme
-# directement les modules (source de vérité) et le service installer_worker
+# directement les services (source de vérité) et le service installer_worker
 # (file de jobs + install/uninstall). Service autonome, aucune dépendance à un script Python externe de compatibilité Tauri.
 from services.installer_worker import jobs
 from services.watch_sysstate import service as sysstate
-from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, AgentsDB, read_db_version, fetch_remote_to_local
-from modules.checker.checker import Checker
 from services._common import _db_paths, _quiet_stdout, log_to_file, runtime_db_path
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
-from modules.llm_manager.local_engines import get_local_engine_manager
-from modules.llm_manager.base_bridge import BridgeError, ErrorCategory
 from services.api.catalogue_api import (
     op_catalogue_skills_list, op_catalogue_skills_get, op_catalogue_skills_save, op_catalogue_skills_delete,
     op_catalogue_behaviors_list, op_catalogue_behaviors_get, op_catalogue_behaviors_save, op_catalogue_behaviors_delete,
@@ -166,8 +160,7 @@ def check_databases():
 def seed_recipes(cat):
     """Backfill catalogue_outils/versions/recettes + outils_popularite depuis
     tools.json et les .mw.yaml shippés. Idempotent (INSERT OR IGNORE / dédupe)."""
-    from modules.sql.db import (_ensure_classes_outils_table, resolve_classe_id,
-                                 _default_class_for_ref)
+    from modules.sql.sql_module import _ensure_classes_outils_table, resolve_classe_id, _default_class_for_ref
     data_path = str(_REPO_ROOT / "modules" / "catalogue" / "data" / "tools.json")
     try:
         with open(data_path) as f:
@@ -239,7 +232,7 @@ def seed_catalogue():
     # Seed models + provider_models (idempotent, indépendant des outils).
     # Ainsi le catalogue LLM est toujours peuplé même si les outils
     # ont déjà été seedés (cas d'un catalogue pré-existant).
-    from modules.llm_manager.llm_manager import seed_providers, seed_models, seed_provider_models
+    from modules.llm_manager.llm_manager_module import seed_providers, seed_models, seed_provider_models
     count_providers = seed_providers(cat)
     count_models = seed_models(cat)
     count_pm = seed_provider_models(cat)
@@ -297,6 +290,7 @@ def get_installed_tools():
 
 def save_system_state():
     mw = _get_mw()
+    from modules.checker.checker_module import Checker
     Checker().update_local_db(mw)
     mw.commit()
     return {"status": "ok"}
@@ -326,7 +320,7 @@ def update_tools_table():
 
 def op_tools_install_all(_params):
     """Queue tous les outils du catalogue non encore installés."""
-    from modules.checker.checker import Checker
+    from modules.checker.checker_module import Checker
     cat = _get_cat()
     cur = cat.conn.execute("SELECT ref, nom AS name FROM catalogue_outils")
     all_tools = cur.fetchall()
@@ -560,25 +554,19 @@ def _op_tarif_sync(url=None):
     return sync_tarif(url)
 
 
-def op_usage_budget(_params):
-    """Resumer du budget USD reellement consomme (persiste par le rassembleur)."""
-    from modules.usage.budget import get_budget_summary, get_budget_rows
-    limit = int(_params.get("limit", 100)) if isinstance(_params, dict) else 100
-    return {
-        "summary": get_budget_summary(),
-        "rows": get_budget_rows(limit=limit),
-    }
+def op_usage_budget(params):
+    from services.usage import get_budget
+    return get_budget(params)
 
 
-def op_usage_free_tier(_params):
-    """Liste des modeles marques free-tier (cout nul) pour tous les providers."""
-    from modules.usage.budget import get_free_tier_models
-    return {"free_tier_models": get_free_tier_models()}
+def op_usage_free_tier(params):
+    from services.usage import get_free_tier
+    return get_free_tier(params)
 
 
 def op_deps_check(_params):
-    from services.depends import check_all_units
-    return check_all_units(_REPO_ROOT)
+    from services.system_service import check_deps
+    return check_deps(_params)
 
 
 def _rescan_local_tools():
@@ -593,10 +581,8 @@ def _rescan_local_tools():
 
 
 def op_deps_install(params):
-    package = params.get("package")
-    if not package:
-        return {"status": "error", "error": "missing 'package'"}
-    res = install_system_package(package)
+    from services.system_service import install_dep
+    res = install_dep(params)
     if res.get("status") == "ok":
         try:
             _get_rt().bump_meta("dependencies")
@@ -607,14 +593,8 @@ def op_deps_install(params):
 
 
 def op_deps_install_target(params):
-    """Installe les dépendances requises de la cible via le script compilé.
-
-    target vide -> auto-détecté. Script absent -> erreur 'fichier <script> absent'.
-    """
-    target = params.get("target", "") or ""
-    include_optional = bool(params.get("include_optional", False))
-    res = install_target_dependencies(target=target, include_optional=include_optional)
-    # Signal à la GUI (pseudo-domaine 'dependencies') que l'état a changé.
+    from services.system_service import install_target
+    res = install_target(params)
     if res.get("status") == "ok":
         try:
             _get_rt().bump_meta("dependencies")
@@ -625,31 +605,8 @@ def op_deps_install_target(params):
 
 
 def op_db_versions(params):
-    """Renvoie les `PRAGMA data_version` par DB (+ meta 'dependencies').
-
-    La GUI poll ce endpoint à 20 Hz et ne rafraîchit que les panneaux du
-    domaine dont la DB a changé (split physique : catalogue / inventory /
-    runtime / dependencies). Pas de triggers par table.
-    """
-    out = {}
-    try:
-        out["inventory"] = read_db_version(_get_mw().conn)
-    except Exception:
-        out["inventory"] = 0
-    try:
-        # combine data_version (écritures externes) + meta (écritures du daemon lui-même)
-        out["catalogue"] = max(read_db_version(_get_cat().conn), _get_rt().read_meta("catalogue"))
-    except Exception:
-        out["catalogue"] = 0
-    try:
-        out["runtime"] = read_db_version(_get_rt().conn)
-    except Exception:
-        out["runtime"] = 0
-    try:
-        out["dependencies"] = _get_rt().read_meta("dependencies")
-    except Exception:
-        out["dependencies"] = 0
-    return out
+    from services.sql_service import get_db_versions
+    return get_db_versions(params)
 
 
 # Cache TTL pour check_dependencies_manifest (évite de re-lancer dpkg/pip à chaque poll)
@@ -733,7 +690,7 @@ def op_keys_get(params):
             identity=params.get("identity", "default"),
         )
     except Exception as e:
-        from modules.key_manager.key_manager import KeyLockedError
+        from modules.key_manager.key_manager_module import KeyLockedError
         if isinstance(e, KeyLockedError):
             return {"status": "locked"}
         raise
@@ -785,7 +742,7 @@ def op_keys_delete(params):
 
 
 def op_keys_onboard(params):
-    from modules.key_manager.onboarder import Onboarder
+    from modules.key_manager.key_manager_module import Onboarder
     km = _get_km()
     onboarder = Onboarder(km)
     env_path = params.get("env_path", str(_REPO_ROOT / ".env"))
@@ -796,7 +753,7 @@ def op_keys_onboard(params):
 
 
 def op_providers_list(_params):
-    from modules.sql.db import CatalogueDB
+    from modules.sql.sql_module import CatalogueDB
     cat = _get_cat()
     cur = cat.conn.execute(
         "SELECT ref, name, provider_type, api_type, website, is_free_tier_provider "
@@ -928,6 +885,7 @@ def op_llm_chat(params):
             "usage": resp.usage,
         }
     except BridgeError as be:
+        from modules.llm_manager.llm_manager_module import BridgeError
         return {
             "status": "error",
             "error": be.message,
@@ -996,6 +954,7 @@ def op_llm_chat_stream_sse(params, wfile):
             char_count += len(chunk)
             sw.send("delta", {"content": chunk})
     except BridgeError as be:
+        from modules.llm_manager.llm_manager_module import BridgeError
         sw.error(be.message, be.category.value, be.provider_ref, be.model_ref)
     except Exception as e:
         sw.error(str(e), "unknown", provider_ref or "", model_ref or "")
@@ -1093,12 +1052,14 @@ def op_llm_context_history(params):
 
 def op_llm_local_list(params):
     """Liste les moteurs LLM locaux détectés (Ollama, LM Studio, ...)."""
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
     mgr = get_local_engine_manager()
     return mgr.list_engines()
 
 
 def op_llm_local_start(params):
     """Démarre un moteur local gérable en headless. params: engine"""
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
     mgr = get_local_engine_manager()
     engine_ref = params.get("engine")
     if not engine_ref:
@@ -1108,6 +1069,7 @@ def op_llm_local_start(params):
 
 def op_llm_local_stop(params):
     """Arrête un moteur local. params: engine"""
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
     mgr = get_local_engine_manager()
     engine_ref = params.get("engine")
     if not engine_ref:
@@ -1117,6 +1079,7 @@ def op_llm_local_stop(params):
 
 def op_llm_local_models(params):
     """Liste les modèles disponibles d'un moteur local. params: engine"""
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
     mgr = get_local_engine_manager()
     engine_ref = params.get("engine")
     if not engine_ref:
@@ -1126,7 +1089,7 @@ def op_llm_local_models(params):
 
 # ── Agent Manager ──────────────────────────────────────────
 
-def _get_agent_db() -> AgentsDB:
+def _get_agent_db():
     d = getattr(_get_agent_db, "_db", None)
     if d is None:
         d = AgentsDB()
@@ -1567,7 +1530,7 @@ def op_chat_session_stream(params):
 def op_provider_endpoint_add(params):
     """Ajoute un endpoint à un provider (table provider_endpoints).
     params: provider_ref, label, endpoint_url, api_type?, is_default?"""
-    from modules.sql.db import CatalogueDB
+    from modules.sql.sql_module import CatalogueDB
     ref = params.get("provider_ref")
     label = params.get("label") or "v1"
     url = params.get("endpoint_url")
@@ -1652,7 +1615,7 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
 def _storage_route(agent_id: int, method: str, sub_parts: List[str], params: dict) -> dict:
     """Gère les sous-routes agents/{id}/storage/* (infra, pas agent)."""
     from AgentFrameWork.agent_storage import AgentStorage
-    from modules.sql.db import AgentsDB
+    from modules.sql.sql_module import AgentsDB
     st = AgentStorage(agent_id, AgentsDB().conn)
     if sub_parts and sub_parts[0] == "quota" and len(sub_parts) >= 2 and sub_parts[1] == "approve":
         if method != "POST":
@@ -1681,7 +1644,7 @@ def _budget_route(agent_id: int, method: str, sub_parts: List[str], params: dict
     """agents/{id}/budget — interroge le budget restant du fournisseur/modèle de l'agent."""
     if sub_parts:
         return {"code": 404, "payload": {"error": "not_found"}}
-    from modules.sql.db import AgentsDB
+    from modules.sql.sql_module import AgentsDB
     row = AgentsDB().conn.execute(
         "SELECT config_json FROM agents WHERE agent_id=?",
         (agent_id,)
