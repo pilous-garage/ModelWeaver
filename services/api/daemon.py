@@ -72,7 +72,7 @@ from AgentFrameWork.router import (
 )
 
 API_VERSION = "v1"
-MW_VERSION = "0.7.5"
+MW_VERSION = "0.8.0"
 
 
 def _mw_dir() -> Path:
@@ -1265,6 +1265,66 @@ def op_agent_execute(params):
                                  entrypoint=params.get("entrypoint", "main"))
 
 
+def op_agent_launch(params):
+    """Crée un agent et l'exécute immédiatement (one-shot)."""
+    create = op_agent_create(params)
+    if create["status"] != "ok":
+        return create
+    agent_id = create["agent_id"]
+    execute_params = {
+        "agent_id": agent_id,
+        "request": params.get("request", ""),
+        "provider_ref": params.get("provider_ref", ""),
+        "model_ref": params.get("model_ref", ""),
+        "entrypoint": params.get("entrypoint", "main"),
+    }
+    exec_result = op_agent_execute(execute_params)
+    return {"status": "ok", "agent_id": agent_id, "execute": exec_result}
+
+
+def op_service_list(_params):
+    """Liste les services supervisés (lecture du miroir DB partagé avec Rust)."""
+    import sqlite3
+    try:
+        db = runtime_db_path()
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT name, mode, command, args, status, pid, parent, "
+            "restart, restarts, last_exit, started_at, updated_at "
+            "FROM services ORDER BY started_at"
+        ).fetchall()
+        conn.close()
+        return {"services": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        return {"services": [], "count": 0, "error": str(e)}
+
+
+def _service_command(name: str, action: str):
+    """Écrit une commande dans service_commands (lue par le superviseur Rust)."""
+    import sqlite3
+    try:
+        db = runtime_db_path()
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE IF NOT EXISTS service_commands "
+                      "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, action TEXT, "
+                      "created_at INTEGER DEFAULT (strftime('%s','now')), executed INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO service_commands (name, action) VALUES (?, ?)", (name, action))
+        conn.commit()
+        conn.close()
+        return {"status": "ok", "action": action, "name": name}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_service_restart(params):
+    return _service_command(params.get("name", ""), "restart")
+
+
+def op_service_stop(params):
+    return _service_command(params.get("name", ""), "stop")
+
+
 def op_agent_manager_status(_params):
     """Retourne le statut de l'AgentManager — proxy vers AFD."""
     from services.api.afd_client import get_afd_client
@@ -1719,6 +1779,11 @@ ROUTES = {
     "agent/stream":           op_agent_stream,
     "agent/spawn":            op_agent_spawn,
     "agent/handoff":          op_agent_handoff,
+    "agent/launch":           op_agent_launch,
+    # N. Service Manager (pont DB partagée avec le superviseur Rust)
+    "service/list":           op_service_list,
+    "service/restart":        op_service_restart,
+    "service/stop":           op_service_stop,
     # N. Chat Service (V0.6.6)
     "chat/session/create":    op_chat_session_create,
     "chat/session/list":      op_chat_session_list,
@@ -2003,10 +2068,45 @@ def serve(port: int = 8770) -> None:
 
     log.info("Daemon démarré", port=port, api=API_VERSION, version=MW_VERSION,
              token=str(token_file), routes=len(ROUTES))
+
+    # Boot agents : crée les agents système s'ils n'existent pas encore.
+    _ensure_boot_agents(log)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("Arrêt du daemon")
+
+
+# Agents système créés au démarrage si absents. Chaque entrée est passée
+# à op_agent_create (role, name, occupation, config, etc.).
+BOOT_AGENTS = [
+    {"role": "chat", "name": "installer", "occupation": "continue",
+     "config": {"description": "Agent de chat pour la fenêtre installateur/dashboard"}},
+    {"role": "chat", "name": "sandbox", "occupation": "continue",
+     "config": {"description": "Agent de chat pour la fenêtre sandbox IDE"}},
+]
+
+
+def _ensure_boot_agents(log):
+    """Crée les BOOT_AGENTS manquants dans agents.db."""
+    existing = op_agent_list({})
+    existing_names = {a["name"] for a in existing.get("agents", [])}
+    for spec in BOOT_AGENTS:
+        name = spec.get("name", "")
+        if not name:
+            continue
+        if name in existing_names:
+            log.info("Boot agent déjà présent", name=name)
+            continue
+        try:
+            result = op_agent_create(spec)
+            if result.get("status") == "ok":
+                log.info("Boot agent créé", name=name, agent_id=result.get("agent_id"))
+            else:
+                log.warning("Boot agent échoué", name=name, error=result.get("error"))
+        except Exception as e:
+            log.error("Boot agent erreur", name=name, error=str(e))
 
 
 def main():

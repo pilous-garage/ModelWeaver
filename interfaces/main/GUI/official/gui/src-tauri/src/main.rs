@@ -388,6 +388,8 @@ struct ServiceInfo {
     last_exit: Option<i32>,
     started_at: u64,
     proc_id: u64,
+    start_order: u32,        // ordre défini dans le manifest
+    depends_on: Vec<String>, // services requis avant démarrage
 }
 
 struct ServiceEntry {
@@ -395,10 +397,12 @@ struct ServiceEntry {
     child: Option<std::process::Child>,
     watch: bool,             // if true, stdout lines are cached (WATCH_CACHE)
     managed: bool,           // if true, supervisor spawns/restarts the child
+    depends_on: Vec<String>, // services requis avant démarrage
 }
 
 static SERVICES: OnceLock<Mutex<Vec<ServiceEntry>>> = OnceLock::new();
 static WATCH_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static SERVICE_ORDER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 fn services_reg() -> &'static Mutex<Vec<ServiceEntry>> {
     SERVICES.get_or_init(|| Mutex::new(Vec::new()))
@@ -408,10 +412,11 @@ fn watch_cache() -> &'static Mutex<HashMap<String, String>> {
     WATCH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, parent: Option<String>, restart: bool, watch: bool) {
+fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, parent: Option<String>, restart: bool, watch: bool, depends_on: Vec<String>) {
     let mut reg = services_reg().lock().unwrap();
     if reg.iter().any(|s| s.info.name == name) { return; }
     let proc_id = proc_begin(name, None, &format!("{} {}", command, args.join(" ")));
+    let order = SERVICE_ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     reg.push(ServiceEntry {
         info: ServiceInfo {
             name: name.to_string(),
@@ -426,10 +431,13 @@ fn define_service(name: &str, mode: &str, command: &str, args: Vec<String>, pare
             last_exit: None,
             started_at: now_secs(),
             proc_id,
+            start_order: order,
+            depends_on: depends_on.clone(),
         },
         child: None,
         watch,
         managed: true,
+        depends_on,
     });
 }
 
@@ -440,6 +448,7 @@ fn register_thread_service(name: &str) -> u64 {
     proc_set_status(proc_id, "running");
     let mut reg = services_reg().lock().unwrap();
     if reg.iter().any(|s| s.info.name == name) { return proc_id; }
+    let order = SERVICE_ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     reg.push(ServiceEntry {
         info: ServiceInfo {
             name: name.to_string(),
@@ -454,10 +463,13 @@ fn register_thread_service(name: &str) -> u64 {
             last_exit: None,
             started_at: now_secs(),
             proc_id,
+            start_order: order,
+            depends_on: vec![],
         },
         child: None,
         watch: false,
         managed: false,
+        depends_on: vec![],
     });
     proc_id
 }
@@ -564,9 +576,20 @@ fn start_service_supervisor() {
     std::thread::spawn(move || loop {
         {
             let mut reg = services_reg().lock().unwrap();
+            let running: Vec<String> = reg.iter()
+                .filter(|s| s.info.status == "running")
+                .map(|s| s.info.name.clone())
+                .collect();
             for entry in reg.iter_mut() {
                 if !entry.managed { continue; }
                 if entry.info.mode != "loop" { continue; }
+                // Vérification des dépendances : si des services requis ne sont
+                // pas "running", on diffère le démarrage.
+                let deps_ok = entry.depends_on.iter().all(|dep| running.contains(dep));
+                if entry.child.is_none() && entry.info.status != "running" && !deps_ok {
+                    entry.info.status = "stopped".to_string();
+                    continue;
+                }
                 let exited = match entry.child.as_mut() {
                     Some(c) => match c.try_wait() {
                         Ok(Some(code)) => { entry.info.last_exit = Some(code.code().unwrap_or(-1)); true }
@@ -601,27 +624,57 @@ fn start_service_supervisor() {
             }
         }
         mirror_services_to_db();
+        poll_service_commands();
         std::thread::sleep(Duration::from_millis(1000));
     });
 }
+
+
+fn poll_service_commands() {
+    // Lit la table service_commands dans runtime.db et exécute les actions.
+    let db = mw_home().join("runtime.db");
+    db_run(&db, "CREATE TABLE IF NOT EXISTS service_commands (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT,\
+        name TEXT NOT NULL,\
+        action TEXT NOT NULL,\
+        created_at INTEGER DEFAULT (strftime('%s','now')),\
+        executed INTEGER DEFAULT 0\
+    );");
+    let rows = db_query_json(&db,
+        "SELECT id, name, action FROM service_commands WHERE executed = 0 ORDER BY id");
+    if rows.is_empty() { return; }
+    for row in &rows {
+        let name = row.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        let action = row.get("action").and_then(|x| x.as_str()).unwrap_or("");
+        let id = row.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+        log_to_file("CMD", &format!("service {} -> {}", name, action));
+        match action {
+            "restart" => { let _ = service_restart(name.to_string()); }
+            "stop" => { let _ = service_stop(name.to_string()); }
+            _ => {}
+        }
+        db_run(&db, &format!("UPDATE service_commands SET executed = 1 WHERE id = {}", id));
+    }
+}
+
 
 /// Écrit un fichier résumé clair de l'interface des services (comment chaque
 /// service est ouvert/lancé) dans ~/.modelweaver/services-summary.txt.
 fn write_services_summary() {
     let reg = services_reg().lock().unwrap();
     let mut out = String::new();
-    out.push_str("=== ModelWeaver — Interface des services ===\n\n");
-    out.push_str("Chaque service est ouvert (lancé) par le superviseur Rust.\n");
-    out.push_str("Services légers = threads Rust (pas d'enfant Python).\n");
-    out.push_str("Services complexes = enfants Python supervisés (auto-redémarrage).\n\n");
+    out.push_str("=== ModelWeaver — Boot des services ===\n\n");
+    out.push_str(&format!("{} services définis\n\n", reg.len()));
     for s in reg.iter() {
-        out.push_str(&format!("● {}  [mode: {}]\n", s.info.name, s.info.mode));
-        out.push_str(&format!("    ouvert par : {} {}\n", s.info.command, s.info.args.join(" ")));
-        out.push_str(&format!("    auto-redémarrage : {} | enfant managé : {} | cache watch : {}\n",
+        let deps = if s.depends_on.is_empty() { String::new() } else { format!(" requires=[{}]", s.depends_on.join(",")) };
+        out.push_str(&format!("#{} {}  [mode: {}]{}", s.info.start_order, s.info.name, s.info.mode, deps));
+        out.push('\n');
+        out.push_str(&format!("    command: {} {}\n", s.info.command, s.info.args.join(" ")));
+        out.push_str(&format!("    auto-restart: {} | managed: {} | watch: {}\n",
             s.info.restart, s.managed, s.watch));
         out.push('\n');
     }
-    let path = mw_home().join("services-summary.txt");
+    let path = mw_home().join("services-boot.txt");
     if let Ok(mut f) = OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
         let _ = f.write_all(out.as_bytes());
     }
@@ -1270,11 +1323,11 @@ fn service_log(name: String, lines: usize) -> Result<String, String> {
 
 #[tauri::command]
 fn service_restart(name: String) -> Result<String, String> {
-    let reg = services_reg().lock().unwrap();
+    let mut reg = services_reg().lock().unwrap();
     let entry = reg.iter_mut().find(|s| s.info.name == name);
     if let Some(entry) = entry {
         entry.info.status = "restarting".to_string();
-        if let Some(child) = entry.child.take() {
+        if let Some(mut child) = entry.child.take() {
             let _ = child.kill();
         }
         drop(reg);
@@ -1282,6 +1335,21 @@ fn service_restart(name: String) -> Result<String, String> {
         let entry2 = reg2.iter_mut().find(|s| s.info.name == name).unwrap();
         spawn_service_child(entry2);
         Ok(format!("{} restarted", name))
+    } else {
+        Err(format!("service '{}' introuvable", name))
+    }
+}
+
+#[tauri::command]
+fn service_stop(name: String) -> Result<String, String> {
+    let mut reg = services_reg().lock().unwrap();
+    let entry = reg.iter_mut().find(|s| s.info.name == name);
+    if let Some(entry) = entry {
+        entry.info.status = "stopped".to_string();
+        if let Some(mut child) = entry.child.take() {
+            let _ = child.kill();
+        }
+        Ok(format!("{} stopped", name))
     } else {
         Err(format!("service '{}' introuvable", name))
     }
@@ -1563,17 +1631,17 @@ fn main() {
     let cat_entry = service_entry(&repo_root, "catalogue");
     let cat_db = mw_home().join("catalogue.remote.db");
     define_service("catalogue", "loop", python_bin(),
-        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false);
+        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false, vec![]);
     define_service("installer", "loop", python_bin(),
-        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false);
+        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false, vec![]);
     // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut.
     if autotest_enabled() {
         define_service("tester", "loop", python_bin(),
-            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false);
+            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![]);
     }
     // Daemon API (backend unique, consommé par toute interface).
     define_service("daemon-api", "loop", python_bin(),
-        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false);
+        vec![repo_root.join("services").join("api").join("daemon.py").display().to_string(), "serve".to_string(), "--port".to_string(), "8770".to_string()], None, true, false, vec![]);
     start_service_supervisor();
     write_services_summary();
 
@@ -1645,6 +1713,7 @@ fn main() {
              service_list,
              service_log,
              service_restart,
+             service_stop,
              watch_get,
             run_command,
             get_platform,

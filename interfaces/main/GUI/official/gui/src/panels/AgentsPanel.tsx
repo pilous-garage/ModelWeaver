@@ -41,13 +41,20 @@ export function AgentsPanel({ app }: { app: AppApi }) {
                    <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#e2e8f0' }}>{a.name} {a.running && <span style={{ color: '#6ee7b7', fontSize: '0.7rem' }}>● actif</span>}{app.agentMgr.zombies.includes(a.agent_id) && <span style={{ color: '#fca5a5', fontSize: '0.7rem' }}>🧟 zombie</span>}</div>
                    <div style={{ fontSize: '0.66rem', color: '#64748b' }}>{a.role_type} · {a.occupation} · <span style={{ color: a.status === 'RUNNING' ? '#6ee7b7' : '#94a3b8' }}>{a.status}</span>{a.running && a.heartbeat ? ` · ❤ ${Math.round(a.heartbeat)} ms` : ''}{a.running && a.current_step ? ` · 🪜 ${a.current_step}` : ''}</div>
                  </div>
-                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                  <button onClick={() => app.sendAgentSignal(a.agent_id, 'pause')} style={sigBtn('#475569')}>⏸ Pause</button>
-                  <button onClick={() => app.sendAgentSignal(a.agent_id, 'resume')} style={sigBtn('#0e7490')}>▶ Reprendre</button>
-                  <button onClick={() => app.sendAgentSignal(a.agent_id, 'configure', { variables: { note: 'via-gui' } })} style={sigBtn('#7c3aed')}>⚙ Config</button>
-                  <button onClick={() => app.sendAgentSignal(a.agent_id, 'kill')} style={sigBtn('#7f1d1d')}>✕ Kill</button>
-                  <button onClick={() => app.watchAgentStream(a.agent_id)} style={sigBtn('#059669')}>📡 Stream</button>
-                </div>
+<div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                   <button onClick={() => app.sendAgentSignal(a.agent_id, 'pause')} style={sigBtn('#475569')}>⏸ Pause</button>
+                   <button onClick={() => app.sendAgentSignal(a.agent_id, 'resume')} style={sigBtn('#0e7490')}>▶ Reprendre</button>
+                   <button onClick={() => app.sendAgentSignal(a.agent_id, 'configure', { variables: { note: 'via-gui' } })} style={sigBtn('#7c3aed')}>⚙ Config</button>
+                   <button onClick={() => app.sendAgentSignal(a.agent_id, 'kill')} style={sigBtn('#7f1d1d')}>✕ Kill</button>
+                   <button onClick={() => app.watchAgentStream(a.agent_id)} style={sigBtn('#059669')}>📡 Stream</button>
+                 </div>
+                 <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.3rem' }}>
+                   <button onClick={async () => {
+                     await app.sendAgentSignal(a.agent_id, 'kill');
+                     try { await app.handleAgentRestart(a.agent_id); } catch {}
+                   }} style={{ ...sigBtn('#1d4ed8'), fontSize: '0.6rem', padding: '0.15rem 0.35rem' }}>⟳ Restart</button>
+                   <button onClick={() => app.sendAgentSignal(a.agent_id, 'pause')} style={{ ...sigBtn('#7f1d1d'), fontSize: '0.6rem', padding: '0.15rem 0.35rem' }}>■ Stop</button>
+                 </div>
               </div>
             </div>
           ))}

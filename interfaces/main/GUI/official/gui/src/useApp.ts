@@ -526,6 +526,16 @@ export function useApp() {
     setAgentStreamText('');
   };
 
+  const handleAgentRestart = async (agentId: number) => {
+    try {
+      await invoke<any>('daemon_post', {
+        route: 'agent/execute',
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      await fetchAgents();
+    } catch (e: any) { /* ignore */ }
+  };
+
   const handleChatSend = async () => {
     const msg = chatInput.trim();
     if (!msg || !chatProvider || !chatModel || chatSending) return;
@@ -1222,6 +1232,7 @@ export function useApp() {
     fetchAgentSignals,
     watchAgentStream,
     stopAgentStream,
+    handleAgentRestart,
     handleChatSend,
     handleSetKey,
     handleAddProvider,

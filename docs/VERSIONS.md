@@ -838,19 +838,26 @@ rendre le framework observable panneau par panneau pendant un live test.
 ## V0.8 — Organisateur Global & Dashboard (📝 Planifié)
 **Objectif** : Dashboard central, tour de contrôle et orchestration visuelle.
 
-### V0.8.0 — Dashboard — Nouvelle fenêtre dédiée 🖥️
+### V0.8.0 — Dashboard + CLI + Services Manifest (✅ Livrée)
 - **Fenêtre Tauri séparée** `dashboard` (1400×900), indépendante de l'installateur — window Tauri dédié, lancée via `openDashboardWindow`
 - **Module panneaux** (`panels/index.ts`) : un fichier = un panneau, exporté centralement — n'importe quelle fenêtre peut importer n'importe quel panneau simplement
 - `App.tsx` gère maintenant 3 fenêtres : `main` (installateur/dashboard), `dashboard` (dashboard dédié), `sandbox` (IDE agent)
 - `tauri.conf.json` : 3 windows : `main` (2560×1440), `dashboard` (1400×900), `sandbox` (1400×900)
 - `.gitignore` corrigé : `gui/` → `/gui/` (ancien pattern bloquait le nouveau GUI)
-- **Panneau État système** : CPU, RAM, Disque, Swap, uptime (via `RessourceManager.hardware_snapshot`)
-- **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill (signaux)
-- **Panneau Services** : liste des services actifs (installer_worker, tester, watch_installed, watch_sysstate, daemon AFD), statut, uptime
-- **Panneau LLM locaux** : détection moteurs (Ollama :11434, LM Studio :1234, llama.cpp :8080), start/stop, modèles disponibles
+- **Panneau État système** : CPU, RAM, Disque, Swap, uptime
+- **Panneau Agents** : liste agents, statut, heartbeat, étape courante, boutons Pause/Resume/Kill/Restart/Stop
+- **Panneau Services** : liste des services actifs, statut, uptime, boutons Restart/Stop
+- **Panneau LLM locaux** : détection moteurs (Ollama, LM Studio, llama.cpp), start/stop
 - **Panneau Clés** : santé des clés (grade, provider, dernière utilisation)
 - **Panneau Activité** : logs temps réel, stream bus, inter-agent messages
-- Remplacement du `DashboardPanel` actuel (simple wrapper) par cette fenêtre dédiée
+- `service_stop` Tauri command + `service_restart` Rust fix
+- **Services Manifest** : `ServiceInfo.start_order`, `depends_on`, résumé dans `~/.modelweaver/services-boot.txt`
+- **Bus de commandes Rust↔Python** : table `service_commands` dans `runtime.db`, polling par le supervisor
+- Routes daemon : `service/list`, `service/restart`, `service/stop`
+- `agent/launch` route dans daemon.py (create + execute one-shot)
+- `handlerAgentRestart` dans `useApp.ts` (boutons ⟳/■)
+- **Boot agents** : `BOOT_AGENTS` crée `installer` + `sandbox` au démarrage
+- **CLI Dashboard** : `cli/dashboard.py` — 7 subcommands : `agents`, `services`, `system`, `keys`, `providers`, `launch`, `signal`
 
 ### V0.8.1 — Monitoring étendu 📊
 - CPU/RAM/Disque par agent (via `RessourceManager.hardware_snapshot`)
