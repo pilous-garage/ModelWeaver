@@ -691,7 +691,12 @@ export function useApp() {
     setSvcLogName(name);
     invoke<string>('service_log', { name, lines: 200 }).then(setSvcLogText).catch(() => setSvcLogText(''));
   };
-  const fetchServiceList = () => invoke<any[]>('service_list').then(setServiceList).catch(() => {});
+  const fetchServiceList = async () => {
+    try {
+      const data = await invoke<any>('daemon_post', { route: 'service/list', body: '{}' });
+      if (data?.ok && data?.result?.services) setServiceList(data.result.services);
+    } catch { /* daemon indisponible */ }
+  };
   const fetchAppVersion = () => invoke<any>('version').then((v) => { if (v?.result?.version) setAppVersion(String(v.result.version)); }).catch(() => {});
 
   useEffect(() => {

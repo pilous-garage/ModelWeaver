@@ -714,6 +714,19 @@ fn mirror_services_to_db() {
             ON CONFLICT(name) DO UPDATE SET mode=excluded.mode,command=excluded.command,args=excluded.args,status=excluded.status,pid=excluded.pid,parent=excluded.parent,restart=excluded.restart,restarts=excluded.restarts,last_exit=excluded.last_exit,started_at=excluded.started_at,updated_at=strftime('%s','now');",
             esc(&s.info.name), esc(&s.info.mode), esc(&s.info.command), args, esc(&s.info.status), pid, parent, if s.info.restart {1} else {0}, s.info.restarts, s.info.last_exit.unwrap_or(-1), s.info.started_at as i64);
     }
+    // Nettoie les entrées orphelines (services supprimés du manifest)
+    let names: Vec<String> = reg.iter().map(|s| s.info.name.clone()).collect();
+    if !names.is_empty() {
+        let mut del = String::from("DELETE FROM services WHERE name NOT IN (");
+        for (i, n) in names.iter().enumerate() {
+            if i > 0 { del.push(','); }
+            del.push('\'');
+            del.push_str(&n.replace('\'', "''"));
+            del.push('\'');
+        }
+        del.push_str(");");
+        let _ = writeln!(sql, "{}", del);
+    }
     let home = mw_home().join("runtime.db");
     db_run(&home, &sql);
 }
