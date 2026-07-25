@@ -2,19 +2,17 @@
 
 > **Version cible** : daemon 0.8.1+  
 > **Branch** : `test-npm-dev`  
-> **Statut** : Phase 1 en cours  
+> **Statut** : planifié  
 > **Dernière mise à jour** : 2026-07-25
 
 ---
 
 ## Vision d'ensemble
 
-Réorganiser `services/api/daemon.py` (2231 lignes, monolithique) en une architecture propre :
-
 ```
 Client (GUI/CLI)
   ↓ HTTP /v1/<namespace>/<action>
-daemon.py (routeur fin — ne fait que router)
+daemon.py (routeur fin — ne fait que router + HTTP serveur)
   ↓ dispatch()  [appel intra-processus, pas HTTP]
 services/<name>/service.py  (couche de service)
   ↓
@@ -22,7 +20,7 @@ modules/<name>/<name>_module.py  (interface publique du module)
 ```
 
 **Principes** :
-- Le daemon n'a **aucune import direct** depuis `modules/` — délègue toujours via des services
+- Le daemon n'a **aucune import direct** depuis `modules/` — délègue toujours via des services ou `dispatch()`
 - Chaque module a un fichier `_module.py` qui expose sa surface publique
 - Chaque service a `_contract/interface.py` + `service.py`
 - Les routes sont enregistrées dynamiquement via `router.register()`
@@ -31,342 +29,357 @@ modules/<name>/<name>_module.py  (interface publique du module)
 
 ---
 
-## Phase 1 — Infrastructure : `services/api/router.py`
+## Résumé des changements
+
+| Métrique | Actuel | Cible |
+|----------|--------|-------|
+| Taille `daemon.py` | 2231 lignes | ~400-500 lignes (router mince + HTTP serveur) |
+| Imports directs `modules/` dans `daemon.py` | 18 | **0** |
+| Handlers `op_*` dans `daemon.py` | 69 | **0** (extraits dans handlers dédiés) |
+| Services sous `services/` | 9 avec `_contract/interface.py` | 14 |
+| Fichiers `_module.py` | 0 | 15 |
+| Routes dynamiques runtime | 0 | oui (agent-as-service) |
+
+---
+
+## Stratégie de migration
+
+**Route par route, pas big-bang.** Chaque étape = un petit commit qui :
+1. Crée/migre UN module (`_module.py`)
+2. Crée/migre SON service
+3. Migre SES routes
+4. Test passe
+5. Commit
+
+### Règles de backward compat
+- Les routes HTTP **restent les mêmes** (`/v1/service/list`, `/v1/agent/list` inchangés)
+- Pas de break de la GUI/CLI pendant la migration
+- Seul le code interne change : handlers → services → modules
+- À la fin, `daemon.py` n'a plus aucun `from modules.*` import
+
+---
+
+## Phase 1 — Infrastructure : `router.py` + extraction des handlers
+
+### 1.1 Créer `services/api/router.py`
+
+```python
+ROUTES: dict[str, Callable] = {}
+STREAMING_ROUTES: dict[str, Callable] = {}
+
+def register(route: str, handler: Callable):
+    """Enregistre une route statique."""
+    ROUTES[route] = handler
+
+def register_dynamic(route: str, handler: Callable):
+    """Enregistre une route runtime (agent-as-service, etc.)."""
+    ROUTES[route] = handler
+
+def unregister(route: str):
+    """Retire une route runtime."""
+    ROUTES.pop(route, None)
+
+def dispatch(route: str, params: dict = {}) -> Any:
+    """Appel intra-processus : appelle un handler directement (pas HTTP).
+    
+    ATTENTION : dispatch() ne fait PAS de rate limiting, auth, audit.
+    Utiliser depuis un service uniquement (pas depuis l'extérieur).
+    """
+    handler = ROUTES.get(route) or STREAMING_ROUTES.get(route)
+    if not handler:
+        raise KeyError(f"unknown route: {route}")
+    return handler(params)
+
+def get_streaming(route: str) -> Optional[Callable]:
+    return STREAMING_ROUTES.get(route)
+```
+
+### 1.2 Extraire les handlers de `daemon.py` → `services/api/handlers/`
+
+**Pour éviter le circular import** (daemon.py ↔ router.py), les handlers sortent de `daemon.py` dans un package dédié :
+
+```
+services/api/handlers/
+├── __init__.py         ← importe tous les handlers, les enregistre via router.register()
+├── system.py           ← op_system_info, op_version, op_deps_check, ...
+├── db_routes.py        ← op_db_init, op_db_check, op_db_versions
+├── agent_routes.py     ← op_agent_list, op_agent_create, ...
+├── service_routes.py   ← op_service_list, op_service_restart, op_service_stop, ...
+├── llm_routes.py       ← op_llm_chat, op_llm_models_list, op_llm_recommend, ...
+├── key_routes.py       ← op_keys_set, op_keys_get, ...
+├── chat_routes.py      ← op_chat_session_create, ...
+├── usage_routes.py     ← op_usage_budget, op_usage_free_tier
+├── catalogue_routes.py ← op_catalogue_skills_list, op_catalogue_agents_list, ...
+├── tools_routes.py     ← op_get_installed_tools, op_tools_install_all, ...
+├── jobs_routes.py      ← op_jobs_add, op_jobs_list, ...
+├── logs_routes.py      ← op_logs_read, op_logs_write
+└── auth_routes.py      ← op_auth_info
+```
+
+Chaque fichier :
+- Contient les handlers (les fonctions `op_*`)
+- **N'importe PAS** `daemon.py` 
+- Importe depuis `services.api.router` pour enregistrer ses routes
+- Appelle les services ou directement les modules (pour l'instant, provisoire)
+
+`__init__.py` appelle tous les `register_*_routes()` de chaque module handler.
+
+### 1.3 `daemon.py` devient mince
+
+```python
+from services.api.router import dispatch, get_streaming
+from services.api.handlers import register_all_routes  # enregistre toutes les routes
+
+register_all_routes()  # called at module load
+
+class MWAPIHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        handler = ROUTES.get(route)
+        # plus de ROUTES dans daemon.py, tout est dans router.py
+```
 
 | # | Tâche | Détail | Statut |
 |---|-------|--------|--------|
-| 1.1 | Créer `services/api/router.py` | Nouveau module : `ROUTES`, `register()`, `dispatch()`, `get_route()` | 🔴 À faire |
-| 1.2 | Migrer le dict `ROUTES` de `daemon.py` → `router.py` | Toutes les 108 routes | 🔴 À faire |
-| 1.3 | Migrer le dict `STREAMING_ROUTES` → `router.py` | 1 entrée (`llm/chat/stream`) | 🔴 À faire |
-| 1.4 | Remplacer `ROUTES.get(route)` dans `MWAPIHandler` par `router.dispatch(route)` | `daemon.py` devient thin | 🔴 À faire |
-| 1.5 | Remplacer `STREAMING_ROUTES.get(route)` par `router.get_streaming(route)` | Même pattern | 🔴 À faire |
-| 1.6 | `daemon.py` fait `from services.api.router import ROUTES, STREAMING_ROUTES, register` | Import propre | 🔴 À faire |
-| 1.7 | Vérifier que tous les tests passent | `cargo test`, tests Python | 🔴 À faire |
-
-**Fichiers modifiés** :
-- `services/api/router.py` (nouveau)
-- `services/api/daemon.py` (réduire fortement)
+| 1.1 | Créer `router.py` | `ROUTES`, `register()`, `dispatch()`, `register_dynamic()`, `unregister()` | 🔴 |
+| 1.2 | Extraire handlers dans `services/api/handlers/*.py` | ~12 fichiers, 69 fonctions | 🔴 |
+| 1.3 | Créer `handlers/__init__.py` avec registration | Appelle chaque `register_*_routes()` | 🔴 |
+| 1.4 | `daemon.py` importe depuis `router.py` + `handlers/` | Plus de handlers inline, plus de ROUTES inline | 🔴 |
+| 1.5 | Supprimer les handlers `op_*` restants de `daemon.py` | Ne garder que `serve()`, `main()`, `MWAPIHandler` | 🔴 |
+| 1.6 | Tester : HTTP route par route | Chaque route répond pareil qu'avant | 🔴 |
 
 ---
 
-## Phase 2 — Namespacing des routes
+## Phase 2 — Interfaces `_module.py` (15 modules)
 
-### 2.1 Système de namespaces
+Créer les fichiers d'interface publique pour chaque module, PAR ORDRE DE PRIORITÉ (ceux utilisés par les routes daemon en premier).
 
-Les routes utilisent le pattern `<namespace>/<action>` :
+### 2.1 Modules prioritaires (utilisés par les routes daemon actuellement)
 
-| Namespace | Routes actuelles | Nombre |
-|-----------|------------------|--------|
-| `system` | `info`, `deps/check`, `state/get`, `state/save` | 4 |
-| `db` | `init`, `check`, `versions` | 3 |
-| `catalogue` | `tools/list`, `seed`, `sync`, `tools_table/update`, `fetch/remote`, `skills/*` (8), `behaviors/*` (8), `personalities/*` (8), `roles/*` (8), `agents/*` (8), `all` | 27 |
-| `tools` | `installed/list`, `install`, `uninstall`, `install/all` | 4 |
-| `jobs` | `add`, `list`, `status`, `cancel`, `clear` | 5 |
-| `deps` | `check`, `install`, `install_target`, `check_manifest` | 4 |
-| `keys` | `set`, `get`, `list`, `delete`, `set_lock`, `onboard` | 6 |
-| `providers` | `list` | 1 |
-| `provider` | `endpoint/add` | 1 |
-| `llm` | `models/list`, `recommend`, `chat`, `chat/stream`, `capabilities`, `bridge/status`, `context/probe`, `context/history`, `local/*` (4) | 12 |
-| `auth` | `info` | 1 |
-| `logs` | `read`, `write` | 2 |
-| `agent` | `list`, `get`, `create`, `delete`, `execute`, `manager/status`, `resources/evaluate`, `admit`, `signal*`, `signals`, `signal/ack`, `signal/complete`, `stream`, `spawn`, `handoff`, `launch`, `metrics` | 17 |
-| `service` | `list`, `restart`, `stop`, `resources` | 4 |
-| `chat` | `session/*` (9) | 9 |
-| `tarif` | `info`, `sync` | 2 |
-| `usage` | `budget`, `free_tier` | 2 |
-| `lib` | `list`, `resolve`, `scan` | 3 |
-| **Total** | | **108** |
+| # | Module | Fichier `_module.py` | Contenu exporté | Statut |
+|---|--------|---------------------|-----------------|--------|
+| 2.1 | `sql` | `modules/sql/sql_module.py` | `ModelWeaverDB`, `CatalogueDB`, `RuntimeDB`, `AgentsDB`, `read_db_version`, `fetch_remote_to_local` | 🔴 |
+| 2.2 | `llm_manager` | `modules/llm_manager/llm_manager_module.py` | `LLMManager`, `LiteLLMBridge`, `BaseBridge`, `BridgeError`, `ErrorCategory`, `ModelCapabilities`, `ChatResponse`, `get_local_engine_manager` | 🔴 |
+| 2.3 | `key_manager` | `modules/key_manager/key_manager_module.py` | `KeyManager`, `KeyLockedError`, `Onboarder` | 🔴 |
+| 2.4 | `usage` | `modules/usage/usage_module.py` | `get_budget_summary`, `get_budget_rows`, `get_free_tier_models` | 🔴 |
+| 2.5 | `system` | `modules/system/system_module.py` | `install_system_package`, `install_target_dependencies` | 🔴 |
+| 2.6 | `checker` | `modules/checker/checker_module.py` | `Checker` | 🔴 |
 
-### 2.2 Enregistrement par namespace
-
-Chaque namespace a une fonction d'enregistrement :
-
-```python
-# router.py
-def register_system_routes(): ...
-def register_agent_routes(): ...
-def register_service_routes(): ...
-def register_llm_routes(): ...
-# ... unregister per group
-```
-
-Chaque appel utilise `router.register("namespace/action", handler)`.
-
-### 2.3 `dispatch()` pour appels intra-processus
-
-```python
-# Depuis n'importe quel service
-from services.api.router import dispatch
-
-result = dispatch("service/list", {})        # appel direct, pas HTTP
-result = dispatch("agent/metrics", {"agent_id": 123})
-```
-
----
-
-## Phase 3 — Services manquants
-
-### 3.1 `services/sql/` — wrapper pour `modules/sql/db.py`
-
-**Module cible** : `modules/sql/db.py`  
-**Interface** : `modules/sql/sql_module.py` (nouveau)  
-**Service** : `services/sql/service.py` + `_contract/interface.py`
-
-| Route daemon | Handler actuel | Appelle directement | Après migration appelle |
-|-------------|---------------|--------------------|------------------------|
-| `db/init` | `op_db_init` | `modules.sql.db` | `services.sql.init()` |
-| `db/check` | `op_db_check` | `modules.sql.db` | `services.sql.check()` |
-| `db/versions` | `op_db_versions` | `read_db_version` (module) | `services.sql.get_versions()` |
-
-**Tâches** :
-| # | Tâche | Statut |
-|---|-------|--------|
-| 3.1.1 | Créer `modules/sql/sql_module.py` (interface publique) | 🔴 |
-| 3.1.2 | Créer `services/sql/_contract/interface.py` | 🔴 |
-| 3.1.3 | Créer `services/sql/service.py` | 🔴 |
-| 3.1.4 | Migrer `op_db_init` → délègue à `services.sql` | 🔴 |
-| 3.1.5 | Migrer `op_db_check` → délègue à `services.sql` | 🔴 |
-| 3.1.6 | Migrer `op_db_versions` → délègue à `services.sql` | 🔴 |
-| 3.1.7 | Retirer imports directs `modules.sql.db` depuis `daemon.py` | 🔴 |
-
-### 3.2 `services/key_manager/` — wrapper pour `modules/key_manager/`
-
-**Module cible** : `modules/key_manager/key_manager.py`, `modules/key_manager/onboarder.py`  
-**Service** : `services/key_manager/service.py`
-
-| Route daemon | Handler actuel | Appelle directement | Après migration appelle |
-|-------------|---------------|--------------------|------------------------|
-| `keys/set` | `op_keys_set` | `KeyManager` (module) | `services.key_manager.set_key()` |
-| `keys/get` | `op_keys_get` | `KeyManager`, `KeyLockedError` (module) | `services.key_manager.get_key()` |
-| `keys/list` | `op_keys_list` | `KeyManager` (module) | `services.key_manager.list_keys()` |
-| `keys/delete` | `op_keys_delete` | `KeyManager` (module) | `services.key_manager.delete_key()` |
-| `keys/set_lock` | `op_keys_set_lock` | `KeyManager` (module) | `services.key_manager.set_lock()` |
-| `keys/onboard` | `op_keys_onboard` | `Onboarder` (module) | `services.key_manager.onboard()` |
-
-**Tâches** :
-| # | Tâche | Statut |
-|---|-------|--------|
-| 3.2.1 | Créer `modules/key_manager/key_manager_module.py` (interface) | 🔴 |
-| 3.2.2 | Créer `services/key_manager/_contract/interface.py` | 🔴 |
-| 3.2.3 | Créer `services/key_manager/service.py` | 🔴 |
-| 3.2.4 | Migrer 6 handlers op_keys_* | 🔴 |
-| 3.2.5 | Retirer imports directs `modules.key_manager.*` depuis `daemon.py` | 🔴 |
-
-### 3.3 `services/usage/` — wrapper pour `modules/usage/`
-
-**Module cible** : `modules/usage/budget.py`  
-**Service** : `services/usage/service.py`
-
-| Route daemon | Handler actuel | Appelle directement | Après migration appelle |
-|-------------|---------------|--------------------|------------------------|
-| `usage/budget` | `op_usage_budget` | `get_budget_summary`, `get_budget_rows` (module) | `services.usage.get_budget()` |
-| `usage/free_tier` | `op_usage_free_tier` | `get_free_tier_models` (module) | `services.usage.get_free_tier()` |
-
-### 3.4 `services/system/` — wrapper pour `modules/system/`
-
-**Module cible** : `modules/system/deps.py`  
-**Service** : `services/system/service.py`
-
-| Route daemon | Handler actuel | Appelle directement | Après migration appelle |
-|-------------|---------------|--------------------|------------------------|
-| `deps/check` | `op_deps_check` | `check_all_units` (via `services.depends`) | `services.system.check_deps()` |
-| `deps/install` | `op_deps_install` | `install_system_package` (module) | `services.system.install_dep()` |
-| `deps/install_target` | `op_deps_install_target` | `install_target_dependencies` (module) | `services.system.install_target()` |
-| `deps/check_manifest` | `op_deps_check_manifest` | `deps_mod` (via module) | `services.system.check_manifest()` |
-
-### 3.5 `services/llm_manager/` — wrapper pour `modules/llm_manager/`
-
-**Modules cibles** : `modules/llm_manager/llm_manager.py`, `modules/llm_manager/litellm_bridge.py`, `modules/llm_manager/local_engines.py`  
-**Service** : `services/llm_manager/service.py`
-
-| Route daemon | Handler actuel | Appelle directement | Après migration appelle |
-|-------------|---------------|--------------------|------------------------|
-| `llm/models/list` | `op_llm_models_list` | `LLMManager`, `seed_providers` (module) | `services.llm_manager.list_models()` |
-| `llm/recommend` | `op_llm_recommend` | `LLMManager` (module) | `services.llm_manager.recommend()` |
-| `llm/chat` | `op_llm_chat` | `LiteLLMBridge` (module) | `services.llm_manager.chat()` |
-| `llm/chat/stream` | `op_llm_chat_stream_sse` | `LiteLLMBridge` (module) | `services.llm_manager.chat_stream()` |
-| `llm/capabilities` | `op_llm_capabilities` | `LiteLLMBridge` (module) | `services.llm_manager.capabilities()` |
-| `llm/bridge/status` | `op_llm_bridge_status` | `BaseBridge` (module) | `services.llm_manager.bridge_status()` |
-| `llm/context/probe` | `op_llm_context_probe` | `LiteLLMBridge` | `services.llm_manager.context_probe()` |
-| `llm/context/history` | `op_llm_context_history` | `litellm_bridge` | `services.llm_manager.context_history()` |
-| `llm/local/list` | `op_llm_local_list` | `get_local_engine_manager` (module) | `services.llm_manager.local_list()` |
-| `llm/local/start` | `op_llm_local_start` | `get_local_engine_manager` | `services.llm_manager.local_start()` |
-| `llm/local/stop` | `op_llm_local_stop` | `get_local_engine_manager` | `services.llm_manager.local_stop()` |
-| `llm/local/models` | `op_llm_local_models` | `get_local_engine_manager` | `services.llm_manager.local_models()` |
-
-### 3.6 `services/checker/` — wrapper pour `modules/checker/`
-
-**Module cible** : `modules/checker/checker.py`  
-**Service** : `services/checker/service.py`
-
-### 3.7 `services/config/` — wrapper pour `modules/config/`
-
-**Module cible** : `modules/config/config_manager.py`  
-**Service** : `services/config/service.py`
-
-### 3.8 `services/container_manager/` — wrapper pour `modules/container_manager/`
-
-**Module cible** : `modules/container_manager/container_manager.py`  
-**Service** : `services/container_manager/service.py`
-
-### 3.9 `services/dashboard/` — wrapper pour `modules/dashboard/`
-
-**Module cible** : `modules/dashboard/dashboard.py`  
-**Service** : `services/dashboard/service.py`
-
-### 3.10 `services/installer/` — wrapper pour `modules/installer/`
-
-**Modules cibles** : `modules/installer/installer.py`, `modules/installer/recipe_parser.py`, `modules/installer/github_bridge.py`  
-**Service** : `services/installer/service.py`
-
-### 3.11 `services/organiser/` — wrapper pour `modules/organiser/`
-
-### 3.12 `services/plumber/` — wrapper pour `modules/plumber/`
-
-### 3.13 `services/test_runner/` — wrapper pour `modules/test_runner/`
-
----
-
-## Phase 4 — Interfaces `_module.py`
-
-Pour chaque module `modules/<name>/`, créer `<name>_module.py` qui :
-- Réexporte uniquement les symboles publics listés dans `_contract/interface.py`
-- Masque les internals (fonctions utilitaires, imports privés)
-- Sert de contrat public pour les services
-
-Exemple : `modules/sql/sql_module.py`
-
-```python
-"""Interface publique du module `sql`."""
-from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, AgentsDB
-
-__all__ = ['ModelWeaverDB', 'CatalogueDB', 'RuntimeDB', 'AgentsDB']
-```
+### 2.2 Modules secondaires (pas de route directe, mais bonne pratique)
 
 | # | Module | Fichier `_module.py` | Statut |
 |---|--------|---------------------|--------|
-| 4.1 | `sql` | `modules/sql/sql_module.py` | 🔴 |
-| 4.2 | `key_manager` | `modules/key_manager/key_manager_module.py` | 🔴 |
-| 4.3 | `llm_manager` | `modules/llm_manager/llm_manager_module.py` | 🔴 |
-| 4.4 | `usage` | `modules/usage/usage_module.py` | 🔴 |
-| 4.5 | `system` | `modules/system/system_module.py` | 🔴 |
-| 4.6 | `checker` | `modules/checker/checker_module.py` | 🔴 |
-| 4.7 | `config` | `modules/config/config_module.py` | 🔴 |
-| 4.8 | `container_manager` | `modules/container_manager/container_manager_module.py` | 🔴 |
-| 4.9 | `dashboard` | `modules/dashboard/dashboard_module.py` | 🔴 |
-| 4.10 | `installer` | `modules/installer/installer_module.py` | 🔴 |
-| 4.11 | `organiser` | `modules/organiser/organiser_module.py` | 🔴 |
-| 4.12 | `plumber` | `modules/plumber/plumber_module.py` | 🔴 |
-| 4.13 | `catalogue` | `modules/catalogue/catalogue_module.py` | 🔴 |
-| 4.14 | `test_runner` | `modules/test_runner/test_runner_module.py` | 🔴 |
-| 4.15 | `utils` | `modules/utils/utils_module.py` | 🔴 |
+| 2.7 | `catalogue` | `modules/catalogue/catalogue_module.py` | 🔴 |
+| 2.8 | `config` | `modules/config/config_module.py` | 🔴 |
+| 2.9 | `container_manager` | `modules/container_manager/container_manager_module.py` | 🔴 |
+| 2.10 | `dashboard` | `modules/dashboard/dashboard_module.py` | 🔴 |
+| 2.11 | `installer` | `modules/installer/installer_module.py` | 🔴 |
+| 2.12 | `organiser` | `modules/organiser/organiser_module.py` | 🔴 |
+| 2.13 | `plumber` | `modules/plumber/plumber_module.py` | 🔴 |
+| 2.14 | `test_runner` | `modules/test_runner/test_runner_module.py` | 🔴 |
+| 2.15 | `utils` | `modules/utils/utils_module.py` | 🔴 |
+
+Chaque fichier suit ce pattern :
+```python
+"""Interface publique du module <name>. Usage : from modules.<name>.<name>_module import ..."""
+from modules.<name>.<internal_module> import Symbol1, Symbol2, ...
+
+__all__ = ['Symbol1', 'Symbol2']
+```
 
 ---
 
-## Phase 5 — Refactor des handlers `daemon.py`
+## Phase 3 — Services manquants + migration route par route
 
-### 5.1 Objectif
+### 3.1 Services à créer (5 ONLY — pas 13)
 
-`daemon.py` passe de 2231 lignes (tout-en-un) à un routeur fin de ~300 lignes.
+Seuls les modules qui ont des routes daemon directes obtiennent un service wrapper :
 
-### 5.2 État actuel des imports directs à retirer de `daemon.py`
+| Service | Module wrappé | Routes concernées | Priorité |
+|---------|---------------|-------------------|----------|
+| `services/key_manager/` | `key_manager` | `keys/set`, `keys/get`, `keys/list`, `keys/delete`, `keys/set_lock`, `keys/onboard` | Haute |
+| `services/usage/` | `usage` | `usage/budget`, `usage/free_tier` | Haute |
+| `services/system/` | `system` | `deps/check`, `deps/install`, `deps/install_target`, `deps/check_manifest` | Haute |
+| `services/llm_manager/` | `llm_manager` | `llm/*` (12 routes) | Haute |
+| `services/sql/` | `sql` | `db/init`, `db/check`, `db/versions` | **Basse** (voir note) |
 
-| Import direct | Destinations | Actions affectées | Remplacement |
-|--------------|-------------|-------------------|-------------|
-| `from modules.sql.db import ModelWeaverDB, CatalogueDB, RuntimeDB, AgentsDB, ...` | 6+ symboles | `op_db_init`, `op_db_check`, `op_db_versions`, `op_agent_list`, `op_agent_create`, `op_agent_delete`, `op_agent_get`, `op_agent_execute`, `op_agent_launch`, `op_keys_*`, `op_usage_*`, `op_chat_session_*`, `op_service_list`, etc. | `services.sql.module`, `services.key_manager.module`, `services.usage.module` |
-| `from modules.checker.checker import Checker` | 1 | Utilisé inline | `services.checker.module` |
-| `from modules.llm_manager.litellm_bridge import LiteLLMBridge` | LiteLLMBridge | `op_llm_chat`, `chat/stream`, `context/probe`, `context/history`, bridge status | `services.llm_manager.module` |
-| `from modules.llm_manager.llm_manager import LLMManager, seed_providers/seed_models/seed_provider_models` | 4+ | `op_llm_models_list`, `op_llm_recommend`, init | `services.llm_manager.module` |
-| `from modules.llm_manager.local_engines import get_local_engine_manager` | 1 | `op_llm_local_*` (4 routes) | `services.llm_manager.module` |
-| `from modules.key_manager.key_manager import KeyManager` | 1 | `op_keys_get` (inline use) | `services.key_manager.module` |
-| `from modules.key_manager.onboarder import Onboarder` | 1 | `op_keys_onboard` | `services.key_manager.module` |
-| `from modules.usage.budget import get_budget_summary, get_budget_rows, get_free_tier_models` | 3 | `op_usage_budget`, `op_usage_free_tier` | `services.usage.module` |
-| `from modules.system.deps import install_system_package, install_target_dependencies` | 2 | `op_deps_install`, `op_deps_install_target` | `services.system.module` |
-| `from modules.llm_manager.base_bridge import BridgeError, ErrorCategory` | 2 | `op_llm_chat` (exception handling) | `services.llm_manager.module` |
-| `from modules.sql.db import _ensure_classes_outils_table, resolve_classe_id, _default_class_for_ref` | 3 | divers | `services.sql.module` |
+**Note sur `services/sql/`** : SQL est déjà un data-layer pur. Créer un service wrapper qui ne fait que re-exporter les mêmes fonctions n'apporte aucune valeur. On peut soit :
+- Le créer (pour la propreté architecturelle)
+- Ou laisser `daemon.py` appeler `sql_module.py` directement (compromis acceptable)
+- Décision : le créer MAIS en faisant en sorte que le service apporte une valeur (logging des requêtes, validation des paramètres)
 
-### 5.3 Tâches
+### 3.2 Service pattern
 
-| # | Tâche | Statut |
-|---|-------|--------|
-| 5.1 | Retirer imports directs `modules.sql.db` | 🔴 |
-| 5.2 | Retirer imports directs `modules.llm_manager.*` | 🔴 |
-| 5.3 | Retirer imports directs `modules.key_manager.*` | 🔴 |
-| 5.4 | Retirer imports directs `modules.usage.budget` | 🔴 |
-| 5.5 | Retirer imports directs `modules.system.deps` | 🔴 |
-| 5.6 | Retirer imports directs `modules.checker.checker` | 🔴 |
-| 5.7 | Remplacer chaque usage par délégation service | 🔴 |
-| 5.8 | Vérifier `daemon.py` = < 400 lignes après nettoyage | 🔴 |
-| 5.9 | Tests passent | 🔴 |
+Chaque service sous `services/<name>/` :
+```
+services/<name>/
+├── _contract/
+│   ├── interface.py    ← KIND=service, NAME=<name>, ENTRYPOINT=service.py, RUNS=...
+│   └── dependencies.py
+└── service.py          ← wrap le _module.py, expose des fonctions métier
+```
+
+Exemple `services/key_manager/service.py` :
+```python
+"""Service key_manager : gestion des clés API."""
+from modules.key_manager.key_manager_module import KeyManager as _KeyManager, KeyLockedError as _KeyLockedError
+
+_km = None
+
+def _get_km():
+    global _km
+    if _km is None:
+        _km = _KeyManager()
+    return _km
+
+def set_key(params: dict) -> dict:
+    km = _get_km()
+    # + validation, logging, etc.
+    return km.set(params['name'], params.get('value'), params.get('origin'))
+
+def get_key(params: dict) -> dict:
+    km = _get_km()
+    return km.get(params['name'])
+
+# ... etc.
+```
+
+### 3.3 Migration route par route
+
+Chaque migration suit ce protocole :
+
+```
+1. Créer le _module.py (Phase 2) si pas déjà fait
+2. Créer le service (service.py + _contract/)
+3. Mettre à jour le handler dans handlers/<name>_routes.py pour appeler le service
+4. Tester la route
+5. Supprimer l'import direct modules depuis handler
+6. Commit
+```
+
+| # | Migration | Routes | Statut |
+|---|-----------|--------|--------|
+| 3.1 | `key_manager` service + 6 routes | `keys/*` | 🔴 |
+| 3.2 | `usage` service + 2 routes | `usage/*` | 🔴 |
+| 3.3 | `system` service + 4 routes | `deps/*` | 🔴 |
+| 3.4 | `llm_manager` service + 12 routes | `llm/*` | 🔴 |
+| 3.5 | `sql` service + 3 routes | `db/*` | 🔴 |
+
+### 3.4 Suppression des imports directs dans les handlers
+
+Après chaque migration, retirer l'import direct dans le handler et le remplacer par un appel service.
+
+**Avant** (dans `handlers/key_routes.py`) :
+```python
+from modules.key_manager.key_manager import KeyManager
+```
+
+**Après** :
+```python
+from services.key_manager.service import KeyManagerService as KeyManager  # ou mieux : from services import key_manager
+```
 
 ---
 
-## Phase 6 — Routes dynamiques runtime (Agent-as-Service)
+## Phase 4 — Agent-as-service + routes dynamiques runtime
 
-### 6.1 Routes à ajouter
+### 4.1 Ce que ça implique côté Rust
+
+Le supervisor Rust (`main.rs`) a actuellement :
+- `define_service()` pour les services statiques (hardcodés)
+- `mirror_services_to_db()` qui écrit dans `runtime.db.services`
+- `poll_service_commands()` qui lit `runtime.db.service_commands`
+
+Pour les services dynamiques, il faut :
+
+1. **Côté daemon Python** : écrire dans `runtime.db.services` directement (comme le Rust)
+2. **Côté daemon Python** : écrire dans `runtime.db.service_commands` avec action `start`
+3. **Côté Rust** : option A — ignorer les services inconnus (ils sont gérés par le daemon)
+4. **Côté Rust** : option B — ajouter support des services dynamiques dans `define_service()`
+
+**Option choisie** : A (le daemon gère ses propres services dynamiques en subprocess Python, le Rust ne gère que les services statiques)
+
+### 4.2 Routes à ajouter
 
 | Route | Méthode | Handler | Description |
 |-------|---------|---------|-------------|
 | `service/register` | POST | `op_service_register` | Enregistre un agent comme service supervisé |
-| `service/unregister` | DELETE | `op_service_unregister` | Retire un agent-as-service du superviseur |
-| `service/<name>/start` | POST | `op_service_start_dynamic` | Démarre un service dynamique enregistré |
+| `service/unregister` | DELETE | `op_service_unregister` | Retire un agent-as-service |
+| `service/<name>/start` | POST | `op_service_start_dynamic` | Démarre un service dynamique |
 | `service/<name>/stop` | POST | `op_service_stop_dynamic` | Stoppe un service dynamique |
 | `service/<name>/status` | GET | `op_service_status_dynamic` | Statut d'un service dynamique |
 
-### 6.2 Mécanisme
+### 4.3 Mécanisme runtime
 
-1. `POST /v1/service/register` avec `{name, command, agent_id, mode}` 
-2. Handler vérifie l'agent existe, crée un `ServiceInfo`
-3. Appelle `router.register_dynamic("service/<name>", handler)` 
-4. Écrit dans `runtime.db.services` la nouvelle entrée
-5. Rust supervisor lit `runtime.db.services` et gère le process
-6. `DELETE /v1/service/<name>` inverse le processus
+```
+POST /v1/service/register {name: "agent-x", agent_id: 5, command: "python -m services.agent_x.service"}
+  → op_service_register()
+    → vérifie que l'agent existe
+    → router.register_dynamic("service/agent-x/status", handler)
+    → écrit dans runtime.db.services (INSERT)
+    → écrit dans runtime.db.service_commands (action=start)
+    → lance subprocess Python
+    → retourne {status: "ok", pid: 12345}
 
-### 6.3 Tâches
+DELETE /v1/service/agent-x
+  → op_service_unregister()
+    → kill subprocess
+    → runtime.db.services DELETE
+    → router.unregister("service/agent-x/status")
+    → retourne {status: "ok"}
+```
 
-| # | Tâche | Statut |
-|---|-------|--------|
-| 6.1 | `op_service_register(params)` | 🔴 |
-| 6.2 | `op_service_unregister(params)` | 🔴 |
-| 6.3 | Registration dans `ROUTES` au runtime | 🔴 |
-| 6.4 | `router.register_dynamic()` pour runtime routes | 🔴 |
-| 6.5 | Synchronisation avec `runtime.db.services` | 🔴 |
-| 6.6 | Tests dynamiques | 🔴 |
+### 4.4 Tâches
+
+| # | Tâche | Détail | Statut |
+|---|-------|--------|--------|
+| 4.1 | `router.register_dynamic()` + `unregister()` | Ajout dans `router.py` | 🔴 |
+| 4.2 | `op_service_register` handler | Vérification agent + création entry DB + subprocess | 🔴 |
+| 4.3 | `op_service_unregister` handler | Kill subprocess + suppression DB + unregister route | 🔴 |
+| 4.4 | `op_service_start/stop/status_dynamic` | Contrôle runtime du cycle de vie | 🔴 |
+| 4.5 | Synchronisation `runtime.db.services` | Écriture directe depuis Python (comme le Rust) | 🔴 |
+| 4.6 | ServicesMonitorPanel met à jour | GUI voit les nouveaux services | 🔴 |
 
 ---
 
-## Phase 7 — Vérification finale
+## Phase 5 — Nettoyage final
 
 | # | Vérification | Statut |
 |---|-------------|--------|
-| 7.1 | Aucun import direct `modules/` dans `daemon.py` | 🔴 |
-| 7.2 | Toutes les routes sont enregistrées via `router.register()` | 🔴 |
-| 7.3 | `dispatch()` fonctionne pour tous les namespaces | 🔴 |
-| 7.4 | `cargo build --release` propre (si impact Rust) | 🔴 |
-| 7.5 | `pytest` ou tests équivalents passent | 🔴 |
-| 7.6 | GUI/CLI fonctionnent via HTTP | 🔴 |
-| 7.7 | Documentation `migration.md` à jour | ✅ |
+| 5.1 | Aucun import direct `modules/` dans `daemon.py` | 🔴 |
+| 5.2 | Aucun import direct `modules/` dans handlers `services/api/handlers/*.py` | 🔴 |
+| 5.3 | `daemon.py` < 500 lignes | 🔴 |
+| 5.4 | `router.dispatch()` testé pour tous les namespaces | 🔴 |
+| 5.5 | `_agent_dynamic_route()` fonctionne toujours | 🔴 |
+| 5.6 | `cargo build --release` propre | 🔴 |
+| 5.7 | Tests Python passent | 🔴 |
+| 5.8 | Routes backward compat OK (GUI + CLI) | 🔴 |
 
 ---
 
-## Progress Summary
+## Routes exclues de la migration (inchangées)
+
+Certaines routes restent telles quelles car elles passent déjà par une couche propre :
+
+| Route | Justification |
+|-------|---------------|
+| `agent/*` (17 routes) | Passent déjà par `afd_client` ou `AgentManager` (service propre) |
+| `service/*` (4 routes) | Lisent déjà `runtime.db.services` ou écrivent dans `service_commands` |
+| `catalogue/*` (27 routes) | Handlers déjà dans `services.api.catalogue_api` (extraits dans Phase 1.2) |
+| `chat/session/*` (9 routes) | Passent par `_chat_mgr()` → AgentManager |
+| `system/state/*` (2 routes) | Passent par `_wrap(sysstate.get_system_state)` (service watch_sysstate) |
+| `tarif/*` (2 routes) | Service tarif déjà isolé |
+
+Ces routes seront simplement DÉPLACÉES dans `handlers/` (Phase 1.2) sans changer leur logique interne.
+
+---
+
+## Progress Tracking
 
 | Phase | Tâches | Terminé |
 |-------|--------|---------|
-| 1 — `router.py` | 7 | 0/7 |
-| 2 — Namespacing | ~22 namespaces + dispatch | 0 |
-| 3 — Services manquants | 13 services, ~70 tâches | 0 |
-| 4 — `_module.py` interfaces | 15 modules | 0 |
-| 5 — Refactor daemon.py handlers | 9 tâches | 0 |
-| 6 — Routes dynamiques | 6 tâches | 0 |
-| 7 — Vérification finale | 7 tâches | 0 |
-| **Total** | **~138 tâches** | **0** |
-
----
-
-## Fichier de référence
-
-- **daemon routes actuelles** : `services/api/daemon.py:1806-1938` (dict `ROUTES`)
-- **daemon streaming routes** : `services/api/daemon.py:1939-1941` (dict `STREAMING_ROUTES`)
-- **handler count** : 69 fonctions `op_*` dans `daemon.py`
-- **modules touchés par imports directs** : 18 modules (voir analyse)
+| 1 — Infrastructure (router.py + extraction handlers) | 6 | 0/6 |
+| 2 — Interfaces `_module.py` (15 modules) | 15 | 0/15 |
+| 3 — Services manquants + migration route par route | 5 services + 27 routes | 0/5 |
+| 4 — Agent-as-service runtime routes | 6 | 0/6 |
+| 5 — Nettoyage final | 8 | 0/8 |
+| **Total** | **~40 tâches structurantes** | **0** |
