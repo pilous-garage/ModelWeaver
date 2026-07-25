@@ -26,6 +26,7 @@ import secrets
 import argparse
 import platform
 import contextlib
+import threading
 import sys
 import os
 from pathlib import Path
@@ -71,14 +72,17 @@ from AgentFrameWork.router import (
     capabilities_catalog as router_capabilities,
 )
 
-API_VERSION = "v1"
-MW_VERSION = "0.8.1"
-
-
-def _mw_dir() -> Path:
-    d = mw_home()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+# Infrastructure de routage namespacé
+from services.api.router import (
+    ROUTES, STREAMING_ROUTES,
+    register, register_streaming, register_dynamic, unregister,
+    dispatch, get_streaming,
+)
+from services.api._shared import (
+    API_VERSION, MW_VERSION,
+    _mw_dir, _get_mw, _get_cat, _get_rt, _get_km, _get_llm, _get_bridge,
+    _wrap, _quiet,
+)
 
 
 # ── Opérations « métier » : implémentées ici en consommant modules/services ──
@@ -336,66 +340,6 @@ def op_tools_install_all(_params):
             queued.append({"ref": ref, "name": name, "job_id": jid})
     return {"status": "ok", "queued": len(queued), "tools": queued}
 
-
-import threading
-_DB_LOCK = threading.Lock()
-_MW_INSTANCE = None
-_CAT_INSTANCE = None
-_KM_INSTANCE = None
-_LLM_INSTANCE = None
-
-def _get_mw():
-    global _MW_INSTANCE
-    if _MW_INSTANCE is None:
-        with _DB_LOCK:
-            if _MW_INSTANCE is None:
-                mw_path, _ = _db_paths()
-                _MW_INSTANCE = ModelWeaverDB(mw_path)
-    return _MW_INSTANCE
-
-def _get_cat():
-    global _CAT_INSTANCE
-    if _CAT_INSTANCE is None:
-        with _DB_LOCK:
-            if _CAT_INSTANCE is None:
-                _, cat_path = _db_paths()
-                _CAT_INSTANCE = CatalogueDB(cat_path)
-    return _CAT_INSTANCE
-
-
-_RT_INSTANCE = None
-
-
-def _get_rt():
-    global _RT_INSTANCE
-    if _RT_INSTANCE is None:
-        with _DB_LOCK:
-            if _RT_INSTANCE is None:
-                _RT_INSTANCE = RuntimeDB(runtime_db_path())
-    return _RT_INSTANCE
-
-def _get_km():
-    from modules.key_manager.key_manager import KeyManager
-    global _KM_INSTANCE
-    if _KM_INSTANCE is None:
-        _KM_INSTANCE = KeyManager(db=_get_mw())
-    return _KM_INSTANCE
-
-def _get_llm():
-    from modules.llm_manager.llm_manager import LLMManager
-    global _LLM_INSTANCE
-    if _LLM_INSTANCE is None:
-        _LLM_INSTANCE = LLMManager(cat=_get_cat())
-    return _LLM_INSTANCE
-
-
-_BRIDGE_INSTANCE = None
-
-def _get_bridge():
-    global _BRIDGE_INSTANCE
-    if _BRIDGE_INSTANCE is None:
-        _BRIDGE_INSTANCE = LiteLLMBridge(cat=_get_cat(), km=_get_km())
-    return _BRIDGE_INSTANCE
 
 def _process_install_jobs():
     """Process one queued install job (blocking). Called by the background thread."""
@@ -1647,15 +1591,6 @@ def op_provider_endpoint_add(params):
     return {"status": "ok", "provider_ref": ref, "endpoint_url": url}
 
 
-def _wrap(fn):
-    """Adapte une fonction sans args en handler(params)->dict, en silençant
-    tout print intempestif vers stderr."""
-    def handler(_params):
-        with contextlib.redirect_stdout(sys.stderr):
-            return fn()
-    return handler
-
-
 # ── Routage dynamique des agents (Agent Framework Daemon) ──
 # Les agents sont dynamiques : les routes ne sont pas hardcodées, elles sont
 # résolues à runtime par AgentFrameWork.router selon le rôle + l'état.
@@ -1803,147 +1738,141 @@ def _fs_auth_route(agent_id: int, method: str, sub_parts: List[str], params: dic
 
 
 # ── Table de routage : "domaine/action" -> handler(params) -> dict ──
-ROUTES = {
-    # A. Système & environnement
-    "system/info":            op_system_info,
-    "version":                op_version,
-    "system/deps/check":      _wrap(check_python_deps),
-    "system/state/get":       _wrap(sysstate.get_system_state),
-    "system/state/save":      _wrap(save_system_state),
-    # B. Bases
-    "db/init":                _wrap(init_databases),
-    "db/check":               _wrap(check_databases),
-    # C. Catalogue
-    "catalogue/tools/list":   _wrap(get_catalogue_tools),
-    "catalogue/seed":         _wrap(seed_catalogue),
-    "catalogue/sync":         lambda p: _quiet(sync_catalogue_remote, p.get("url")),
-    "catalogue/tools_table/update": _wrap(update_tools_table),
-    "catalogue/fetch/remote":  lambda p: _quiet(fetch_remote_to_local),
-    # D. Outils installés (synchrone)
-    "tools/installed/list":   _wrap(get_installed_tools),
-    "tools/install":          lambda p: _quiet(jobs.install_tool, p.get("ref"), None, _get_cat()),
-    "tools/uninstall":        lambda p: _quiet(jobs.uninstall_tool, p.get("ref"), None, _get_cat()),
-    "tools/install/all":      lambda p: _quiet(op_tools_install_all, p),
-    # E. File de jobs (asynchrone)
-    "jobs/add":               op_jobs_add,
-    # F. Dépendances (modules/services)
-    "deps/check":             op_deps_check,
-    "deps/install":           op_deps_install,
-    "deps/install_target":    op_deps_install_target,
-    "deps/check_manifest":    op_deps_check_manifest,
-    "db/versions":            op_db_versions,
-    "jobs/list":              op_jobs_list,
-    "jobs/status":            op_jobs_status,
-    "jobs/cancel":            op_jobs_cancel,
-    "jobs/clear":             op_jobs_clear,
-    # G. Key Manager
-    "keys/set":               op_keys_set,
-    "keys/get":               op_keys_get,
-    "keys/list":              op_keys_list,
-    "keys/delete":            op_keys_delete,
-    "keys/set_lock":          op_keys_set_lock,
-    "keys/onboard":           op_keys_onboard,
-    # H. Providers (catalogue)
-    "providers/list":         op_providers_list,
-    "provider/endpoint/add":  op_provider_endpoint_add,
-    # I. LLM Manager
-    "llm/models/list":        op_llm_models_list,
-    "llm/recommend":          op_llm_recommend,
-    # K. LLM Bridge
-    "llm/chat":               op_llm_chat,
-    "llm/chat/stream":        op_llm_chat,  # fallback JSON
-    "llm/capabilities":       op_llm_capabilities,
-    "llm/bridge/status":      op_llm_bridge_status,
-    "llm/context/probe":      op_llm_context_probe,
-    "llm/context/history":    op_llm_context_history,
-    # K2. LLM locaux (moteurs détectés sur la machine)
-    "llm/local/list":         op_llm_local_list,
-    "llm/local/start":        op_llm_local_start,
-    "llm/local/stop":         op_llm_local_stop,
-    "llm/local/models":       op_llm_local_models,
-    # L. Auth / Infra
-    "auth/info":              op_auth_info,
-    # J. Logs
-    "logs/read":              op_logs_read,
-    "logs/write":             op_logs_write,
-    # M. Agent Manager
-    "agent/list":             op_agent_list,
-    "agent/get":              op_agent_get,
-    "agent/create":           op_agent_create,
-    "agent/delete":           op_agent_delete,
-    "agent/execute":          op_agent_execute,
-    "agent/manager/status":   op_agent_manager_status,
-    "agent/resources/evaluate": op_agent_evaluate,
-    "agent/admit":            op_agent_admit,
-    "agent/signal":           op_agent_signal,
-    "agent/signals":          op_agent_signals,
-    "agent/signal/ack":       op_agent_signal_ack,
-    "agent/signal/complete":  op_agent_signal_complete,
-    "agent/stream":           op_agent_stream,
-    "agent/spawn":            op_agent_spawn,
-    "agent/handoff":          op_agent_handoff,
-    "agent/launch":           op_agent_launch,
-    "agent/metrics":          op_agent_metrics,
-    # N. Service Manager (pont DB partagée avec le superviseur Rust)
-    "service/list":           op_service_list,
-    "service/restart":        op_service_restart,
-    "service/stop":           op_service_stop,
-    "service/resources":      op_service_resources,
-    # N. Chat Service (V0.6.6)
-    "chat/session/create":    op_chat_session_create,
-    "chat/session/list":      op_chat_session_list,
-    "chat/session/get":       op_chat_session_get,
-    "chat/session/delete":    op_chat_session_delete,
-    "chat/session/update":    op_chat_session_update,
-    "chat/session/send":      op_chat_session_send,
-    "chat/session/history":   op_chat_session_history,
-    "chat/session/read":      op_chat_session_read,
-    "chat/session/stream":    op_chat_session_stream,
-    # O. Tarif / budget
-    "tarif/info":            lambda p: _quiet(_op_tarif_info, p),
-    "tarif/sync":            lambda p: _quiet(_op_tarif_sync, p.get("url")),
-    # P. Usage / budget reel (USD) + free-tier
-    "usage/budget":         op_usage_budget,
-    "usage/free_tier":      op_usage_free_tier,
-    # Q. Catalogue Sandbox (V0.7) — skills / behaviors / personalities / roles
-    "catalogue/skills/list":    op_catalogue_skills_list,
-    "catalogue/skills/get":     op_catalogue_skills_get,
-    "catalogue/skills/save":    op_catalogue_skills_save,
-    "catalogue/skills/delete":  op_catalogue_skills_delete,
-    "catalogue/behaviors/list":    op_catalogue_behaviors_list,
-    "catalogue/behaviors/get":     op_catalogue_behaviors_get,
-    "catalogue/behaviors/save":    op_catalogue_behaviors_save,
-    "catalogue/behaviors/delete":  op_catalogue_behaviors_delete,
-    "catalogue/personalities/list":    op_catalogue_personalities_list,
-    "catalogue/personalities/get":     op_catalogue_personalities_get,
-    "catalogue/personalities/save":    op_catalogue_personalities_save,
-    "catalogue/personalities/delete":  op_catalogue_personalities_delete,
-    "catalogue/roles/list":    op_catalogue_roles_list,
-    "catalogue/roles/get":     op_catalogue_roles_get,
-    "catalogue/roles/save":    op_catalogue_roles_save,
-    "catalogue/roles/delete":  op_catalogue_roles_delete,
-    "catalogue/agents/list":    op_catalogue_agents_list,
-    "catalogue/agents/get":     op_catalogue_agents_get,
-    "catalogue/agents/save":    op_catalogue_agents_save,
-    "catalogue/agents/delete":  op_catalogue_agents_delete,
-    "catalogue/agents/inline":  op_catalogue_agents_inline,
-    "catalogue/all":           op_catalogue_all,
-    # R. Bibliothèques de fonctions (AgentsCatalogue/lib) — hover IDE
-    "lib/list":                op_lib_list,
-    "lib/resolve":             op_lib_resolve,
-    "lib/scan":                op_lib_scan,
-}
+# ── Route registration ──────────────────────────────────────────────────
+# Chaque handler s'enregistre ici via register(). Tous les op_* doivent
+# être définis AVANT cette section.
 
-# Routes qui reçoivent (params, wfile) au lieu de (params) -> dict
-# pour la réponse SSE directe (text/event-stream).
-STREAMING_ROUTES = {
-    "llm/chat/stream":        op_llm_chat_stream_sse,
-}
+# A. Système & environnement
+register("system/info",            op_system_info)
+register("version",                op_version)
+register("system/deps/check",      _wrap(check_python_deps))
+register("system/state/get",       _wrap(sysstate.get_system_state))
+register("system/state/save",      _wrap(save_system_state))
+# B. Bases
+register("db/init",                _wrap(init_databases))
+register("db/check",               _wrap(check_databases))
+# C. Catalogue (helpers)
+register("catalogue/tools/list",   _wrap(get_catalogue_tools))
+register("catalogue/seed",         _wrap(seed_catalogue))
+register("catalogue/sync",         lambda p: _quiet(sync_catalogue_remote, p.get("url")))
+register("catalogue/tools_table/update", _wrap(update_tools_table))
+register("catalogue/fetch/remote",  lambda p: _quiet(fetch_remote_to_local))
+# D. Outils installés (synchrone)
+register("tools/installed/list",   _wrap(get_installed_tools))
+register("tools/install",          lambda p: _quiet(jobs.install_tool, p.get("ref"), None, _get_cat()))
+register("tools/uninstall",        lambda p: _quiet(jobs.uninstall_tool, p.get("ref"), None, _get_cat()))
+register("tools/install/all",      lambda p: _quiet(op_tools_install_all, p))
+# E. File de jobs (asynchrone)
+register("jobs/add",               op_jobs_add)
+# F. Dépendances (modules/services)
+register("deps/check",             op_deps_check)
+register("deps/install",           op_deps_install)
+register("deps/install_target",    op_deps_install_target)
+register("deps/check_manifest",    op_deps_check_manifest)
+register("db/versions",            op_db_versions)
+register("jobs/list",              op_jobs_list)
+register("jobs/status",            op_jobs_status)
+register("jobs/cancel",            op_jobs_cancel)
+register("jobs/clear",             op_jobs_clear)
+# G. Key Manager
+register("keys/set",               op_keys_set)
+register("keys/get",               op_keys_get)
+register("keys/list",              op_keys_list)
+register("keys/delete",            op_keys_delete)
+register("keys/set_lock",          op_keys_set_lock)
+register("keys/onboard",           op_keys_onboard)
+# H. Providers (catalogue)
+register("providers/list",         op_providers_list)
+register("provider/endpoint/add",  op_provider_endpoint_add)
+# I. LLM Manager
+register("llm/models/list",        op_llm_models_list)
+register("llm/recommend",          op_llm_recommend)
+# K. LLM Bridge
+register("llm/chat",               op_llm_chat)
+register("llm/chat/stream",        op_llm_chat)   # fallback JSON
+register("llm/capabilities",       op_llm_capabilities)
+register("llm/bridge/status",      op_llm_bridge_status)
+register("llm/context/probe",      op_llm_context_probe)
+register("llm/context/history",    op_llm_context_history)
+# K2. LLM locaux
+register("llm/local/list",         op_llm_local_list)
+register("llm/local/start",        op_llm_local_start)
+register("llm/local/stop",         op_llm_local_stop)
+register("llm/local/models",       op_llm_local_models)
+# L. Auth / Infra
+register("auth/info",              op_auth_info)
+# J. Logs
+register("logs/read",              op_logs_read)
+register("logs/write",             op_logs_write)
+# M. Agent Manager
+register("agent/list",             op_agent_list)
+register("agent/get",              op_agent_get)
+register("agent/create",           op_agent_create)
+register("agent/delete",           op_agent_delete)
+register("agent/execute",          op_agent_execute)
+register("agent/manager/status",   op_agent_manager_status)
+register("agent/resources/evaluate", op_agent_evaluate)
+register("agent/admit",            op_agent_admit)
+register("agent/signal",           op_agent_signal)
+register("agent/signals",          op_agent_signals)
+register("agent/signal/ack",       op_agent_signal_ack)
+register("agent/signal/complete",  op_agent_signal_complete)
+register("agent/stream",           op_agent_stream)
+register("agent/spawn",            op_agent_spawn)
+register("agent/handoff",          op_agent_handoff)
+register("agent/launch",           op_agent_launch)
+register("agent/metrics",          op_agent_metrics)
+# N. Service Manager (pont DB partagée avec le superviseur Rust)
+register("service/list",           op_service_list)
+register("service/restart",        op_service_restart)
+register("service/stop",           op_service_stop)
+register("service/resources",      op_service_resources)
+# N. Chat Service
+register("chat/session/create",    op_chat_session_create)
+register("chat/session/list",      op_chat_session_list)
+register("chat/session/get",       op_chat_session_get)
+register("chat/session/delete",    op_chat_session_delete)
+register("chat/session/update",    op_chat_session_update)
+register("chat/session/send",      op_chat_session_send)
+register("chat/session/history",   op_chat_session_history)
+register("chat/session/read",      op_chat_session_read)
+register("chat/session/stream",    op_chat_session_stream)
+# O. Tarif / budget
+register("tarif/info",            lambda p: _quiet(_op_tarif_info, p))
+register("tarif/sync",            lambda p: _quiet(_op_tarif_sync, p.get("url")))
+# P. Usage / budget reel (USD) + free-tier
+register("usage/budget",         op_usage_budget)
+register("usage/free_tier",      op_usage_free_tier)
+# Q. Catalogue Sandbox (V0.7)
+register("catalogue/skills/list",    op_catalogue_skills_list)
+register("catalogue/skills/get",     op_catalogue_skills_get)
+register("catalogue/skills/save",    op_catalogue_skills_save)
+register("catalogue/skills/delete",  op_catalogue_skills_delete)
+register("catalogue/behaviors/list",    op_catalogue_behaviors_list)
+register("catalogue/behaviors/get",     op_catalogue_behaviors_get)
+register("catalogue/behaviors/save",    op_catalogue_behaviors_save)
+register("catalogue/behaviors/delete",  op_catalogue_behaviors_delete)
+register("catalogue/personalities/list",    op_catalogue_personalities_list)
+register("catalogue/personalities/get",     op_catalogue_personalities_get)
+register("catalogue/personalities/save",    op_catalogue_personalities_save)
+register("catalogue/personalities/delete",  op_catalogue_personalities_delete)
+register("catalogue/roles/list",    op_catalogue_roles_list)
+register("catalogue/roles/get",     op_catalogue_roles_get)
+register("catalogue/roles/save",    op_catalogue_roles_save)
+register("catalogue/roles/delete",  op_catalogue_roles_delete)
+register("catalogue/agents/list",    op_catalogue_agents_list)
+register("catalogue/agents/get",     op_catalogue_agents_get)
+register("catalogue/agents/save",    op_catalogue_agents_save)
+register("catalogue/agents/delete",  op_catalogue_agents_delete)
+register("catalogue/agents/inline",  op_catalogue_agents_inline)
+register("catalogue/all",           op_catalogue_all)
+# R. Bibliothèques de fonctions (AgentsCatalogue/lib)
+register("lib/list",                op_lib_list)
+register("lib/resolve",             op_lib_resolve)
+register("lib/scan",                op_lib_scan)
 
-
-def _quiet(fn, *args):
-    with contextlib.redirect_stdout(sys.stderr):
-        return fn(*args)
+# Routes streaming SSE (reçoivent params + wfile au lieu de params uniquement)
+register_streaming("llm/chat/stream",        op_llm_chat_stream_sse)
 
 
 class MWAPIHandler(BaseHTTPRequestHandler):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-    """File d'installation + opérations d'install/désinstall réelles.
+"""File d'installation + opérations d'install/désinstall réelles.
 
 Implémente la source de vérité du service
 `installer_worker` (consommé directement par le daemon API).
