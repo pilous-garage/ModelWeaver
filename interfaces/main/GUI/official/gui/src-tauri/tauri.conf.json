@@ -1,6 +1,6 @@
 {
   "productName": "ModelWeaver",
-  "version": "0.8.3",
+  "version": "0.8.5",
   "identifier": "com.modelweaver.main",
   "build": {
     "beforeDevCommand": "fuser -k 8770/tcp 2>/dev/null; npm run dev",

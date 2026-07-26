@@ -432,8 +432,24 @@ CREATE TABLE IF NOT EXISTS key_endpoint_models (
 );
 
 -- ============================================================
+-- 9b. MODEL_BENCHMARKS_RAW — Scores bruts scrapés par source.
+--      Chaque ligne = une métrique pour un modèle depuis un benchmark.
+--      Alimenté par scraper-base/benchmarks/ (machine admin).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS model_benchmarks_raw (
+    model_ref       TEXT NOT NULL,
+    benchmark_key   TEXT NOT NULL,
+    metric_name     TEXT NOT NULL DEFAULT 'score',
+    raw_value       REAL NOT NULL,
+    percentile      REAL,
+    source_url      TEXT DEFAULT '',
+    fetched_at      TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (model_ref, benchmark_key, metric_name)
+);
+
+-- ============================================================
 -- 10. MODEL_EFFICACY — Efficacite communautaire (catalogue).
---     Vierge au depart ; remplie plus tard (analyse commune).
+--     Vierge au depart ; remplie par scraper-base/benchmarks/.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS model_efficacy (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

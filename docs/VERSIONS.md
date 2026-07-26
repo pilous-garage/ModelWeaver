@@ -922,7 +922,38 @@ Définition et gestion d'équipes d'agents via manifests `.team.yaml`.
 - **Éditeur de pipeline** : drag-and-drop pour créer des workflows multi-agents
 - Layout dagre (comme le FSM graph editor V0.7.4)
 
-### V0.8.5 — Orchestrateur visuel 🎛️
+### V0.8.5 — Benchmark Scraper & Model Scores 📊 (🚀 Livrée)
+**Date** : 2026-07-26
+
+Infrastructure de scraping de benchmarks LLM + scoring consolidé.
+
+#### Nouveautés
+- **`scraper-base/benchmarks/`** : package standalone pour machine admin
+  - `sources/seeded.py` : données benchmark initiales (20 modèles, 6 métriques)
+  - `sources/lmsys_arena.py` : scraper LMSYS Arena Elo (normalisation de noms)
+  - `sources/artificial_analysis.py` : scraper qualité/vitesse/prix
+  - `consolidate.py` : percentile → model_efficacy (qualité, vitesse, coût, fiabilité)
+  - `run_all.py` : orchestrateur (cron weekly) — écrit sur Turso distant
+- **Table `model_benchmarks_raw`** : données brutes par source (catalogue DB)
+- **`model_efficacy`** : scores consolidés (existante, maintenant alimentée)
+- Stratégies `llm/allocate` enrichies : utilisent `model_efficacy` pour le scoring best-fallback
+
+#### Architecture
+- Machine admin : `python -m scraper-base.benchmarks.run_all` → Turso distant
+- Dev local : `--local` → catalogue.db local
+- Cron recommandé : hebdomadaire
+
+#### Fichiers modifiés
+- `scraper-base/benchmarks/__init__.py` : NOUVEAU
+- `scraper-base/benchmarks/sources/__init__.py` : NOUVEAU
+- `scraper-base/benchmarks/sources/seeded.py` : NOUVEAU
+- `scraper-base/benchmarks/sources/lmsys_arena.py` : NOUVEAU
+- `scraper-base/benchmarks/sources/artificial_analysis.py` : NOUVEAU
+- `scraper-base/benchmarks/consolidate.py` : NOUVEAU
+- `scraper-base/benchmarks/run_all.py` : NOUVEAU
+- `scraper-base/benchmarks/schema.sql` : NOUVEAU
+- `scraper-base/README.md` : NOUVEAU
+- `modules/sql/catalogue_schema.sql` : table model_benchmarks_raw ajoutée
 - **Pipeline DAG** : créer, éditer, tester des pipelines d'agents
 - **Gestion des ressources** : allocation LLM manuelle ou auto par l'Organisateur
 - **Préemption visuelle** : voir les agents préemptibles et les conflits d'allocation
