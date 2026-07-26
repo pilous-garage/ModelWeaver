@@ -233,8 +233,7 @@ class Agent:
                     stream_sink=stream_sink,
                     spawn_handler=spawn_handler,
                     handoff_handler=handoff_handler,
-                agent_call_handler=agent_call_handler,
-                team_call_handler=team_call_handler,
+                    agent_call_handler=agent_call_handler,
                     team_call_handler=team_call_handler,
                     lifecycle_mgr=self._lifecycle,
                 )
@@ -514,6 +513,7 @@ class Agent:
                 spawn_handler=spawn_handler,
                 handoff_handler=handoff_handler,
                 agent_call_handler=agent_call_handler,
+                team_call_handler=team_call_handler,
                 lifecycle_mgr=lifecycle_mgr,
             )
             # Persister les variables (survit à configure / spawn / handoff)
