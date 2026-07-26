@@ -400,6 +400,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         if route == "capabilities":
             self._send(200, {"ok": True, "route": route, "result": router_capabilities()})
             return
+        # Routes statiques enregistrées (system/info, etc.)
+        handler = ROUTES.get(route)
+        if handler:
+            result = handler({})
+            self._send(200, {"ok": True, "route": route, "result": result})
+            return
         self._send(404, {"error": "not_found", "path": self.path})
 
     def _handle_stream(self, route: str, handler, params: dict):
