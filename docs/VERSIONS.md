@@ -939,7 +939,7 @@ Infrastructure de scraping de benchmarks LLM + scoring consolidé.
     pour les modèles qui matchent les patterns frontière)
   - `consolidate.py` : percentile → model_efficacy avec breakdown par type de
     tâche (score_chat, score_knowledge, score_coding, score_reasoning, score_agentic)
-    + global_score persistant dans la DB
+    + global_score par formule task-type (prioritaire) + model_ref backfillé (fix BUG)
   - `run_all.py` : orchestrateur (cron weekly) — écrit sur Turso distant
 - **Table `model_benchmarks_raw`** : données brutes par source (catalogue DB)
   - Nouvelles clés : `frontier_estimate` (données estimées pour modèles récents)
