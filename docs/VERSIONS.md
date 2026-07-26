@@ -1001,6 +1001,10 @@ par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
 - Relecture et mise à jour de toute la documentation
 - Nettoyage dette technique (code mort, TODO, FIXME)
 - Page de release + changelog
+- **Agent dédié benchmark scraper** : agent autonome qui orchestre le scraping
+  quotidien des CSVs LMSYS/Arena-Hard, génère les données synthétiques pour les
+  modèles récents (Ling 3.0, DeepSeek V4, GPT-5.6, etc.) via `frontier_estimate`,
+  et met à jour `model_efficacy` dans la DB
 
 ## V0.12 — Test Utilisateur (📝 Planifié)
 **Objectif** : Test en conditions réelles par un utilisateur non-développeur.
