@@ -15,6 +15,10 @@ from typing import Callable
 API_VERSION = "v1"
 MW_VERSION = "0.8.1"
 
+# ── Racine du dépôt (référence pour les chemins absolus) ────────────────
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
 # ── Singletons lazy (initialisés par _get_*) ────────────────────────────
 _DB_LOCK = threading.Lock()
 _MW_INSTANCE = None

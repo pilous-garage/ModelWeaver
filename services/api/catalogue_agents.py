@@ -179,3 +179,13 @@ def op_catalogue_agents_inline(params: dict) -> Dict[str, Any]:
     _write_yaml(inline_path, inline)
     return {"status": "ok", "inline_yaml": inline_path.read_text(encoding="utf-8"),
             "inline_file": str(inline_path.relative_to(_CATALOGUE))}
+
+
+# ── Self-registration ───────────────────────────────────────────────────
+from services.api.router import register
+
+register("catalogue/agents/list",    op_catalogue_agents_list)
+register("catalogue/agents/get",     op_catalogue_agents_get)
+register("catalogue/agents/save",    op_catalogue_agents_save)
+register("catalogue/agents/delete",  op_catalogue_agents_delete)
+register("catalogue/agents/inline",  op_catalogue_agents_inline)

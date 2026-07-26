@@ -373,3 +373,28 @@ def op_catalogue_all(params: dict) -> Dict[str, Any]:
         "personalities": op_catalogue_personalities_list({})["personalities"],
         "roles": op_catalogue_roles_list({})["roles"],
     }
+
+
+# ── Self-registration ───────────────────────────────────────────────────
+from services.api.router import register
+
+register("catalogue/skills/list",    op_catalogue_skills_list)
+register("catalogue/skills/get",     op_catalogue_skills_get)
+register("catalogue/skills/save",    op_catalogue_skills_save)
+register("catalogue/skills/delete",  op_catalogue_skills_delete)
+register("catalogue/behaviors/list",    op_catalogue_behaviors_list)
+register("catalogue/behaviors/get",     op_catalogue_behaviors_get)
+register("catalogue/behaviors/save",    op_catalogue_behaviors_save)
+register("catalogue/behaviors/delete",  op_catalogue_behaviors_delete)
+register("catalogue/personalities/list",    op_catalogue_personalities_list)
+register("catalogue/personalities/get",     op_catalogue_personalities_get)
+register("catalogue/personalities/save",    op_catalogue_personalities_save)
+register("catalogue/personalities/delete",  op_catalogue_personalities_delete)
+register("catalogue/roles/list",    op_catalogue_roles_list)
+register("catalogue/roles/get",     op_catalogue_roles_get)
+register("catalogue/roles/save",    op_catalogue_roles_save)
+register("catalogue/roles/delete",  op_catalogue_roles_delete)
+register("catalogue/all",           op_catalogue_all)
+register("lib/list",                op_lib_list)
+register("lib/resolve",             op_lib_resolve)
+register("lib/scan",                op_lib_scan)
