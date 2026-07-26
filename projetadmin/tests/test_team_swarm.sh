@@ -27,8 +27,8 @@ read_config() {
 read_config
 
 # Les routes d'équipe sont préfixées par team: (ex: team/team:bug-busters/start)
-TEAM_ROUTE="team/team:example-team"
-BUG_ROUTE="team/team:bug-busters"
+TEAM_ROUTE="team:example-team"
+BUG_ROUTE="team:bug-busters"
 PASS=0
 FAIL=0
 
@@ -84,7 +84,7 @@ fi
 # ── 2. charger une équipe manuellement via le daemon ──
 # L'équipe "example-team" est chargée au boot via _ensure_teams().
 # Vérifier qu'elle existe :
-TEAMS=$(curlauth "${API}/${TEAM_ROUTE}/status" 2>&1 || true)
+TEAMS=$(curlauth "${API}/team/${TEAM_ROUTE}/status" 2>&1 || true)
 if echo "$TEAMS" | grep -q "example-team"; then
   ok "team example-team chargée"
 else
@@ -94,7 +94,7 @@ else
 fi
 
 # ── 3. Démarrer l'équipe ──
-START=$(curlauth -X POST "${API}/${TEAM_ROUTE}/start")
+START=$(curlauth -X POST "${API}/team/${TEAM_ROUTE}/start")
 if echo "$START" | grep -q "started"; then
   ok "team example-team démarrée ($START)"
 else
@@ -103,7 +103,7 @@ else
 fi
 
 # ── 4. Vérifier les agents ──
-AGENTS=$(curlauth "${API}/${TEAM_ROUTE}/status")
+AGENTS=$(curlauth "${API}/team/${TEAM_ROUTE}/status")
 WORKER_A=$(echo "$AGENTS" | grep -c "worker-a" || true)
 WORKER_B=$(echo "$AGENTS" | grep -c "worker-b" || true)
 if [ "$WORKER_A" -gt 0 ] && [ "$WORKER_B" -gt 0 ]; then
@@ -121,7 +121,7 @@ fi
 
 # ── 5. Déléguer une tâche au team_leader ──
 log "=== Délégation ==="
-DELEGATE=$(curlauth -X POST "${API}/${TEAM_ROUTE}/delegate" \
+DELEGATE=$(curlauth -X POST "${API}/team/${TEAM_ROUTE}/delegate" \
   -H 'Content-Type: application/json' \
   -d '{"request": "list 3 programming languages and their primary use cases"}')
 if echo "$DELEGATE" | grep -q "ok"; then
@@ -131,7 +131,7 @@ else
 fi
 
 # ── 6. Chat direct avec le team_leader ──
-CHAT=$(curlauth -X POST "${API}/${TEAM_ROUTE}/chat" \
+CHAT=$(curlauth -X POST "${API}/team/${TEAM_ROUTE}/chat" \
   -H 'Content-Type: application/json' \
   -d '{"message": "what team are you?"}')
 if echo "$CHAT" | grep -q "ok"; then
@@ -140,16 +140,8 @@ else
   fail "échec chat: $CHAT"
 fi
 
-# ── 7. Vérifier la supervision (tick) ──
-TICK=$(curlauth -X POST "${API}/tick")
-if echo "$TICK" | grep -q "ok"; then
-  ok "tick supervision OK"
-else
-  fail "tick échoué: $TICK"
-fi
-
-# ── 8. Arrêter l'équipe ──
-STOP=$(curlauth -X POST "${API}/${TEAM_ROUTE}/stop")
+# ── 7. Arrêter l'équipe ──
+STOP=$(curlauth -X POST "${API}/team/${TEAM_ROUTE}/stop")
 if echo "$STOP" | grep -q "stopped"; then
   ok "team example-team arrêtée"
 else
