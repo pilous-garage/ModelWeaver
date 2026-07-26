@@ -159,6 +159,78 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
         if metric in ("cost_per_m_input", "cost_per_m_output"):
             pct = 100 - pct
 
+# ──────────────────────────────────────────────
+#  3. TASK-TYPE → METRIC MAPPING
+# ──────────────────────────────────────────────
+# Each benchmark metric maps to task types it measures.
+# Scores are stored per-task-type per model in model_efficacy.
+TASK_TYPE_METRICS = {
+    "score_chat":        {"mt_bench_quality", "quality_pct"},
+    "score_knowledge":   {"mmlu_knowledge", "quality_pct"},
+    "score_coding":      {"score", "arena_hard_auto", "pass_rate"},
+    "score_reasoning":   {"score", "arena_hard_auto", "pass_rate"},
+    "score_agentic":     {"score", "arena_hard_auto"},
+}
+
+
+def _task_scores_from_metrics(
+    metrics_by_type: Dict[str, List[float]],
+    confidences_by_type: Dict[str, List[float]],
+) -> Dict[str, float]:
+    """metrics_by_type is already grouped by task type (score_chat, etc).
+    Compute weighted average per task type."""
+    scores = {}
+    for task, vals in metrics_by_type.items():
+        confs = confidences_by_type.get(task, [])
+        if vals:
+            total_w = sum(confs)
+            if total_w > 0:
+                scores[task] = round(sum(v * c for v, c in zip(vals, confs)) / total_w, 2)
+            else:
+                scores[task] = round(statistics.mean(vals), 2)
+        else:
+            scores[task] = 0.0
+    return scores
+
+
+def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
+    """Aggregate percentile scores into per-model efficacy scores with task breakdown.
+
+    Each model gets:
+      - global_score: weighted combination of all scores
+      - score_quality / score_speed / score_cost / score_reliability (existing)
+      - score_chat / score_knowledge / score_coding / score_reasoning / score_agentic (new)
+      - is_synthetic: True only if ALL data is from synthetic sources
+    """
+    by_ref: Dict[str, Dict[str, Any]] = {}
+
+    for r in rows:
+        ref = r["model_ref"]
+        if ref not in by_ref:
+            by_ref[ref] = {
+                "q": [], "s": [], "c": [], "rl": [],
+                "q_conf": [], "s_conf": [], "c_conf": [], "rl_conf": [],
+                "task_metrics": {},   # task_type → list of percentile values
+                "task_conf": {},      # task_type → list of confidences
+                "sources": set(),
+            }
+        entry = by_ref[ref]
+        conf = r.get("confidence", 1.0)
+
+        metric = r["metric_name"]
+        pct = r.get("percentile", 50.0)
+
+        # Normalize cost: invert so cheaper = higher percentile
+        if metric in ("cost_per_m_input", "cost_per_m_output"):
+            pct = 100 - pct
+
+        # Aggregate by task type
+        for task, metrics in TASK_TYPE_METRICS.items():
+            if metric in metrics:
+                entry["task_metrics"].setdefault(task, []).append(pct)
+                entry["task_conf"].setdefault(task, []).append(conf)
+
+        # Legacy aggregation for global score
         if metric in ("mt_bench_quality", "mmlu_knowledge", "score", "quality_pct"):
             entry["q"].append(pct)
             entry["q_conf"].append(conf)
@@ -191,16 +263,25 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
         c = _weighted_mean(sc["c"], sc["c_conf"])
         rl = _weighted_mean(sc["rl"], sc["rl_conf"])
 
+        # Compute per-task-type scores
+        task_scores = _task_scores_from_metrics(sc["task_metrics"], sc["task_conf"])
+
         n_data = len(sc["q"]) + len(sc["s"]) + len(sc["c"]) + len(sc["rl"])
         source_count = len(sc["sources"])
-        # is_synthetic only if ALL data for this model is from synthetic sources
         _REAL_SOURCES = {"lmsys_arena", "arena_hard_auto", "artificial_analysis", "seeded"}
         has_real = sc["sources"].intersection(_REAL_SOURCES)
         is_synth = 0 if has_real else 1
-        has_synthetic = any(
-            r.get("is_synthetic") for r in rows if r["model_ref"] == ref
-        )
+
         global_score = round(q * 0.35 + s * 0.20 + c * 0.15 + rl * 0.30, 2)
+        if global_score == 0.0:
+            global_score = round(
+                task_scores.get("score_chat", 0) * 0.35
+                + task_scores.get("score_coding", 0) * 0.20
+                + task_scores.get("score_reasoning", 0) * 0.20
+                + task_scores.get("score_knowledge", 0) * 0.15
+                + task_scores.get("score_agentic", 0) * 0.10,
+                2,
+            )
 
         results.append({
             "model_ref": ref,
@@ -209,6 +290,7 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
             "score_speed": s,
             "score_cost": c,
             "score_reliability": rl,
+            **task_scores,
             "samples": n_data,
             "source_count": source_count,
             "is_synthetic": is_synth,
@@ -256,6 +338,11 @@ def ensure_schema(conn: sqlite3.Connection, local: bool):
     _add_column(conn, "model_efficacy", "source_count", "INTEGER DEFAULT 0")
     _add_column(conn, "model_efficacy", "is_synthetic", "INTEGER DEFAULT 0")
     _add_column(conn, "model_efficacy", "benchmark_keys", "TEXT DEFAULT '[]'")
+    _add_column(conn, "model_efficacy", "score_chat", "REAL DEFAULT 0")
+    _add_column(conn, "model_efficacy", "score_knowledge", "REAL DEFAULT 0")
+    _add_column(conn, "model_efficacy", "score_coding", "REAL DEFAULT 0")
+    _add_column(conn, "model_efficacy", "score_reasoning", "REAL DEFAULT 0")
+    _add_column(conn, "model_efficacy", "score_agentic", "REAL DEFAULT 0")
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
@@ -387,6 +474,8 @@ def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
     print(f"    → {count} écrits, {skipped} skipped")
 
 
+TASK_TYPE_COLS = "score_chat REAL DEFAULT 0, score_knowledge REAL DEFAULT 0, score_coding REAL DEFAULT 0, score_reasoning REAL DEFAULT 0, score_agentic REAL DEFAULT 0"
+
 def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
     written = 0
     for r in rows:
@@ -399,32 +488,40 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                     "INSERT OR REPLACE INTO model_efficacy "
                     "(model_id, use_case, score_quality, score_speed, "
                     "score_cost, score_reliability, samples, "
-                    "source_count, is_synthetic, benchmark_keys) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "source_count, is_synthetic, benchmark_keys, "
+                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (model_id, "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
                      r["score_reliability"], r.get("samples", 0),
                      r.get("source_count", 0), r.get("is_synthetic", 0),
-                     json.dumps(r.get("benchmark_keys", []))),
+                     json.dumps(r.get("benchmark_keys", [])),
+                     r.get("score_chat", 0), r.get("score_knowledge", 0),
+                     r.get("score_coding", 0), r.get("score_reasoning", 0),
+                     r.get("score_agentic", 0)),
                 )
             else:
                 conn.execute(
                     "INSERT OR REPLACE INTO model_efficacy "
                     "(model_ref, use_case, score_quality, score_speed, "
                     "score_cost, score_reliability, samples, "
-                    "source_count, is_synthetic, benchmark_keys) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "source_count, is_synthetic, benchmark_keys, "
+                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (r["model_ref"], "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
                      r["score_reliability"], r.get("samples", 0),
                      r.get("source_count", 0), r.get("is_synthetic", 0),
-                     json.dumps(r.get("benchmark_keys", []))),
+                     json.dumps(r.get("benchmark_keys", [])),
+                     r.get("score_chat", 0), r.get("score_knowledge", 0),
+                     r.get("score_coding", 0), r.get("score_reasoning", 0),
+                     r.get("score_agentic", 0)),
                 )
             written += 1
         except Exception as e:
             print(f"    ⚠ efficacy {r.get('model_ref','?')}: {e}")
     conn.commit()
-    print(f"    → {written}/{len(rows)} écrits")
+    print(f"    → {written}/{len(rows)} écrits") 
 
 
 # ──────────────────────────────────────────────
