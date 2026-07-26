@@ -272,16 +272,26 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
         has_real = sc["sources"].intersection(_REAL_SOURCES)
         is_synth = 0 if has_real else 1
 
-        global_score = round(q * 0.35 + s * 0.20 + c * 0.15 + rl * 0.30, 2)
-        if global_score == 0.0:
-            global_score = round(
-                task_scores.get("score_chat", 0) * 0.35
-                + task_scores.get("score_coding", 0) * 0.20
-                + task_scores.get("score_reasoning", 0) * 0.20
-                + task_scores.get("score_knowledge", 0) * 0.15
-                + task_scores.get("score_agentic", 0) * 0.10,
-                2,
-            )
+        # Compute task-type weighted global score
+        task_global = round(
+            task_scores.get("score_chat", 0) * 0.35
+            + task_scores.get("score_coding", 0) * 0.20
+            + task_scores.get("score_reasoning", 0) * 0.20
+            + task_scores.get("score_knowledge", 0) * 0.15
+            + task_scores.get("score_agentic", 0) * 0.10,
+            2,
+        )
+
+        # Compute legacy weighted global score
+        legacy_global = round(q * 0.35 + s * 0.20 + c * 0.15 + rl * 0.30, 2)
+
+        # Prefer task-type global when available (covers frontier models
+        # with score_coding/score_reasoning etc. that have no speed/cost/reliability)
+        has_task_data = any(task_scores.values())
+        if has_task_data:
+            global_score = task_global
+        else:
+            global_score = legacy_global
 
         results.append({
             "model_ref": ref,
@@ -487,12 +497,12 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                     continue
                 conn.execute(
                     "INSERT OR REPLACE INTO model_efficacy "
-                    "(model_id, use_case, score_quality, score_speed, "
+                    "(model_id, model_ref, use_case, score_quality, score_speed, "
                     "score_cost, score_reliability, samples, "
                     "source_count, is_synthetic, benchmark_keys, "
                     "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic, global_score) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (model_id, "general",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (model_id, r["model_ref"], "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
                      r["score_reliability"], r.get("samples", 0),
                      r.get("source_count", 0), r.get("is_synthetic", 0),
