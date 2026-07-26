@@ -343,6 +343,7 @@ def ensure_schema(conn: sqlite3.Connection, local: bool):
     _add_column(conn, "model_efficacy", "score_coding", "REAL DEFAULT 0")
     _add_column(conn, "model_efficacy", "score_reasoning", "REAL DEFAULT 0")
     _add_column(conn, "model_efficacy", "score_agentic", "REAL DEFAULT 0")
+    _add_column(conn, "model_efficacy", "global_score", "REAL DEFAULT 0")
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
@@ -489,8 +490,8 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                     "(model_id, use_case, score_quality, score_speed, "
                     "score_cost, score_reliability, samples, "
                     "source_count, is_synthetic, benchmark_keys, "
-                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic, global_score) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (model_id, "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
                      r["score_reliability"], r.get("samples", 0),
@@ -498,7 +499,7 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                      json.dumps(r.get("benchmark_keys", [])),
                      r.get("score_chat", 0), r.get("score_knowledge", 0),
                      r.get("score_coding", 0), r.get("score_reasoning", 0),
-                     r.get("score_agentic", 0)),
+                     r.get("score_agentic", 0), r.get("global_score", 0)),
                 )
             else:
                 conn.execute(
@@ -506,8 +507,8 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                     "(model_ref, use_case, score_quality, score_speed, "
                     "score_cost, score_reliability, samples, "
                     "source_count, is_synthetic, benchmark_keys, "
-                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "score_chat, score_knowledge, score_coding, score_reasoning, score_agentic, global_score) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (r["model_ref"], "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
                      r["score_reliability"], r.get("samples", 0),
@@ -515,7 +516,7 @@ def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
                      json.dumps(r.get("benchmark_keys", [])),
                      r.get("score_chat", 0), r.get("score_knowledge", 0),
                      r.get("score_coding", 0), r.get("score_reasoning", 0),
-                     r.get("score_agentic", 0)),
+                     r.get("score_agentic", 0), r.get("global_score", 0)),
                 )
             written += 1
         except Exception as e:

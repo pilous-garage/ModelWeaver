@@ -13,6 +13,7 @@ où chaque dict a les clés standardisées :
     confidence     : float (0.0–1.0, défaut 1.0)
 """
 
+from . import frontier
 from . import lmsys_arena
 from . import arena_hard
 from . import synthetic
@@ -21,6 +22,7 @@ from . import synthetic
 SOURCES = {
     "lmsys_arena": lmsys_arena,
     "arena_hard": arena_hard,
+    "frontier_estimate": frontier,
     "synthetic_catalogue": synthetic,
 }
 

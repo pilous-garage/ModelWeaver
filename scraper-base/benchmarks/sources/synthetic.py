@@ -35,6 +35,13 @@ QUALITY_WEIGHTS = {
     "Gemma": 48,
 }
 
+FRONTIER_INDICATORS = [
+    "gpt-5", "gpt-4o", "claude-opus-4", "deepseek-v4", "deepseek-r1-0",
+    "grok-4", "gemini-3", "ling-2.6", "qwen3", "qwen3.7",
+    "kimi-k3", "glm-5", "nex-n2", "sakana-fugu",
+    "cohere-north", "meta-llama-4", "nvidia-nemotron-3",
+]
+
 SIZE_BONUS_TABLE = [
     (1_000_000_000_000, 35),
     (400_000_000_000, 33),
@@ -91,8 +98,13 @@ def _detect_provider(ref: str) -> str:
     return ref.split("-")[0] if "-" in ref else ref.split(".")[0]
 
 
+def _is_frontier_model(ref: str) -> bool:
+    lower = ref.lower()
+    return any(ind in lower for ind in FRONTIER_INDICATORS)
+
+
 def _quality_bonus(ref: str, release_year: Optional[int], architecture: Optional[str],
-                   modality: Optional[str], target_use: Optional[str]) -> float:
+                    modality: Optional[str], target_use: Optional[str]) -> float:
     bonus = 0.0
     arch = (architecture or "").lower()
     if "mixture" in arch or "moe" in arch:
@@ -107,6 +119,8 @@ def _quality_bonus(ref: str, release_year: Optional[int], architecture: Optional
         bonus += 4
     elif release_year and release_year >= 2023:
         bonus += 2
+    if _is_frontier_model(ref):
+        bonus += 5
     return bonus
 
 
