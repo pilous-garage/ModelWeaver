@@ -931,12 +931,21 @@ Infrastructure de scraping de benchmarks LLM + scoring consolidé.
 - **`scraper-base/benchmarks/`** : package standalone pour machine admin
   - `sources/seeded.py` : données benchmark initiales (20 modèles, 6 métriques)
   - `sources/lmsys_arena.py` : scraper LMSYS Arena Elo (normalisation de noms)
-  - `sources/artificial_analysis.py` : scraper qualité/vitesse/prix
-  - `consolidate.py` : percentile → model_efficacy (qualité, vitesse, coût, fiabilité)
+  - `sources/arena_hard.py` : scraper Arena-Hard CSV depuis HF Space
+  - **`sources/frontier.py`** : scores estimés pour les modèles frontière récents
+    (Ling 2.6, DeepSeek V4, Grok 4, Gemini 3, Claude Opus 4.8, GPT-5.6, etc.)
+    — confiance 0.6 (vs 0.3 pour le générique synthétique)
+  - `sources/synthetic.py` : générateur synthétique amélioré (+5 bonus qualité
+    pour les modèles qui matchent les patterns frontière)
+  - `consolidate.py` : percentile → model_efficacy avec breakdown par type de
+    tâche (score_chat, score_knowledge, score_coding, score_reasoning, score_agentic)
+    + global_score persistant dans la DB
   - `run_all.py` : orchestrateur (cron weekly) — écrit sur Turso distant
 - **Table `model_benchmarks_raw`** : données brutes par source (catalogue DB)
+  - Nouvelles clés : `frontier_estimate` (données estimées pour modèles récents)
 - **`model_efficacy`** : scores consolidés (existante, maintenant alimentée)
-- Stratégies `llm/allocate` enrichies : utilisent `model_efficacy` pour le scoring best-fallback
+  - Nouveaux champs : score_chat, score_knowledge, score_coding, score_reasoning,
+    score_agentic, global_score, is_synthetic, benchmark_keys, source_count
 
 #### Architecture
 - Machine admin : `python -m scraper-base.benchmarks.run_all` → Turso distant
