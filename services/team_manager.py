@@ -118,6 +118,7 @@ class Team:
                 team_name=self.spec.team_name)
             if self.spec.workspace_id:
                 _set_workspace_director(self.spec.workspace_id, self.team_leader_agent_id)
+            self._seed_leader_workflow()
 
         # Members
         for m in self.spec.members:
@@ -126,6 +127,38 @@ class Team:
             self.member_agent_ids[m.agent_name] = aid
 
         self.status = "ready"
+
+    def _seed_leader_workflow(self):
+        """Peuple le config_json du team_leader avec un workflow par défaut
+        qui distribue les requêtes à tous les membres de l'équipe."""
+        member_names = [m.agent_name for m in self.spec.members]
+        if not member_names or not self.team_leader_agent_id:
+            return
+
+        workflow = {
+            "steps": [{
+                "type": "team_delegate",
+                "id": "scatter",
+                "members": member_names,
+                "entrypoint": "main",
+                "inputs": {"request": "{{request}}"},
+                "assignment": "all_same",
+                "capture": {"results": "team_outputs"},
+                "next": "done",
+            }, {
+                "type": "final",
+                "id": "done",
+                "capture": {"content": "team_outputs"},
+            }]
+        }
+
+        db = _get_agent_db()
+        db.conn.execute(
+            "UPDATE agents SET config_json = ? WHERE agent_id = ?",
+            (json.dumps({"role": "team_leader", "workflow": workflow}),
+             self.team_leader_agent_id),
+        )
+        db.conn.commit()
 
     # ── Agent hydration helpers ─────────────────────────────────
 
