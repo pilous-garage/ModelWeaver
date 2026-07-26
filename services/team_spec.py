@@ -1,8 +1,11 @@
 """TeamSpec — Modèle déclaratif d'équipe (.team.yaml).
 
 Une équipe regroupe des agents autour d'un objectif commun, avec une
-topologie d'orchestration (hiérarchique, pair, DAG) et un director
-optionnel pour la délégation automatique des tâches.
+topologie d'orchestration (hiérarchique, pair, DAG) et un
+team_leader (chef d'équipe) responsable de la coordination.
+
+Chaque agent (et en particulier le team_leader) est unique à son
+équipe : un même agent_name ne peut pas être échangé entre projets.
 
 Usage:
     spec = TeamSpec.from_yaml("services/manifests/teams/bug-busters.team.yaml")
@@ -27,9 +30,14 @@ class TeamMemberSpec:
 
 
 @dataclass
-class TeamDirectorSpec:
+class TeamLeaderSpec:
+    """Chef d'équipe — agent responsable de l'orchestration du projet.
+
+    Unique à une équipe : le team_leader d'un projet ne doit PAS être
+    interchangeable avec le team_leader d'un autre projet.
+    """
     agent_name: str = ""
-    role: str = "director"
+    role: str = "team_leader"
     occupation: str = "continue"
     resources: Optional[Dict[str, Any]] = None
     config: Dict[str, Any] = field(default_factory=dict)
@@ -52,7 +60,7 @@ class TeamSpec:
     description: str = ""
     workspace_id: str = ""
     topology: str = "hierarchical"  # hierarchical | peer | dag
-    director: Optional[TeamDirectorSpec] = None
+    team_leader: Optional[TeamLeaderSpec] = None
     members: List[TeamMemberSpec] = field(default_factory=list)
     resources: TeamResourcesSpec = field(default_factory=TeamResourcesSpec)
 
@@ -68,18 +76,18 @@ class TeamSpec:
         if not raw:
             raise ValueError(f"Fichier vide: {path}")
 
-        director_raw = raw.get("director")
-        director = None
-        if director_raw:
-            director = TeamDirectorSpec(
-                agent_name=director_raw.get("agent_name", ""),
-                role=director_raw.get("role", "director"),
-                occupation=director_raw.get("occupation", "continue"),
-                resources=director_raw.get("resources"),
-                config=director_raw.get("config", {}),
-                provider_ref=director_raw.get("provider_ref", ""),
-                model_ref=director_raw.get("model_ref", ""),
-                workflow=director_raw.get("workflow", "orchestrate"),
+        leader_raw = raw.get("director") or raw.get("team_leader") or raw.get("leader")
+        team_leader = None
+        if leader_raw:
+            team_leader = TeamLeaderSpec(
+                agent_name=leader_raw.get("agent_name", ""),
+                role=leader_raw.get("role", "team_leader"),
+                occupation=leader_raw.get("occupation", "continue"),
+                resources=leader_raw.get("resources"),
+                config=leader_raw.get("config", {}),
+                provider_ref=leader_raw.get("provider_ref", ""),
+                model_ref=leader_raw.get("model_ref", ""),
+                workflow=leader_raw.get("workflow", "orchestrate"),
             )
 
         members = []
@@ -107,7 +115,7 @@ class TeamSpec:
             description=raw.get("description", ""),
             workspace_id=raw.get("workspace_id", ""),
             topology=raw.get("topology", "hierarchical"),
-            director=director,
+            team_leader=team_leader,
             members=members,
             resources=resources,
         )
@@ -120,11 +128,11 @@ class TeamSpec:
             "description": self.description,
             "workspace_id": self.workspace_id,
             "topology": self.topology,
-            "director": {
-                "agent_name": self.director.agent_name,
-                "role": self.director.role,
-                "workflow": self.director.workflow,
-            } if self.director else None,
+            "team_leader": {
+                "agent_name": self.team_leader.agent_name,
+                "role": self.team_leader.role,
+                "workflow": self.team_leader.workflow,
+            } if self.team_leader else None,
             "members": [
                 {"agent_name": m.agent_name, "role": m.role}
                 for m in self.members

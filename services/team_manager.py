@@ -1,7 +1,7 @@
 """TeamManager — Registre global des équipes + cycle de vie.
 
 Chaque équipe est définie par un .team.yaml et se compose :
-  - D'un director (agent orchestrateur, optionnel)
+  - D'un team_leader (agent orchestrateur, optionnel)
   - De membres (agents exécutants)
   - D'un workspace_id (optionnel, qui lie le director au workspace)
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from services.api.router import register_dynamic, unregister
-from services.team_spec import TeamSpec, TeamMemberSpec, TeamDirectorSpec
+from services.team_spec import TeamSpec, TeamMemberSpec, TeamLeaderSpec
 
 
 # ── Helpers internes ──────────────────────────────────────────────
@@ -40,7 +40,7 @@ def _ensure_agent_exists(spec, role: str, occupation: str) -> int:
     config_json = json.dumps(spec.config or {})
     resources_json = json.dumps(spec.resources or {})
 
-    if isinstance(spec, TeamDirectorSpec):
+    if isinstance(spec, TeamLeaderSpec):
         effective_role = role
         effective_occupation = spec.occupation or occupation
     else:
@@ -87,10 +87,7 @@ class Team:
 
     def __init__(self, spec: TeamSpec):
         self.spec = spec
-        self.director_agent_id: Optional[int] = None
-        self.member_agent_ids: Dict[str, int] = {}  # agent_name -> agent_id
-        self.status: str = "stopped"
-        self._routes: List[str] = []
+                self.team_leader_agent_id: Optional[int] = None
 
     @property
     def name(self) -> str:
@@ -103,13 +100,13 @@ class Team:
     # ── Setup ───────────────────────────────────────────────────
 
     def setup(self):
-        """Assure que tous les agents existent et lie le director au workspace."""
+        """Assure que tous les agents existent et lie le leader au workspace."""
         # Director
-        if self.spec.director and self.spec.director.agent_name:
-            self.director_agent_id = _ensure_agent_exists(
-                self.spec.director, "director", "continue")
+        if self.spec.team_leader and self.spec.team_leader.agent_name:
+            self.leader_agent_id = _ensure_agent_exists(
+                self.spec.team_leader, "team_leader", "continue")
             if self.spec.workspace_id:
-                _set_workspace_director(self.spec.workspace_id, self.director_agent_id)
+                _set_workspace_director(self.spec.workspace_id, self.team_leader_agent_id)
 
         # Members
         for m in self.spec.members:
@@ -152,8 +149,8 @@ class Team:
             aid = self.member_agent_ids.get(target)
             if not aid:
                 return {"status": "error", "error": f"membre inconnu: {target}"}
-        elif self.director_agent_id:
-            aid = self.director_agent_id
+        elif self.team_leader_agent_id:
+            aid = self.team_leader_agent_id
         else:
             return {"status": "error", "error": "aucun director ni target spécifié"}
 
@@ -165,8 +162,8 @@ class Team:
             aid = self.member_agent_ids.get(target)
             if not aid:
                 return {"status": "error", "error": f"membre inconnu: {target}"}
-        elif self.director_agent_id:
-            aid = self.director_agent_id
+        elif self.team_leader_agent_id:
+            aid = self.team_leader_agent_id
         else:
             aid = next(iter(self.member_agent_ids.values()), None)
             if not aid:
@@ -183,9 +180,9 @@ class Team:
             return
         for name in self.member_agent_ids:
             self._set_agent_status(name, "IDLE")
-        if self.director_agent_id:
+        if self.team_leader_agent_id:
             self._set_agent_status(
-                self.spec.director.agent_name if self.spec.director else "", "IDLE")
+                self.spec.team_leader.agent_name if self.spec.team_leader else "", "IDLE")
         self.status = "running"
 
     def stop(self, agent_name: Optional[str] = None):
@@ -195,9 +192,9 @@ class Team:
             return
         for name in self.member_agent_ids:
             self._set_agent_status(name, "STOPPED")
-        if self.director_agent_id:
+        if self.team_leader_agent_id:
             self._set_agent_status(
-                self.spec.director.agent_name if self.spec.director else "", "STOPPED")
+                self.spec.team_leader.agent_name if self.spec.team_leader else "", "STOPPED")
         self.status = "stopped"
 
     def restart(self):
@@ -226,13 +223,13 @@ class Team:
                 "last_active_at": row["last_active_at"] if row else None,
             })
         director_info = None
-        if self.director_agent_id:
+        if self.team_leader_agent_id:
             row = db.conn.execute(
                 "SELECT status, last_active_at FROM agents WHERE agent_id = ?",
-                (self.director_agent_id,)).fetchone()
+                (self.team_leader_agent_id,)).fetchone()
             director_info = {
-                "agent_name": self.spec.director.agent_name if self.spec.director else "",
-                "agent_id": self.director_agent_id,
+                "agent_name": self.spec.team_leader.agent_name if self.spec.team_leader else "",
+                "agent_id": self.team_leader_agent_id,
                 "status": row["status"] if row else "unknown",
                 "last_active_at": row["last_active_at"] if row else None,
             }
