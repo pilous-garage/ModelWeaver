@@ -1,123 +1,115 @@
-"""Scraper LMSYS Chatbot Arena Leaderboard.
+"""Scraper LMSYS Chatbot Arena Leaderboard from Hugging Face Space CSV.
 
-Source : Hugging Face dataset lmsys/lmsys-arena-elo-results-v2
-         ou CSV direct depuis le HF Space.
+The leaderboard data is published as daily CSV snapshots in the HF Space:
+  lmarena-ai/arena-leaderboard
 
-Score Elo = qualité perçue par des humains en aveugle.
-C'est le benchmark de référence pour la qualité "réelle".
+Each CSV file: leaderboard_table_YYYYMMDD.csv
+
+Metrics:
+  - MT-bench (score): quality score 0-10 (style/chat preferences)
+  - MMLU: proportion 0.0-1.0 (knowledge benchmark)
+
+We derive an ELO-style score from the ranking position.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List
+
+import csv
+import io
 import json
+import re
 import urllib.request
 import urllib.error
 import ssl
+from typing import Any, Dict, List, Optional
 
 
-LEADERBOARD_JSON = "https://huggingface.co/spaces/lmarena-ai/arena-leaderboard/raw/main/leaderboard_table.json"
+HF_SPACE_HOST = "https://lmarena-ai-arena-leaderboard.static.hf.space"
+LEADERBOARD_CSV_TEMPLATE = (
+    "{host}/leaderboard_table_{date}.csv"
+)
+
+
+def _latest_csv_date() -> str:
+    """Tentative: derive latest CSV date from the Space API."""
+    url = "https://huggingface.co/api/spaces/lmarena-ai/arena-leaderboard"
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request(url, headers={"User-Agent": "ModelWeaver/0.8.5"})
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = json.loads(resp.read().decode())
+        siblings = data.get("siblings", [])
+        csvs = [s["rfilename"] for s in siblings if "leaderboard_table_20" in s["rfilename"]]
+        if csvs:
+            csvs.sort(reverse=True)
+            stem = csvs[0]
+            return stem.replace("leaderboard_table_", "").replace(".csv", "")
+    except Exception:
+        pass
+    return "20250804"
 
 
 def _normalize_model_name(name: str) -> str:
-    """Normalise les noms de modèles LMSYS vers notre format canonique.
-
-    Exemples :
-        'gpt-4o-2024-05-13' -> 'openai/gpt-4o'
-        'gpt-4o-mini-2024-07-18' -> 'openai/gpt-4o-mini'
-        'claude-3-5-sonnet-20241022' -> 'anthropic/claude-3-5-sonnet'
-        'gemini-2.0-flash-exp' -> 'google/gemini-2.0-flash'
-        'Meta-Llama-3-70B-Instruct' -> 'meta/llama-3-70b-instruct'
-    """
     n = name.strip().lower()
-
-    provider_map = [
-        ("gpt-", "openai/gpt-"),
-        ("o1-", "openai/o1-"),
-        ("o3-", "openai/o3-"),
-        ("claude", "anthropic/claude"),
-        ("gemini", "google/gemini"),
-        ("gemma", "google/gemma"),
-        ("meta-llama", "meta/llama"),
-        ("llama", "meta/llama"),
-        ("mistral", "mistral/mistral"),
-        ("mixtral", "mistral/mixtral"),
-        ("deepseek", "deepseek/deepseek"),
-        ("qwen", "qwen/qwen"),
-        ("command", "cohere/command"),
-        ("dbrx", "databricks/dbrx"),
-    ]
-
-    for prefix, replacement in provider_map:
-        if n.startswith(prefix):
-            n = replacement + n[len(prefix):]
-            break
-
-    # Nettoyer suffixes de version (formats: -YYYY, -YYYYMMDD, -YYYY-MM-DD, -vN, etc.)
-    import re
-    n = re.sub(r'-\d{4}\d{2}\d{2}$', '', n)     # -YYYYMMDD (8 digits)
-    n = re.sub(r'-\d{4}(-\d{2}(-\d{2})?)?$', '', n)  # -YYYY, -YYYY-MM, -YYYY-MM-DD
-    n = re.sub(r'-v\d+$', '', n)
-    n = re.sub(r'-(exp|beta|latest|turbo|snapshot)$', '', n)
-
+    n = re.sub(r"\-?\d{4}.*$", "", n)       # strip version dates
+    n = re.sub(r"\-v\d+$", "", n)
+    n = re.sub(r"\-(latest|turbo|snapshot|preview|exp|beta)$", "", n)
+    n = n.strip("-").strip()
     return n
 
 
-def fetch() -> List[Dict[str, Any]]:
-    """Récupère les scores Elo depuis le leaderboard LMSYS.
-
-    Retourne une liste de dicts :
-        model_ref     : str (canonique, ex: 'openai/gpt-4o')
-        benchmark_key : str ('lmsys_arena_elo')
-        metric_name   : str ('elo')
-        raw_value     : float
-        source_url    : str
-    """
+def fetch(limit: int = 500) -> List[Dict[str, Any]]:
+    rows = []
+    date = _latest_csv_date()
+    url = LEADERBOARD_CSV_TEMPLATE.format(host=HF_SPACE_HOST, date=date)
     ctx = ssl.create_default_context()
-    req = urllib.request.Request(
-        LEADERBOARD_JSON,
-        headers={"User-Agent": "ModelWeaver/0.8.5"},
-    )
-
+    req = urllib.request.Request(url, headers={"User-Agent": "ModelWeaver/0.8.5"})
     try:
         with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
-        print(f"    [lmsys] Failed to fetch from {LEADERBOARD_JSON}: {e}")
+            csv_bytes = resp.read()
+    except Exception as e:
+        print(f"  ⚠ LMSYS leaderboard CSV ({date}) non dispo ({e})")
         return []
-
-    # Le JSON peut être une liste de modèles ou un dict avec clé 'models'
-    if isinstance(data, dict):
-        rows = data.get("models", data.get("data", []))
-    else:
-        rows = data
-
-    results = []
-    seen = set()
-
-    for item in rows:
-        if isinstance(item, dict):
-            name = item.get("name", item.get("model", ""))
-            elo = item.get("elo", item.get("score", item.get("gpt_score", 0)))
-        elif isinstance(item, list) and len(item) >= 2:
-            name = item[0]
-            elo = item[1]
-        else:
+    reader = csv.DictReader(io.TextIOWrapper(io.BytesIO(csv_bytes), encoding="utf-8"))
+    rank = 0
+    for row in reader:
+        if rank >= limit:
+            break
+        rank += 1
+        model_name = row.get("Model", "")
+        if not model_name:
             continue
-
-        if not name or not elo:
+        mt_bench = row.get("MT-bench (score)", "")
+        mmlu = row.get("MMLU", "")
+        ref = _normalize_model_name(model_name)
+        if not ref:
             continue
-
-        model_ref = _normalize_model_name(str(name))
-        if not model_ref or model_ref in seen:
+        try:
+            raw = float(mt_bench) if mt_bench else 0.0
+        except ValueError:
+            raw = 0.0
+        if raw == 0.0 and not mmlu:
             continue
-        seen.add(model_ref)
-
-        results.append({
-            "model_ref": model_ref,
-            "benchmark_key": "lmsys_arena_elo",
-            "metric_name": "elo",
-            "raw_value": float(elo),
-            "source_url": LEADERBOARD_JSON,
+        rows.append({
+            "model_ref": ref,
+            "benchmark_key": "lmsys_arena",
+            "metric_name": "mt_bench_quality",
+            "raw_value": raw,
+            "source_url": url,
+            "lmsys_mmlu": float(mmlu) if mmlu and mmlu != "-" else None,
+            "lmsys_rank": rank,
         })
-
-    return results
+        if mmlu and mmlu != "-":
+            try:
+                mmlu_val = float(mmlu)
+                rows.append({
+                    "model_ref": ref,
+                    "benchmark_key": "lmsys_arena",
+                    "metric_name": "mmlu_knowledge",
+                    "raw_value": mmlu_val * 100,  # scale to 0-100
+                    "source_url": url,
+                    "lmsys_rank": rank,
+                })
+            except ValueError:
+                pass
+    return rows

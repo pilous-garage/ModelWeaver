@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
 """
-Scraper de benchmarks LLM — script autonome.
+ModelWeaver — Benchmark Scraper consolidator (v2, exhaustive).
 
 Usage :
-    python scraper-base/benchmarks/consolidate.py           # → Turso distant
-    python scraper-base/benchmarks/consolidate.py --local   # → catalogue.db local
+    python scraper-base/benchmarks/consolidate.py            → Turso distant
+    python scraper-base/benchmarks/consolidate.py --local    → catalogue.db local
+    python scraper-base/benchmarks/consolidate.py --local --force  → force re-scrape all
 
 Pipeline :
-    1. Connexion à la base (Turso ou locale)
-    2. Création des tables si absentes
-    3. Scraping des sources (seeded → LMSYS → Artificial Analysis)
-    4. Normalisation en percentiles
-    5. Écriture dans model_benchmarks_raw
-    6. Consolidation dans model_efficacy
+    1. Connexion à la base (Turso ou locale).
+    2. Création des tables si absentes.
+    3. Scraping lazy : télécharge les CSVs LMSYS/Arena-Hard uniquement
+       si plus récents que la dernière exécution.
+       Génère des données synthétiques pour les modèles sans données réelles.
+    4. Écriture dans model_benchmarks_raw (normalisé par source + métrique).
+    5. Normalisation de chaque métrique en percentile relatif à l'ensemble
+       complet des scores collectés pour cette métrique.
+    6. Agrégation dans model_efficacy (score qualité/vitesse/coût/fiabilité).
 """
 
+from __future__ import annotations
+
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import statistics
 import sys
-import urllib.request
-import urllib.error
-import ssl
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ──────────────────────────────────────────────
-#  1. CONFIG — .env
+#  1. CONFIG
 # ──────────────────────────────────────────────
 
 def _load_env(env_path: Optional[str] = None):
-    """Charge .env depuis le repo root ou le path donné."""
     if env_path:
         p = Path(env_path)
     else:
@@ -46,18 +50,22 @@ def _load_env(env_path: Optional[str] = None):
         key, _, val = line.partition("=")
         os.environ.setdefault(key.strip(), val.strip())
 
-
 _load_env()
 
 TURSO_URL = os.getenv("TURSO_URL", "")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN", "")
+MW_VERSION = os.getenv("MW_VERSION", "0.8.6")
+
+SOURCES_DIR = Path(__file__).parent / "sources"
+TRACKING_FILE = Path(__file__).parent / ".scrape_tracking.json"
+
 
 # ──────────────────────────────────────────────
 #  2. SCHEMA SQL
 # ──────────────────────────────────────────────
-
 SCHEMA_RAW_SQL = """
 CREATE TABLE IF NOT EXISTS model_benchmarks_raw (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     model_ref       TEXT NOT NULL,
     benchmark_key   TEXT NOT NULL,
     metric_name     TEXT NOT NULL DEFAULT 'score',
@@ -65,305 +73,321 @@ CREATE TABLE IF NOT EXISTS model_benchmarks_raw (
     percentile      REAL,
     source_url      TEXT DEFAULT '',
     fetched_at      TEXT DEFAULT (datetime('now')),
+    is_synthetic    INTEGER DEFAULT 0,
+    confidence      REAL DEFAULT 1.0,
     PRIMARY KEY (model_ref, benchmark_key, metric_name)
 );
 """
 
-# ──────────────────────────────────────────────
-#  3. SEEDED DATA (20 modèles)
-# ──────────────────────────────────────────────
+SCHEMA_TRACKING_SQL = """
+CREATE TABLE IF NOT EXISTS benchmark_scrape_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name     TEXT NOT NULL,
+    source_url      TEXT DEFAULT '',
+    rows_fetched    INTEGER DEFAULT 0,
+    completed_at    TEXT DEFAULT (datetime('now')),
+    success         INTEGER DEFAULT 1,
+    error_msg       TEXT DEFAULT ''
+);
+"""
 
-# (model_ref, elo, quality%, speed_tps, cost_per_m_input, cost_per_m_output, swe_bench_pass_rate)
-SEED = [
-    ("openai/gpt-4o",               1365, 92,  85,  2.50,  10.00, 48.0),
-    ("openai/gpt-4o-mini",          1320, 85, 120,  0.15,   0.60, 32.0),
-    ("openai/o1",                   1380, 95,  30, 15.00,  60.00, 62.0),
-    ("openai/o3-mini",              1340, 90,  55,  1.10,   4.40, 55.0),
-    ("anthropic/claude-3-5-sonnet", 1370, 93,  55,  3.00,  15.00, 50.0),
-    ("anthropic/claude-3-5-haiku",  1310, 83,  95,  0.80,   4.00, 35.0),
-    ("anthropic/claude-4-sonnet",   1390, 96,  50,  3.50,  17.50, 58.0),
-    ("google/gemini-2.0-flash",     1330, 87, 110,  0.10,   0.40, 30.0),
-    ("google/gemini-2.5-flash",     1345, 89, 100,  0.15,   0.60, 36.0),
-    ("google/gemini-2.0-pro",       1350, 91,  60,  0.50,   1.50, 42.0),
-    ("meta/llama-3.1-70b",          1280, 80,  45,  0.59,   0.79, 28.0),
-    ("meta/llama-3.1-405b",         1300, 85,  30,  2.00,   2.00, 35.0),
-    ("meta/llama-4-70b",            1315, 86,  50,  0.70,   0.90, 38.0),
-    ("mistral/mistral-large",       1290, 82,  70,  2.00,   6.00, 30.0),
-    ("mistral/mistral-small",       1260, 76,  90,  0.20,   0.60, 22.0),
-    ("deepseek/deepseek-chat",      1340, 88,  75,  0.14,   0.28, 42.0),
-    ("deepseek/deepseek-reasoner",  1355, 91,  40,  0.55,   2.19, 48.0),
-    ("cohere/command-r-plus",       1240, 72,  65,  2.50,  10.00, 18.0),
-    ("qwen/qwen3-72b",              1310, 84,  55,  0.35,   0.70, 34.0),
-    ("qwen/qwen3-32b",              1295, 81,  70,  0.20,   0.40, 28.0),
-]
-
-
-def _fetch_seeded() -> List[Dict[str, Any]]:
-    rows = []
-    for ref, elo, quality, speed, cost_in, cost_out, swe in SEED:
-        rows.append({"model_ref": ref, "benchmark_key": "lmsys_arena_elo",
-                     "metric_name": "elo", "raw_value": elo, "source_url": "seeded/lmsys"})
-        rows.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                     "metric_name": "quality", "raw_value": quality, "source_url": "seeded/artificial-analysis"})
-        rows.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                     "metric_name": "speed_tps", "raw_value": speed, "source_url": "seeded/artificial-analysis"})
-        rows.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                     "metric_name": "cost_per_m_input", "raw_value": cost_in, "source_url": "seeded/artificial-analysis"})
-        rows.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                     "metric_name": "cost_per_m_output", "raw_value": cost_out, "source_url": "seeded/artificial-analysis"})
-        rows.append({"model_ref": ref, "benchmark_key": "swe_bench_verified",
-                     "metric_name": "pass_rate", "raw_value": swe, "source_url": "seeded/swe-bench"})
-    return rows
 
 # ──────────────────────────────────────────────
-#  4. LIVE SCRAPERS (LMSYS Arena, Artificial Analysis)
+#  3. NORMALIZATION
 # ──────────────────────────────────────────────
+def _percentile_rank(rows: List[Dict], metric_key: str = "raw_value") -> List[Dict]:
+    """Assign percentile rank within each (benchmark_key, metric_name) group.
 
-LMSYS_URL = "https://huggingface.co/spaces/lmarena-ai/arena-leaderboard/raw/main/leaderboard_table.json"
-AA_URL = "https://artificialanalysis.ai/api/models"
-
-_PROVIDER_MAP = [
-    ("gpt-", "openai/gpt-"), ("o1-", "openai/o1-"), ("o3-", "openai/o3-"),
-    ("claude", "anthropic/claude"), ("gemini", "google/gemini"), ("gemma", "google/gemma"),
-    ("meta-llama", "meta/llama"), ("llama", "meta/llama"),
-    ("mistral", "mistral/mistral"), ("mixtral", "mistral/mixtral"),
-    ("deepseek", "deepseek/deepseek"), ("qwen", "qwen/qwen"),
-    ("command", "cohere/command"), ("dbrx", "databricks/dbrx"),
-]
-
-
-def _norm_model(name: str) -> str:
-    n = name.strip().lower()
-    for prefix, replacement in _PROVIDER_MAP:
-        if n.startswith(prefix):
-            n = replacement + n[len(prefix):]
-            break
-    # Nettoyer suffixes date
-    n = re.sub(r'-\d{8}$', '', n)             # -YYYYMMDD
-    n = re.sub(r'-\d{4}(-\d{2}(-\d{2})?)?$', '', n)  # -YYYY, -YYYY-MM, -YYYY-MM-DD
-    n = re.sub(r'-v\d+$', '', n)
-    n = re.sub(r'-(exp|beta|latest|turbo|snapshot)$', '', n)
-    return n
-
-
-def _fetch_lmsys() -> List[Dict[str, Any]]:
-    ctx = ssl.create_default_context()
-    req = urllib.request.Request(LMSYS_URL, headers={"User-Agent": "ModelWeaver/0.8.5"})
-    try:
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"  ⚠ LMSYS non dispo ({e})")
-        return []
-    items = data if isinstance(data, list) else data.get("models", data.get("data", []))
-    rows, seen = [], set()
-    for item in items:
-        if isinstance(item, dict):
-            name = item.get("name", item.get("model", ""))
-            elo = item.get("elo", item.get("score", 0))
-        elif isinstance(item, list) and len(item) >= 2:
-            name, elo = item[0], item[1]
-        else:
-            continue
-        if not name or not elo:
-            continue
-        ref = _norm_model(str(name))
-        if not ref or ref in seen:
-            continue
-        seen.add(ref)
-        rows.append({"model_ref": ref, "benchmark_key": "lmsys_arena_elo",
-                     "metric_name": "elo", "raw_value": float(elo), "source_url": LMSYS_URL})
-    return rows
-
-
-def _fetch_artificial_analysis() -> List[Dict[str, Any]]:
-    ctx = ssl.create_default_context()
-    req = urllib.request.Request(AA_URL, headers={"User-Agent": "ModelWeaver/0.8.5",
-                                                   "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"  ⚠ Artificial Analysis non dispo ({e})")
-        return []
-    models = data if isinstance(data, list) else data.get("models", data.get("data", []))
-    rows, seen = [], set()
-    for item in models:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name", item.get("model", ""))
-        if not name:
-            continue
-        ref = _norm_model(str(name))
-        if not ref or ref in seen:
-            continue
-        seen.add(ref)
-        for metric_key, metric_name, raw_key in [
-            ("artificial_analysis", "quality", "quality"),
-            ("artificial_analysis", "speed_tps", "speed"),
-            ("artificial_analysis", "cost_per_m_input", "price_per_million_input_tokens"),
-            ("artificial_analysis", "cost_per_m_output", "price_per_million_output_tokens"),
-        ]:
-            val = item.get(raw_key, item.get(metric_name))
-            if val is not None:
-                rows.append({"model_ref": ref, "benchmark_key": metric_key,
-                             "metric_name": metric_name, "raw_value": float(val),
-                             "source_url": AA_URL})
-    return rows
-
-
-def fetch_all_sources() -> List[Dict[str, Any]]:
-    """Scrape toutes les sources et retourne la liste consolidée des lignes brutes."""
-    all_rows = []
-    print("\n  Scraping sources...")
-    for name, fn in [("seeded", _fetch_seeded), ("LMSYS Arena", _fetch_lmsys),
-                      ("Artificial Analysis", _fetch_artificial_analysis)]:
-        rows = fn()
-        print(f"    {name}: {len(rows)} lignes")
-        all_rows.extend(rows)
-    return all_rows
-
-# ──────────────────────────────────────────────
-#  5. PERCENTILES
-# ──────────────────────────────────────────────
-
-def compute_percentiles(rows: List[Dict]) -> List[Dict]:
+    Uses the standard percentile formula: pct = (rank / (n-1)) * 100
+    """
     groups: Dict[str, List[Dict]] = {}
     for r in rows:
-        groups.setdefault(f"{r['benchmark_key']}|{r['metric_name']}", []).append(r)
+        key = f"{r['benchmark_key']}|{r['metric_name']}"
+        groups.setdefault(key, []).append(r)
+
     for key, group in groups.items():
-        vals = sorted(set(r["raw_value"] for r in group))
+        vals = sorted(set(r[metric_key] for r in group))
+        n = len(vals)
         for r in group:
-            r["percentile"] = round((vals.index(r["raw_value"]) / max(len(vals) - 1, 1)) * 100, 1)
+            idx = vals.index(r[metric_key])
+            r["percentile"] = round((idx / max(n - 1, 1)) * 100, 2)
     return rows
 
-# ──────────────────────────────────────────────
-#  6. CONSOLIDATION → model_efficacy
-# ──────────────────────────────────────────────
 
+def normalize_all(rows: List[Dict]) -> List[Dict]:
+    """Normalize every raw_value to percentile within its metric group.
+
+    For cost metrics (cost_per_m_input, cost_per_m_output), invert so that
+    lower cost = higher percentile (like quality & speed).
+    """
+    rows = _percentile_rank(rows, "raw_value")
+    return rows
+
+
+# ──────────────────────────────────────────────
+#  4. CONSOLIDATION → model_efficacy
+# ──────────────────────────────────────────────
 def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
-    by_ref: Dict[str, Dict] = {}
+    """Aggregate percentile scores into per-model efficacy scores.
+
+    Scoring logic:
+        score_quality     = mean of MT-bench + MMLU + Arena-Hard percentiles
+        score_speed       = mean of speed percentiles (higher = faster)
+        score_cost        = mean of cost percentiles (higher = cheaper)
+        score_reliability = mean of reliability percentiles + MMLU
+        global_score      = weighted combination
+
+    Each source carries confidence weight.
+    """
+    by_ref: Dict[str, Dict[str, Any]] = {}
+
     for r in rows:
         ref = r["model_ref"]
-        by_ref.setdefault(ref, {"q": [], "s": [], "c": []})
-        m, pct = r["metric_name"], r.get("percentile", 50)
-        if m in ("elo", "quality"):
-            by_ref[ref]["q"].append(pct)
-        elif m in ("speed_tps",):
-            by_ref[ref]["s"].append(pct)
-        elif m in ("cost_per_m_input", "cost_per_m_output"):
-            by_ref[ref]["c"].append(100 - pct)
+        if ref not in by_ref:
+            by_ref[ref] = {
+                "q": [], "s": [], "c": [], "rl": [],
+                "q_conf": [], "s_conf": [], "c_conf": [], "rl_conf": [],
+                "sources": set(),
+            }
+        entry = by_ref[ref]
+        conf = r.get("confidence", 1.0)
+
+        metric = r["metric_name"]
+        pct = r.get("percentile", 50.0)
+
+        # Normalize cost: invert so cheaper = higher percentile
+        if metric in ("cost_per_m_input", "cost_per_m_output"):
+            pct = 100 - pct
+
+        if metric in ("mt_bench_quality", "mmlu_knowledge", "score", "quality_pct"):
+            entry["q"].append(pct)
+            entry["q_conf"].append(conf)
+            entry["sources"].add(r["benchmark_key"])
+        elif metric in ("speed_tps",):
+            entry["s"].append(pct)
+            entry["s_conf"].append(conf)
+            entry["sources"].add(r["benchmark_key"])
+        elif metric in ("cost_per_m_input", "cost_per_m_output"):
+            entry["c"].append(pct)
+            entry["c_conf"].append(conf)
+            entry["sources"].add(r["benchmark_key"])
+        elif metric in ("reliability_pct", "mmlu_knowledge", "pass_rate"):
+            entry["rl"].append(pct)
+            entry["rl_conf"].append(conf)
+            entry["sources"].add(r["benchmark_key"])
+
     results = []
     for ref, sc in by_ref.items():
-        q = round(statistics.mean(sc["q"]), 1) if sc["q"] else 0.0
-        s = round(statistics.mean(sc["s"]), 1) if sc["s"] else 0.0
-        c = round(statistics.mean(sc["c"]), 1) if sc["c"] else 50.0
-        samples = len(sc["q"]) + len(sc["s"]) + len(sc["c"])
-        global_ = round(q * 0.4 + s * 0.2 + c * 0.2 + 0.5 * 0.2, 1)
-        results.append({"model_ref": ref, "global_score": global_,
-                        "score_quality": q, "score_speed": s, "score_cost": c,
-                        "score_reliability": 50.0, "samples": samples})
+        def _weighted_mean(values, confidences):
+            if not values:
+                return 0.0
+            total_w = sum(confidences)
+            if total_w == 0:
+                return statistics.mean(values)
+            return round(sum(v * c for v, c in zip(values, confidences)) / total_w, 2)
+
+        q = _weighted_mean(sc["q"], sc["q_conf"])
+        s = _weighted_mean(sc["s"], sc["s_conf"])
+        c = _weighted_mean(sc["c"], sc["c_conf"])
+        rl = _weighted_mean(sc["rl"], sc["rl_conf"])
+
+        n_data = len(sc["q"]) + len(sc["s"]) + len(sc["c"]) + len(sc["rl"])
+        source_count = len(sc["sources"])
+        # is_synthetic only if ALL data for this model is from synthetic sources
+        _REAL_SOURCES = {"lmsys_arena", "arena_hard_auto", "artificial_analysis", "seeded"}
+        has_real = sc["sources"].intersection(_REAL_SOURCES)
+        is_synth = 0 if has_real else 1
+        has_synthetic = any(
+            r.get("is_synthetic") for r in rows if r["model_ref"] == ref
+        )
+        global_score = round(q * 0.35 + s * 0.20 + c * 0.15 + rl * 0.30, 2)
+
+        results.append({
+            "model_ref": ref,
+            "global_score": global_score,
+            "score_quality": q,
+            "score_speed": s,
+            "score_cost": c,
+            "score_reliability": rl,
+            "samples": n_data,
+            "source_count": source_count,
+            "is_synthetic": is_synth,
+            "benchmark_keys": list(sc["sources"]),
+        })
+
     return results
 
+
 # ──────────────────────────────────────────────
-#  7. CONNEXION BASE
+#  5. DATABASE CONNECTION
 # ──────────────────────────────────────────────
-
-def get_connection(local: bool):
-    if local:
-        return _get_local_conn()
-    return _get_turso_conn()
-
-
-def _get_local_conn() -> sqlite3.Connection:
+def get_local_connection() -> sqlite3.Connection:
     home = Path(os.environ.get("MODELWEAVER_HOME", Path.home() / ".modelweaver"))
     db_path = home / "catalogue.db"
-    if not db_path.exists():
-        print(f"  Création base locale: {db_path}")
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=10)  # 10s busy timeout
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
-def _get_turso_conn():
+def get_turso_connection():
     if not TURSO_URL or not TURSO_TOKEN:
         raise RuntimeError(
-            "TURSO_URL et TURSO_TOKEN non définis.\n"
-            "  Soit dans .env à la racine du projet,\n"
-            "  Soit en variables d'environnement.\n"
-            "Utilise --local pour la base catalogue locale."
+            "TURSO_URL + TURSO_TOKEN non définis.\n"
+            "  Utilisez --local pour travailler en local.\n"
         )
     import libsql
-    conn = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-    return conn
+    return libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
+
 
 # ──────────────────────────────────────────────
-#  8. ÉCRITURE
+#  6. SCHEMA — ensure tables exist (local + Turso)
 # ──────────────────────────────────────────────
-
-def ensure_schema(conn, local: bool):
-    print("  Création des tables si absentes...")
-    # model_benchmarks_raw (nouvelle table, n'existe nulle part)
-    for attempt in range(3):
-        try:
-            conn.execute(SCHEMA_RAW_SQL)
-            conn.commit()
-            break
-        except Exception as e:
-            if attempt < 2:
-                import time; time.sleep(0.5)
-            else:
-                print(f"    ⚠ model_benchmarks_raw: {e}")
-    # model_efficacy existe déjà dans le schéma catalogue.
-    # En local : utilise la table existante (model_id FK, pas model_ref).
-    # Sur Turso : ajoute model_ref si pas déjà là.
-    if not local:
-        try:
-            conn.execute("ALTER TABLE model_efficacy ADD COLUMN model_ref TEXT")
-            conn.commit()
-        except Exception:
-            pass  # existe déjà ou pas possible
-
-
-def write_raw(conn, rows: List[Dict]):
-    print(f"  Écriture de {len(rows)} lignes dans model_benchmarks_raw...")
-    for r in rows:
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO model_benchmarks_raw "
-                "(model_ref, benchmark_key, metric_name, raw_value, percentile, source_url) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (r["model_ref"], r["benchmark_key"], r["metric_name"],
-                 r["raw_value"], r.get("percentile"), r.get("source_url", ""))
-            )
-        except Exception as e:
-            print(f"    ⚠ {r['model_ref']}/{r['benchmark_key']}: {e}")
+def ensure_schema(conn: sqlite3.Connection, local: bool):
+    conn.execute(SCHEMA_RAW_SQL)
+    conn.execute(SCHEMA_TRACKING_SQL)
     conn.commit()
+    # Add missing columns if absent (self-healing schema)
+    _add_column(conn, "model_benchmarks_raw", "is_synthetic", "INTEGER DEFAULT 0")
+    _add_column(conn, "model_benchmarks_raw", "confidence", "REAL DEFAULT 1.0")
+    _add_column(conn, "model_efficacy", "model_ref", "TEXT")
+    _add_column(conn, "model_efficacy", "source_count", "INTEGER DEFAULT 0")
+    _add_column(conn, "model_efficacy", "is_synthetic", "INTEGER DEFAULT 0")
+    _add_column(conn, "model_efficacy", "benchmark_keys", "TEXT DEFAULT '[]'")
 
 
-def _resolve_model_id(conn, model_ref: str) -> Optional[int]:
-    """Trouve catalogue_models.id pour un model_ref avec fallback."""
-    # 1. Match exact
+def _add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
+    except Exception:
+        pass
+
+
+# ──────────────────────────────────────────────
+#  7. SCRAPE TRACKING — lazy/incremental
+# ──────────────────────────────────────────────
+def _load_tracking() -> dict:
+    if TRACKING_FILE.exists():
+        try:
+            return json.loads(TRACKING_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_tracking(tracking: dict):
+    TRACKING_FILE.write_text(json.dumps(tracking, indent=2))
+
+
+def _should_scrape(source_key: str, url: str, tracking: dict) -> Tuple[bool, Optional[str]]:
+    """Return (force_scrape, latest_date) based on tracking data."""
+    entry = tracking.get(source_key, {})
+    last_run = entry.get("last_run", "")
+    last_csv_date = entry.get("csv_date", "")
+
+    # Check if remote CSV has a newer date
+    try:
+        current_date = _extract_csv_date(url)
+        if current_date and last_csv_date and current_date > last_csv_date:
+            return True, current_date
+        if not last_csv_date and current_date:
+            return True, current_date
+    except Exception:
+        pass
+
+    # If no tracking, scrape
+    if not entry:
+        return True, None
+
+    # Force if --force flag was used (tracked separately)
+    if tracking.get("_force", False):
+        return True, None
+
+    return False, None
+
+
+def _extract_csv_date(url: str) -> Optional[str]:
+    m = re.search(r"leaderboard_table_(\d{8})\.csv", url)
+    return m.group(1) if m else None
+
+
+def _record_scrape(tracking: dict, source_name: str, url: str,
+                    rows_fetched: int, success: bool, error_msg: str = ""):
+    tracking[source_name] = {
+        "last_run": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "url": url,
+        "rows_fetched": rows_fetched,
+        "success": success,
+        "csv_date": _extract_csv_date(url) or "",
+    }
+    if not success:
+        tracking[source_name]["last_error"] = error_msg
+    tracking["_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# ──────────────────────────────────────────────
+#  8. WRITE HELPERS
+# ──────────────────────────────────────────────
+def _resolve_model_id(conn: sqlite3.Connection, model_ref: str) -> Optional[int]:
     row = conn.execute("SELECT id FROM catalogue_models WHERE ref = ?", (model_ref,)).fetchone()
     if row:
         return row["id"] if isinstance(row, sqlite3.Row) else row[0]
-    # 2. Match sur le nom après le slash (ex: 'openai/gpt-4o' → 'gpt-4o')
     short = model_ref.split("/", 1)[-1] if "/" in model_ref else model_ref
     row = conn.execute("SELECT id FROM catalogue_models WHERE ref LIKE ?", (f"%{short}%",)).fetchone()
-    if row:
-        return row["id"] if isinstance(row, sqlite3.Row) else row[0]
-    # 3. Match insensible à la casse
-    row = conn.execute("SELECT id FROM catalogue_models WHERE LOWER(ref) = ?", (model_ref.lower(),)).fetchone()
     if row:
         return row["id"] if isinstance(row, sqlite3.Row) else row[0]
     return None
 
 
-def write_efficacy(conn, rows: List[Dict], local: bool):
-    print(f"  Écriture de {len(rows)} modèles dans model_efficacy...")
+def _model_name_to_ref(conn: sqlite3.Connection, name: str) -> Optional[str]:
+    """Try to resolve a model name from a CSV to our canonical ref."""
+    short = name.lower().strip()
+    # Direct match on ref
+    row = conn.execute("SELECT ref FROM catalogue_models WHERE LOWER(ref) = ?", (short,)).fetchone()
+    if row:
+        return row["ref"] if isinstance(row, sqlite3.Row) else row[0]
+    # Fuzzy: ref contains the name or vice versa
+    row = conn.execute("SELECT ref FROM catalogue_models WHERE LOWER(ref) LIKE ?", (f"%{short}%",)).fetchone()
+    if row:
+        return row["ref"] if isinstance(row, sqlite3.Row) else row[0]
+    # Extract just the model part (after /)
+    if "/" in short:
+        short = short.split("/", 1)[1]
+    row = conn.execute("SELECT ref FROM catalogue_models WHERE LOWER(ref) LIKE ?", (f"%{short}%",)).fetchone()
+    if row:
+        return row["ref"] if isinstance(row, sqlite3.Row) else row[0]
+    return None
+
+
+def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
+    count = 0
+    skipped = 0
+    for r in rows:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO model_benchmarks_raw "
+                "(model_ref, benchmark_key, metric_name, raw_value, percentile, "
+                "source_url, fetched_at, is_synthetic, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)",
+                (r["model_ref"], r["benchmark_key"], r["metric_name"],
+                 r["raw_value"], r.get("percentile", 50.0),
+                 r.get("source_url", ""),
+                 r.get("is_synthetic", 0),
+                 r.get("confidence", 1.0)),
+            )
+            count += 1
+        except Exception as e:
+            skipped += 1
+            if skipped <= 5:
+                print(f"    ⚠ skip {r.get('model_ref','?')}: {e}")
+    conn.commit()
+    print(f"    → {count} écrits, {skipped} skipped")
+
+
+def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
     written = 0
     for r in rows:
         try:
@@ -374,102 +398,135 @@ def write_efficacy(conn, rows: List[Dict], local: bool):
                 conn.execute(
                     "INSERT OR REPLACE INTO model_efficacy "
                     "(model_id, use_case, score_quality, score_speed, "
-                    " score_cost, score_reliability, samples) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "score_cost, score_reliability, samples, "
+                    "source_count, is_synthetic, benchmark_keys) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (model_id, "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
-                     r["score_reliability"], r.get("samples", 1))
+                     r["score_reliability"], r.get("samples", 0),
+                     r.get("source_count", 0), r.get("is_synthetic", 0),
+                     json.dumps(r.get("benchmark_keys", []))),
                 )
-                written += 1
             else:
                 conn.execute(
                     "INSERT OR REPLACE INTO model_efficacy "
                     "(model_ref, use_case, score_quality, score_speed, "
-                    " score_cost, score_reliability, samples) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "score_cost, score_reliability, samples, "
+                    "source_count, is_synthetic, benchmark_keys) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (r["model_ref"], "general",
                      r["score_quality"], r["score_speed"], r["score_cost"],
-                     r["score_reliability"], r.get("samples", 1))
+                     r["score_reliability"], r.get("samples", 0),
+                     r.get("source_count", 0), r.get("is_synthetic", 0),
+                     json.dumps(r.get("benchmark_keys", []))),
                 )
-                written += 1
+            written += 1
         except Exception as e:
-            print(f"    ⚠ {r['model_ref']}: {e}")
+            print(f"    ⚠ efficacy {r.get('model_ref','?')}: {e}")
     conn.commit()
     print(f"    → {written}/{len(rows)} écrits")
 
-# ──────────────────────────────────────────────
-#  9. MAIN
-# ──────────────────────────────────────────────
 
+# ──────────────────────────────────────────────
+#  9. SCRAPE TRACKING LOG
+# ──────────────────────────────────────────────
+def append_scrape_log(conn: sqlite3.Connection, source_name: str, url: str,
+                        rows_fetched: int, success: bool, error_msg: str = ""):
+    try:
+        conn.execute(
+            "INSERT INTO benchmark_scrape_log (source_name, source_url, rows_fetched, success, error_msg) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source_name, url, rows_fetched, 1 if success else 0, error_msg),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+# ──────────────────────────────────────────────
+#  10. MAIN
+# ──────────────────────────────────────────────
 def main():
     local = "--local" in sys.argv
+    force = "--force" in sys.argv
 
     print("=" * 60)
-    print("ModelWeaver — LLM Benchmark Scraper")
+    print("ModelWeaver — Benchmark Scraper v2")
     print(f"Cible: {'📁 catalogue.db local' if local else '☁️  Turso distant'}")
+    print(f"Mode: {'FORCE re-scrape' if force else 'lazy (incrémental)'}")
     print("=" * 60)
 
     # 1. Connexion
     try:
-        conn = get_connection(local)
-        print(f"\n✅ Connexion établie")
+        conn = get_local_connection() if local else get_turso_connection()
+        print("\n✅ Connexion établie")
     except Exception as e:
         print(f"\n❌ {e}")
         sys.exit(1)
 
     # 2. Schema
-    try:
-        ensure_schema(conn, local)
-        print(f"✅ Schéma OK")
-    except Exception as e:
-        print(f"\n❌ Erreur schéma: {e}")
-        sys.exit(1)
+    ensure_schema(conn, local)
+    print("✅ Schéma OK")
 
-    # 3. Scraping
-    all_raw = fetch_all_sources()
+    # 3. Load tracking
+    tracking = _load_tracking()
+    if force:
+        tracking["_force"] = True
+
+    # 4. Scraping
+    sys.path.insert(0, str(SOURCES_DIR))
+    from sources import fetch_all
+
+    local_db = str(Path.home() / ".modelweaver" / "catalogue.db") if local else ":memory:"
+    source_results = fetch_all(local_db)
+
+    all_raw = []
+    for src_name, rows in source_results.items():
+        print(f"    {src_name}: {len(rows)} lignes")
+        all_raw.extend(rows)
+
     if not all_raw:
-        print("  Aucune donnée récupérée.")
+        print("  ❌ Aucune donnée récupérée.")
         sys.exit(1)
 
-    # 4. Percentiles
-    print("\n  Calcul des percentiles...")
-    all_raw = compute_percentiles(all_raw)
+    print(f"\n  Total: {len(all_raw)} lignes brutes")
 
-    # 5. Écriture raw
-    try:
-        write_raw(conn, all_raw)
-        print(f"✅ model_benchmarks_raw: {len(all_raw)} lignes")
-    except Exception as e:
-        print(f"❌ Écriture raw: {e}")
-        sys.exit(1)
+    # 5. Normalize percentiles
+    print("\n  Normalisation percentiles...")
+    all_raw = normalize_all(all_raw)
 
-    # 6. Consolidation
+    # 6. Write raw
+    print("\n  Écriture model_benchmarks_raw...")
+    write_raw(conn, all_raw)
+    append_scrape_log(conn, "all_sources", "", len(all_raw), True)
+    print(f"✅ model_benchmarks_raw: {len(all_raw)} lignes")
+
+    # 7. Consolidate
     print("\n  Consolidation model_efficacy...")
     efficacy = consolidate_to_efficacy(all_raw)
-    print(f"  {len(efficacy)} modèles scorés")
+    print(f"  {len(efficacy)} modèles scorés "
+          f"({sum(1 for r in efficacy if r['is_synthetic'])} synthétiques)")
 
-    # 7. Écriture efficacy
-    try:
-        write_efficacy(conn, efficacy, local)
-        print(f"✅ model_efficacy: {len(efficacy)} modèles")
+    # 8. Write efficacy
+    write_efficacy(conn, efficacy, local)
+    print(f"✅ model_efficacy: {len(efficacy)} modèles")
 
-        # Top 5
-        top = sorted(efficacy, key=lambda r: r["global_score"], reverse=True)[:5]
-        print(f"\n  Top 5 modèles (score global):")
-        for m in top:
-            print(f"    {m['model_ref']:35s} {m['global_score']:5.1f}  "
-                  f"Q={m['score_quality']:5.1f}  S={m['score_speed']:5.1f}  "
-                  f"C={m['score_cost']:5.1f}")
-    except Exception as e:
-        print(f"❌ Écriture efficacy: {e}")
-        sys.exit(1)
+    # 9. Top 10
+    top = sorted(efficacy, key=lambda r: r["global_score"], reverse=True)[:10]
+    print(f"\n  Top 10 (score global):")
+    for m in top:
+        synth = " 🧪" if m["is_synthetic"] else ""
+        print(f"    {m['model_ref']:40s} {m['global_score']:6.2f}  "
+              f"Q={m['score_quality']:6.2f}  S={m['score_speed']:6.2f}  "
+              f"C={m['score_cost']:6.2f}  R={m['score_reliability']:6.2f}"
+              f"  [{m['source_count']}src]{synth}")
 
-    # 8. Fermeture
-    try:
-        conn.close()
-    except Exception:
-        pass
+    # 10. Stats
+    real = [r for r in efficacy if not r["is_synthetic"]]
+    synth = [r for r in efficacy if r["is_synthetic"]]
+    print(f"\n  Stats: {len(real)} réels + {len(synth)} synthétiques = {len(efficacy)} total")
 
+    conn.close()
     print(f"\n{'=' * 60}")
     print("Terminé.")
 

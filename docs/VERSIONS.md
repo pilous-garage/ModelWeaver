@@ -922,7 +922,7 @@ Définition et gestion d'équipes d'agents via manifests `.team.yaml`.
 - **Éditeur de pipeline** : drag-and-drop pour créer des workflows multi-agents
 - Layout dagre (comme le FSM graph editor V0.7.4)
 
-### V0.8.5 — Benchmark Scraper & Model Scores 📊 (🚀 Livrée)
+### V0.8.6 — Benchmark Scraper & Model Scores 📊 (🚀 Livrée)
 **Date** : 2026-07-26
 
 Infrastructure de scraping de benchmarks LLM + scoring consolidé.
