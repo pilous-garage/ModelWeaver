@@ -987,6 +987,33 @@ par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
 - Mention légale et crédits
 - Page « Legal » dans l'application
 
+## V0.8.4 — Auto-allocation LLM 🎲 (🚀 Livrée)
+**Date** : 2026-07-26
+
+Stratégies d'allocation dynamique de modèles LLM.
+
+### Nouveautés
+- **`services/llm_allocation/`** : nouveau package pour l'allocation stratégique de modèles LLM
+- **Stratégies implémentées** :
+  - `random` : choisit au hasard parmi les modèles avec budget/clé disponibles
+  - `best-fallback` : score composite (fit tâche + coût + window) + retourne le meilleur
+  - `eco` : moindre coût par token
+  - `fast` : moindre latence (proxy par taille de modèle)
+- Pipeline complet : catalogue → filtrage (clé, budget, window, vision, coût) → stratégie → résultat
+- Route `llm/allocate` — prend `{strategy, task_type, min_window, needs_vision, max_cost_per_call, exclude}`
+
+### Extension possible
+- Table `model_scores` pour scorer la latence réelle, fiabilité, etc.
+- Fallback automatique en cas d'échec du modèle alloué
+- Budget-aware (consommer le budget de l'agent/équipe au moment de l'allocation)
+
+### Fichiers modifiés
+- `services/llm_allocation/__init__.py` : NOUVEAU
+- `services/llm_allocation/strategies.py` : NOUVEAU (4 stratégies)
+- `services/llm_allocation/allocate.py` : NOUVEAU (orchestrateur)
+- `services/api/handlers/llm_allocation.py` : NOUVEAU (route handler)
+- `services/api/handlers/__init__.py` : import llm_allocation ajouté
+
 ## V1.0 — Release Stable (🎯 Objectif)
 **Objectif** : Version publique distribuable, stable et documentée.
 
