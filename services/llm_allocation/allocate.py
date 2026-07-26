@@ -48,11 +48,14 @@ def _query_candidates() -> List[Dict[str, Any]]:
                 COALESCE(cm.modality, '') AS modality,
                 COALESCE(pm.free_tier, 0) AS free_tier,
                 kem.available,
-                kem.declared
+                kem.declared,
+                me.score_chat, me.score_coding, me.score_reasoning,
+                me.score_knowledge, me.score_agentic, me.is_synthetic
             FROM key_endpoint_models kem
             JOIN catalogue_providers cp ON cp.id = kem.provider_id
             JOIN catalogue_models cm ON cm.id = kem.model_id
             JOIN provider_models pm ON pm.provider_id = kem.provider_id AND pm.model_id = kem.model_id
+            LEFT JOIN model_efficacy me ON me.model_id = cm.id AND me.use_case = 'general'
             WHERE kem.available = 1 AND kem.declared = 1
               AND pm.status = 'active'
             ORDER BY cp.ref, cm.ref
@@ -147,6 +150,12 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest) -> List[
             has_vision=_has_vision(row.get("modality", "")),
             budget_ok=True,
             key_available=True,
+            score_chat=float(row.get("score_chat") or 0),
+            score_coding=float(row.get("score_coding") or 0),
+            score_reasoning=float(row.get("score_reasoning") or 0),
+            score_knowledge=float(row.get("score_knowledge") or 0),
+            score_agentic=float(row.get("score_agentic") or 0),
+            is_synthetic=int(row.get("is_synthetic") or 0),
         ))
 
     return candidates

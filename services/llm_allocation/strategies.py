@@ -36,6 +36,12 @@ class ModelOption:
     budget_ok: bool = True
     key_available: bool = True
     score: float = 0.0
+    score_chat: float = 0.0
+    score_coding: float = 0.0
+    score_reasoning: float = 0.0
+    score_knowledge: float = 0.0
+    score_agentic: float = 0.0
+    is_synthetic: int = 0
 
     @property
     def ref(self) -> str:
@@ -74,27 +80,48 @@ register_strategy("random", _random_allocate)
 # ── Best-Fallback ───────────────────────────────────────────────
 
 def _score_model(option: ModelOption, request: AllocationRequest) -> float:
-    """Score composite : fit tâche + coût + window.
+    """Score composite orienté par type de tâche.
 
-    Pondérations par défaut, ajustables plus tard via la table model_scores.
+    Utilise le score spécifique à la tâche quand disponible (issu du
+    benchmark), sinon le score qualité global. Pondère aussi le coût,
+    la fenêtre de contexte et la compatibilité vision.
     """
+    TASK_SCORE_MAP = {
+        "chat": "score_chat",
+        "knowledge": "score_knowledge",
+        "coding": "score_coding",
+        "reasoning": "score_reasoning",
+        "agentic": "score_agentic",
+        "analysis": "score_reasoning",
+        "writing": "score_chat",
+    }
+
     score = 0.5  # baseline
+
+    # Score par tâche (prioritaire) ou fallback global
+    task_key = TASK_SCORE_MAP.get(request.task_type, "score_chat")
+    task_score = getattr(option, task_key, 0.0)
+    if task_score > 0:
+        score = task_score / 100.0
 
     # Pénalité si pas assez de window
     if request.min_window > 0 and option.context_window > 0:
         ratio = min(option.context_window / request.min_window, 2.0)
-        score += 0.2 * (ratio / 2.0)
+        score += 0.1 * (ratio / 2.0)
 
     # Bonus si coût bas
     cost = option.cost_per_input + option.cost_per_output
     if cost > 0:
-        # Normalisation : plus c'est cher, moins le score est bon
-        cost_factor = max(0, 1.0 - (cost / 1e-5))  # ~$10/1M tokens = référence
-        score += 0.15 * cost_factor
+        cost_factor = max(0, 1.0 - (cost / 1e-5))
+        score += 0.05 * cost_factor
 
     # Pénalité si vision nécessaire mais absente
     if request.needs_vision and not option.has_vision:
-        score -= 0.3
+        score -= 0.2
+
+    # Pénalité si score synthétique (moins fiable)
+    if option.is_synthetic:
+        score *= 0.8
 
     return max(0.0, min(1.0, score))
 
