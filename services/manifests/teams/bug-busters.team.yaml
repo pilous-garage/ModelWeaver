@@ -1,0 +1,43 @@
+name: bug-busters
+version: 0.1.0
+description: Équipe de résolution de bugs — le director décompose les tickets en sous-tâches
+workspace_id: bugs-2024
+topology: hierarchical
+
+director:
+  agent_name: lead-bug-hunter
+  role: senior-debugger
+  occupation: continue
+  workflow: orchestrate
+  provider_ref: openrouter
+  model_ref: openai/gpt-4o
+  resources:
+    llm: true
+
+members:
+  - agent_name: code-analyst
+    role: code-analyst
+    occupation: noncontinue
+    resources:
+      llm: true
+    provider_ref: openrouter
+    model_ref: anthropic/claude-sonnet
+
+  - agent_name: test-writer
+    role: test-writer
+    occupation: noncontinue
+    resources:
+      llm: true
+    provider_ref: openrouter
+    model_ref: anthropic/claude-sonnet
+
+  - agent_name: pr-creator
+    role: pr-creator
+    occupation: noncontinue
+    resources:
+      llm: true
+
+resources:
+  budget_per_hour: 100
+  max_concurrent: 5
+  llm_quota_per_day: 500

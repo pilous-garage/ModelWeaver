@@ -1,0 +1,27 @@
+name: installer
+version: 0.1.0
+description: Processeur de jobs d'installation/désinstallation
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/installer_worker/service.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: pid
+  interval: 30
+  timeout: 5
+
+entrypoints:
+  status:
+    type: inline
+    handler: |
+      def handler(params):
+          return {"name": "installer", "status": "running", "type": "worker"}

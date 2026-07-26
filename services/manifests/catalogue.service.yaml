@@ -1,0 +1,38 @@
+name: catalogue
+version: 0.1.0
+description: Catalogue de tools, skills, behaviors, personalities, roles
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/catalogue/service.py
+    - --port
+    - "8765"
+    - --db
+    - "{{mw_home}}/catalogue.remote.db"
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: http
+  port: 8765
+  endpoint: /health
+  interval: 30
+  timeout: 5
+
+entrypoints:
+  health:
+    type: http-proxy
+    method: GET
+    path: http://127.0.0.1:8765/health
+    description: Health check
+  catalogue-list:
+    type: http-proxy
+    method: GET
+    path: http://127.0.0.1:8765/
+    description: Liste du catalogue

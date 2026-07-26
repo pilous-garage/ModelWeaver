@@ -1,0 +1,25 @@
+name: example-team
+version: 0.1.0
+description: Équipe de démonstration — topology peer sans director
+workspace_id: ""
+topology: peer
+
+director:
+
+members:
+  - agent_name: worker-a
+    role: worker
+    occupation: noncontinue
+    resources:
+      llm: true
+
+  - agent_name: worker-b
+    role: worker
+    occupation: noncontinue
+    resources:
+      llm: true
+
+resources:
+  budget_per_hour: 0
+  max_concurrent: 2
+  llm_quota_per_day: 0

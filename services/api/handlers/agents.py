@@ -42,12 +42,25 @@ def op_service_resources(params):
         import psutil
     except ImportError:
         return {"status": "error", "error": "psutil non disponible"}
-    db = _get_mw()
-    rows = db.conn.execute(
-        "SELECT name, pid, status FROM services WHERE pid IS NOT NULL"
-    ).fetchall()
+    import sqlite3
+    from services._common import runtime_db_path
+    from services.api.handlers.services_handlers import _list_agent_services
+    conn = sqlite3.connect(str(runtime_db_path()))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT name, pid, status FROM services WHERE pid IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return {"services": [], "count": 0}
+    finally:
+        conn.close()
+    # Merge agent-as-service (chat agents from AgentsDB)
+    existing = {r["name"] for r in rows}
+    agent_services = [a for a in _list_agent_services() if a["name"] not in existing]
+    all_services = list(rows) + agent_services
     resources = []
-    for r in rows:
+    for r in all_services:
         pid = r["pid"]
         try:
             proc = psutil.Process(pid)

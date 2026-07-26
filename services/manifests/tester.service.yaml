@@ -1,0 +1,27 @@
+name: tester
+version: 0.1.0
+description: Testeur automatique (opt-in, MODELWEAVER_ENABLE_AUTOTEST)
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/tester/service.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: pid
+  interval: 30
+  timeout: 5
+
+entrypoints:
+  status:
+    type: inline
+    handler: |
+      def handler(params):
+          return {"name": "tester", "status": "running", "type": "autotester"}

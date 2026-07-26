@@ -881,7 +881,36 @@ rendre le framework observable panneau par panneau pendant un live test.
 - **Restart** : `kill` + `hydrate` + re-exécution du step courant
 - Boutons dans `AgentsPanel` côte à côte avec feedback visuel
 
-### V0.8.3 — Logs en temps réel par agent 📋
+### V0.8.3 — Team Management (🚀 Livrée)
+**Date** : 2026-07-26
+
+Définition et gestion d'équipes d'agents via manifests `.team.yaml`.
+
+#### Nouveautés
+- **`services/team_spec.py`** : `TeamSpec` dataclass + `from_yaml()` — parsing YAML déclaratif (nom, topology, director, members, resources)
+- **`services/team_manager.py`** : `Team` (runtime, lifecycle, delegation, chat) + `TeamManager` singleton (register, unregister, list, supervise)
+- **`services/manifests/teams/`** : répertoire pour les manifests `.team.yaml` chargés au boot
+- **`services/api/handlers/teams_handlers.py`** : routes statiques `team/list`, `team/get`, `team/start`, `team/stop`, `team/restart`, `team/delegate`, `team/chat`
+- Routes dynamiques par équipe : `team/{team_name}/{status,health,start,stop,restart,delegate,chat,routes}`
+- Intégration workspace : le `director` d'une équipe est lié au champ `workspaces.director`
+- Auto-création des agents membres et director dans `agents.db` si absents
+
+#### Topologies supportées
+- `hierarchical` : director orchestre, membres exécutent
+- `peer` : agents collaborent sans hiérarchie
+- `dag` : workflow prédéfini avec dépendances (structure)
+
+#### Fichiers modifiés
+- `services/team_spec.py` : NOUVEAU
+- `services/team_manager.py` : NOUVEAU
+- `services/manifests/teams/bug-busters.team.yaml` : NOUVEAU
+- `services/manifests/teams/example-team.team.yaml` : NOUVEAU
+- `services/api/handlers/teams_handlers.py` : NOUVEAU
+- `services/api/__init__.py` : import teams_handlers ajouté
+- `services/api/handlers/__init__.py` : import teams_handlers ajouté
+- `services/api/daemon.py` : TEAM_MANIFESTS + _ensure_teams() + TeamManager supervise_loop
+
+### V0.8.4 — Vue topologie & dépendances 🗺️
 - `StreamBus` cross-process déjà fonctionnel (V0.6.10)
 - Côté GUI : `LogsPanel` avec poll `agent/stream` (séquence)
 - Filtrage par agent, par niveau (info/warn/error)

@@ -1,0 +1,35 @@
+name: api
+version: 0.8.1
+description: Daemon API HTTP principal
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/api/daemon.py
+    - serve
+    - --port
+    - "8770"
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 3
+  interval: 5
+
+health:
+  type: http
+  port: 8770
+  endpoint: /health
+  interval: 15
+  timeout: 5
+
+depends_on:
+  - catalogue
+
+entrypoints:
+  health:
+    type: http-proxy
+    method: GET
+    path: http://127.0.0.1:8770/health
+    description: Health check du daemon

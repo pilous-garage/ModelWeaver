@@ -1,6 +1,6 @@
 [package]
 name = "modelweaver-cli"
-version = "0.6.0"
+version = "0.8.3"
 description = "ModelWeaver headless CLI (service runner)"
 authors = ["ModelWeaver Team"]
 edition = "2021"

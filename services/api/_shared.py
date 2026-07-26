@@ -13,7 +13,7 @@ from typing import Callable
 
 
 API_VERSION = "v1"
-MW_VERSION = "0.8.1"
+MW_VERSION = "0.8.3"
 
 # ── Racine du dépôt (référence pour les chemins absolus) ────────────────
 def repo_root() -> Path:

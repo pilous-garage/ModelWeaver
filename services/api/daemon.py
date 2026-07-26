@@ -532,6 +532,7 @@ def serve(port: int = 8770) -> None:
     # Initialiser les connexions partagées AVANT le processeur de jobs.
     mw_singleton = _get_mw()
     cat_singleton = _get_cat()
+    rt_singleton = _get_rt()  # crée services + service_commands tables si absentes
     # Charger les clés en mémoire (après validation keyring OS).
     try:
         _get_km().load()
@@ -568,6 +569,14 @@ def serve(port: int = 8770) -> None:
         target=_collector_supervisor_loop, args=(30.0,), daemon=True)
     _supervisor.start()
 
+    # Service supervisor : lit service_commands, monitore et relance les services.
+    from services.service_manager import ServiceManager
+    ServiceManager().supervise_loop(interval=5.0)
+
+    # Team supervisor : surveille la santé des équipes.
+    from services.team_manager import TeamManager
+    TeamManager().supervise_loop(interval=15.0)
+
     # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
     try:
         from AgentFrameWork.stream_bus import activate_cross_process, resolve_stream_path
@@ -581,14 +590,16 @@ def serve(port: int = 8770) -> None:
     # Boot agents : crée les agents système s'ils n'existent pas encore.
     _ensure_boot_agents(log)
 
+    # Boot teams : charge les manifests .team.yaml
+    _ensure_teams(log)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("Arrêt du daemon")
 
 
-# Agents système créés au démarrage si absents. Chaque entrée est passée
-# à op_agent_create (role, name, occupation, config, etc.).
+# Agents système créés au démarrage si absents.
 BOOT_AGENTS = [
     {"role": "chat", "name": "installer", "occupation": "continue",
      "config": {"description": "Agent de chat pour la fenêtre installateur/dashboard"}},
@@ -596,9 +607,26 @@ BOOT_AGENTS = [
      "config": {"description": "Agent de chat pour la fenêtre sandbox IDE"}},
 ]
 
+# Fichiers .service.yaml — tous les services connus du système
+MANIFESTS_DIR = Path(__file__).resolve().parent.parent.parent / "services" / "manifests"
+SERVICE_MANIFESTS = sorted(MANIFESTS_DIR.glob("*.service.yaml"))
+
+# Fichiers .team.yaml — toutes les équipes
+TEAM_MANIFESTS = sorted((MANIFESTS_DIR / "teams").glob("*.team.yaml"))
+
 
 def _ensure_boot_agents(log):
-    """Crée les BOOT_AGENTS manquants dans agents.db."""
+    """Crée les BOOT_AGENTS dans agents.db et enregistre les manifests service.
+
+    Seuls les manifests avec parent='agent-as-service' sont auto-démarrés
+    par le ServiceManager Python. Les services système (catalogue, installer,
+    api, tester) sont gérés par le superviseur Rust et ignorés ici.
+    """
+    from services.service_manager import ServiceManager
+    import sqlite3
+    mgr = ServiceManager()
+
+    # 1. Créer les agents dans agents.db si absents
     existing = op_agent_list({})
     existing_names = {a["name"] for a in existing.get("agents", [])}
     for spec in BOOT_AGENTS:
@@ -607,15 +635,53 @@ def _ensure_boot_agents(log):
             continue
         if name in existing_names:
             log.info("Boot agent déjà présent", name=name)
+        else:
+            try:
+                result = op_agent_create(spec)
+                if result.get("status") == "ok":
+                    log.info("Boot agent créé", name=name, agent_id=result.get("agent_id"))
+                else:
+                    log.warning("Boot agent échoué", name=name, error=result.get("error"))
+            except Exception as e:
+                log.error("Boot agent erreur", name=name, error=str(e))
+
+    # 2. Charger tous les manifests .service.yaml
+    #    Les services système (Rust) sont enregistrés sans être démarrés.
+    #    Les agent-as-service sont enregistrés ET démarrés.
+    for mpath in SERVICE_MANIFESTS:
+        if not mpath.exists():
             continue
         try:
-            result = op_agent_create(spec)
-            if result.get("status") == "ok":
-                log.info("Boot agent créé", name=name, agent_id=result.get("agent_id"))
-            else:
-                log.warning("Boot agent échoué", name=name, error=result.get("error"))
+            from services.service_spec import ServiceSpec
+            spec = ServiceSpec.from_yaml(mpath)
+            start = spec.parent == "agent-as-service"
+            mgr.register(spec, start=start)
+            log.info("Service manifest chargé", name=spec.name, mode=spec.launch.mode,
+                     parent=spec.parent or "system", started=start)
         except Exception as e:
-            log.error("Boot agent erreur", name=name, error=str(e))
+            log.warning("Service manifest échoué", path=str(mpath), error=str(e))
+
+
+def _ensure_teams(log):
+    """Charge tous les manifests .team.yaml dans le TeamManager.
+
+    Les équipes sont enregistrées avec leurs agents et leurs routes.
+    Les agents membres et le director sont créés dans agents.db si absents.
+    Le workspace director est lié si workspace_id est spécifié.
+    """
+    if not TEAM_MANIFESTS:
+        log.info("Aucun manifest .team.yaml trouvé", path=str(MANIFESTS_DIR / "teams"))
+        return
+    from services.team_manager import TeamManager
+    mgr = TeamManager()
+    for mpath in TEAM_MANIFESTS:
+        if not mpath.exists():
+            continue
+        try:
+            mgr.register(mpath)
+            log.info("Team manifest chargé", name=mpath.stem)
+        except Exception as e:
+            log.warning("Team manifest échoué", path=str(mpath), error=str(e))
 
 
 def main():
