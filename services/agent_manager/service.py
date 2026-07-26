@@ -217,6 +217,7 @@ class Agent:
         spawn_handler = self._make_spawn_handler()
         handoff_handler = self._make_handoff_handler()
         agent_call_handler = self._make_agent_call_handler()
+        team_call_handler = self._make_team_call_handler(agent_call_handler)
 
         # Stocker provider/model pour que agent_call_handler les propage
         self._call_provider_ref = provider_ref
@@ -232,7 +233,9 @@ class Agent:
                     stream_sink=stream_sink,
                     spawn_handler=spawn_handler,
                     handoff_handler=handoff_handler,
-                    agent_call_handler=agent_call_handler,
+                agent_call_handler=agent_call_handler,
+                team_call_handler=team_call_handler,
+                    team_call_handler=team_call_handler,
                     lifecycle_mgr=self._lifecycle,
                 )
                 result = result.to_dict()
@@ -454,7 +457,8 @@ class Agent:
         provider_ref: str = "", model_ref: str = "",
         signal_check: Any = None, stream_sink: Any = None,
         spawn_handler: Any = None, handoff_handler: Any = None,
-        agent_call_handler: Any = None, lifecycle_mgr: Any = None,
+        agent_call_handler: Any = None, team_call_handler: Any = None,
+        lifecycle_mgr: Any = None,
     ) -> "FSMResult":
         """Exécution via FSM Interpreter (Phase 4 : signaux + streaming,
         Phase 5 : spawn + handoff)."""
@@ -582,6 +586,36 @@ class Agent:
                 model_ref=inputs.get("model_ref", self._call_model_ref),
             )
         return _call
+
+    def _make_team_call_handler(self, agent_call_handler: Any) -> Any:
+        """Closure : scatter-gather — appelle TOUS les membres de l'équipe
+        et agrège les résultats.
+
+        Utilisé par le step FSM `team_delegate`.
+        """
+        db = self.db
+        parent_bridge = self._bridge
+
+        def _scatter(members: List[str], entrypoint: str,
+                     inputs: dict, assignment: str) -> Dict[str, Any]:
+            results = {}
+            errors = []
+            for agent_name in members:
+                try:
+                    out = agent_call_handler(agent_name, entrypoint, inputs)
+                    if out.get("status") in ("ok", "success"):
+                        results[agent_name] = out.get("content", out.get("result", ""))
+                    else:
+                        errors.append({"agent": agent_name, "error": out.get("error", "unknown")})
+                except Exception as e:
+                    errors.append({"agent": agent_name, "error": str(e)})
+            return {
+                "status": "ok" if not errors else "partial",
+                "results": results,
+                "errors": errors,
+                "count": len(results),
+            }
+        return _scatter
 
     def _record_failure(self):
         """Enregistre une tâche échouée dans les métriques."""

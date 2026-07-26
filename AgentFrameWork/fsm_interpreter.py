@@ -157,6 +157,7 @@ class FSMInterpreter:
         spawn_handler: Optional[Any] = None,
         handoff_handler: Optional[Any] = None,
         agent_call_handler: Optional[Any] = None,
+        team_call_handler: Optional[Any] = None,
         lifecycle_mgr: Optional[Any] = None,
     ) -> FSMResult:
         """Exécute le workflow."""
@@ -167,6 +168,7 @@ class FSMInterpreter:
         self._spawn_handler = spawn_handler
         self._handoff_handler = handoff_handler
         self._agent_call_handler = agent_call_handler
+        self._team_call_handler = team_call_handler
         self._lifecycle_mgr = lifecycle_mgr
 
         steps = workflow.get("steps", [])
@@ -764,6 +766,66 @@ class FSMInterpreter:
             return False
 
         # Capture la sortie dans les variables
+        capture = step.get("capture", {})
+        for out_key, var_name in capture.items():
+            result.variables[var_name] = out.get(out_key, out.get("content", ""))
+
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_team_delegate(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """Délègue une tâche à TOUS les membres de l'équipe et agrège les
+        résultats (scatter-gather). Le step est traité par team_call_handler
+        de l'Agent (service.py : _make_team_call_handler).
+
+        step: {
+          type: team_delegate
+          members: ["worker-a", "worker-b"]       // membres cibles
+          entrypoint: "main"                       // entrée à exécuter
+          inputs: {request: "sous-tâche"}          // arguments par membre
+          assignment: "all_same"                   // all_same | by_role
+          capture: {results: team_outputs}         // stockage variable
+        }
+        """
+        if self._team_call_handler is None:
+            result.status = "failed"
+            result.end_reason = "team_call_handler non configuré"
+            return False
+
+        members = step.get("members", [])
+        if not members:
+            result.status = "failed"
+            result.end_reason = "team_delegate: 'members' requis"
+            return False
+
+        ep = step.get("entrypoint", "main")
+        inputs = {
+            k: self._resolve(v, result.variables)
+            for k, v in step.get("inputs", {}).items()
+        }
+        assignment = step.get("assignment", "all_same")
+
+        try:
+            out = self._team_call_handler(members, ep, inputs, assignment)
+        except Exception as e:
+            if step.get("on_error"):
+                return self._branch_on_error(step, result, f"team_delegate error: {e}")
+            result.status = "failed"
+            result.end_reason = f"team_delegate error: {e}"
+            return False
+
+        if out.get("status") not in ("ok", "success"):
+            if step.get("on_error"):
+                return self._branch_on_error(step, result,
+                                             out.get("error", "team_delegate failed"))
+            result.status = "failed"
+            result.end_reason = f"team_delegate échoué: {out.get('error', 'inconnu')}"
+            return False
+
         capture = step.get("capture", {})
         for out_key, var_name in capture.items():
             result.variables[var_name] = out.get(out_key, out.get("content", ""))
