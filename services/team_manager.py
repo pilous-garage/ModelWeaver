@@ -3,10 +3,10 @@
 Chaque équipe est définie par un .team.yaml et se compose :
   - D'un team_leader (agent orchestrateur, optionnel)
   - De membres (agents exécutants)
-  - D'un workspace_id (optionnel, qui lie le director au workspace)
+  - D'un workspace_id (optionnel, qui lie le team_leader au workspace)
 
 Le TeamManager garantit que tous les agents membres existent dans
-agents.db et que le director est lié au workspace si workspace_id
+agents.db et que le team_leader est lié au workspace si workspace_id
 est renseigné.
 """
 
@@ -28,11 +28,18 @@ def _get_agent_db():
     return AgentsDB()
 
 
-def _ensure_agent_exists(spec, role: str, occupation: str) -> int:
-    """Crée l'agent dans agents.db s'il n'existe pas, retourne son agent_id."""
+def _ensure_agent_exists(spec, role: str, occupation: str,
+                         team_name: str = "") -> int:
+    """Crée l'agent dans agents.db s'il n'existe pas, retourne son agent_id.
+
+    Le nom réel de l'agent est préfixé par le team_name pour garantir
+    l'unicité inter-projets. Un agent_name 'lead-bug-hunter' dans l'équipe
+    'bug-busters' devient 'bug-busters/lead-bug-hunter'.
+    """
     db = _get_agent_db()
+    scoped_name = f"{team_name}/{spec.agent_name}" if team_name else spec.agent_name
     row = db.conn.execute(
-        "SELECT agent_id FROM agents WHERE name = ?", (spec.agent_name,)
+        "SELECT agent_id FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
     if row:
         return row["agent_id"]
@@ -47,16 +54,16 @@ def _ensure_agent_exists(spec, role: str, occupation: str) -> int:
         effective_role = spec.role or role
         effective_occupation = spec.occupation or occupation
 
-    ref = f"agent:{spec.agent_name}"
+    ref = f"agent:{scoped_name}"
     db.conn.execute("""
         INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (spec.agent_name, ref, effective_role, effective_occupation,
+    """, (scoped_name, ref, effective_role, effective_occupation,
           config_json, resources_json))
     db.conn.commit()
 
     row = db.conn.execute(
-        "SELECT agent_id FROM agents WHERE name = ?", (spec.agent_name,)
+        "SELECT agent_id FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
     return row["agent_id"]
 
@@ -69,7 +76,7 @@ def _set_workspace_director(workspace_id: str, director_agent_id: int):
         ws = wdb.workspaces.get(workspace_id)
         if not ws:
             wdb.workspaces.create(workspace_id, workspace_id,
-                                  description=f"Workspace for team", director=director_agent_id)
+                                  description=f"Workspace for team", leader=leader_agent_id)
         else:
             wdb.conn.execute(
                 "UPDATE workspaces SET director = ? WHERE workspace_id = ?",
@@ -87,7 +94,10 @@ class Team:
 
     def __init__(self, spec: TeamSpec):
         self.spec = spec
-                self.team_leader_agent_id: Optional[int] = None
+        self.team_leader_agent_id: Optional[int] = None
+        self.member_agent_ids: Dict[str, int] = {}
+        self.status: str = "stopped"
+        self._routes: List[str] = []
 
     @property
     def name(self) -> str:
@@ -101,16 +111,18 @@ class Team:
 
     def setup(self):
         """Assure que tous les agents existent et lie le leader au workspace."""
-        # Director
+        # Leader
         if self.spec.team_leader and self.spec.team_leader.agent_name:
-            self.leader_agent_id = _ensure_agent_exists(
-                self.spec.team_leader, "team_leader", "continue")
+            self.team_leader_agent_id = _ensure_agent_exists(
+                self.spec.team_leader, "team_leader", "continue",
+                team_name=self.spec.team_name)
             if self.spec.workspace_id:
                 _set_workspace_director(self.spec.workspace_id, self.team_leader_agent_id)
 
         # Members
         for m in self.spec.members:
-            aid = _ensure_agent_exists(m, m.role, m.occupation)
+            aid = _ensure_agent_exists(m, m.role, m.occupation,
+                                       team_name=self.spec.team_name)
             self.member_agent_ids[m.agent_name] = aid
 
         self.status = "ready"
@@ -144,7 +156,7 @@ class Team:
     def delegate(self, request: str, entrypoint: str = "main",
                  target: Optional[str] = None, **kwargs) -> dict:
         """Délègue une requête à un membre. Si target est None et que le
-        director existe, c'est le director qui reçoit la requête."""
+        team_leader existe, c'est le team_leader qui traite la requête."""
         if target:
             aid = self.member_agent_ids.get(target)
             if not aid:
@@ -152,7 +164,7 @@ class Team:
         elif self.team_leader_agent_id:
             aid = self.team_leader_agent_id
         else:
-            return {"status": "error", "error": "aucun director ni target spécifié"}
+            return {"status": "error", "error": "aucun team_leader ni target spécifié"}
 
         return self._execute(aid, request, entrypoint, **kwargs)
 
@@ -222,12 +234,12 @@ class Team:
                 "status": row["status"] if row else "unknown",
                 "last_active_at": row["last_active_at"] if row else None,
             })
-        director_info = None
+        leader_info = None
         if self.team_leader_agent_id:
             row = db.conn.execute(
                 "SELECT status, last_active_at FROM agents WHERE agent_id = ?",
                 (self.team_leader_agent_id,)).fetchone()
-            director_info = {
+            leader_info = {
                 "agent_name": self.spec.team_leader.agent_name if self.spec.team_leader else "",
                 "agent_id": self.team_leader_agent_id,
                 "status": row["status"] if row else "unknown",
@@ -238,7 +250,7 @@ class Team:
             "status": self.status,
             "topology": self.spec.topology,
             "workspace_id": self.spec.workspace_id,
-            "director": director_info,
+            "team_leader": leader_info,
             "members": members_info,
             "member_count": len(members_info),
         }
