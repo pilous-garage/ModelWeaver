@@ -1522,6 +1522,34 @@ class CatalogueDB:
                 )
             """)
             self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_provider_scoring (
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id           INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+                    model_id              INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    endpoint_id           INTEGER REFERENCES provider_endpoints(endpoint_id) ON DELETE SET NULL,
+                    latency_avg_ms        REAL DEFAULT 0,
+                    latency_p95_ms        REAL DEFAULT 0,
+                    latency_stddev_ms     REAL DEFAULT 0,
+                    latency_samples       INTEGER DEFAULT 0,
+                    quality_score         REAL DEFAULT 0,
+                    score_chat            REAL DEFAULT 0,
+                    score_coding          REAL DEFAULT 0,
+                    score_reasoning       REAL DEFAULT 0,
+                    score_knowledge       REAL DEFAULT 0,
+                    score_agentic         REAL DEFAULT 0,
+                    cost_per_1k_input     REAL DEFAULT 0,
+                    cost_per_1k_output    REAL DEFAULT 0,
+                    global_score          REAL DEFAULT 0,
+                    is_synthetic          INTEGER DEFAULT 0,
+                    benchmark_ref         TEXT DEFAULT '',
+                    last_scored_at        INTEGER DEFAULT (strftime('%s','now')),
+                    confidence            REAL DEFAULT 0,
+                    created_at            INTEGER DEFAULT (strftime('%s','now')),
+                    updated_at            INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(provider_id, model_id)
+                )
+            """)
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS budget_tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
@@ -1774,6 +1802,74 @@ class CatalogueDB:
 
         self.conn.commit()
         return results
+
+    def fetch_model_scores(self) -> Dict[str, int]:
+        """Lie les scores de model_efficacy (benchmark scraper) aux
+        combinaisons provider/modèle de provider_models.
+
+        Crée/met à jour model_provider_scoring avec :
+          - quality_score, score_chat, score_coding, score_reasoning,
+            score_knowledge, score_agentic, global_score, is_synthetic
+          - cost_per_1k_input / cost_per_1k_output depuis provider_models
+          - latency_* restent à 0 (remplis par les appels API réels)
+
+        Retourne {table: count} des entrées synchronisées.
+        """
+        rows = self.conn.execute("""
+            SELECT me.model_ref, me.global_score, me.score_quality,
+                   me.score_chat, me.score_coding, me.score_reasoning,
+                   me.score_knowledge, me.score_agentic,
+                   me.is_synthetic, me.samples, me.source_count,
+                   pm.provider_id, pm.id AS pm_id,
+                   pm.cost_per_input_token, pm.cost_per_output_token
+            FROM model_efficacy me
+            JOIN catalogue_models cm ON cm.id = me.model_id
+            JOIN provider_models pm ON pm.model_id = cm.id
+            WHERE me.is_synthetic = 0 OR me.source_count > 0
+        """).fetchall()
+
+        count = 0
+        for r in rows:
+            try:
+                cost_in = 0.0
+                cost_out = 0.0
+                try:
+                    cost_in = float(r["cost_per_input_token"] or 0)
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    cost_out = float(r["cost_per_output_token"] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO model_provider_scoring
+                    (provider_id, model_id, endpoint_id,
+                     quality_score, score_chat, score_coding, score_reasoning,
+                     score_knowledge, score_agentic, global_score,
+                     is_synthetic, cost_per_1k_input, cost_per_1k_output,
+                     benchmark_ref, confidence, last_scored_at, updated_at)
+                    VALUES (?, ?, NULL,
+                            ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?,
+                            strftime('%s','now'), strftime('%s','now'))
+                """, (
+                    r["provider_id"],
+                    r["model_id"],
+                    r["score_quality"], r["score_chat"], r["score_coding"],
+                    r["score_reasoning"], r["score_knowledge"], r["score_agentic"],
+                    r["global_score"],
+                    r["is_synthetic"],
+                    cost_in * 1000, cost_out * 1000,
+                    r["model_ref"],
+                    0.6 if r["is_synthetic"] else 1.0,
+                ))
+                count += 1
+            except Exception as e:
+                print(f"  ⚠ skip scoring {r.get('model_ref','?')}: {e}")
+
+        self.conn.commit()
+        return {"model_provider_scoring": count}
 
     def close(self):
         self.conn.close()

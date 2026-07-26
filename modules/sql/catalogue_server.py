@@ -10,6 +10,8 @@ Endpoints:
     GET  /api/models
     GET  /api/tools
     GET  /api/commands
+    GET  /api/model-scores
+    POST /api/sync-scores  — lie les scores benchmark aux combinaisons provider/modèle
 """
 
 import json
@@ -57,6 +59,7 @@ class CatalogueAPIHandler(BaseHTTPRequestHandler):
             "/api/models": self._models,
             "/api/tools": self._tools,
             "/api/commands": self._commands,
+            "/api/model-scores": self._model_scores,
         }
         handler = routes.get(self.path)
         if handler:
@@ -64,6 +67,21 @@ class CatalogueAPIHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.send_json({"error": "not_found", "path": self.path})
+
+    def _model_scores(self):
+        try:
+            rows = self._query("""
+                SELECT mps.*, cp.ref AS provider_ref, cm.ref AS model_ref, pe.label AS endpoint_label
+                FROM model_provider_scoring mps
+                JOIN catalogue_providers cp ON cp.id = mps.provider_id
+                JOIN catalogue_models cm ON cm.id = mps.model_id
+                LEFT JOIN provider_endpoints pe ON pe.endpoint_id = mps.endpoint_id
+                ORDER BY mps.global_score DESC
+            """)
+            self.send_json(rows)
+        except Exception as e:
+            self.send_response(500)
+            self.send_json({"error": str(e)})
 
     def _health(self):
         self.send_json({"status": "ok", "db": str(self.server.db_path)})
@@ -100,6 +118,28 @@ class CatalogueAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        routes = {
+            "/api/sync-scores": self._sync_scores,
+        }
+        handler = routes.get(self.path)
+        if handler:
+            handler()
+        else:
+            self.send_response(404)
+            self.send_json({"error": "not_found", "path": self.path})
+
+    def _sync_scores(self):
+        try:
+            from modules.sql.db import CatalogueDB
+            cat = CatalogueDB(self.server.db_path)
+            result = cat.fetch_model_scores()
+            cat.close()
+            self.send_json({"status": "ok", "synced": result})
+        except Exception as e:
+            self.send_response(500)
+            self.send_json({"error": str(e)})
 
     def log_message(self, fmt, *args):
         print(f"  📡 {args[0]} {args[1]} → {args[2]}" if len(args) >= 3 else f"  📡 {fmt % args}")

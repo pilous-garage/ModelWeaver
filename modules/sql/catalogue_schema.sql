@@ -464,8 +464,38 @@ CREATE TABLE IF NOT EXISTS model_efficacy (
     UNIQUE(model_id, use_case)
 );
 
--- ============================================================
--- 11. BUDGET_TAGS — Reference des types de budget.
+ CREATE TABLE IF NOT EXISTS model_provider_scoring (
+     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+     provider_id           INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+     model_id              INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+     endpoint_id           INTEGER REFERENCES provider_endpoints(endpoint_id) ON DELETE SET NULL,
+     latency_avg_ms        REAL DEFAULT 0,
+     latency_p95_ms        REAL DEFAULT 0,
+     latency_stddev_ms     REAL DEFAULT 0,
+     latency_samples       INTEGER DEFAULT 0,
+     quality_score         REAL DEFAULT 0,
+     score_chat            REAL DEFAULT 0,
+     score_coding          REAL DEFAULT 0,
+     score_reasoning       REAL DEFAULT 0,
+     score_knowledge       REAL DEFAULT 0,
+     score_agentic         REAL DEFAULT 0,
+     cost_per_1k_input     REAL DEFAULT 0,
+     cost_per_1k_output    REAL DEFAULT 0,
+     global_score          REAL DEFAULT 0,
+     is_synthetic          INTEGER DEFAULT 0,
+     benchmark_ref         TEXT DEFAULT '',
+     last_scored_at        INTEGER DEFAULT (strftime('%s','now')),
+     confidence            REAL DEFAULT 0,
+     created_at            INTEGER DEFAULT (strftime('%s','now')),
+     updated_at            INTEGER DEFAULT (strftime('%s','now')),
+     UNIQUE(provider_id, model_id)
+ );
+ CREATE INDEX IF NOT EXISTS idx_mps_provider ON model_provider_scoring(provider_id);
+ CREATE INDEX IF NOT EXISTS idx_mps_model ON model_provider_scoring(model_id);
+ CREATE INDEX IF NOT EXISTS idx_mps_endpoint ON model_provider_scoring(endpoint_id);
+
+ -- ============================================================
+ -- 11. BUDGET_TAGS — Reference des types de budget.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS budget_tags (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
