@@ -200,12 +200,13 @@ def _model_matches_frontier(ref: str) -> bool:
     return any(indicator in lower for indicator in frontier_indicators)
 
 
-def fetch() -> List[Dict[str, Any]]:
+def fetch(local_db_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return frontier benchmark rows for models that either:
     (a) match known frontier indicators and don't already have real data, or
     (b) are frontier models without any benchmark rows yet.
     """
-    local_db_path = str(Path.home() / ".modelweaver" / "catalogue.db")
+    if local_db_path is None:
+        local_db_path = str(Path.home() / ".modelweaver" / "catalogue.db")
     conn = sqlite3.connect(local_db_path)
     conn.row_factory = sqlite3.Row
 
