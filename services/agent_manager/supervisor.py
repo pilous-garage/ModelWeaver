@@ -1,13 +1,13 @@
 """ProjectSupervisor — orchestration de projets multi-agents.
 
-S'appuie sur AgentManager pour la gestion des cycles de vie des agents
-(heartbeat, kill, admission) et ajoute :
+Le supervisor est lui-même un agent (role_type='supervisor') enregistré
+auprès de l'AgentManager via `spawn()`. Il profite ainsi du même cycle
+de vie : heartbeat, preemption, kill, FSM steps.
 
-  - file de tâches projet (task queue)
-  - agrégation de résultats
-  - budget partagé par projet
-  - orchestration de workflow (étapes avec dépendances)
-  - persistence de l'état projet
+Usage:
+    manager = AgentManager()
+    sup = ProjectSupervisor(project_name="my-project")
+    sup.spawn_as_agent(manager, provider_ref="openrouter")
 """
 
 from __future__ import annotations
@@ -16,11 +16,7 @@ import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
-
-import sqlite3
-
-from services.agent_manager.service import AgentManager
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 
 @dataclass
@@ -61,16 +57,53 @@ class ProjectBudget:
 
 
 class ProjectSupervisor:
-    """Superviseur de projet : orchestre une équipe d'agents sur un projet.
+    """Superviseur de projet : orchestre une équipe d'agents.
 
-    Utilise AgentManager en arrière-plan pour les heartbeats et le cycle
-    de vie des agents. Ajoute la coordination de projet au-dessus.
+    Instancié par projet (project_name fixe au constructeur).
+    L'enregistrement en tant qu'agent se fait via spawn_as_agent()
+    auprès de l'AgentManager. Le supervisor devient alors un
+    agent FSM à part entière (heartbeat, preemption, kill).
     """
 
-    def __init__(self, manager: AgentManager, db: Optional[sqlite3.Connection] = None):
-        self.manager = manager
+    def __init__(self, project_name: str,
+                 db: Optional[sqlite3.Connection] = None):
+        self.project_name = project_name
         self.db = db or self._open_project_db()
         self._ensure_project_schema()
+
+    # ── Agent spawn ──────────────────────────────────
+
+    def spawn_as_agent(self, manager: "AgentManager",
+                       provider_ref: str = "",
+                       model_ref: str = "",
+                       resources: Optional[Dict[str, Any]] = None,
+                       occupation: str = "continue") -> Dict[str, Any]:
+        """Enregistre ce supervisor comme agent dans AgentManager.
+
+        Le supervisor apparaît dans list_active() et bénéficie du
+        ciclo de vie standard (heartbeat, preemption, kill).
+        L'orchestration loop est déclenchée par les FSM steps.
+        """
+        config = {
+            "role": "supervisor",
+            "project_name": self.project_name,
+            "step": "idle",
+        }
+        if resources is None:
+            resources = {"llm": True, "priority": 1, "preemptible": False}
+        return manager.spawn_agent(
+            name=f"supervisor-{self.project_name}",
+            role="supervisor",
+            occupation=occupation,
+            provider_ref=provider_ref,
+            model_ref=model_ref,
+            resources=resources,
+            config=config,
+            keep_sleeping=True,
+        )
+
+    def get_agent_name(self) -> str:
+        return f"supervisor-{self.project_name}"
 
     # ── DB helpers ─────────────────────────────────────────
 
