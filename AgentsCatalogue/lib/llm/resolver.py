@@ -208,7 +208,7 @@ def make_dispatcher(
         # Registry d'abord
         if registry:
             result = registry.execute(name, inputs, ws)
-            if not result.get("ok") or "error" not in result:
+            if result.get("ok") or "error" not in result:
                 return result
 
         # Fallback skills YAML

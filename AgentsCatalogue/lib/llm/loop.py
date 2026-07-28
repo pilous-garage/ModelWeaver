@@ -102,6 +102,60 @@ def _auto_assign(cfg: LoopConfig):
     return "", ""
 
 
+def _try_text_mode(content: str, execute_fn: callable, ws: str) -> List[dict]:
+    """Tente d'extraire et exécuter des actions depuis une réponse texte.
+
+    Utilisé quand le LLM ne supporte pas les tool_calls (mode texte).
+    Retourne une liste de résultats d'actions, ou [] si rien d'extractible.
+    """
+    if not content or not execute_fn:
+        return []
+
+    from .text_mode import extract_actions
+
+    actions = extract_actions(content, ws)
+    if not actions:
+        return []
+
+    results = []
+    for action in actions:
+        action_type = action.get("action", "")
+        if action_type == "write_file":
+            path = action.get("path", "")
+            content_body = action.get("content", "")
+            if not path:
+                lang = action.get("language", "txt")
+                ext = {"python": "py", "javascript": "js", "bash": "sh",
+                       "rust": "rs", "go": "go", "html": "html"}.get(lang, "txt")
+                path = f"work/untitled.{ext}"
+
+            try:
+                r = execute_fn("file_write_file_v1", {"path": path, "content": content_body})
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            r["_text_action"] = action
+            results.append(r)
+
+        elif action_type == "shell_exec":
+            try:
+                r = execute_fn("shell_exec_v1", {"command": action.get("command", "")})
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            r["_text_action"] = action
+            results.append(r)
+
+        elif action_type == "git_command":
+            try:
+                from AgentsCatalogue.lib.git.lite import exec as git_exec
+                r = git_exec(action, ws)
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            r["_text_action"] = action
+            results.append(r)
+
+    return results
+
+
 def _signal_match(signal_key: str, pattern_list: List[str]) -> bool:
     for pattern in pattern_list:
         if pattern == signal_key:
@@ -284,8 +338,25 @@ def run(
         content = getattr(response, "content", "") or ""
         turn.response_text = content
 
-        # Pas de tool_calls → le LLM a fini
+        # Pas de tool_calls → tenter le mode texte (extraction d'actions)
         if not tool_calls:
+            text_mode_actions = _try_text_mode(content, execute_fn, ws)
+
+            if text_mode_actions:
+                # Ajouter la réponse du LLM
+                asst_msg = {"role": "assistant", "content": content or None}
+                messages.append(asst_msg)
+                turn.tool_finished = True
+
+                # Ajouter les résultats des actions comme messages tool
+                for tma in text_mode_actions:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tma.get("tool_call_id", f"txt_{step}_{id(tma)}"),
+                        "content": json.dumps(tma),
+                    })
+                continue
+
             return LoopResult(
                 signal="loop_end",
                 output=content or "(empty)",
