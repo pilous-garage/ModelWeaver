@@ -276,6 +276,62 @@ def op_agent_signal_complete(params):
                                  result=params.get("result"))
 
 
+def op_agent_stop(params):
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    db = _get_agent_db()
+    if agent_id:
+        row = db.conn.execute("SELECT agent_id, status FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    elif name:
+        row = db.conn.execute("SELECT agent_id, status FROM agents WHERE name = ?", (name,)).fetchone()
+        if row:
+            agent_id = row["agent_id"]
+    if not row:
+        return {"status": "error", "error": "agent introuvable"}
+    from services.api.afd_client import get_afd_client
+    get_afd_client().call(agent_id, "signal", type="kill")
+    db.conn.execute(
+        "UPDATE agents SET status = 'STOPPED', last_active_at = datetime('now') WHERE agent_id = ?",
+        (agent_id,))
+    db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (agent_id,))
+    db.conn.commit()
+    from services.audit import audit
+    audit("agent.stop", agent_id=agent_id, name=name, ok=True)
+    return {"status": "ok", "agent_id": agent_id, "action": "stop"}
+
+
+def op_agent_restart(params):
+    from services.api.afd_client import get_afd_client
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    ref = agent_id or name
+    if not ref:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    db = _get_agent_db()
+    if agent_id:
+        row = db.conn.execute("SELECT agent_id, name, config_json, resources_json FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    elif name:
+        row = db.conn.execute("SELECT agent_id, name, config_json, resources_json FROM agents WHERE name = ?", (name,)).fetchone()
+        if row:
+            agent_id = row["agent_id"]
+    if not row:
+        return {"status": "error", "error": "agent introuvable"}
+    get_afd_client().call(agent_id, "signal", type="kill")
+    db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (agent_id,))
+    db.conn.commit()
+    exec_result = get_afd_client().call(agent_id, "execute",
+                                        request=params.get("request", ""),
+                                        provider_ref=params.get("provider_ref", ""),
+                                        model_ref=params.get("model_ref", ""),
+                                        entrypoint=params.get("entrypoint", "main"))
+    from services.audit import audit
+    audit("agent.restart", agent_id=agent_id, name=row["name"], ok=True)
+    return {"status": "ok", "agent_id": agent_id, "action": "restart", "execute": exec_result}
+
+
 def op_agent_stream(params):
     from services.api.afd_client import get_afd_client
     agent_id = params.get("agent_id")
@@ -303,7 +359,59 @@ def op_agent_capabilities(_params):
 
 # ── Route registration ─────────────────────────────────────────────────
 
+def op_agent_list_by_team(_params):
+    """Liste les agents groupés par équipe (préfixe team:XXX/)."""
+    db = _get_agent_db()
+    rows = db.conn.execute(
+        "SELECT agent_id, name, ref, role_type, occupation, status, "
+        "       created_at, last_active_at "
+        "FROM agents ORDER BY name"
+    ).fetchall()
+    agents = [dict(r) for r in rows]
+    for a in agents:
+        rt = db.conn.execute(
+            "SELECT thread_id, heartbeat_at, current_step FROM agent_runtime WHERE agent_id = ?",
+            (a["agent_id"],)
+        ).fetchone()
+        if rt:
+            a["running"] = True
+            a["thread_id"] = rt["thread_id"]
+            a["heartbeat"] = rt["heartbeat_at"]
+            a["current_step"] = rt["current_step"]
+        else:
+            a["running"] = False
+
+    import re
+    teams = {}
+    standalone = []
+    for a in agents:
+        m = re.match(r"^team:([^/]+)/", a["name"])
+        if m:
+            team_name = m.group(1)
+            teams.setdefault(team_name, []).append(a)
+        else:
+            standalone.append(a)
+
+    from services.team_manager import TeamManager
+    mgr = TeamManager()
+    team_info = {}
+    for tname in teams:
+        t = mgr.get(f"team:{tname}")
+        if t:
+            team_info[tname] = t.status_info()
+
+    return {
+        "teams": {k: {"agents": v, "team_info": team_info.get(k)} for k, v in teams.items()},
+        "standalone": standalone,
+        "team_count": len(teams),
+        "standalone_count": len(standalone),
+        "total": len(agents),
+    }
+
+
 register("agent/list",               op_agent_list)
+register("agent/list-by-team",       op_agent_list_by_team)
+register("capabilities",             op_agent_capabilities)
 register("agent/get",                op_agent_get)
 register("agent/create",             op_agent_create)
 register("agent/delete",             op_agent_delete)
@@ -316,6 +424,8 @@ register("agent/signals",            op_agent_signals)
 register("agent/signal/ack",         op_agent_signal_ack)
 register("agent/signal/complete",    op_agent_signal_complete)
 register("agent/stream",             op_agent_stream)
+register("agent/stop",               op_agent_stop)
+register("agent/restart",            op_agent_restart)
 register("agent/spawn",              op_agent_spawn)
 register("agent/handoff",            op_agent_handoff)
 register("agent/launch",             op_agent_launch)

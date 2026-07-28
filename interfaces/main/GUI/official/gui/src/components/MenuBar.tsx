@@ -44,6 +44,7 @@ const PANEL_LABELS: Record<string, string> = {
   'chat': 'Chat',
   'install-queue': "File d'installation",
   'agents': 'Agents',
+  'teams': 'Équipes',
   'local-models': 'LLM locaux',
   'keys': 'Clés API',
   'debug': 'Debug',

@@ -11,7 +11,7 @@ except ImportError:
 _SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
 
-def get_all_skills(inputs: dict, ws: str) -> dict:
+def get_all_skills(inputs: dict, home: str) -> dict:
     skills = []
     if not _SKILLS_DIR.is_dir():
         return {"skills": []}

@@ -1,0 +1,9 @@
+name: workflow
+skills:
+  - workspace/task_create@v1
+  - workspace/task_list@v1
+  - workspace/task_get@v1
+  - workspace/task_claim@v1
+  - workspace/task_done@v1
+  - workspace/task_file_add@v1
+  - system/log@v1

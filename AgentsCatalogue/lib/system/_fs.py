@@ -1,7 +1,7 @@
 """Helpers de résolution de chemins partagés par les fonctions fichier de la librairie.
 
 Déplacés depuis services/skill_manager.py (méthodes self._*). Adaptés en
-fonctions module-level : (path, ws) au lieu de (self, path). Utilisent
+fonctions module-level : (path, home) au lieu de (self, path). Utilisent
 os.path (portable) — pas de logique OS-spécifique ici.
 """
 
@@ -17,18 +17,18 @@ KNOWN_IMPORTANT = {
 INDEX_FILE = "index.json"
 
 
-def safe_path(path: str, workspace_root: str) -> str:
+def safe_path(path: str, home_root: str) -> str:
     norm = os.path.normpath(path)
     if norm.startswith("..") or norm.startswith("/"):
         norm = norm.lstrip("/")
-    full = os.path.join(workspace_root, norm)
-    if not full.startswith(os.path.abspath(workspace_root)):
-        raise PermissionError("chemin hors workspace")
+    full = os.path.join(home_root, norm)
+    if not full.startswith(os.path.abspath(home_root)):
+        raise PermissionError("chemin hors home")
     return full
 
 
-def read_index(ws: str) -> dict:
-    p = os.path.join(ws, INDEX_FILE)
+def read_index(home: str) -> dict:
+    p = os.path.join(home, INDEX_FILE)
     if os.path.exists(p):
         try:
             return json.loads(Path(p).read_text(encoding="utf-8"))
@@ -37,14 +37,14 @@ def read_index(ws: str) -> dict:
     return {}
 
 
-def write_index(ws: str, idx: dict) -> None:
-    os.makedirs(ws, exist_ok=True)
-    Path(os.path.join(ws, INDEX_FILE)).write_text(
+def write_index(home: str, idx: dict) -> None:
+    os.makedirs(home, exist_ok=True)
+    Path(os.path.join(home, INDEX_FILE)).write_text(
         json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def index_add(ws: str, abs_file: str) -> None:
-    home = os.path.abspath(ws)
+def index_add(home: str, abs_file: str) -> None:
+    home = os.path.abspath(home)
     imp = os.path.join(home, "important")
     af = os.path.abspath(abs_file)
     if not (af == imp or af.startswith(imp + os.sep)):
@@ -52,45 +52,45 @@ def index_add(ws: str, abs_file: str) -> None:
     stem = os.path.splitext(os.path.basename(af))[0].lower()
     if not stem:
         return
-    idx = read_index(ws)
+    idx = read_index(home)
     if stem in idx:  # ambiguïté : déjà indexé
         return
     idx[stem] = os.path.relpath(af, home)
-    write_index(ws, idx)
+    write_index(home, idx)
 
 
-def index_remove(ws: str, abs_file: str) -> None:
-    home = os.path.abspath(ws)
+def index_remove(home: str, abs_file: str) -> None:
+    home = os.path.abspath(home)
     imp = os.path.join(home, "important")
     af = os.path.abspath(abs_file)
     if not (af == imp or af.startswith(imp + os.sep)):
         return
     stem = os.path.splitext(os.path.basename(af))[0].lower()
-    idx = read_index(ws)
+    idx = read_index(home)
     rel = os.path.relpath(af, home)
     if idx.get(stem) == rel:
         del idx[stem]
-        write_index(ws, idx)
+        write_index(home, idx)
 
 
-def resolve_read_path(path: str, ws: str) -> str:
+def resolve_read_path(path: str, home: str) -> str:
     """Résout un chemin de lecture : alias d'index puis relatif sous home."""
-    home = os.path.abspath(ws)
-    idx = read_index(ws)
+    home = os.path.abspath(home)
+    idx = read_index(home)
     base = path.split("/")[-1]
     if "/" not in path and path in idx:
         return os.path.join(home, idx[path])
     if "/" not in path and base in idx:
         return os.path.join(home, idx[base])
-    return safe_path(path, ws)
+    return safe_path(path, home)
 
 
-def classify_write_path(path: str, ws: str) -> str:
+def classify_write_path(path: str, home: str) -> str:
     """Résout un chemin d'écriture : sous-dossier explicite honoré,
     sinon nom connu -> important/, sinon -> work/."""
-    home = os.path.abspath(ws)
+    home = os.path.abspath(home)
     if "/" in path:
-        return safe_path(path, ws)
+        return safe_path(path, home)
     stem = os.path.splitext(path)[0].lower()
     sub = "important" if stem in KNOWN_IMPORTANT else "work"
     return os.path.join(home, sub, path)

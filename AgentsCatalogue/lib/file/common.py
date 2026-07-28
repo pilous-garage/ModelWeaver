@@ -25,7 +25,7 @@ def _safe_under(root: Path, path: str) -> Path:
     return full
 
 
-def common_write(inputs: dict, ws: str) -> dict:
+def common_write(inputs: dict, home: str) -> dict:
     gid = inputs.get("group_id", "")
     path = inputs.get("path", "")
     content = inputs.get("content", "")
@@ -38,7 +38,7 @@ def common_write(inputs: dict, ws: str) -> dict:
     return {"ok": True, "path": str(full)}
 
 
-def common_read(inputs: dict, ws: str) -> dict:
+def common_read(inputs: dict, home: str) -> dict:
     gid = inputs.get("group_id", "")
     path = inputs.get("path", "")
     if not gid or not path:
@@ -50,7 +50,7 @@ def common_read(inputs: dict, ws: str) -> dict:
     return {"content": full.read_text(encoding="utf-8")}
 
 
-def common_list(inputs: dict, ws: str) -> dict:
+def common_list(inputs: dict, home: str) -> dict:
     gid = inputs.get("group_id", "")
     path = inputs.get("path", "")
     if not gid:
@@ -63,7 +63,7 @@ def common_list(inputs: dict, ws: str) -> dict:
                        for p in sorted(full.iterdir())]}
 
 
-def common_tree(inputs: dict, ws: str) -> dict:
+def common_tree(inputs: dict, home: str) -> dict:
     gid = inputs.get("group_id", "")
     if not gid:
         return {"files": [], "error": "group_id requis"}

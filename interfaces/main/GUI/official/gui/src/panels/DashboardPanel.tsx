@@ -13,6 +13,7 @@ import { CataloguePanel } from './CataloguePanel.tsx';
 import { InstallQueuePanel } from './InstallQueuePanel.tsx';
 import { KeysPanel } from './KeysPanel.tsx';
 import { DebugPanel } from './DebugPanel.tsx';
+import { TeamCompositionPanel } from './TeamCompositionPanel.tsx';
 
 const PANEL_RENDER: Record<string, (app: AppApi) => React.ReactNode> = {
   'system-state': app => <SystemStatePanel app={app} />,
@@ -22,6 +23,7 @@ const PANEL_RENDER: Record<string, (app: AppApi) => React.ReactNode> = {
   'chat': app => <ChatPanel app={app} />,
   'install-queue': app => <InstallQueuePanel app={app} />,
   'agents': app => <AgentsPanel app={app} />,
+  'teams': app => <TeamCompositionPanel app={app} />,
   'local-models': app => <LocalModelsPanel app={app} />,
   'keys': app => <KeysPanel app={app} />,
   'debug': app => <DebugPanel app={app} />,

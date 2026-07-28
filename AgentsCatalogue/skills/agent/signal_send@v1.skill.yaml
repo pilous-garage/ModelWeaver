@@ -1,0 +1,24 @@
+name: agent/signal_send@v1
+category: agent
+description: Envoie un signal à un agent (wakeup, sleep, kill, pause, resume, configure)
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Nom de l'agent destinataire
+  signal_type:
+    type: string
+    required: true
+    description: wakeup | sleep | kill | pause | resume | configure
+  payload:
+    type: object
+    required: false
+    description: Données additionnelles
+outputs:
+  ok:
+    type: boolean
+  signal_id:
+    type: integer
+implementation:
+  type: python
+  function: agent.signal_send.exec

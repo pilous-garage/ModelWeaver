@@ -6,7 +6,7 @@ Migrée depuis services/skill_manager.py (_exec_log).
 from services.audit import audit
 
 
-def log(inputs: dict, ws: str) -> dict:
+def log(inputs: dict, home: str) -> dict:
     level = inputs.get("level", "info")
     message = inputs.get("message", "")
     action = inputs.get("action", "skill.log")

@@ -16,12 +16,12 @@ from services.skill_manager import call_skill
 
 AGENT = "fsmresolve"
 PROJ = "fsmproj24"
-WS = str(mw_home() / "memagent" / AGENT)
+WS = str(mw_home() / "agent_home" / AGENT)
 
 
 def _make_conflict():
     repo = mw_home() / "repos" / f"{PROJ}.git"
-    clone = mw_home() / "memagent" / AGENT / "workspace" / PROJ
+    clone = mw_home() / "agent_home" / AGENT / "workspace" / PROJ
     shutil.rmtree(repo, ignore_errors=True)
     shutil.rmtree(clone, ignore_errors=True)
     call_skill("system/repo_init@v1", {"project_id": PROJ}, WS)
@@ -65,7 +65,7 @@ class TestGitAdd(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(mw_home() / "repos" / f"{PROJ}.git", ignore_errors=True)
-        shutil.rmtree(mw_home() / "memagent" / AGENT, ignore_errors=True)
+        shutil.rmtree(mw_home() / "agent_home" / AGENT, ignore_errors=True)
 
     def test_git_add_single_file(self):
         call_skill("system/project_write@v1",
@@ -87,7 +87,7 @@ class TestConflictResolution(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(mw_home() / "repos" / f"{PROJ}.git", ignore_errors=True)
-        shutil.rmtree(mw_home() / "memagent" / AGENT, ignore_errors=True)
+        shutil.rmtree(mw_home() / "agent_home" / AGENT, ignore_errors=True)
 
     def test_merge_strategy_theirs(self):
         r = call_skill("system/git_merge@v1",

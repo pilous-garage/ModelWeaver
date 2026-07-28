@@ -1,0 +1,28 @@
+name: system/home/mount_info@v1
+category: system
+description: "Renvoie les informations sur un point de montage."
+inputs:
+  name:
+    type: string
+    required: true
+    description: Nom du montage
+outputs:
+  name:
+    type: string
+  target:
+    type: string
+  read_only:
+    type: boolean
+  type:
+    type: string
+    description: Catégorie du montage (workspace, project, config, …)
+  description:
+    type: string
+    description: Label lisible
+  exists:
+    type: boolean
+  is_dir:
+    type: boolean
+implementation:
+  type: python
+  function: system.home.mount_info

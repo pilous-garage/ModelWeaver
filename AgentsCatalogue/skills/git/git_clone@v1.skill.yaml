@@ -1,6 +1,6 @@
 name: git/git_clone@v1
 category: git
-description: Clone le dépôt central du projet dans le workspace perso de l'agent (memagent/{agent}/workspace/{project}).
+description: Clone le dépôt central du projet dans le workspace perso de l'agent (agent_home/{agent}/workspace/{project}).
   Si déjà cloné, fait un fetch.
 inputs:
   project_id:

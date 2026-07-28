@@ -136,7 +136,7 @@ class TestLiveMultiAgent(unittest.TestCase):
         repo = mw_home() / "repos" / f"{PROJ}.git"
         shutil.rmtree(repo, ignore_errors=True)
         for a in AGENTS:
-            shutil.rmtree(mw_home() / "memagent" / a, ignore_errors=True)
+            shutil.rmtree(mw_home() / "agent_home" / a, ignore_errors=True)
 
     @classmethod
     def _setup_repo(cls):
@@ -171,7 +171,7 @@ class TestLiveMultiAgent(unittest.TestCase):
     def _reset_agent_workspace(self, agent_id):
         """Reclone proprement le workspace de l'agent pour que le retry sur un
         autre LLM reparte d'un etat sans branche feature-* residuelle."""
-        clone = mw_home() / "memagent" / agent_id / "workspace" / PROJ
+        clone = mw_home() / "agent_home" / agent_id / "workspace" / PROJ
         shutil.rmtree(clone, ignore_errors=True)
         try:
             call_skill("system/git_clone@v1",
@@ -282,7 +282,7 @@ class TestLiveMultiAgent(unittest.TestCase):
         self.assertEqual(rm.status, "success", rm.end_reason)
 
         # ── assertions produit (clone manager) ──
-        mclone = mw_home() / "memagent" / MANAGER / "workspace" / PROJ
+        mclone = mw_home() / "agent_home" / MANAGER / "workspace" / PROJ
         logic = (mclone / "src" / "logic.py").read_text() if (mclone / "src" / "logic.py").exists() else ""
         ui = (mclone / "src" / "ui.py").read_text() if (mclone / "src" / "ui.py").exists() else ""
         main = (mclone / "src" / "main.py").read_text() if (mclone / "src" / "main.py").exists() else ""

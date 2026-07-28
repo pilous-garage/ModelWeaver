@@ -1,7 +1,7 @@
 """Orchestration multi-agents (appel, messagerie, événements).
 
 Migrée depuis services/skill_manager.py (_exec_*). Les helpers de chemins
-(_agent_id_from_ws, _inbox_root, _comms_root) sont reproduits à l'identique.
+(_agent_id_from_home, _inbox_root, _comms_root) sont reproduits à l'identique.
 """
 
 import os
@@ -13,13 +13,13 @@ from pathlib import Path
 from services._common import mw_home
 
 
-def _agent_id_from_ws(ws: str, inputs: dict) -> str:
+def _agent_id_from_home(home: str, inputs: dict) -> str:
     aid = inputs.get("agent_id", "")
     if aid:
         return str(aid)
-    parts = Path(ws).parts
-    if "memagent" in parts:
-        return str(parts[parts.index("memagent") + 1])
+    parts = Path(home).parts
+    if "agent_home" in parts:
+        return str(parts[parts.index("agent_home") + 1])
     return ""
 
 
@@ -31,7 +31,7 @@ def _comms_root(chatroom_id: str) -> Path:
     return mw_home() / "comms" / str(chatroom_id)
 
 
-def call_agent(inputs: dict, ws: str) -> dict:
+def call_agent(inputs: dict, home: str) -> dict:
     target = inputs.get("target", "")
     request = inputs.get("request", "")
     provider = inputs.get("provider_ref", "")
@@ -54,7 +54,7 @@ def call_agent(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def get_budget(inputs: dict, ws: str) -> dict:
+def get_budget(inputs: dict, home: str) -> dict:
     from services.tarif import check_budget
     provider = inputs.get("provider_ref", "")
     model = inputs.get("model_ref", "")
@@ -64,13 +64,13 @@ def get_budget(inputs: dict, ws: str) -> dict:
         return {"budget": {}, "error": str(e)}
 
 
-def emit_event(inputs: dict, ws: str) -> dict:
+def emit_event(inputs: dict, home: str) -> dict:
     from services.lifecycle import get_event_bus, HookEvent
     event_type = inputs.get("event_type", "custom")
-    agent_id = _agent_id_from_ws(ws, inputs)
+    agent_id = _agent_id_from_home(home, inputs)
     payload = inputs.get("payload", {}) or {}
     # Journal agent-level
-    log_path = os.path.join(os.path.abspath(ws), "ctx", "events.jsonl")
+    log_path = os.path.join(os.path.abspath(home), "ctx", "events.jsonl")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps({"type": event_type, "payload": payload,
@@ -80,11 +80,11 @@ def emit_event(inputs: dict, ws: str) -> dict:
     return {"ok": True}
 
 
-def ask_user(inputs: dict, ws: str) -> dict:
-    agent_id = _agent_id_from_ws(ws, inputs)
+def ask_user(inputs: dict, home: str) -> dict:
+    agent_id = _agent_id_from_home(home, inputs)
     question = inputs.get("question", "")
     qid = str(uuid.uuid4())
-    store = os.path.join(os.path.abspath(ws), "ctx", "ask")
+    store = os.path.join(os.path.abspath(home), "ctx", "ask")
     os.makedirs(store, exist_ok=True)
     Path(os.path.join(store, f"{qid}.json")).write_text(
         json.dumps({"question": question, "answered": False,
@@ -93,7 +93,7 @@ def ask_user(inputs: dict, ws: str) -> dict:
     return {"question_id": qid, "answered": False, "agent_id": agent_id}
 
 
-def message_send(inputs: dict, ws: str) -> dict:
+def message_send(inputs: dict, home: str) -> dict:
     to = inputs.get("to_agent_id", "")
     sender = inputs.get("from_agent_id", inputs.get("agent_id", ""))
     content = inputs.get("content", "")
@@ -108,7 +108,7 @@ def message_send(inputs: dict, ws: str) -> dict:
     return {"ok": True, "message_id": msg_id}
 
 
-def message_recv(inputs: dict, ws: str) -> dict:
+def message_recv(inputs: dict, home: str) -> dict:
     agent_id = inputs.get("agent_id", "")
     if not agent_id:
         return {"messages": [], "error": "agent_id requis"}
@@ -127,7 +127,7 @@ def message_recv(inputs: dict, ws: str) -> dict:
     return {"messages": msgs, "count": len(msgs)}
 
 
-def chatroom_post(inputs: dict, ws: str) -> dict:
+def chatroom_post(inputs: dict, home: str) -> dict:
     cid = inputs.get("chatroom_id", "")
     agent = inputs.get("agent_id", "")
     content = inputs.get("content", "")
@@ -142,7 +142,7 @@ def chatroom_post(inputs: dict, ws: str) -> dict:
     return {"ok": True}
 
 
-def chatroom_read(inputs: dict, ws: str) -> dict:
+def chatroom_read(inputs: dict, home: str) -> dict:
     cid = inputs.get("chatroom_id", "")
     last_n = int(inputs.get("last_n", 50))
     if not cid:

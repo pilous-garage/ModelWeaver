@@ -1,0 +1,33 @@
+name: system/home/insert@v1
+category: system
+description: "Insère du contenu à une ligne spécifique d'un fichier (ou en crée un nouveau si inexistant). Le LLM choisit la ligne d'insertion. Chemin borné au home de l'agent."
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif au home de l'agent
+  content:
+    type: string
+    required: true
+    description: Texte à insérer
+  line:
+    type: integer
+    required: false
+    default: 0
+    description: "Numéro de ligne où insérer (0 = avant, positif = après). Défaut: fin du fichier"
+  before:
+    type: boolean
+    required: false
+    default: false
+    description: "Si true, insère avant la ligne spécifiée (défaut: après)"
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+  action:
+    type: string
+    description: created (fichier nouveau) | inserted_at_line
+implementation:
+  type: python
+  function: file.ops.insert_lines

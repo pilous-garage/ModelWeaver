@@ -1,0 +1,16 @@
+name: system/home/tree@v1
+category: system
+description: Affiche l'arbre des fichiers d'un dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif dans le home (vide = racine home)
+outputs:
+  tree:
+    type: string
+    description: Arbre texte des fichiers et dossiers
+implementation:
+  type: python
+  function: file.ops.tree

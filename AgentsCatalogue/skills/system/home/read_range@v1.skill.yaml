@@ -1,0 +1,31 @@
+name: system/home/read_range@v1
+category: system
+description: "Lit une plage de lignes d'un fichier avec numéros. Conçu pour les LLM — chaque ligne est référencée par son numéro, ce qui permet au LLM de décrire précisément la modification à effectuer. Chemin borné au home de l'agent."
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif au home de l'agent
+  start_line:
+    type: integer
+    required: false
+    default: 1
+    description: Première ligne à lire (1-indexed)
+  end_line:
+    type: integer
+    required: false
+    default: 0
+    description: Dernière ligne à lire (0 = fin du fichier)
+outputs:
+  lines:
+    type: array
+    description: Liste de {line, content} pour chaque ligne lue
+  total_lines:
+    type: integer
+    description: Nombre total de lignes du fichier
+  preview:
+    type: string
+    description: Texte complet des lignes lues
+implementation:
+  type: python
+  function: file.ops.read_range

@@ -8,7 +8,7 @@ def _scope(workspace_id: str):
     return db, db.for_workspace(workspace_id)
 
 
-def create(inputs: dict, ws: str) -> dict:
+def create(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     title = inputs.get("title", "")
     description = inputs.get("description", "")
@@ -25,7 +25,7 @@ def create(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def list_pending(inputs: dict, ws: str) -> dict:
+def list_pending(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
@@ -38,7 +38,7 @@ def list_pending(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def list_all(inputs: dict, ws: str) -> dict:
+def list_all(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
@@ -51,7 +51,7 @@ def list_all(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def get(inputs: dict, ws: str) -> dict:
+def get(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     if not workspace_id or task_id is None:
@@ -70,7 +70,7 @@ def get(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def claim(inputs: dict, ws: str) -> dict:
+def claim(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     agent_name = inputs.get("agent_name", "")
@@ -89,7 +89,7 @@ def claim(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def done(inputs: dict, ws: str) -> dict:
+def done(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     branch = inputs.get("branch", "")
@@ -107,7 +107,7 @@ def done(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def add_file(inputs: dict, ws: str) -> dict:
+def add_file(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     path = inputs.get("path", "")
@@ -123,7 +123,7 @@ def add_file(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def get_files(inputs: dict, ws: str) -> dict:
+def get_files(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     if not workspace_id or task_id is None:
@@ -137,7 +137,7 @@ def get_files(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def list_tasks(inputs: dict, ws: str) -> dict:
+def list_tasks(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     show_all = inputs.get("all", False)
     if not workspace_id:

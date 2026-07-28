@@ -1,0 +1,20 @@
+name: system/home/append@v1
+category: system
+description: Ajoute du contenu à la fin d'un fichier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du fichier
+  content:
+    type: string
+    required: true
+    description: Contenu à ajouter
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+implementation:
+  type: python
+  function: file.ops.append_file

@@ -1,0 +1,14 @@
+name: system/home/delete@v1
+category: system
+description: Supprime un fichier ou dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif à supprimer
+outputs:
+  ok:
+    type: boolean
+implementation:
+  type: python
+  function: file.ops.delete_file

@@ -103,18 +103,29 @@ export function ServicesMonitorPanel({ app }: { app: AppApi }) {
                 <tr key={s.name} style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
 <td style={{ padding: '0.15rem 0.4rem', fontWeight: '600' }}>
                       {s.name}
-                      <button onClick={async () => {
-                        try { await daemonPost('service/restart', { name: s.name }); } catch {}
-                      }}
-                        style={{ marginLeft: '0.3rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#1d4ed8', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
-                        ⟳
-                      </button>
-                      <button onClick={async () => {
-                        try { await daemonPost('service/stop', { name: s.name }); } catch {}
-                      }}
-                        style={{ marginLeft: '0.2rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
-                        ■
-                      </button>
+                      {s.status === 'stopped' ? (
+                        <button onClick={async () => {
+                          try { await daemonPost('service/start', { name: s.name }); } catch {}
+                        }}
+                          style={{ marginLeft: '0.3rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#059669', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
+                          ▶
+                        </button>
+                      ) : (
+                        <>
+                          <button onClick={async () => {
+                            try { await daemonPost('service/restart', { name: s.name }); } catch {}
+                          }}
+                            style={{ marginLeft: '0.3rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#1d4ed8', color: '#e2e8f0', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
+                            ⟳
+                          </button>
+                          <button onClick={async () => {
+                            try { await daemonPost('service/stop', { name: s.name }); } catch {}
+                          }}
+                            style={{ marginLeft: '0.2rem', fontSize: '0.58rem', padding: '0.1rem 0.3rem', backgroundColor: '#7f1d1d', color: '#fecaca', border: 'none', borderRadius: '0.2rem', cursor: 'pointer' }}>
+                            ■
+                          </button>
+                        </>
+                      )}
                     </td>
                   <td style={{ padding: '0.15rem 0.4rem' }}>{s.mode}</td>
                   <td style={{ padding: '0.15rem 0.4rem', textAlign: 'center' }}>

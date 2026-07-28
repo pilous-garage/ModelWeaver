@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id    TEXT PRIMARY KEY,
     name            TEXT NOT NULL,
     description     TEXT DEFAULT '',
-    director        INTEGER DEFAULT NULL,
+    director        TEXT DEFAULT NULL,
     git_shared      TEXT DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     last_activity_at TEXT NOT NULL DEFAULT (datetime('now'))

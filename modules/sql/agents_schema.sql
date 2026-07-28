@@ -67,8 +67,7 @@ CREATE TABLE IF NOT EXISTS agent_metrics (
 CREATE TABLE IF NOT EXISTS agent_signals (
     signal_id       INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id        INTEGER NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-    type            TEXT NOT NULL
-                    CHECK(type IN ('pause', 'resume', 'status', 'health', 'kill', 'configure')),
+    type            TEXT NOT NULL,
     payload_json    TEXT,
     status          TEXT DEFAULT 'PENDING'
                     CHECK(status IN ('PENDING', 'ACKED', 'COMPLETED', 'FAILED')),

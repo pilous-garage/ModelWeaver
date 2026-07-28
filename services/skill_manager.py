@@ -35,8 +35,8 @@ class SkillInputError(ValueError):
 
 
 class SkillManager:
-    def __init__(self, workspace_root: str = "/tmp"):
-        self.workspace_root = workspace_root
+    def __init__(self, home_root: str = "/tmp"):
+        self.home_root = home_root
         self._defs: Dict[str, dict] = {}
         self._categories: Dict[str, List[str]] = {}
         self._lock = threading.Lock()
@@ -53,7 +53,7 @@ class SkillManager:
                     continue
                 cat = cat_dir.name
                 self._categories.setdefault(cat, [])
-                for f in sorted(cat_dir.glob("*.skill.yaml")):
+                for f in sorted(cat_dir.rglob("*.skill.yaml")):
                     self._load_file(cat, f)
             self._loaded = True
 
@@ -150,17 +150,17 @@ class SkillManager:
                     step["capture"][out_name] = cap_var
 
     def call(self, fn: str, inputs: Dict[str, Any],
-             workspace_root: Optional[str] = None) -> Dict[str, Any]:
+             home_root: Optional[str] = None) -> Dict[str, Any]:
         spec = self.get(fn)
         impl = spec.get("implementation", {}) or {}
         impl_type = impl.get("type", "")
         func_name = impl.get("function", "")
         inline_code = impl.get("code", "")
 
-        ws = workspace_root or self.workspace_root
+        home = home_root or self.home_root
 
         # 1. Code inline dans le YAML (sandboxé par l'agent hôte) :
-        #    le YAML fournit une fonction `run(inputs, ws) -> dict`.
+        #    le YAML fournit une fonction `run(inputs, home) -> dict`.
         if inline_code and impl_type == "python":
             try:
                 ns: Dict[str, Any] = {}
@@ -168,7 +168,7 @@ class SkillManager:
                 run_fn = ns.get("run")
                 if not callable(run_fn):
                     raise SkillInputError(f"skill '{fn}' : fonction `run` introuvable dans le code inline")
-                return run_fn(inputs, ws)
+                return run_fn(inputs, home)
             except SkillInputError:
                 raise
             except Exception as e:
@@ -184,22 +184,22 @@ class SkillManager:
         lib_ref = impl.get("lib") or func_name
         lib_func = _lib_get_func(lib_ref)
         if lib_func is not None:
-            return lib_func(inputs, ws)
+            return lib_func(inputs, home)
 
         raise SkillInputError(f"skill '{fn}' : fonction lib introuvable : {lib_ref}")
 
-    def _safe_path(self, path: str, workspace_root: str) -> str:
+    def _safe_path(self, path: str, home_root: str) -> str:
         norm = os.path.normpath(path)
         if norm.startswith("..") or norm.startswith("/"):
             norm = norm.lstrip("/")
-        full = os.path.join(workspace_root, norm)
-        if not full.startswith(os.path.abspath(workspace_root)):
-            raise PermissionError("chemin hors workspace")
+        full = os.path.join(home_root, norm)
+        if not full.startswith(os.path.abspath(home_root)):
+            raise PermissionError("chemin hors home")
         return full
 
     # ── Résolution de chemin dans le home de l'agent (relatif) ──
-    def _read_index(self, ws: str) -> dict:
-        p = os.path.join(ws, INDEX_FILE)
+    def _read_index(self, home: str) -> dict:
+        p = os.path.join(home, INDEX_FILE)
         if os.path.exists(p):
             try:
                 return json.loads(Path(p).read_text(encoding="utf-8"))
@@ -207,13 +207,13 @@ class SkillManager:
                 return {}
         return {}
 
-    def _write_index(self, ws: str, idx: dict) -> None:
-        os.makedirs(ws, exist_ok=True)
-        Path(os.path.join(ws, INDEX_FILE)).write_text(
+    def _write_index(self, home: str, idx: dict) -> None:
+        os.makedirs(home, exist_ok=True)
+        Path(os.path.join(home, INDEX_FILE)).write_text(
             json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _index_add(self, ws: str, abs_file: str) -> None:
-        home = os.path.abspath(ws)
+    def _index_add(self, home: str, abs_file: str) -> None:
+        home = os.path.abspath(home)
         imp = os.path.join(home, "important")
         af = os.path.abspath(abs_file)
         if not (af == imp or af.startswith(imp + os.sep)):
@@ -221,42 +221,42 @@ class SkillManager:
         stem = os.path.splitext(os.path.basename(af))[0].lower()
         if not stem:
             return
-        idx = self._read_index(ws)
+        idx = self._read_index(home)
         if stem in idx:  # ambiguïté : déjà indexé
             return
         idx[stem] = os.path.relpath(af, home)
-        self._write_index(ws, idx)
+        self._write_index(home, idx)
 
-    def _index_remove(self, ws: str, abs_file: str) -> None:
-        home = os.path.abspath(ws)
+    def _index_remove(self, home: str, abs_file: str) -> None:
+        home = os.path.abspath(home)
         imp = os.path.join(home, "important")
         af = os.path.abspath(abs_file)
         if not (af == imp or af.startswith(imp + os.sep)):
             return
         stem = os.path.splitext(os.path.basename(af))[0].lower()
-        idx = self._read_index(ws)
+        idx = self._read_index(home)
         rel = os.path.relpath(af, home)
         if idx.get(stem) == rel:
             del idx[stem]
-            self._write_index(ws, idx)
+            self._write_index(home, idx)
 
-    def _resolve_read_path(self, path: str, ws: str) -> str:
+    def _resolve_read_path(self, path: str, home: str) -> str:
         """Résout un chemin de lecture : alias d'index puis relatif sous home."""
-        home = os.path.abspath(ws)
-        idx = self._read_index(ws)
+        home = os.path.abspath(home)
+        idx = self._read_index(home)
         base = path.split("/")[-1]
         if "/" not in path and path in idx:
             return os.path.join(home, idx[path])
         if "/" not in path and base in idx:
             return os.path.join(home, idx[base])
-        return self._safe_path(path, ws)
+        return self._safe_path(path, home)
 
-    def _classify_write_path(self, path: str, ws: str) -> str:
+    def _classify_write_path(self, path: str, home: str) -> str:
         """Résout un chemin d'écriture : sous-dossier explicite honoré,
         sinon nom connu -> important/, sinon -> work/."""
-        home = os.path.abspath(ws)
+        home = os.path.abspath(home)
         if "/" in path:
-            return self._safe_path(path, ws)
+            return self._safe_path(path, home)
         stem = os.path.splitext(path)[0].lower()
         sub = "important" if stem in KNOWN_IMPORTANT else "work"
         return os.path.join(home, sub, path)
@@ -297,19 +297,19 @@ class SkillManager:
 
     def _memory_root(self, agent_id: str) -> Path:
         from services._common import mw_home
-        return mw_home() / "memagent" / str(agent_id) / "mem"
+        return mw_home() / "agent_home" / str(agent_id) / "mem"
 
     # ── Fichiers étendus (relatif au home de l'agent) ──
 
     # ── Classification important / work ──
 
-    def _agent_id_from_ws(self, ws: str, inputs: dict) -> str:
+    def _agent_id_from_home(self, home: str, inputs: dict) -> str:
         aid = inputs.get("agent_id", "")
         if aid:
             return str(aid)
-        parts = Path(ws).parts
-        if "memagent" in parts:
-            return str(parts[parts.index("memagent") + 1])
+        parts = Path(home).parts
+        if "agent_home" in parts:
+            return str(parts[parts.index("agent_home") + 1])
         return ""
 
     # ── Temps ──
@@ -331,7 +331,7 @@ class SkillManager:
     #
     # Modèle :
     #   - Dépôt central BARE  : mw_home()/repos/{project_id}.git  (source de vérité)
-    #   - Clone par agent     : mw_home()/memagent/{agent_id}/workspace/{project_id}
+    #   - Clone par agent     : mw_home()/agent_home/{agent_id}/workspace/{project_id}
     #     (= working tree versionné ; contient work + important/ + fichiers projet)
     #   - Chatroom (N:N)      : mw_home()/comms/{chatroom_id}/chatroom.jsonl
     #   - Inbox (1:1)         : mw_home()/inbox/{agent_id}/
@@ -346,7 +346,7 @@ class SkillManager:
 
     def _agent_clone(self, agent_id: str, project_id: str) -> Path:
         from services._common import mw_home
-        return (mw_home() / "memagent" / str(agent_id)
+        return (mw_home() / "agent_home" / str(agent_id)
                 / "workspace" / str(project_id))
 
     def _inbox_root(self, agent_id: str) -> Path:
@@ -428,12 +428,12 @@ class SkillManager:
 _INSTANCE: SkillManager = _EMPTY
 
 
-def _get(workspace_root: str = "/tmp") -> SkillManager:
+def _get(home_root: str = "/tmp") -> SkillManager:
     global _INSTANCE
     if _INSTANCE is _EMPTY:
-        _INSTANCE = SkillManager(workspace_root)
+        _INSTANCE = SkillManager(home_root)
     else:
-        _INSTANCE.workspace_root = workspace_root
+        _INSTANCE.home_root = home_root
     _INSTANCE.load_all()
     return _INSTANCE
 
@@ -446,8 +446,8 @@ def expand_workflow(workflow: dict) -> dict:
     return _get().expand(workflow)
 
 
-def call_skill(fn: str, inputs: dict, ws: str = "/tmp") -> dict:
-    return _get(ws).call(fn, inputs)
+def call_skill(fn: str, inputs: dict, home: str = "/tmp") -> dict:
+    return _get(home).call(fn, inputs)
 
 
 def list_skills() -> List[dict]:

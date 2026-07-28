@@ -10,7 +10,7 @@ _ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL",
                   "MODELWEAVER_HOME", "TERM", "SHELL", "PWD", "OS")
 
 
-def get_env(inputs: dict, ws: str) -> dict:
+def get_env(inputs: dict, home: str) -> dict:
     name = inputs.get("name", "")
     if name not in _ENV_ALLOWLIST:
         return {"value": "", "allowed": False}

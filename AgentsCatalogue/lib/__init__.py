@@ -4,7 +4,7 @@ Arborescence : AgentsCatalogue/lib/{domaine}/{fichier}.py
 Référence qualifiée (relative à lib/) : file.ops.read_file
 
 Chaque module liste ses fonctions-skills dans __skills__ = [...].
-Les fonctions ont la signature (inputs: dict, ws: str) -> dict.
+Les fonctions ont la signature (inputs: dict, home: str) -> dict.
 
 Résolution pour le hover IDE : resolve("system.log.log")
 renvoie {source, module, func, file}. Aucun dispatch OS/archi (YAGNI) :
@@ -104,9 +104,9 @@ def list_all() -> List[dict]:
     return out
 
 
-def call(ref: str, inputs: dict, ws: str) -> dict:
-    """Appelle une fonction de la librairie (signature run(inputs, ws))."""
+def call(ref: str, inputs: dict, home: str) -> dict:
+    """Appelle une fonction de la librairie (signature run(inputs, home))."""
     func = get_func(ref)
     if not func:
         raise KeyError(f"fonction lib introuvable: {ref}")
-    return func(inputs, ws)
+    return func(inputs, home)

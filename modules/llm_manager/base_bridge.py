@@ -48,6 +48,7 @@ class ChatResponse:
     usage: Dict[str, int] = field(default_factory=dict)
     raw: Any = None
     budget: Dict[str, Any] = field(default_factory=dict)
+    tool_calls: Optional[List[Dict]] = None
 
 
 @dataclass

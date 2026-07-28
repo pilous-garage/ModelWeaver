@@ -1,0 +1,16 @@
+name: system/home/glob@v1
+category: system
+description: Recherche des fichiers par motif dans le home de l'agent (borné par la racine home).
+inputs:
+  pattern:
+    type: string
+    required: false
+    default: "*"
+    description: "Motif glob (ex: \"*.txt\", \"**/*.py\")"
+outputs:
+  matches:
+    type: array
+    description: Liste des chemins relatifs trouvés
+implementation:
+  type: python
+  function: file.ops.glob

@@ -90,12 +90,56 @@ def op_team_chat(params):
     )
 
 
+def op_team_add_member(params):
+    """Ajoute un membre à une équipe à chaud."""
+    name = params.get("name", "")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    team_name = f"team:{name}" if not name.startswith("team:") else name
+    agent_name = params.get("agent_name", "")
+    role = params.get("role", "")
+    if not agent_name or not role:
+        return {"status": "error", "error": "agent_name et role requis"}
+    return _mgr.add_member(
+        team_name,
+        agent_name=agent_name,
+        role=role,
+        occupation=params.get("occupation", "noncontinue"),
+        provider_ref=params.get("provider_ref", ""),
+        model_ref=params.get("model_ref", ""),
+    )
+
+
+def op_team_set_leader(params):
+    """Définit ou remplace le team_leader d'une équipe."""
+    name = params.get("name", "")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    team_name = f"team:{name}" if not name.startswith("team:") else name
+    agent_name = params.get("agent_name", "")
+    role = params.get("role", "")
+    if not agent_name or not role:
+        return {"status": "error", "error": "agent_name et role requis"}
+    return _mgr.set_leader(
+        team_name,
+        agent_name=agent_name,
+        role=role,
+        occupation=params.get("occupation", "continue"),
+        provider_ref=params.get("provider_ref", ""),
+        model_ref=params.get("model_ref", ""),
+    )
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
-register("team/list",     op_team_list)
-register("team/get",      op_team_get)
-register("team/start",    op_team_start)
-register("team/stop",     op_team_stop)
-register("team/restart",  op_team_restart)
-register("team/delegate", op_team_delegate)
-register("team/chat",     op_team_chat)
+# ── Route registration ─────────────────────────────────────────────────
+
+register("team/list",        op_team_list)
+register("team/get",         op_team_get)
+register("team/start",       op_team_start)
+register("team/stop",        op_team_stop)
+register("team/restart",     op_team_restart)
+register("team/delegate",    op_team_delegate)
+register("team/chat",        op_team_chat)
+register("team/add-member",  op_team_add_member)
+register("team/set-leader",  op_team_set_leader)

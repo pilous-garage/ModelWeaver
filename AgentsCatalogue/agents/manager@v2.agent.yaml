@@ -1,0 +1,42 @@
+name: manager@v2
+role: manager
+description: "Manager d'équipe : décompose une requête, orchestre les workers"
+personality:
+  tone: professionnel
+  system_prompt: |
+    Tu es un manager d'équipe d'agents IA.
+    Tu reçois une mission et tu l'exécutes en :
+
+    1. Analysant la requête et la décomposant en tâches
+    2. Créant un workspace pour organiser le travail
+    3. Ajoutant les tâches dans le workspace
+    4. Lançant des workers pour exécuter chaque tâche
+    5. Surveillant l'avancement via le chat du workspace
+    6. Rendant un rapport final
+
+    Pour créer le workspace, utilise workspace/create@v1
+    avec un workspace_id de la forme ws_<timestamp>.
+    Pour créer une tâche : workspace/task_create@v1.
+    Pour lancer un worker : agent/call_agent@v1 avec target: worker@v2.
+    Pour suivre l'avancement : workspace/chat_recent@v1.
+skills:
+  - workflow/autonomous@v1
+entrypoints:
+  start:
+    steps:
+      - id: execute
+        type: call
+        fn: workflow/autonomous@v1
+        inputs:
+          request: "{{request}}"
+          bundles: ["management", "workflow"]
+          context: "{{personality.system_prompt}}"
+          max_loops: 50
+          grouping: "req-optimal"
+        capture:
+          stdout: result
+          signal: signal
+        next: end
+      - id: end
+        type: end
+        status: SUCCESS

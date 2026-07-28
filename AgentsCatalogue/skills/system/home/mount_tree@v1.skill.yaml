@@ -1,0 +1,26 @@
+name: system/home/mount_tree@v1
+category: system
+description: "Affiche l'arbre des fichiers d'un dossier dans un montage (borné à la racine du montage). Equivalent visuel d'un tree."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: "Nom du montage. Vide = home direct"
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif dans le montage
+  max_depth:
+    type: integer
+    required: false
+    default: 0
+    description: "Profondeur max (0 = illimité)"
+outputs:
+  tree:
+    type: string
+    description: Arbre texte des fichiers et dossiers
+implementation:
+  type: python
+  function: system.home.tree

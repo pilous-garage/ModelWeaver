@@ -15,9 +15,9 @@ inputs:
     required: false
     default: ''
   director:
-    type: integer
+    type: string
     required: false
-    description: agent_id du manager/créateur (reçoit un clone git)
+    description: "team_name (team:XXX) ou agent_id (héritage) — le workspace est lié à une position, pas à un agent"
 outputs:
   ok:
     type: boolean

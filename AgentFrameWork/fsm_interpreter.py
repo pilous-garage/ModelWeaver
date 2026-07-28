@@ -141,7 +141,7 @@ class FSMInterpreter:
         max_iterations: int = 100,
     ):
         self.bridge = bridge or LiteLLMBridge()
-        self.tool_executor = tool_executor or ToolExecutor(workspace_root="/tmp")
+        self.tool_executor = tool_executor or ToolExecutor(home_root="/tmp")
         self.max_iterations = max_iterations
 
     def run(
@@ -157,7 +157,6 @@ class FSMInterpreter:
         spawn_handler: Optional[Any] = None,
         handoff_handler: Optional[Any] = None,
         agent_call_handler: Optional[Any] = None,
-        team_call_handler: Optional[Any] = None,
         lifecycle_mgr: Optional[Any] = None,
     ) -> FSMResult:
         """Exécute le workflow."""
@@ -168,7 +167,6 @@ class FSMInterpreter:
         self._spawn_handler = spawn_handler
         self._handoff_handler = handoff_handler
         self._agent_call_handler = agent_call_handler
-        self._team_call_handler = team_call_handler
         self._lifecycle_mgr = lifecycle_mgr
 
         steps = workflow.get("steps", [])
@@ -275,6 +273,52 @@ class FSMInterpreter:
 
     # ── Steps ──────────────────────────────────────────
 
+    def _build_llm_tools(self) -> List[Dict]:
+        """Construit la liste des outils (OpenAI function calling) depuis les skills YAML."""
+        try:
+            import yaml as _yaml
+        except ImportError:
+            return []
+        from pathlib import Path as _Path
+
+        base = _Path(__file__).parent.parent / "AgentsCatalogue" / "skills"
+        tool_skills = [
+            "shell/exec@v1",
+            "git/lite@v1",
+            "file/read_file@v1",
+            "file/write_file@v1",
+        ]
+        tools = []
+        for ref in tool_skills:
+            parts = ref.replace("@v1", "").split("/")
+            candidates = list(base.rglob(f"{parts[-1]}*.skill.yaml"))
+            skill_path = candidates[0] if candidates else None
+            if not skill_path or not skill_path.exists():
+                continue
+            try:
+                with open(skill_path, encoding="utf-8") as f:
+                    skill = _yaml.safe_load(f)
+            except Exception:
+                continue
+            name = skill.get("name", "").replace("/", ".").replace("@", ".")
+            desc = skill.get("description", "")
+            inputs = skill.get("inputs", {})
+            props = {}
+            required = []
+            for k, v in inputs.items():
+                if v.get("required"):
+                    required.append(k)
+                props[k] = {"type": v.get("type", "string"), "description": v.get("description", "")}
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": {"type": "object", "properties": props, "required": required},
+                },
+            })
+        return tools
+
     def _step_llm_call(
         self, step: Dict, result: FSMResult,
         provider_ref: str = "", model_ref: str = "",
@@ -332,12 +376,13 @@ class FSMInterpreter:
                 result.variables["_llm_model"] = m_ref
                 result.variables["_llm_fallbacks"] = 0
             else:
+                # Tools : convertir les skills disponibles au format OpenAI
+                tools = self._build_llm_tools()
+                tool_kwargs = {"tools": tools} if tools else {}
+
                 timeout = step.get("timeout")
                 use_fallback = step.get("fallback", False)
                 if timeout:
-                    # Appel LLM résilient : si le LLM ne répond pas dans
-                    # `timeout` secondes, demande un autre LLM au gestionnaire
-                    # de LLM (LLMManager.assign_llm) et réessaie.
                     from modules.llm_manager.resilient import resilient_chat
                     try:
                         response = resilient_chat(
@@ -345,6 +390,7 @@ class FSMInterpreter:
                             timeout=int(timeout), fallback=use_fallback,
                             max_tokens=max_tokens, temperature=temperature,
                             agent_id=_agent_id or None,
+                            **tool_kwargs,
                         )
                     except BridgeError as e:
                         return self._branch_on_error(step, result, f"LLM error: {e}")
@@ -356,14 +402,66 @@ class FSMInterpreter:
                     result.variables["_llm_model"] = m_ref
                     result.variables["_llm_fallbacks"] = getattr(response, "fallbacks", 0)
                 else:
-                    response = self.bridge.chat(
-                        provider_ref=p_ref, model_ref=m_ref,
-                        messages=msgs, temperature=temperature, max_tokens=max_tokens,
-                        agent_id=_agent_id or None,
-                    )
-                    result.variables["_llm_provider"] = p_ref
-                    result.variables["_llm_model"] = m_ref
-                    result.variables["_llm_fallbacks"] = 0
+                    # Boucle tool_calls : LLM → tool → LLM → ... → text
+                    for _tool_round in range(15):
+                        response = self.bridge.chat(
+                            provider_ref=p_ref, model_ref=m_ref,
+                            messages=msgs, temperature=temperature, max_tokens=max_tokens,
+                            agent_id=_agent_id or None, **tool_kwargs,
+                        )
+                        result.variables["_llm_provider"] = p_ref
+                        result.variables["_llm_model"] = m_ref
+                        result.variables["_llm_fallbacks"] = 0
+
+                        tool_calls = getattr(response, "tool_calls", None)
+                        if not tool_calls:
+                            break  # réponse textuelle → on sort
+
+                        # Ajouter la réponse assistant avec tool_calls
+                        asst_msg = {"role": "assistant", "content": response.content or ""}
+                        tc_list = []
+                        for tc in tool_calls:
+                            tc_entry = {
+                                "id": tc.get("id"),
+                                "type": tc.get("type", "function"),
+                                "function": {
+                                    "name": tc["function"]["name"],
+                                    "arguments": tc["function"]["arguments"],
+                                },
+                            }
+                            tc_list.append(tc_entry)
+                        if tc_list:
+                            asst_msg["tool_calls"] = tc_list
+                        msgs.append(asst_msg)
+
+                        # Exécuter chaque tool
+                        for tc in tool_calls:
+                            fn_name = tc["function"]["name"]
+                            try:
+                                raw_args = json.loads(tc["function"]["arguments"])
+                            except json.JSONDecodeError:
+                                raw_args = {}
+                            conv_name = fn_name.replace(".", "/")
+                            if "@" not in conv_name:
+                                conv_name = conv_name + "@v1"
+                            try:
+                                from services.skill_manager import call_skill
+                                tool_result = call_skill(conv_name, raw_args)
+                            except Exception as e2:
+                                tool_result = {"ok": False, "error": str(e2)}
+                            msgs.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": json.dumps(tool_result, default=str),
+                            })
+
+                        # Un seul tool_calls round supprime les tools suivants
+                        # pour éviter les boucles infinies
+                        tool_kwargs = {}
+                    else:
+                        # 15 rounds sans réponse textuelle → erreur
+                        content = "Tool call limit exceeded"
+                        tokens = 0
                 content = response.content if hasattr(response, 'content') else str(response)
                 if hasattr(response, 'usage') and isinstance(response.usage, dict):
                     tokens = response.usage.get("total_tokens", 0)
@@ -427,10 +525,10 @@ class FSMInterpreter:
             from services.skill_manager import call_skill
             from services._common import mw_home
             if agent_id:
-                ws = str(mw_home() / "memagent" / str(agent_id))
+                home = str(mw_home() / "agent_home" / str(agent_id))
             else:
-                ws = self.tool_executor.workspace_root if self.tool_executor else "/tmp"
-            out = call_skill(fn, resolved, ws)
+                home = self.tool_executor.home_root if self.tool_executor else "/tmp"
+            out = call_skill(fn, resolved, home)
         except Exception as e:
             result.status = "failed"
             result.end_reason = f"call {fn}: {e}"
@@ -512,6 +610,7 @@ class FSMInterpreter:
             "read_file": ("system/read_file@v1", {"path": "path"}),
             "write_file": ("system/write_file@v1", {"path": "path", "content": "content"}),
             "run_shell": ("system/run_shell@v1", {"command": "command"}),
+            "shell_exec": ("shell/exec@v1", {"command": "command"}),
         }
 
         skill_ref, arg_map = TOOL_TO_SKILL.get(tool_name, ("", {}))
@@ -529,10 +628,10 @@ class FSMInterpreter:
                 from services.skill_manager import call_skill
                 from services._common import mw_home
                 if agent_id:
-                    ws = str(mw_home() / "memagent" / str(agent_id))
+                    home = str(mw_home() / "agent_home" / str(agent_id))
                 else:
-                    ws = self.tool_executor.workspace_root if self.tool_executor else "/tmp"
-                out = call_skill(skill_ref, mapped_args, ws)
+                    home = self.tool_executor.home_root if self.tool_executor else "/tmp"
+                out = call_skill(skill_ref, mapped_args, home)
                 output_capture = step.get("output_capture")
                 if output_capture:
                     if tool_name == "read_file" and "content" in out:
@@ -631,10 +730,25 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Fin du workflow."""
+        """Fin du workflow — copie les variables capturées dans le résultat.
+
+        Capture convention (key=source, value=target) :
+          {team_outputs: content} → result.content = variables['team_outputs']
+        """
         end_status = step.get("status", "SUCCESS")
         result.status = "success" if end_status == "SUCCESS" else "failed"
         result.end_reason = end_status
+        capture = step.get("capture", {})
+        for source_var, target_field in capture.items():
+            val = result.variables.get(source_var, "")
+            if isinstance(val, dict):
+                val = json.dumps(val, ensure_ascii=False)
+            elif not isinstance(val, str):
+                val = str(val)
+            if target_field == "content":
+                result.content = val
+            else:
+                result.variables[target_field] = val
         return False
 
     def _step_set_variable(
@@ -766,66 +880,6 @@ class FSMInterpreter:
             return False
 
         # Capture la sortie dans les variables
-        capture = step.get("capture", {})
-        for out_key, var_name in capture.items():
-            result.variables[var_name] = out.get(out_key, out.get("content", ""))
-
-        result.next_step_id = step.get("next")
-        return True
-
-    def _step_team_delegate(
-        self, step: Dict, result: FSMResult,
-        provider_ref: str = "", model_ref: str = "",
-        **kwargs: Any,
-    ) -> bool:
-        """Délègue une tâche à TOUS les membres de l'équipe et agrège les
-        résultats (scatter-gather). Le step est traité par team_call_handler
-        de l'Agent (service.py : _make_team_call_handler).
-
-        step: {
-          type: team_delegate
-          members: ["worker-a", "worker-b"]       // membres cibles
-          entrypoint: "main"                       // entrée à exécuter
-          inputs: {request: "sous-tâche"}          // arguments par membre
-          assignment: "all_same"                   // all_same | by_role
-          capture: {results: team_outputs}         // stockage variable
-        }
-        """
-        if self._team_call_handler is None:
-            result.status = "failed"
-            result.end_reason = "team_call_handler non configuré"
-            return False
-
-        members = step.get("members", [])
-        if not members:
-            result.status = "failed"
-            result.end_reason = "team_delegate: 'members' requis"
-            return False
-
-        ep = step.get("entrypoint", "main")
-        inputs = {
-            k: self._resolve(v, result.variables)
-            for k, v in step.get("inputs", {}).items()
-        }
-        assignment = step.get("assignment", "all_same")
-
-        try:
-            out = self._team_call_handler(members, ep, inputs, assignment)
-        except Exception as e:
-            if step.get("on_error"):
-                return self._branch_on_error(step, result, f"team_delegate error: {e}")
-            result.status = "failed"
-            result.end_reason = f"team_delegate error: {e}"
-            return False
-
-        if out.get("status") not in ("ok", "success"):
-            if step.get("on_error"):
-                return self._branch_on_error(step, result,
-                                             out.get("error", "team_delegate failed"))
-            result.status = "failed"
-            result.end_reason = f"team_delegate échoué: {out.get('error', 'inconnu')}"
-            return False
-
         capture = step.get("capture", {})
         for out_key, var_name in capture.items():
             result.variables[var_name] = out.get(out_key, out.get("content", ""))

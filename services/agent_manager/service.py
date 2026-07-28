@@ -113,6 +113,15 @@ CHAT_WORKFLOW = {
 #  Agent — Runtime wrapper (Phase 1 minimal)
 # ──────────────────────────────────────────────
 
+# ── Constantes ────────────────────────────────────────────────────────────────
+
+TICK_INTERVAL = 1          # secondes entre chaque cycle de supervision
+MAX_THREAD_AGENTS = 100    # agents actifs simultanés max
+MAX_SLEEPING_AGENTS = 10000  # agents endormis max dans la BDD
+MIN_DISK_FREE_GB = 1       # espace disque libre minimum avant de créer un agent
+MAX_TOTAL_AGENT_DISK_GB = 10  # espace disque total max utilisé par tous les agents
+
+
 class Agent:
     """Wrapper runtime d'un agent hydraté.
 
@@ -145,7 +154,8 @@ class Agent:
     def hydrate(cls, agent_id: int, db: Optional[AgentsDB] = None) -> "Agent":
         """Hydrate un agent depuis la BDD.
 
-        Charge les données, vérifie l'existence, crée une entrée runtime.
+        Charge les données, vérifie l'existence, crée une entrée runtime
+        et initialise le shell interne de l'agent.
         """
         db = db or AgentsDB()
         row = db.conn.execute(
@@ -170,6 +180,23 @@ class Agent:
             VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated')
         """, (agent_id, thread_id, os.getpid()))
         db.conn.commit()
+
+        # Initialiser le shell interne de l'agent
+        try:
+            from services.agent_shell_manager import agent_shell_manager
+            agent_shell_manager.init()
+            config = json.loads(self._data.get("config_json") or "{}")
+            role = config.get("role", "member")
+            from services._common import mw_home
+            home_root = (mw_home() / "agent_home" / self.name).resolve()
+            agent_shell_manager.get_or_create(
+                agent_id=self.name,
+                role=role,
+                home_root=home_root,
+            )
+        except Exception as e:
+            # Le shell est optionnel — ne pas bloquer l'hydratation
+            pass
 
         return self
 
@@ -217,7 +244,6 @@ class Agent:
         spawn_handler = self._make_spawn_handler()
         handoff_handler = self._make_handoff_handler()
         agent_call_handler = self._make_agent_call_handler()
-        team_call_handler = self._make_team_call_handler(agent_call_handler)
 
         # Stocker provider/model pour que agent_call_handler les propage
         self._call_provider_ref = provider_ref
@@ -234,7 +260,6 @@ class Agent:
                     spawn_handler=spawn_handler,
                     handoff_handler=handoff_handler,
                     agent_call_handler=agent_call_handler,
-                    team_call_handler=team_call_handler,
                     lifecycle_mgr=self._lifecycle,
                 )
                 result = result.to_dict()
@@ -456,7 +481,7 @@ class Agent:
         provider_ref: str = "", model_ref: str = "",
         signal_check: Any = None, stream_sink: Any = None,
         spawn_handler: Any = None, handoff_handler: Any = None,
-        agent_call_handler: Any = None, team_call_handler: Any = None,
+        agent_call_handler: Any = None,
         lifecycle_mgr: Any = None,
     ) -> "FSMResult":
         """Exécution via FSM Interpreter (Phase 4 : signaux + streaming,
@@ -513,7 +538,6 @@ class Agent:
                 spawn_handler=spawn_handler,
                 handoff_handler=handoff_handler,
                 agent_call_handler=agent_call_handler,
-                team_call_handler=team_call_handler,
                 lifecycle_mgr=lifecycle_mgr,
             )
             # Persister les variables (survit à configure / spawn / handoff)
@@ -587,36 +611,6 @@ class Agent:
             )
         return _call
 
-    def _make_team_call_handler(self, agent_call_handler: Any) -> Any:
-        """Closure : scatter-gather — appelle TOUS les membres de l'équipe
-        et agrège les résultats.
-
-        Utilisé par le step FSM `team_delegate`.
-        """
-        db = self.db
-        parent_bridge = self._bridge
-
-        def _scatter(members: List[str], entrypoint: str,
-                     inputs: dict, assignment: str) -> Dict[str, Any]:
-            results = {}
-            errors = []
-            for agent_name in members:
-                try:
-                    out = agent_call_handler(agent_name, entrypoint, inputs)
-                    if out.get("status") in ("ok", "success"):
-                        results[agent_name] = out.get("content", out.get("result", ""))
-                    else:
-                        errors.append({"agent": agent_name, "error": out.get("error", "unknown")})
-                except Exception as e:
-                    errors.append({"agent": agent_name, "error": str(e)})
-            return {
-                "status": "ok" if not errors else "partial",
-                "results": results,
-                "errors": errors,
-                "count": len(results),
-            }
-        return _scatter
-
     def _record_failure(self):
         """Enregistre une tâche échouée dans les métriques."""
         try:
@@ -633,8 +627,16 @@ class Agent:
             pass
 
     def dehydrate(self) -> None:
-        """Déshydrate l'agent : sauve état, supprime runtime, libère le thread."""
+        """Déshydrate l'agent : ferme le shell, sauve état, supprime runtime."""
         db = self.db
+
+        # Fermer le shell interne si présent
+        try:
+            from services.agent_shell_manager import agent_shell_manager
+            agent_shell_manager.close(self.name)
+        except Exception:
+            pass
+
         # Sauvegarder l'état
         db.conn.execute("""
             UPDATE agents
@@ -655,6 +657,27 @@ class Agent:
                 self._lifecycle.cleanup()
             except Exception:
                 pass
+
+    # ── Accès au shell interne ────────────────────────────────────
+
+    @property
+    def shell(self):
+        """Retourne l'AgentShell de l'agent, ou None si pas de shell."""
+        try:
+            from services.agent_shell_manager import agent_shell_manager
+            return agent_shell_manager.get(self.name)
+        except Exception:
+            return None
+
+    def run_shell(self, cmd: str) -> dict:
+        """Exécute une commande shell dans le contexte de l'agent.
+
+        Retourne {"exit_code": int, "stdout": str, "stderr": str, "status": str}.
+        """
+        ag_sh = self.shell
+        if ag_sh is None:
+            return {"exit_code": 1, "stdout": "", "stderr": "shell non disponible", "status": "error"}
+        return ag_sh.run(cmd)
 
     def get_status(self) -> Dict[str, Any]:
         """Retourne l'état courant de l'agent."""
@@ -827,6 +850,9 @@ class AgentManager:
             result = self.kill(zid)
             killed.append({"agent_id": zid, "result": result})
 
+        # Réveiller les agents endormis qui ont des signaux en attente
+        woken = self._wake_sleeping_agents()
+
         active = len(self.list_active())
 
         return {
@@ -834,7 +860,41 @@ class AgentManager:
             "active_agents": active,
             "zombies_found": len(zombies),
             "zombies_killed": killed,
+            "woken_agents": woken,
         }
+
+    def _wake_sleeping_agents(self) -> int:
+        """Hydrate et exécute les agents endormis qui ont des signaux PENDING."""
+        rows = self.db.conn.execute("""
+            SELECT DISTINCT a.agent_id, a.name, a.role_type
+            FROM agents a
+            JOIN agent_signals s ON s.agent_id = a.agent_id
+            WHERE s.status = 'PENDING'
+              AND a.agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+        """).fetchall()
+
+        active = len(self.list_active())
+        count = 0
+        for row in rows:
+            if active + count >= MAX_THREAD_AGENTS:
+                break
+            agent_id = row["agent_id"]
+            threading.Thread(target=self._run_sleeping_agent, args=(agent_id,), daemon=True).start()
+            count += 1
+        return count
+
+    def _run_sleeping_agent(self, agent_id: int) -> None:
+        agent = None
+        try:
+            agent = Agent.hydrate(agent_id, db=self.db)
+            agent.execute(request="wakeup: signals pending")
+        except Exception:
+            pass
+        if agent:
+            try:
+                agent.dehydrate()
+            except Exception:
+                pass
 
     # ── Phase 3 : ressources & préemption ──
 
@@ -899,7 +959,7 @@ class AgentManager:
 
     # ── Phase 4 : canal de signaux ──
 
-    VALID_SIGNALS = ("pause", "resume", "status", "health", "kill", "configure")
+    VALID_SIGNALS = ("pause", "resume", "wakeup", "sleep", "status", "health", "kill", "configure")
 
     def send_signal(self, agent_id: int, signal_type: str,
                     payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -975,17 +1035,35 @@ class AgentManager:
         provider_ref: str = "", model_ref: str = "",
         keep_sleeping: bool = True,
     ) -> Dict[str, Any]:
-        """Crée un agent (souvent occupation `disparate` = rare/on-demand),
-        l'hydrate, l'exécute, puis le renvoie dormir en BDD (Phénix).
-
-        keep_sleeping=True : après exécution l'agent reste en BDD (status INIT),
-        prêt à réveiller. False : il est supprimé.
-        name vide → auto-généré format `role_N` (ex: assistant_3).
-        """
         if occupation not in ("continue", "noncontinue", "disparate"):
             return {"status": "error", "error": f"occupation invalide: {occupation}"}
         if not role:
             return {"status": "error", "error": "role requis pour spawn_agent"}
+
+        # Vérifier la limite d'agents actifs
+        active = len(self.list_active())
+        if active >= MAX_THREAD_AGENTS:
+            return {"status": "error", "error": f"limite d'agents actifs atteinte ({MAX_THREAD_AGENTS})", "active": active}
+
+        # Vérifier l'espace disque total utilisé par tous les agents
+        rows = self.db.conn.execute("SELECT storage_json FROM agents").fetchall()
+        total_used = 0
+        for row in rows:
+            if row["storage_json"]:
+                try:
+                    s = json.loads(row["storage_json"])
+                    total_used += s.get("used_bytes", 0) or 0
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        total_used_gb = total_used / (1024**3)
+        if total_used_gb >= MAX_TOTAL_AGENT_DISK_GB:
+            return {"status": "error", "error": f"espace disque total des agents épuisé ({total_used_gb:.1f}/{MAX_TOTAL_AGENT_DISK_GB} Go)", "total_used_gb": round(total_used_gb, 1)}
+
+        import shutil
+        du = shutil.disk_usage(mw_home())
+        free_gb = du.free / (1024**3)
+        if free_gb < MIN_DISK_FREE_GB:
+            return {"status": "error", "error": f"espace disque insuffisant ({free_gb:.1f} Go libre, minimum {MIN_DISK_FREE_GB} Go)", "free_gb": round(free_gb, 1)}
         name = self._make_agent_name(self.db.conn, role, name)
         ref = f"agent:{name}"
         # Normaliser le config : un workflow ({'steps':...}) doit être

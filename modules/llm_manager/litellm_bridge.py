@@ -19,6 +19,40 @@ from modules.key_manager.key_manager import KeyLockedError
 
 logger = logging.getLogger("modelweaver.bridge.litellm")
 
+# Alias de provider_ref : certains provider_ref scrapés ne correspondent
+# pas aux préfixes attendus par litellm pour le model ID.
+_PROVIDER_ALIAS = {
+    "google": "gemini",
+}
+
+# Traduction provider → variable d'environnement pour litellm
+_PROVIDER_ENV = {
+    "google": "GEMINI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
+}
+
+
+def _inject_env(provider_ref: str, api_key: str) -> None:
+    """Injecte la clé API dans l'environnement pour litellm.
+
+    Certains providers litellm lisent la clé depuis des noms de variable
+    d'environnement spécifiques plutôt que depuis api_key=.
+    """
+    if not api_key:
+        return
+    env_var = _PROVIDER_ENV.get(provider_ref)
+    if env_var and not os.environ.get(env_var):
+        os.environ[env_var] = api_key
+
 
 # ── ErrorClassifier ────────────────────────────────────────────
 
@@ -195,6 +229,21 @@ class LiteLLMBridge(BaseBridge):
                 pass
         return os.environ.get(f"{provider_ref.upper()}_API_KEY"), self._resolve_api_base(provider_ref)
 
+    def _mark_model_unavailable(self, provider_ref: str, model_ref: str, error: str) -> None:
+        """Marque un modèle comme indisponible dans key_endpoint_models."""
+        if not self.cat:
+            return
+        try:
+            self.cat.conn.execute("""
+                UPDATE key_endpoint_models
+                SET available = 0, last_error = ?, last_checked_at = strftime('%s','now')
+                WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                  AND model_id = (SELECT id FROM catalogue_models WHERE ref = ?)
+            """, (error[:500], provider_ref, model_ref))
+            self.cat.conn.commit()
+        except Exception:
+            pass
+
     def _resolve_api_key(self, provider_ref: str) -> Optional[str]:
         key, _ = self._resolve_key(provider_ref)
         return key
@@ -234,6 +283,7 @@ class LiteLLMBridge(BaseBridge):
     def _build_model_id(self, provider_ref: str,
                         model_ref: str) -> str:
         """Construit l'ID LiteLLM : provider/model ou provider_model_name."""
+        provider_ref = _PROVIDER_ALIAS.get(provider_ref, provider_ref)
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT kem.provider_model_name, p.api_type
@@ -289,11 +339,12 @@ class LiteLLMBridge(BaseBridge):
               system_prompt: Optional[str] = None,
               stream: bool = False,
               agent_id: Optional[str] = None,
-              **params) -> ChatResponse:
+               **params) -> ChatResponse:
         self._lazy_import()
         model_id = self._build_model_id(provider_ref, model_ref)
         msgs = self._build_messages(messages, system_prompt)
         api_key, api_base = self._resolve_key(provider_ref)
+        _inject_env(provider_ref, api_key or "")
 
         # Budget check avant appel
         budget_check = self._budget_check(provider_ref, model_ref)
@@ -341,13 +392,24 @@ class LiteLLMBridge(BaseBridge):
                            tokens_in=response.usage.prompt_tokens or 0,
                            tokens_out=response.usage.completion_tokens or 0,
                            latency_ms=elapsed_ms)
+
+            # Extraire tool_calls de la réponse
+            msg = response.choices[0].message
+            tool_calls = None
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_calls = []
+                for tc in msg.tool_calls:
+                    tc_data = {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    tool_calls.append(tc_data)
+
             return ChatResponse(
-                content=response.choices[0].message.content or "",
+                content=msg.content or "",
                 model=response.model,
                 finish_reason=response.choices[0].finish_reason or "stop",
                 usage=usage,
                 raw=response,
                 budget=budget,
+                tool_calls=tool_calls,
             )
         except Exception as e:
             be = self.classifier.classify(e, provider_ref, model_ref)
@@ -374,16 +436,25 @@ class LiteLLMBridge(BaseBridge):
                                    tokens_in=response.usage.prompt_tokens or 0,
                                    tokens_out=response.usage.completion_tokens or 0,
                                    latency_ms=elapsed_ms)
+                    msg2 = response.choices[0].message
+                    tool_calls2 = None
+                    if hasattr(msg2, "tool_calls") and msg2.tool_calls:
+                        tool_calls2 = []
+                        for tc in msg2.tool_calls:
+                            tool_calls2.append({"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}})
                     return ChatResponse(
-                        content=response.choices[0].message.content or "",
+                        content=msg2.content or "",
                         model=response.model,
                         finish_reason=response.choices[0].finish_reason or "stop",
                         usage=usage,
                         raw=response,
                         budget=budget,
+                        tool_calls=tool_calls2,
                     )
                 except Exception as e2:
                     be2 = self.classifier.classify(e2, provider_ref, model_ref)
+                    if be2.category in (ErrorCategory.AUTH, ErrorCategory.UNKNOWN):
+                        self._mark_model_unavailable(provider_ref, model_ref, str(e2)[:500])
                     elapsed_ms = int((time.time() - t0) * 1000)
                     self._log_call(provider_ref, model_ref,
                                    "quota_exhausted" if be2.category == ErrorCategory.RATE_LIMIT
@@ -401,6 +472,8 @@ class LiteLLMBridge(BaseBridge):
                            error_code=getattr(be, "code", None),
                            error_detail=str(e)[:500],
                            latency_ms=elapsed_ms)
+            if be.category in (ErrorCategory.AUTH, ErrorCategory.UNKNOWN):
+                self._mark_model_unavailable(provider_ref, model_ref, str(e)[:500])
             raise be
 
     def chat_stream(self, provider_ref: str, model_ref: str,
@@ -414,6 +487,7 @@ class LiteLLMBridge(BaseBridge):
         model_id = self._build_model_id(provider_ref, model_ref)
         msgs = self._build_messages(messages, system_prompt)
         api_key, api_base = self._resolve_key(provider_ref)
+        _inject_env(provider_ref, api_key or "")
 
         # Budget check avant appel
         budget_check = self._budget_check(provider_ref, model_ref)
@@ -540,8 +614,8 @@ class LiteLLMBridge(BaseBridge):
                 FROM key_endpoint_models kem
                 JOIN catalogue_models m ON m.id = kem.model_id
                 JOIN catalogue_providers p ON p.id = kem.provider_id
-                WHERE p.ref = ? AND kem.available = 1
-                ORDER BY m.name
+                WHERE p.ref = ?
+                ORDER BY kem.available DESC, m.name
             """, (provider_ref,))
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]

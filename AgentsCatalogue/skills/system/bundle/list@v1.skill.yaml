@@ -1,0 +1,11 @@
+name: system/bundle/list@v1
+category: system
+description: "Liste les bundles de skills disponibles pour cet agent. Un bundle est un ensemble prédéfini de skills adapté à un rôle (basic_file_ops, code_editor, worker, …)."
+inputs: {}
+outputs:
+  bundles:
+    type: object
+    description: "Dictionnaire nom -> {skills: list, count: int}"
+implementation:
+  type: python
+  function: system.home.list_bundles

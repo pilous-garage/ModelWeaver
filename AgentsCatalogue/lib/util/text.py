@@ -11,7 +11,7 @@ import random
 import time
 
 
-def template(inputs: dict, ws: str) -> dict:
+def template(inputs: dict, home: str) -> dict:
     template = inputs.get("template", "")
     vars_ = inputs.get("vars", {}) or {}
     out = template
@@ -20,7 +20,7 @@ def template(inputs: dict, ws: str) -> dict:
     return {"result": out}
 
 
-def string_ops(inputs: dict, ws: str) -> dict:
+def string_ops(inputs: dict, home: str) -> dict:
     op = inputs.get("op", "trim")
     text = inputs.get("text", "")
     if op == "trim":
@@ -47,7 +47,7 @@ def string_ops(inputs: dict, ws: str) -> dict:
     return {"result": text, "error": f"op inconnue: {op}"}
 
 
-def diff(inputs: dict, ws: str) -> dict:
+def diff(inputs: dict, home: str) -> dict:
     a = inputs.get("a", "").splitlines()
     b = inputs.get("b", "").splitlines()
     added, removed = [], []
@@ -60,7 +60,7 @@ def diff(inputs: dict, ws: str) -> dict:
             "added_count": len(added), "removed_count": len(removed)}
 
 
-def base64(inputs: dict, ws: str) -> dict:
+def base64(inputs: dict, home: str) -> dict:
     mode = inputs.get("mode", "encode")
     data = inputs.get("data", "")
     if mode == "decode":
@@ -73,7 +73,7 @@ def base64(inputs: dict, ws: str) -> dict:
     return {"result": base64.b64encode(raw).decode("ascii")}
 
 
-def hash(inputs: dict, ws: str) -> dict:
+def hash(inputs: dict, home: str) -> dict:
     algo = inputs.get("algo", "sha256")
     data = inputs.get("data", "")
     h = hashlib.new(algo)
@@ -81,11 +81,11 @@ def hash(inputs: dict, ws: str) -> dict:
     return {"algo": algo, "hex": h.hexdigest()}
 
 
-def uuid(inputs: dict, ws: str) -> dict:
+def uuid(inputs: dict, home: str) -> dict:
     return {"value": str(uuid.uuid4())}
 
 
-def json_query(inputs: dict, ws: str) -> dict:
+def json_query(inputs: dict, home: str) -> dict:
     data = inputs.get("data")
     path = inputs.get("path", "")
     cur = data
@@ -106,7 +106,7 @@ def json_query(inputs: dict, ws: str) -> dict:
     return {"found": True, "value": cur}
 
 
-def random(inputs: dict, ws: str) -> dict:
+def random(inputs: dict, home: str) -> dict:
     lo = int(inputs.get("min", 0))
     hi = int(inputs.get("max", 100))
     if hi < lo:
@@ -114,7 +114,7 @@ def random(inputs: dict, ws: str) -> dict:
     return {"value": random.randint(lo, hi)}
 
 
-def timestamp(inputs: dict, ws: str) -> dict:
+def timestamp(inputs: dict, home: str) -> dict:
     fmt = inputs.get("format", "iso")
     now = time.time()
     if fmt == "epoch":

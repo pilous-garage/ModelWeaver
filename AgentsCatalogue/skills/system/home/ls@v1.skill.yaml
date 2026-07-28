@@ -1,0 +1,16 @@
+name: system/home/ls@v1
+category: system
+description: Liste le contenu d'un dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif dans le home (vide = racine home)
+outputs:
+  entries:
+    type: array
+    description: Liste des entrées (name, type, size)
+implementation:
+  type: python
+  function: file.ops.list_dir

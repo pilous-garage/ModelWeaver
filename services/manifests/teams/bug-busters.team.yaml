@@ -9,8 +9,8 @@ director:
   role: senior-debugger
   occupation: continue
   workflow: orchestrate
-  provider_ref: openrouter
-  model_ref: openai/gpt-4o
+  provider_ref: google
+  model_ref: gemini-2.5-flash
   resources:
     llm: true
 
@@ -20,16 +20,16 @@ members:
     occupation: noncontinue
     resources:
       llm: true
-    provider_ref: openrouter
-    model_ref: anthropic/claude-sonnet
+    provider_ref: groq
+    model_ref: llama-3.3-70b-versatile
 
   - agent_name: test-writer
     role: test-writer
     occupation: noncontinue
     resources:
       llm: true
-    provider_ref: openrouter
-    model_ref: anthropic/claude-sonnet
+    provider_ref: groq
+    model_ref: llama-3.3-70b-versatile
 
   - agent_name: pr-creator
     role: pr-creator

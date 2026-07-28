@@ -1,0 +1,20 @@
+name: system/home/move@v1
+category: system
+description: Déplace un fichier ou dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  src:
+    type: string
+    required: true
+    description: Chemin source relatif au home
+  dst:
+    type: string
+    required: true
+    description: Chemin destination relatif au home
+outputs:
+  ok:
+    type: boolean
+  dst:
+    type: string
+implementation:
+  type: python
+  function: file.ops.move_file

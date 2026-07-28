@@ -3,7 +3,7 @@
 from modules.sql.workspace import WorkspaceDB
 
 
-def post(inputs: dict, ws: str) -> dict:
+def post(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     content = inputs.get("content", "")
     msg_type = inputs.get("msg_type", "text")
@@ -21,7 +21,7 @@ def post(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def recent(inputs: dict, ws: str) -> dict:
+def recent(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     limit = int(inputs.get("limit", 50))
     if not workspace_id:
@@ -36,7 +36,7 @@ def recent(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def thread(inputs: dict, ws: str) -> dict:
+def thread(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     root_id = inputs.get("root_id")
     if not workspace_id or root_id is None:

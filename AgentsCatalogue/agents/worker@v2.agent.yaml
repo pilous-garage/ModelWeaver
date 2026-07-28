@@ -1,0 +1,49 @@
+name: worker@v2
+role: worker
+description: "Agent worker : surveille les tâches d'un workspace et les exécute"
+personality:
+  tone: professionnel
+  system_prompt: |
+    Tu es un agent worker. Tu surveilles le workspace {{workspace_id}}.
+    Ton cycle de vie :
+    1. Liste les tâches pending du workspace
+    2. Si aucune tâche, attends (fin de cycle)
+    3. Claim la première tâche disponible
+    4. Exécute-la avec les outils (shell, git, fichiers)
+    5. Fais un commit git du travail
+    6. Marque la tâche comme done
+    7. Poste un message de confirmation dans le chat
+    8. Reprends à l'étape 1
+
+    Si une tâche échoue, marque-la comme done avec un message d'erreur
+    et passe à la suivante.
+
+    Tu as accès à un shell complet, git-lite, et la gestion de fichiers.
+skills:
+  - workflow/autonomous@v1
+entrypoints:
+  start:
+    steps:
+      - id: init
+        type: set_variable
+        name: workspace_id
+        value: "{{request.workspace_id}}"
+        next: loop
+
+      - id: loop
+        type: call
+        fn: workflow/autonomous@v1
+        inputs:
+          request: "Surveille le workspace {{workspace_id}} et exécute les tâches"
+          bundles: ["dev", "workflow"]
+          context: "{{personality.system_prompt}}"
+          workspace_id: "{{workspace_id}}"
+          max_loops: 50
+          grouping: "req-optimal"
+        capture:
+          stdout: result
+        next: end
+
+      - id: end
+        type: end
+        status: SUCCESS

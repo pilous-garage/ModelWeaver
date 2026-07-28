@@ -143,8 +143,14 @@ export function useApp() {
   // Agents (Phase 4 : signaux + streaming)
   const [showAgents, setShowAgents] = useState(false);
   const [agentList, setAgentList] = useState<any[]>([]);
+  const [agentTeams, setAgentTeams] = useState<Record<string, { agents: any[]; team_info?: any }>>({});
+  const [agentStandalone, setAgentStandalone] = useState<any[]>([]);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentMgr, setAgentMgr] = useState<{ active_agents: number; zombies: number[] }>({ active_agents: 0, zombies: [] });
+  const [teamList, setTeamList] = useState<any[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(false);
+  const [agentCatalogue, setAgentCatalogue] = useState<any>(null);
+  const [catLoading, setCatLoading] = useState(false);
   const [agentStreamText, setAgentStreamText] = useState('');
   const [agentStreamAgent, setAgentStreamAgent] = useState<number | null>(null);
   const [agentStreamSeq, setAgentStreamSeq] = useState(0);
@@ -412,12 +418,13 @@ export function useApp() {
     'chat': 'center',
     'install-queue': 'center',
     'agents': 'right',
+    'teams': 'right',
     'local-models': 'right',
     'keys': 'right',
     'debug': 'right',
   };
 
-  const ALL_PANELS = ['system-state', 'resources', 'installed-tools', 'catalogue', 'chat', 'install-queue', 'agents', 'local-models', 'keys', 'debug'];
+  const ALL_PANELS = ['system-state', 'resources', 'installed-tools', 'catalogue', 'chat', 'install-queue', 'agents', 'teams', 'local-models', 'keys', 'debug'];
 
   const setDebug = (v: boolean) => {
     setShowDebug(v);
@@ -482,14 +489,49 @@ export function useApp() {
   const fetchAgents = async () => {
     setAgentLoading(true);
     try {
-      const data = await daemonPost('agent/list', {});
-      if (data?.ok || data?.agents) setAgentList(data.agents || []);
+      const data = await daemonPost('agent/list-by-team', {});
+      const teams = (data?.teams || {}) as Record<string, { agents: any[]; team_info?: any }>;
+      const standalone = (data?.standalone || []) as any[];
+      setAgentTeams(teams);
+      setAgentStandalone(standalone);
+      const all: any[] = [];
+      for (const t of Object.values(teams)) all.push(...(t as any).agents);
+      all.push(...standalone);
+      setAgentList(all);
       try {
         const m = await daemonPost('agent/manager/status', {});
         if (m) setAgentMgr({ active_agents: m.active_agents || 0, zombies: m.zombies || [] });
       } catch { /* ignore */ }
     } catch { /* ignore */ }
     finally { setAgentLoading(false); }
+  };
+
+  const fetchCapabilities = async () => {
+    setCatLoading(true);
+    try {
+      const data = await daemonPost('capabilities', {});
+      if (data?.ok || data?.result) setAgentCatalogue(data.result || data);
+    } catch { /* ignore */ }
+    finally { setCatLoading(false); }
+  };
+
+  const addAgentToTeam = async (teamName: string, agentName: string, role: string, slot: 'leader' | 'member') => {
+    try {
+      const route = slot === 'leader' ? 'team/set-leader' : 'team/add-member';
+      await daemonPost(route, { name: teamName, agent_name: agentName, role });
+      await fetchTeams();
+      await fetchAgents();
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const fetchTeams = async () => {
+    setTeamsLoading(true);
+    try {
+      const data = await daemonPost('team/list', {});
+      const list = (data?.teams || []) as any[];
+      setTeamList(list);
+    } catch { /* ignore */ }
+    finally { setTeamsLoading(false); }
   };
 
   const sendAgentSignal = async (agentId: number, type: string, payload?: any) => {
@@ -518,9 +560,16 @@ export function useApp() {
     setAgentStreamText('');
   };
 
-  const handleAgentRestart = async (agentId: number) => {
+  const handleAgentStop = async (name: string) => {
     try {
-      await daemonPost('agent/execute', { agent_id: agentId });
+      await daemonPost('agent/stop', { name });
+      await fetchAgents();
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const handleAgentRestart = async (name: string) => {
+    try {
+      await daemonPost('agent/restart', { name });
       await fetchAgents();
     } catch (e: any) { /* ignore */ }
   };
@@ -789,6 +838,8 @@ export function useApp() {
   useEffect(() => {
     if (showDashboard) {
       loadLogitheque();
+      fetchTeams();
+      fetchCapabilities();
       // Premier check-manifest au montage (force), puis périodique 60s.
       lastDepCheckRef.current = 0;
       checkDependencies();
@@ -1186,8 +1237,15 @@ export function useApp() {
     localMsg, setLocalMsg,
     showAgents, setShowAgents,
     agentList, setAgentList,
+    agentTeams, setAgentTeams,
+    agentStandalone, setAgentStandalone,
     agentLoading, setAgentLoading,
     agentMgr, setAgentMgr,
+    teamList, setTeamList,
+    teamsLoading, setTeamsLoading,
+    agentCatalogue, setAgentCatalogue,
+    catLoading, setCatLoading,
+    addAgentToTeam,
     agentStreamText, setAgentStreamText,
     agentStreamAgent, setAgentStreamAgent,
     agentStreamSeq, setAgentStreamSeq,
@@ -1213,10 +1271,13 @@ export function useApp() {
     fetchLocalEngines,
     handleLocalToggle,
     fetchAgents,
+    fetchTeams,
+    fetchCapabilities,
     sendAgentSignal,
     fetchAgentSignals,
     watchAgentStream,
     stopAgentStream,
+    handleAgentStop,
     handleAgentRestart,
     handleChatSend,
     handleSetKey,

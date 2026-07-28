@@ -58,7 +58,7 @@ const deleteRoute: Record<CatalogueType, string> = {
 };
 
 const TEMPLATES: Record<CatalogueType, string> = {
-  skills: 'name: \ncategory: system\ndescription: ""\ninputs: {}\noutputs: {}\nimplementation:\n  type: python\n  code: |\n    def run(inputs, ws):\n        return {}\n',
+  skills: 'name: \ncategory: system\ndescription: ""\ninputs: {}\noutputs: {}\nimplementation:\n  type: python\n  code: |\n    def run(inputs, home):\n        return {}\n',
   behaviors: 'name: \ndescription: ""\nworkflow:\n  steps:\n    - id: start\n      type: llm_call\n      request: ""\n      next: end\n    - id: end\n      type: end\n      status: SUCCESS\n',
   personalities: 'name: \ndescription: ""\ntone: neutre\nsystem_prompt: ""\n',
   roles: 'name: \nclass: worker\nsub_class: general\ndescription: ""\n',

@@ -1,0 +1,13 @@
+name: system/plan/list@v1
+category: system
+description: "Renvoie la liste structurée des skills disponibles avec descriptions et signatures — pour que le LLM construise un plan d'actions."
+inputs: {}
+outputs:
+  skills:
+    type: array
+    description: Liste des skills {ref, description, module, func}
+  count:
+    type: integer
+implementation:
+  type: python
+  function: system.planner.list_skills

@@ -1,4 +1,4 @@
-"""Mémoire persistante par agent (mw_home()/memagent/{id}/mem).
+"""Mémoire persistante par agent (mw_home()/agent_home/{id}/mem).
 
 Migrée depuis services/skill_manager.py (_exec_memory_*). Le helper
 _memory_root est reproduit à l'identique.
@@ -11,10 +11,10 @@ from services._common import mw_home
 
 
 def _memory_root(agent_id: str) -> Path:
-    return mw_home() / "memagent" / str(agent_id) / "mem"
+    return mw_home() / "agent_home" / str(agent_id) / "mem"
 
 
-def memory_write(inputs: dict, ws: str) -> dict:
+def memory_write(inputs: dict, home: str) -> dict:
     agent_id = inputs.get("agent_id", "")
     namespace = inputs.get("namespace", "default")
     key = inputs.get("key", "")
@@ -32,7 +32,7 @@ def memory_write(inputs: dict, ws: str) -> dict:
     return {"ok": True, "path": str(fp)}
 
 
-def memory_read(inputs: dict, ws: str) -> dict:
+def memory_read(inputs: dict, home: str) -> dict:
     agent_id = inputs.get("agent_id", "")
     namespace = inputs.get("namespace", "default")
     key = inputs.get("key", "")

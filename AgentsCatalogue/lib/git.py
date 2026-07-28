@@ -20,7 +20,7 @@ def _central_repo(project_id: str) -> Path:
 
 
 def _agent_clone(agent_id: str, project_id: str) -> Path:
-    return (mw_home() / "memagent" / str(agent_id)
+    return (mw_home() / "agent_home" / str(agent_id)
             / "workspace" / str(project_id))
 
 
@@ -70,7 +70,7 @@ def _unmerged_files(root: Path) -> List[str]:
     return [l.strip() for l in out.get("stdout", "").splitlines() if l.strip()]
 
 
-def repo_init(inputs: dict, ws: str) -> dict:
+def repo_init(inputs: dict, home: str) -> dict:
     """Crée le dépôt central BARE et y sème un commit initial (branche
     master : README + .gitignore)."""
     pid = inputs.get("project_id", "")
@@ -110,7 +110,7 @@ def repo_init(inputs: dict, ws: str) -> dict:
     return {"ok": True, "path": str(bare)}
 
 
-def git_clone(inputs: dict, ws: str) -> dict:
+def git_clone(inputs: dict, home: str) -> dict:
     """Clone le dépôt central dans le workspace perso de l'agent."""
     pid = inputs.get("project_id", "")
     aid = inputs.get("agent_id", "")
@@ -136,7 +136,7 @@ def git_clone(inputs: dict, ws: str) -> dict:
     return {"ok": True, "path": str(dest), "exit_code": rc}
 
 
-def git_branch(inputs: dict, ws: str) -> dict:
+def git_branch(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -147,7 +147,7 @@ def git_branch(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["branch", "--list"])
 
 
-def git_checkout(inputs: dict, ws: str) -> dict:
+def git_checkout(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -157,7 +157,7 @@ def git_checkout(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["checkout", name])
 
 
-def git_commit(inputs: dict, ws: str) -> dict:
+def git_commit(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -166,7 +166,7 @@ def git_commit(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["commit", "-q", "-m", msg])
 
 
-def git_diff(inputs: dict, ws: str) -> dict:
+def git_diff(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -174,7 +174,7 @@ def git_diff(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["diff"] + ([target] if target else []))
 
 
-def git_log(inputs: dict, ws: str) -> dict:
+def git_log(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -184,7 +184,7 @@ def git_log(inputs: dict, ws: str) -> dict:
     return r
 
 
-def git_status(inputs: dict, ws: str) -> dict:
+def git_status(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -194,7 +194,7 @@ def git_status(inputs: dict, ws: str) -> dict:
     return r
 
 
-def git_merge(inputs: dict, ws: str) -> dict:
+def git_merge(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -221,7 +221,7 @@ def git_merge(inputs: dict, ws: str) -> dict:
     return r
 
 
-def git_add(inputs: dict, ws: str) -> dict:
+def git_add(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -231,7 +231,7 @@ def git_add(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["add", "-A"])
 
 
-def git_resolve_conflict(inputs: dict, ws: str) -> dict:
+def git_resolve_conflict(inputs: dict, home: str) -> dict:
     """Résout un conflit de merge en choisissant un côté (ours/theirs)
     puis stage le(s) fichier(s) — à faire après un git_merge en conflit
     avant le commit de conclusion.
@@ -269,14 +269,14 @@ def git_resolve_conflict(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["add", "--", path])
 
 
-def git_fetch(inputs: dict, ws: str) -> dict:
+def git_fetch(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
     return _git_run(root, ["fetch", "-q", "origin"])
 
 
-def git_pull(inputs: dict, ws: str) -> dict:
+def git_pull(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err
@@ -286,7 +286,7 @@ def git_pull(inputs: dict, ws: str) -> dict:
     return _git_run(root, ["pull", "--no-edit"])
 
 
-def git_push(inputs: dict, ws: str) -> dict:
+def git_push(inputs: dict, home: str) -> dict:
     root, err = _clone_or_err(inputs)
     if err:
         return err

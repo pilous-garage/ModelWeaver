@@ -1,0 +1,22 @@
+name: system/home/mount_cd@v1
+category: system
+description: "Valide un chemin relatif dans un montage. Renvoie le chemin résolu si celui-ci reste dans les limites du montage. Utilisé pour la navigation sûre."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: Nom du montage. Vide = home direct
+  path:
+    type: string
+    required: true
+    description: Chemin relatif à valider
+outputs:
+  resolved:
+    type: string
+    description: Chemin absolu résolu, ou vide si erreur
+  error:
+    type: string
+implementation:
+  type: python
+  function: system.home.cd

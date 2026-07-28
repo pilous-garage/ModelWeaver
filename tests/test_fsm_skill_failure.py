@@ -19,12 +19,12 @@ from AgentFrameWork.fsm_interpreter import FSMInterpreter
 
 AGENT = "fsmfail"
 PROJ = "fsmproj"
-WS = str(mw_home() / "memagent" / AGENT)
+WS = str(mw_home() / "agent_home" / AGENT)
 
 
 def _setup_repo():
     repo = mw_home() / "repos" / f"{PROJ}.git"
-    clone = mw_home() / "memagent" / AGENT / "workspace" / PROJ
+    clone = mw_home() / "agent_home" / AGENT / "workspace" / PROJ
     shutil.rmtree(repo, ignore_errors=True)
     shutil.rmtree(clone, ignore_errors=True)
     call_skill("system/repo_init@v1", {"project_id": PROJ}, WS)
@@ -33,7 +33,7 @@ def _setup_repo():
 
 def _teardown_repo():
     shutil.rmtree(mw_home() / "repos" / f"{PROJ}.git", ignore_errors=True)
-    shutil.rmtree(mw_home() / "memagent" / AGENT, ignore_errors=True)
+    shutil.rmtree(mw_home() / "agent_home" / AGENT, ignore_errors=True)
 
 
 class TestGitMergeConflict(unittest.TestCase):

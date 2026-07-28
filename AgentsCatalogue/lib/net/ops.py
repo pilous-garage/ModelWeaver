@@ -40,11 +40,11 @@ def _http_request(method: str, inputs: dict) -> dict:
                 "error": str(e)}
 
 
-def http_get(inputs: dict, ws: str) -> dict:
+def http_get(inputs: dict, home: str) -> dict:
     return _http_request("GET", inputs)
 
 
-def http_post(inputs: dict, ws: str) -> dict:
+def http_post(inputs: dict, home: str) -> dict:
     method = str(inputs.get("method", "POST")).upper()
     if method not in ("POST", "PUT", "PATCH", "DELETE"):
         return {"status_code": 0, "headers": {}, "body": "",

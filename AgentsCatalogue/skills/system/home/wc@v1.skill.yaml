@@ -1,0 +1,32 @@
+name: system/home/wc@v1
+category: system
+description: "Compte lignes, mots et caractères d'un fichier ou répertoire (style wc). Borné au home."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: Nom du montage (vide = home direct)
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif (vide = racine du mount/home)
+outputs:
+  path:
+    type: string
+  lines:
+    type: integer
+  words:
+    type: integer
+  bytes:
+    type: integer
+  files:
+    type: integer
+    description: Nombre de fichiers (présent seulement pour les répertoires)
+  type:
+    type: string
+    description: Compte lignes, mots et caractères - type file ou directory
+implementation:
+  type: python
+  function: system.home.wc

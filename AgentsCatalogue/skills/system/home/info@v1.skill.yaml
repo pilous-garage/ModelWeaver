@@ -1,0 +1,21 @@
+name: system/home/info@v1
+category: system
+description: Renvoie les métadonnées d'un fichier ou dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif du fichier ou dossier
+outputs:
+  exists:
+    type: boolean
+  is_dir:
+    type: boolean
+  size:
+    type: integer
+  mtime:
+    type: number
+implementation:
+  type: python
+  function: file.ops.file_info

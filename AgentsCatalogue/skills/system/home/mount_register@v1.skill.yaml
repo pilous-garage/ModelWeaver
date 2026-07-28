@@ -1,0 +1,39 @@
+name: system/home/mount_register@v1
+category: system
+description: "Enregistre un nouveau point de montage dans le home de l'agent. Options disponibles : read_only (bool), type (string), description (string)."
+inputs:
+  name:
+    type: string
+    required: true
+    description: "Nom du montage (ex: leader_workspace)"
+  target:
+    type: string
+    required: true
+    description: Chemin absolu du point de montage
+  read_only:
+    type: boolean
+    required: false
+    default: false
+    description: Si true, le montage est en lecture seule (écritures refusées)
+  type:
+    type: string
+    required: false
+    default: ""
+    description: "Catégorie du montage (workspace, project, config, …)"
+  description:
+    type: string
+    required: false
+    default: ""
+    description: Label lisible du montage
+outputs:
+  ok:
+    type: boolean
+  name:
+    type: string
+  target:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: system.home.register_mount

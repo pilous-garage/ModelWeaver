@@ -54,7 +54,7 @@ class WorkspaceRepository:
         ).fetchone())
 
     def create(self, workspace_id: str, name: str, description: str = "",
-               director: int = None, git_shared: str = "") -> Dict[str, Any]:
+               director: Optional[str] = None, git_shared: str = "") -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         self.conn.execute("""
             INSERT INTO workspaces (workspace_id, name, description, director,

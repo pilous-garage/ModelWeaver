@@ -1,0 +1,40 @@
+name: system/home/grep@v1
+category: system
+description: "Recherche un motif texte dans les fichiers (grep -style). Rend le contexte : chemin + lignes correspondantes. Borné au home/montage."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: Nom du montage (vide = home direct)
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif dans le montage (vide = racine)
+  pattern:
+    type: string
+    required: true
+    description: Motif de recherche (regex)
+  case_insensitive:
+    type: boolean
+    required: false
+    default: false
+    description: Ignorer la casse
+  max_files:
+    type: integer
+    required: false
+    default: 50
+    description: Nombre max de fichiers à scanner
+outputs:
+  matches:
+    type: array
+    description: "Liste de {path, matches: [{line, content}], match_count}"
+  pattern:
+    type: string
+  count:
+    type: integer
+    description: Nombre de fichiers contenant des matchs
+implementation:
+  type: python
+  function: system.home.grep_content

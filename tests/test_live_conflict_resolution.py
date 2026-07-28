@@ -31,14 +31,14 @@ from AgentFrameWork.fsm_interpreter import FSMInterpreter
 
 AGENT = "liveagent"
 PROJ = "liveproj"
-WS = str(mw_home() / "memagent" / AGENT)
+WS = str(mw_home() / "agent_home" / AGENT)
 PROVIDER = os.environ.get("LIVE_PROVIDER", "groq")
 MODEL = os.environ.get("LIVE_MODEL", "llama-3.1-8b-instant")
 
 
 def _make_conflict():
     repo = mw_home() / "repos" / f"{PROJ}.git"
-    clone = mw_home() / "memagent" / AGENT / "workspace" / PROJ
+    clone = mw_home() / "agent_home" / AGENT / "workspace" / PROJ
     shutil.rmtree(repo, ignore_errors=True)
     shutil.rmtree(clone, ignore_errors=True)
     call_skill("system/repo_init@v1", {"project_id": PROJ}, WS)
@@ -87,7 +87,7 @@ class TestLiveConflictResolution(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(mw_home() / "repos" / f"{PROJ}.git", ignore_errors=True)
-        shutil.rmtree(mw_home() / "memagent" / AGENT, ignore_errors=True)
+        shutil.rmtree(mw_home() / "agent_home" / AGENT, ignore_errors=True)
 
     def test_live_on_error_resolves_conflict(self):
         workflow = {

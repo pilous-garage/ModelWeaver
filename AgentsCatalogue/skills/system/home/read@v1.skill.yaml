@@ -1,0 +1,14 @@
+name: system/home/read@v1
+category: system
+description: Lit le contenu d'un fichier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du fichier à lire
+outputs:
+  content:
+    type: string
+implementation:
+  type: python
+  function: file.ops.read_file

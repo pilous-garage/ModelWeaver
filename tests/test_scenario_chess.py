@@ -97,7 +97,7 @@ def cleanup_disk():
     p = mw_home() / "repos" / f"{PROJECT_ID}.git"
     if p.exists():
         shutil.rmtree(p, ignore_errors=True)
-    for d in (mw_home() / "memagent").glob(f"{PREFIX}*"):
+    for d in (mw_home() / "agent_home").glob(f"{PREFIX}*"):
         shutil.rmtree(d, ignore_errors=True)
     cr = mw_home() / "comms" / CHATROOM
     if cr.exists():
@@ -271,11 +271,11 @@ def main():
     check("analyst review OK", ok)
 
     # ── Vérifications de livrables ──
-    mgr_clone = mw_home() / "memagent" / str(ids["manager"]) / "workspace" / PROJECT_ID
+    mgr_clone = mw_home() / "agent_home" / str(ids["manager"]) / "workspace" / PROJECT_ID
     def exists_any(rel):
         candidates = [mgr_clone / rel]
         for role in TEAM:
-            candidates.append(mw_home() / "memagent" / str(ids[role]) /
+            candidates.append(mw_home() / "agent_home" / str(ids[role]) /
                               "workspace" / PROJECT_ID / rel)
         return any(c.exists() for c in candidates)
 

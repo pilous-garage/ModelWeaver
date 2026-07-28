@@ -1,0 +1,24 @@
+name: system/bundle/register@v1
+category: system
+description: "Enregistre un nouveau bundle de skills (admin uniquement)."
+inputs:
+  name:
+    type: string
+    required: true
+    description: Nom du bundle
+  skills:
+    type: array
+    required: true
+    description: "Liste des références qualifiées des skills (ex: system/home/ls@v1)"
+outputs:
+  ok:
+    type: boolean
+  name:
+    type: string
+  count:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: system.home.register_bundle

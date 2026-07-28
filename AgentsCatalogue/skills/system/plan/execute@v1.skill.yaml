@@ -1,0 +1,39 @@
+name: system/plan/execute@v1
+category: system
+description: "Exécute un plan d'actions séquentielles choisies par le LLM. Chaque action référence un skill par son ref et fournit ses inputs."
+inputs:
+  plan:
+    type: array
+    required: true
+    description: "Liste d'actions à exécuter en séquence. Chaque action = {ref, inputs}"
+    items:
+      type: object
+      properties:
+        ref:
+          type: string
+          description: "Référence qualifiée du skill (ex: system.home.ls)"
+        inputs:
+          type: object
+          description: "Inputs à passer au skill"
+  stop_on_error:
+    type: boolean
+    required: false
+    default: true
+    description: "Arrêter au premier échec (défaut: true)"
+  context:
+    type: object
+    required: false
+    default: {}
+    description: "Contexte partagé injecté dans chaque action (optionnel)"
+outputs:
+  results:
+    type: array
+    description: "Résultats de chaque action exécutée"
+  status:
+    type: string
+    description: "success | partial | failed"
+  steps_executed:
+    type: integer
+implementation:
+  type: python
+  function: system.planner.plan_execute

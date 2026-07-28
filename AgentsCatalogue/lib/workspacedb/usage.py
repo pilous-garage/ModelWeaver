@@ -3,7 +3,7 @@
 from modules.sql.workspace import WorkspaceDB
 
 
-def touch_read(inputs: dict, ws: str) -> dict:
+def touch_read(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     path = inputs.get("path", "")
     if not workspace_id or not path:
@@ -18,7 +18,7 @@ def touch_read(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def touch_write(inputs: dict, ws: str) -> dict:
+def touch_write(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     path = inputs.get("path", "")
     if not workspace_id or not path:
@@ -33,7 +33,7 @@ def touch_write(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def hot(inputs: dict, ws: str) -> dict:
+def hot(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     limit = int(inputs.get("limit", 10))
     if not workspace_id:
@@ -48,7 +48,7 @@ def hot(inputs: dict, ws: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def touch(inputs: dict, ws: str) -> dict:
+def touch(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     path = inputs.get("path", "")
     mode = inputs.get("mode", "read")

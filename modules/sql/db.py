@@ -2169,6 +2169,8 @@ class AgentsDB:
             self.conn.executescript(schema.read_text())
         # Migration V0.6.8 : storage_json (espace disque proprio par agent)
         _add_column_if_missing(self.conn, "agents", "storage_json", "TEXT")
+        # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
+        _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)

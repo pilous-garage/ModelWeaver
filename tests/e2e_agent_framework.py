@@ -396,8 +396,8 @@ def main():
 
     mw.agent.delete(name="e2e_dyn")
 
-    # ===== PHASE 8 : stockage disque propriétaire par agent (memagent) =====
-    print("\n=== PHASE 8 : stockage disque (memagent) ===")
+    # ===== PHASE 8 : stockage disque propriétaire par agent (agent_home) =====
+    print("\n=== PHASE 8 : stockage disque (agent_home) ===")
     # Création auto nom role_N
     ca8 = mw.agent.create(name="", role="assistant")
     check("P8 auto-name (assistant_N)", (ca8 or {}).get("status") == "ok"

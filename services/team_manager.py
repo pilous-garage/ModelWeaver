@@ -38,14 +38,27 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
     """
     db = _get_agent_db()
     scoped_name = f"{team_name}/{spec.agent_name}" if team_name else spec.agent_name
+
+    resources = dict(spec.resources or {})
+    if spec.provider_ref:
+        resources.setdefault("llm_pref", {})["provider"] = spec.provider_ref
+    if spec.model_ref:
+        resources.setdefault("llm_pref", {})["model"] = spec.model_ref
+    resources_json = json.dumps(resources)
+
     row = db.conn.execute(
-        "SELECT agent_id FROM agents WHERE name = ?", (scoped_name,)
+        "SELECT agent_id, resources_json FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
     if row:
+        # Mettre à jour resources_json si le spec contient provider/model
+        if spec.provider_ref:
+            db.conn.execute(
+                "UPDATE agents SET resources_json = ? WHERE agent_id = ?",
+                (resources_json, row["agent_id"]))
+            db.conn.commit()
         return row["agent_id"]
 
     config_json = json.dumps(spec.config or {})
-    resources_json = json.dumps(spec.resources or {})
 
     if isinstance(spec, TeamLeaderSpec):
         effective_role = role
@@ -68,19 +81,21 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
     return row["agent_id"]
 
 
-def _set_workspace_director(workspace_id: str, director_agent_id: int):
-    """Lie le director au workspace."""
+def _set_workspace_director(workspace_id: str, team_name: str):
+    """Lie le workspace à l'équipe (team_name), pas à un agent particulier.
+    Le leader actuel est résolu dynamiquement par project.py."""
     try:
         from modules.sql.workspace import WorkspaceDB
         wdb = WorkspaceDB()
-        ws = wdb.workspaces.get(workspace_id)
-        if not ws:
+        ws_row = wdb.workspaces.get(workspace_id)
+        if not ws_row:
             wdb.workspaces.create(workspace_id, workspace_id,
-                                  description=f"Workspace for team", leader=leader_agent_id)
+                                  description=f"Workspace for {team_name}",
+                                  director=team_name)
         else:
             wdb.conn.execute(
                 "UPDATE workspaces SET director = ? WHERE workspace_id = ?",
-                (director_agent_id, workspace_id))
+                (team_name, workspace_id))
             wdb.conn.commit()
         wdb.close()
     except Exception:
@@ -117,7 +132,7 @@ class Team:
                 self.spec.team_leader, "team_leader", "continue",
                 team_name=self.spec.team_name)
             if self.spec.workspace_id:
-                _set_workspace_director(self.spec.workspace_id, self.team_leader_agent_id)
+                _set_workspace_director(self.spec.workspace_id, self.spec.team_name)
             self._seed_leader_workflow()
 
         # Members
@@ -129,28 +144,34 @@ class Team:
         self.status = "ready"
 
     def _seed_leader_workflow(self):
-        """Peuple le config_json du team_leader avec un workflow par défaut
-        qui distribue les requêtes à tous les membres de l'équipe."""
-        member_names = [m.agent_name for m in self.spec.members]
+        """Génère un workflow FSM pour le team_leader : appelle chaque
+        membre via `agent_call` séquentiellement. Les résultats sont
+        accessibles dans les variables `_member_0`, `_member_1`, ...
+
+        Le leader transmet le workspace_id (si présent) + la requête
+        originale aux workers, qui bouclent en greedy sur la file de
+        tâches du workspace.""" 
+        member_names = [f"{self.team_name}/{m.agent_name}" for m in self.spec.members]
         if not member_names or not self.team_leader_agent_id:
             return
 
-        workflow = {
-            "steps": [{
-                "type": "team_delegate",
-                "id": "scatter",
-                "members": member_names,
+        steps = []
+        for i, mname in enumerate(member_names):
+            step_id = f"call_{i}"
+            step_inputs = {"request": "{{request}}"}
+            if self.spec.workspace_id:
+                step_inputs["workspace_id"] = self.spec.workspace_id
+            steps.append({
+                "type": "agent_call",
+                "id": step_id,
+                "agent": mname,
                 "entrypoint": "main",
-                "inputs": {"request": "{{request}}"},
-                "assignment": "all_same",
-                "capture": {"results": "team_outputs"},
-                "next": "done",
-            }, {
-                "type": "final",
-                "id": "done",
-                "capture": {"content": "team_outputs"},
-            }]
-        }
+                "inputs": step_inputs,
+                "capture": {"content": f"_member_{i}"},
+                "next": "done" if i == len(member_names) - 1 else f"call_{i+1}",
+            })
+        steps.append({"type": "end", "id": "done", "status": "SUCCESS"})
+        workflow = {"steps": steps}
 
         db = _get_agent_db()
         db.conn.execute(
@@ -163,9 +184,8 @@ class Team:
     # ── Agent hydration helpers ─────────────────────────────────
 
     def _hydrate(self, agent_id: int):
-        from services.agent_manager.service import AgentManager
-        mgr = AgentManager(db=_get_agent_db())
-        return mgr.hydrate(agent_id)
+        from services.agent_manager.service import Agent
+        return Agent.hydrate(agent_id, db=_get_agent_db())
 
     def _chat_turn(self, agent_id: int, message: str, **kwargs) -> dict:
         agent = self._hydrate(agent_id)
@@ -188,10 +208,14 @@ class Team:
 
     def delegate(self, request: str, entrypoint: str = "main",
                  target: Optional[str] = None, **kwargs) -> dict:
-        """Délègue une requête à un membre. Si target est None et que le
-        team_leader existe, c'est le team_leader qui traite la requête."""
+        """Délègue une requête à un membre ou au team_leader.
+
+        Si target est None et que le team_leader existe, c'est le team_leader
+        qui traite la requête (scatter-gather via son workflow FSM)."""
         if target:
             aid = self.member_agent_ids.get(target)
+            if not aid and self.spec.team_leader and target == self.spec.team_leader.agent_name:
+                aid = self.team_leader_agent_id
             if not aid:
                 return {"status": "error", "error": f"membre inconnu: {target}"}
         elif self.team_leader_agent_id:
@@ -205,6 +229,8 @@ class Team:
         """Envoie un message de chat à un agent de l'équipe."""
         if target:
             aid = self.member_agent_ids.get(target)
+            if not aid and self.spec.team_leader and target == self.spec.team_leader.agent_name:
+                aid = self.team_leader_agent_id
             if not aid:
                 return {"status": "error", "error": f"membre inconnu: {target}"}
         elif self.team_leader_agent_id:
@@ -248,9 +274,50 @@ class Team:
 
     def _set_agent_status(self, agent_name: str, status: str):
         db = _get_agent_db()
+        scoped = f"{self.team_name}/{agent_name}" if self.team_name else agent_name
         db.conn.execute(
-            "UPDATE agents SET status = ? WHERE name = ?", (status, agent_name))
+            "UPDATE agents SET status = ? WHERE name = ?", (status, scoped))
         db.conn.commit()
+
+    # ── Dynamic member management ───────────────────────────────
+
+    def add_member(self, agent_name: str, role: str,
+                   occupation: str = "noncontinue",
+                   provider_ref: str = "", model_ref: str = "") -> dict:
+        """Ajoute un membre à l'équipe à chaud (BDD + runtime)."""
+        spec = TeamMemberSpec(
+            agent_name=agent_name,
+            role=role,
+            occupation=occupation,
+            provider_ref=provider_ref,
+            model_ref=model_ref,
+        )
+        aid = _ensure_agent_exists(spec, role, occupation,
+                                   team_name=self.spec.team_name)
+        self.member_agent_ids[agent_name] = aid
+        self._seed_leader_workflow()
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
+
+    def set_leader(self, agent_name: str, role: str,
+                   occupation: str = "continue",
+                   provider_ref: str = "", model_ref: str = "") -> dict:
+        """Définit ou remplace le team_leader à chaud."""
+        leader_spec = TeamLeaderSpec(
+            agent_name=agent_name,
+            role=role,
+            occupation=occupation,
+            workflow="orchestrate",
+            provider_ref=provider_ref,
+            model_ref=model_ref,
+        )
+        self.spec.team_leader = leader_spec
+        aid = _ensure_agent_exists(leader_spec, "team_leader", occupation,
+                                   team_name=self.spec.team_name)
+        self.team_leader_agent_id = aid
+        self._seed_leader_workflow()
+        if self.spec.workspace_id:
+            _set_workspace_director(self.spec.workspace_id, self.spec.team_name)
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
 
     # ── Status / Health ─────────────────────────────────────────
 
@@ -446,6 +513,24 @@ class TeamManager:
         if not team:
             return {"status": "error", "error": f"team inconnue: {team_name}"}
         return team.delegate(request, entrypoint=entrypoint, target=target, **kwargs)
+
+    def add_member(self, team_name: str, agent_name: str, role: str,
+                   occupation: str = "noncontinue",
+                   provider_ref: str = "", model_ref: str = "") -> dict:
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        return team.add_member(agent_name, role, occupation,
+                                provider_ref=provider_ref, model_ref=model_ref)
+
+    def set_leader(self, team_name: str, agent_name: str, role: str,
+                   occupation: str = "continue",
+                   provider_ref: str = "", model_ref: str = "") -> dict:
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        return team.set_leader(agent_name, role, occupation,
+                                provider_ref=provider_ref, model_ref=model_ref)
 
     def chat(self, team_name: str, message: str,
              target: Optional[str] = None, **kwargs) -> dict:

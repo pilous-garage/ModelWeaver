@@ -1,0 +1,61 @@
+name: workflow/autonomous@v1
+category: workflow
+description: >
+  Boucle LLM autonome avec signaux de sortie. Reçoit une requête,
+  active des bundles d'outils, et boucle LLM → tool_calls → exécution
+  jusqu'à réponse textuelle. Les signal_handlers déclenchent des actions
+  automatiques sur tool_finish.
+inputs:
+  request:
+    type: string
+    required: true
+  bundles:
+    type: array
+    items:
+      type: string
+    required: true
+  context:
+    type: string
+    required: false
+  max_loops:
+    type: integer
+    required: false
+    default: 30
+  grouping:
+    type: string
+    required: false
+    default: none
+  break_on_signals:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Signaux qui interrompent la boucle. tool_call.* ou tool_finish.*
+  break_on_counts:
+    type: object
+    required: false
+    description: Seuils de comptage. Ex: {"git.lite.commit": 5, "file.write_file.*": 10}
+  llm_timeout:
+    type: integer
+    required: false
+    description: Timeout (s) pour une réponse LLM
+  global_timeout:
+    type: integer
+    required: false
+    description: Timeout (s) pour toute la boucle autonome
+  provider_ref:
+    type: string
+    required: false
+  model_ref:
+    type: string
+    required: false
+outputs:
+  signal:
+    type: string
+  stdout:
+    type: string
+  exit_code:
+    type: int
+implementation:
+  type: python
+  function: workflow.autonomous.exec

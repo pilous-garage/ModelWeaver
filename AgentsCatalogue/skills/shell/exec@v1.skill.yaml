@@ -1,0 +1,20 @@
+name: shell/exec@v1
+category: shell
+description: Exécute une commande shell
+inputs:
+  command:
+    type: string
+    required: true
+    description: Commande à exécuter
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: int
+  continue_anyway:
+    type: bool
+implementation:
+  type: python
+  function: shell.skill.exec

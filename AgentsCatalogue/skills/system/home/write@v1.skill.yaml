@@ -1,0 +1,20 @@
+name: system/home/write@v1
+category: system
+description: Écrit un fichier dans le home de l'agent (borné par la racine home). Crée les dossiers nécessaires.
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du fichier
+  content:
+    type: string
+    required: true
+    description: Contenu à écrire
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+implementation:
+  type: python
+  function: file.ops.write_file

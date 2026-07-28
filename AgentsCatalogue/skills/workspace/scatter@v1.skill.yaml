@@ -1,0 +1,43 @@
+name: workspace/scatter@v1
+category: workspace
+description: Décompose une mission en tâches dans le workspace et notifie les workers
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  request:
+    type: string
+    required: false
+    description: Mission à décomposer en tâches (utilise LLM)
+  tasks:
+    type: array
+    required: false
+    description: Liste explicite de tâches [{title, description, priority}]
+  context:
+    type: string
+    required: false
+    description: Contexte additionnel pour la décomposition LLM
+  worker_names:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Noms des workers à réveiller après création des tâches
+  provider_ref:
+    type: string
+    required: false
+    description: Provider LLM pour la décomposition
+  model_ref:
+    type: string
+    required: false
+    description: Modèle LLM pour la décomposition
+outputs:
+  ok:
+    type: boolean
+  task_ids:
+    type: array
+  count:
+    type: integer
+implementation:
+  type: python
+  function: workspace.scatter.exec

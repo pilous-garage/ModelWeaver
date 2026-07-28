@@ -6,7 +6,7 @@ collabore pour coder un mini-jeu, avec le modèle de collaboration :
 
   - Dépôt central BARE (source de vérité) : mw_home()/repos/{project}.git
   - Chaque agent CLONE le dépôt dans son workspace perso
-    (memagent/{agent}/workspace/{project}) : le travail versionné vit LÀ.
+    (agent_home/{agent}/workspace/{project}) : le travail versionné vit LÀ.
     Les dossiers privés (perso/ ctx/ mem/ history/) restent hors du clone.
   - Réseau 1 (1:1)  : message_send / message_recv (inbox par agent)
   - Réseau 2 (N:N)  : chatroom_post / chatroom_read (comms/{chatroom_id})
@@ -281,7 +281,7 @@ def main():
 
     # clones agents (au cas où un run précédent aurait laissé des restes)
     for aid in (mgr, ana, w1, w2):
-        p = mw_home() / "memagent" / str(aid) / "workspace" / PROJECT_ID
+        p = mw_home() / "agent_home" / str(aid) / "workspace" / PROJECT_ID
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
     cleanup_disk()
@@ -297,7 +297,7 @@ def main():
     check("manager assign OK", ok_status(r), str(r)[:200])
     bare = mw_home() / "repos" / f"{PROJECT_ID}.git"
     check("dépôt central bare créé", bare.exists(), str(bare))
-    mgr_clone = mw_home() / "memagent" / str(mgr) / "workspace" / PROJECT_ID
+    mgr_clone = mw_home() / "agent_home" / str(mgr) / "workspace" / PROJECT_ID
     check("clone manager dans workspace perso", (mgr_clone / ".git").exists(),
           str(mgr_clone))
     check("ROADMAP.md dans le clone", (mgr_clone / "ROADMAP.md").exists())
@@ -310,7 +310,7 @@ def main():
     print("\n=== 2. Analyst : clone + spec ===")
     r = run(mw, PREFIX + "analyst", "spec")
     check("analyst spec OK", ok_status(r), str(r)[:200])
-    ana_clone = mw_home() / "memagent" / str(ana) / "workspace" / PROJECT_ID
+    ana_clone = mw_home() / "agent_home" / str(ana) / "workspace" / PROJECT_ID
     check("docs/SPEC.md dans le clone analyst", (ana_clone / "docs" / "SPEC.md").exists())
 
     print("\n=== 3-4. Workers : clone + branche + push ===")

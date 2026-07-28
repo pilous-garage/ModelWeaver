@@ -81,6 +81,24 @@ RECOMMENDATIONS = {
     ],
 }
 
+# ── Pré-requis par use_case ───────────────────────────────────
+USE_CASE_REQUIREMENTS = {
+    "coding":    {"features": ["function_calling", "chat"]},
+    "chat":      {"features": ["chat"]},
+    "simple":    {"features": []},  # tout modèle fait l'affaire
+    "writing":   {"features": ["chat"]},
+    "analysis":  {"features": ["chat"]},
+    "embedding": {"features": ["embedding"]},
+}
+
+
+# ── Modèles de confiance (testés en priorité) ──────────────────
+TRUSTED_MODELS = [
+    "nvidia/stepfun-ai/step-3.7-flash",
+    "groq/llama-3.3-70b-versatile",
+    "groq/llama-3.1-8b-instant",
+]
+
 
 class LLMManager:
     """Gestionnaire de catalogue LLM : consultation et recommandation."""
@@ -185,6 +203,17 @@ class LLMManager:
         providers = [p for p in bridge.list_available_providers()
                      if p.get("available")]
         candidates = []
+
+        # Ajouter les modèles de confiance en premier
+        for tref in TRUSTED_MODELS:
+            parts = tref.split("/", 1)
+            prov = parts[0]
+            model = parts[1] if len(parts) > 1 else tref
+            if prov in excl_p or tref in excl_m:
+                continue
+            candidates.append({"provider_ref": prov, "model_ref": tref, "use_case": use_case})
+
+        # Puis les autres modèles du catalogue
         for p in providers:
             if p["ref"] in excl_p:
                 continue
@@ -192,22 +221,55 @@ class LLMManager:
                 models = bridge.list_available_models(p["ref"])
             except Exception:
                 continue
-            for m in models:
-                status = m.get("status")
-                if status in ("inactive", "deprecated", "disabled"):
-                    continue
+            for m in models[:max_candidates]:
                 if m["ref"] in excl_m:
                     continue
+                req = USE_CASE_REQUIREMENTS.get(use_case, {})
+                required_features = req.get("features", [])
+                if required_features:
+                    skip_prefixes = ("babbage", "davinci", "curie", "ada", "text-")
+                    if any(m["ref"].startswith(p) for p in skip_prefixes):
+                        continue
+                    if "function_calling" in required_features:
+                        no_fc = ("gemini-2.0-flash-lite", "gemini-2.0-flash-thinking")
+                        if any(nf in m["ref"] for nf in no_fc):
+                            continue
                 candidates.append({"provider_ref": p["ref"],
                                    "model_ref": m["ref"],
                                    "use_case": use_case})
-                if len(candidates) >= max_candidates:
+                if len(candidates) >= max_candidates * len(providers):
                     break
-            if len(candidates) >= max_candidates:
+            if len(candidates) >= max_candidates * len(providers):
                 break
-        if not candidates:
-            return None
-        return candidates[0]
+
+        # Health check : tester chaque provider jusqu'à en trouver un qui répond
+        for c in candidates:
+            req = USE_CASE_REQUIREMENTS.get(use_case, {})
+            needs_fc = "function_calling" in req.get("features", [])
+            try:
+                if needs_fc:
+                    r = bridge.chat(c["provider_ref"], c["model_ref"],
+                        [{"role": "user", "content": "Call test.echo with x=hello"}],
+                        tools=[{
+                            "type": "function",
+                            "function": {
+                                "name": "test.echo",
+                                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}
+                            }
+                        }],
+                        max_tokens=50, temperature=0)
+                else:
+                    r = bridge.chat(c["provider_ref"], c["model_ref"],
+                        [{"role": "user", "content": "ok"}],
+                        max_tokens=1, temperature=0)
+                if r and (r.content is not None or getattr(r, "tool_calls", None)):
+                    return c
+            except Exception:
+                bridge._mark_model_unavailable(c["provider_ref"], c["model_ref"],
+                                               "health check failed")
+                continue
+
+        return None
 
 
 # ── Seed helpers ──────────────────────────────────────────────

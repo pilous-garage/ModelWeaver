@@ -1,0 +1,11 @@
+name: system/home/mounts@v1
+category: system
+description: "Liste tous les points de montage disponibles pour cet agent avec leurs options (read_only, type)."
+inputs: {}
+outputs:
+  mounts:
+    type: object
+    description: "Dictionnaire nom -> {target, read_only, type, description, exists, is_dir}"
+implementation:
+  type: python
+  function: system.home.list_mounts

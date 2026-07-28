@@ -1,0 +1,23 @@
+name: system/home/mount_ls@v1
+category: system
+description: "Liste les fichiers et dossiers d'un montage (borné à la racine du montage). Equivalent d'un ls dans un disque monté virtuel."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: "Nom du montage (ex: leader_workspace, project_42). Vide = home direct"
+  path:
+    type: string
+    required: false
+    default: ""
+    description: Chemin relatif dans le montage
+outputs:
+  entries:
+    type: array
+    description: Liste des entrées (name, type, size)
+  path:
+    type: string
+implementation:
+  type: python
+  function: system.home.ls

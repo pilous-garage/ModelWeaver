@@ -1,0 +1,19 @@
+name: system/bundle/get@v1
+category: system
+description: "Retourne la liste des skills d'un bundle spécifique."
+inputs:
+  name:
+    type: string
+    required: true
+    description: Nom du bundle
+outputs:
+  name:
+    type: string
+  skills:
+    type: array
+    description: Liste des références qualifiées des skills
+  count:
+    type: integer
+implementation:
+  type: python
+  function: system.home.get_bundle

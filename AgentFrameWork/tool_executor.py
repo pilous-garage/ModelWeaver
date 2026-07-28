@@ -13,8 +13,8 @@ logger = logging.getLogger("modelweaver.tool_executor")
 class ToolExecutor:
     """Exécute des outils système sécurisés."""
 
-    def __init__(self, workspace_root: str):
-        self.workspace_root = workspace_root
+    def __init__(self, home_root: str):
+        self.home_root = home_root
 
     def execute(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Dispatch vers la fonction outil correspondante."""
@@ -47,7 +47,7 @@ class ToolExecutor:
         from services.sandbox import Sandbox, SandboxError
         try:
             stdout, stderr, rc = Sandbox().run(
-                command, cwd=self.workspace_root, timeout=30
+                command, cwd=self.home_root, timeout=30
             )
             out = f"STDOUT:\n{stdout}"
             if stderr:
@@ -64,8 +64,8 @@ class ToolExecutor:
         if normalized.startswith("..") or normalized.startswith("/"):
             normalized = normalized.lstrip("/")
         
-        full_path = os.path.join(self.workspace_root, normalized)
-        if not full_path.startswith(os.path.abspath(self.workspace_root)):
+        full_path = os.path.join(self.home_root, normalized)
+        if not full_path.startswith(os.path.abspath(self.home_root)):
             raise PermissionError("Accès refusé : Tentative de sortir du workspace.")
         
         return full_path

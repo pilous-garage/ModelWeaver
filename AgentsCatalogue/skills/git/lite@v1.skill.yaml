@@ -1,0 +1,29 @@
+name: git/lite@v1
+category: git
+description: Git distribué (origin local + upstream distant)
+inputs:
+  action:
+    type: string
+    required: true
+    description: status | diff | log | branch | add | commit | pull | push | pr-create | pr-list | pr-accept | pr-reject | cloud-sync | cloud-init
+  branch:
+    type: string
+    required: false
+  message:
+    type: string
+    required: false
+  paths:
+    type: array
+    items:
+      type: string
+    required: false
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: int
+implementation:
+  type: python
+  function: git.lite.exec

@@ -11,7 +11,7 @@ from services._common import mw_home
 
 
 def _agent_clone(agent_id: str, project_id: str) -> Path:
-    return (mw_home() / "memagent" / str(agent_id)
+    return (mw_home() / "agent_home" / str(agent_id)
             / "workspace" / str(project_id))
 
 
@@ -26,7 +26,7 @@ def _safe_under(root: Path, path: str) -> Path:
     return full
 
 
-def project_write(inputs: dict, ws: str) -> dict:
+def project_write(inputs: dict, home: str) -> dict:
     pid = inputs.get("project_id", "")
     aid = inputs.get("agent_id", "")
     path = inputs.get("path", "")
@@ -42,7 +42,7 @@ def project_write(inputs: dict, ws: str) -> dict:
     return {"ok": True, "path": str(full)}
 
 
-def project_read(inputs: dict, ws: str) -> dict:
+def project_read(inputs: dict, home: str) -> dict:
     pid = inputs.get("project_id", "")
     aid = inputs.get("agent_id", "")
     path = inputs.get("path", "")
@@ -55,7 +55,7 @@ def project_read(inputs: dict, ws: str) -> dict:
     return {"content": full.read_text(encoding="utf-8")}
 
 
-def project_list(inputs: dict, ws: str) -> dict:
+def project_list(inputs: dict, home: str) -> dict:
     pid = inputs.get("project_id", "")
     aid = inputs.get("agent_id", "")
     path = inputs.get("path", "")
@@ -69,7 +69,7 @@ def project_list(inputs: dict, ws: str) -> dict:
                        for p in sorted(full.iterdir())]}
 
 
-def project_tree(inputs: dict, ws: str) -> dict:
+def project_tree(inputs: dict, home: str) -> dict:
     pid = inputs.get("project_id", "")
     aid = inputs.get("agent_id", "")
     if not pid or not aid:

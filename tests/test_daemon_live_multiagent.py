@@ -193,7 +193,7 @@ def cleanup_disk():
     p = mw_home() / "repos" / f"{PROJECT_ID}.git"
     if p.exists():
         shutil.rmtree(p, ignore_errors=True)
-    for d in (mw_home() / "memagent").glob(f"{PREFIX}*"):
+    for d in (mw_home() / "agent_home").glob(f"{PREFIX}*"):
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -254,7 +254,7 @@ def main():
     check("manager setup OK", ok)
     bare = mw_home() / "repos" / f"{PROJECT_ID}.git"
     check("dépôt central bare créé", bare.exists())
-    mgr_clone = mw_home() / "memagent" / str(mgr) / "workspace" / PROJECT_ID
+    mgr_clone = mw_home() / "agent_home" / str(mgr) / "workspace" / PROJECT_ID
     check("clone manager + ROADMAP.md", (mgr_clone / "ROADMAP.md").exists())
 
     print("\n=== 2. Worker1 : src/logic.py (LLM) ===")
@@ -262,21 +262,21 @@ def main():
     check("worker1 OK", ok)
     check("src/logic.py livré (LLM)",
           (mgr_clone / "src" / "logic.py").exists() or
-          (mw_home() / "memagent" / str(w1) / "workspace" / PROJECT_ID
+          (mw_home() / "agent_home" / str(w1) / "workspace" / PROJECT_ID
            / "src" / "logic.py").exists())
 
     print("\n=== 3. Worker2 : src/ui.py (LLM) ===")
     ok, _ = run(mw, PREFIX + "worker2", "go", t0)
     check("worker2 OK", ok)
     check("src/ui.py livré (LLM)",
-          (mw_home() / "memagent" / str(w2) / "workspace" / PROJECT_ID
+          (mw_home() / "agent_home" / str(w2) / "workspace" / PROJECT_ID
            / "src" / "ui.py").exists())
 
     print("\n=== 4. Analyst : docs/SPEC.md (LLM) + branche ===")
     ok, _ = run(mw, PREFIX + "analyst", "spec", t0)
     check("analyst spec OK", ok)
     check("docs/SPEC.md livré (LLM)",
-          (mw_home() / "memagent" / str(ana) / "workspace" / PROJECT_ID
+          (mw_home() / "agent_home" / str(ana) / "workspace" / PROJECT_ID
            / "docs" / "SPEC.md").exists())
 
     print("\n=== 5. Manager : merge 3 branches + src/main.py (LLM) ===")

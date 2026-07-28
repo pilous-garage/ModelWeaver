@@ -1,19 +1,18 @@
 name: file/write_file@v1
 category: file
-description: Écrit du contenu dans un fichier du workspace
+description: "Écrase un fichier dans le home de l'agent avec du nouveau contenu (boundé par safe_path — ne peut pas sortir du home). Préférez patch_file pour modifier une partie spécifique."
 inputs:
   path:
     type: string
     required: true
-    description: Chemin relatif au workspace
+    description: Chemin relatif au home de l'agent
   content:
     type: string
     required: true
-    description: Contenu à écrire
+    description: Contenu complet à écrire (écrase l'existant)
 outputs:
   result:
     type: string
-    description: Message de confirmation
 implementation:
   type: python
   function: file.ops.write_file

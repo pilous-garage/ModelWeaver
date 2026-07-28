@@ -51,7 +51,7 @@ class Worker:
         self.db_conn = db_conn
         self.pipeline_executor = PipelineExecutor()
         # On initialise le ToolExecutor avec le root du projet
-        self.tool_executor = ToolExecutor(workspace_root=os.getcwd())
+        self.tool_executor = ToolExecutor(home_root=os.getcwd())
 
     def load_api_key(self, model_provider_id: int) -> Optional[str]:
         if not model_provider_id or not self.api_keys_repo:

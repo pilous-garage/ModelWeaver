@@ -7,6 +7,7 @@ export { AgentsPanel } from './AgentsPanel.tsx';
 export { ResourcesPanel } from './ResourcesPanel.tsx';
 export { SystemStatePanel } from './SystemStatePanel.tsx';
 export { AgentMonitoringPanel } from './AgentMonitoringPanel.tsx';
+export { TeamCompositionPanel } from './TeamCompositionPanel.tsx';
 export { ChatPanel } from './ChatPanel.tsx';
 export { CataloguePanel } from './CataloguePanel.tsx';
 export { KeysPanel } from './KeysPanel.tsx';

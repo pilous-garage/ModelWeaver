@@ -1,6 +1,6 @@
 """AgentStorage — Espace disque proprio par agent (V0.6.8).
 
-Chaque agent reçoit un dossier `mw_home()/memagent/{agent_id}/` avec :
+Chaque agent reçoit un dossier `mw_home()/agent_home/{agent_id}/` avec :
   - mem/     : mémoire long-terme (fichiers, notes, apprentissages)
   - ctx/     : contexte (system prompt, personnalité, préférences)
   - history/ : historiques de chat/exécution (fichiers, logs)
@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Dict, Optional, Union
 
 
-MEMAGENT_DEFAULT_QUOTA = 10 * 1024 * 1024       # 10 Mo
-MEMAGENT_MAX_QUOTA = 10 * 1024 * 1024 * 1024     # 10 Go (docker)
+AGENT_HOME_DEFAULT_QUOTA = 10 * 1024 * 1024       # 10 Mo
+AGENT_HOME_MAX_QUOTA = 10 * 1024 * 1024 * 1024     # 10 Go (docker)
 SUBDIRS = ("mem", "ctx", "history", "work", "important", "perso")
 
 
@@ -66,11 +66,11 @@ class AgentStorage:
 
     @property
     def max_bytes(self) -> int:
-        return self._cfg.get("max_bytes", MEMAGENT_DEFAULT_QUOTA)
+        return self._cfg.get("max_bytes", AGENT_HOME_DEFAULT_QUOTA)
 
     @max_bytes.setter
     def max_bytes(self, value: int):
-        self._cfg["max_bytes"] = min(value, MEMAGENT_MAX_QUOTA)
+        self._cfg["max_bytes"] = min(value, AGENT_HOME_MAX_QUOTA)
         self._save_config()
 
     @property
@@ -199,7 +199,7 @@ class AgentStorage:
 
     def _resolve_root(self) -> Path:
         from services._common import mw_home
-        return mw_home() / "memagent" / str(self.agent_id)
+        return mw_home() / "agent_home" / str(self.agent_id)
 
     def _load_config(self) -> dict:
         row = self.conn.execute(
@@ -214,7 +214,7 @@ class AgentStorage:
             except (json.JSONDecodeError, TypeError):
                 pass
         return {
-            "max_bytes": MEMAGENT_DEFAULT_QUOTA,
+            "max_bytes": AGENT_HOME_DEFAULT_QUOTA,
             "used_bytes_cache": 0,
         }
 
@@ -229,6 +229,6 @@ class AgentStorage:
 # ── helpers ──
 
 def agent_storage_root() -> Path:
-    """Racine de tous les dossiers agent (mw_home()/memagent)."""
+    """Racine de tous les dossiers agent (mw_home()/agent_home)."""
     from services._common import mw_home
-    return mw_home() / "memagent"
+    return mw_home() / "agent_home"

@@ -21,6 +21,7 @@ class Onboarder:
             (r"COHERE_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "cohere", "free", None),
             (r"DEEPSEEK_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "deepseek", "paid", None),
             (r"OPENROUTER_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "openrouter", "paid", None),
+            (r"HUGGINGFACE_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "huggingface", "free", None),
             (r"OPENCODE_ZEN_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "opencode-zen", "paid", None),
         ]
 

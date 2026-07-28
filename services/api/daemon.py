@@ -544,6 +544,19 @@ def serve(port: int = 8770) -> None:
         _get_km().load()
     except Exception as e:
         log.warning("Keyring indisponible", error=str(e))
+
+    # Onboarder : import automatique des clés API depuis .env dans le KeyManager.
+    # Les providers déjà présents (keyring) ne sont pas écrasés.
+    try:
+        from modules.key_manager.onboarder import Onboarder
+        env_path = _REPO_ROOT / ".env"
+        if env_path.exists():
+            count = Onboarder(_get_km()).onboard_from_env(env_path)
+            if count:
+                log.info("Clés .env onboardées dans KeyManager", count=count)
+    except Exception as e:
+        log.warning("Onboarder .env échoué", error=str(e))
+
     # busy_timeout 30s pour les opérations concurrentes en arrière-plan
     mw_singleton.conn.execute("PRAGMA busy_timeout = 30000")
 

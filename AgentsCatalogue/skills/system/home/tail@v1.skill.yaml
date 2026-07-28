@@ -1,0 +1,34 @@
+name: system/home/tail@v1
+category: system
+description: "Affiche les N dernières lignes d'un fichier (style tail -n). Borné au home."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: Nom du montage (vide = home direct)
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du fichier
+  n:
+    type: integer
+    required: false
+    default: 10
+    description: "Nombre de lignes à afficher (défaut: 10)"
+outputs:
+  path:
+    type: string
+  lines:
+    type: array
+    description: "Liste de {line, content}"
+  total_shown:
+    type: integer
+  total_lines:
+    type: integer
+    description: Nombre total de lignes dans le fichier
+  n:
+    type: integer
+implementation:
+  type: python
+  function: system.home.tail

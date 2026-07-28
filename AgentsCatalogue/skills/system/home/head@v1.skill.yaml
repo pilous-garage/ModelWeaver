@@ -1,0 +1,29 @@
+name: system/home/head@v1
+category: system
+description: "Affiche les N premières lignes d'un fichier (style head -n). Borné au home."
+inputs:
+  mount:
+    type: string
+    required: false
+    default: ""
+    description: Nom du montage (vide = home direct)
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du fichier
+  n:
+    type: integer
+    required: false
+    default: 10
+    description: "Nombre de lignes à afficher (défaut: 10)"
+outputs:
+  path:
+    type: string
+  lines:
+    type: array
+    description: "Liste de {line, content}"
+  total_shown:
+    type: integer
+implementation:
+  type: python
+  function: system.home.head

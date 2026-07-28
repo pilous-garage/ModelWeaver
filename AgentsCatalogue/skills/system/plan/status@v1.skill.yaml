@@ -1,0 +1,20 @@
+name: system/plan/status@v1
+category: system
+description: "Renvoie un résumé des résultats d'un plan pour que le LLM décide s'il faut continuer, réessayer, ou terminer."
+inputs:
+  results:
+    type: array
+    required: true
+    description: "Liste des résultats retournés par plan.execute"
+outputs:
+  status:
+    type: string
+    description: "all_ok | all_failed | partial_errors | empty"
+  steps:
+    type: integer
+  errors:
+    type: array
+    description: "Liste des messages d'erreur (si applicable)"
+implementation:
+  type: python
+  function: system.planner.plan_status

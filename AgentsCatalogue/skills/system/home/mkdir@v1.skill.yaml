@@ -1,0 +1,17 @@
+name: system/home/mkdir@v1
+category: system
+description: Crée un dossier dans le home de l'agent (borné par la racine home).
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif du dossier à créer (peut être imbriqué avec /)
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+    description: Chemin créé (relatif au home)
+implementation:
+  type: python
+  function: file.ops.mkdir

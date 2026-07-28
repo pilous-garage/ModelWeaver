@@ -6,7 +6,7 @@ Migrée depuis services/skill_manager.py (_exec_sleep).
 import time
 
 
-def sleep(inputs: dict, ws: str) -> dict:
+def sleep(inputs: dict, home: str) -> dict:
     seconds = float(inputs.get("seconds", 0))
     if seconds < 0:
         seconds = 0

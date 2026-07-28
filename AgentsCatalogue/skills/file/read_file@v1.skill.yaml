@@ -1,11 +1,11 @@
 name: file/read_file@v1
 category: file
-description: Lit le contenu d'un fichier dans le workspace
+description: Lit un fichier (chemin relatif au home, borné safe_path)
 inputs:
   path:
     type: string
     required: true
-    description: Chemin relatif au workspace
+    description: Chemin relatif au home de l'agent
 outputs:
   content:
     type: string

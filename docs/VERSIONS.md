@@ -380,8 +380,8 @@ PAS hardcodées au démarrage mais dérivées à chaque requête de
   et un modèle spécifiques.
 - **Tests de rôles** : chat de test direct depuis l'éditeur.
 
-### V0.6.8 — Stockage disque propriétaire par agent (memagent) ✅
-Chaque agent reçoit un dossier dédié `mw_home()/memagent/{agent_id}/` avec
+### V0.6.8 — Stockage disque propriétaire par agent (agent_home) ✅
+Chaque agent reçoit un dossier dédié `mw_home()/agent_home/{agent_id}/` avec
 quota soft, workspace RW complet, et escalade au gestionnaire de ressources
 (demande d'augmentation → approbation utilisateur).
 
@@ -514,7 +514,7 @@ un **processus dédié** distinct du gateway REST :
 ### V0.6.16 — Agent memory skills ✅
 
 - **Skills `system/memory_write@v1` / `system/memory_read@v1`** : persistance
-  JSON dans `mw_home()/memagent/{agent_id}/mem/{namespace}/{key}.json`.
+  JSON dans `mw_home()/agent_home/{agent_id}/mem/{namespace}/{key}.json`.
   Espaces de noms + clés (caractères sûrs). Les hooks de cycle de vie
   injectent `agent_id` automatiquement.
 - Handlers `_exec_memory_write` / `_exec_memory_read` dans `SkillManager`.
@@ -546,7 +546,7 @@ un **processus dédié** distinct du gateway REST :
 
 ### V0.6.19 — Skills système étendus + FsAuthManager + home agents ✅
 
-- **Home agent = `mw_home()/memagent/{agent_id}/`** avec 5 sous-espaces :
+- **Home agent = `mw_home()/agent_home/{agent_id}/`** avec 5 sous-espaces :
   `work/` (défaut RW), `important/` (fichiers clés, envoyés à chaque contexte),
   `mem/`, `ctx/`, `history/`. `important/` ajouté à `AgentStorage.SUBDIRS`.
 - **Adressage relatif** : skills fichiers résolus sous le home (anti-traversée).
@@ -629,7 +629,7 @@ communication sont **hors** du versionnement.
   `services/skill_manager.py`) :
   - **Dépôt central BARE** : `mw_home()/repos/{project_id}.git` — source de
     vérité partagée.
-  - **Clone par agent** : `mw_home()/memagent/{agent_id}/workspace/{project_id}`
+  - **Clone par agent** : `mw_home()/agent_home/{agent_id}/workspace/{project_id}`
     — le travail **versionné** vit ici (fichiers projet + `important/`). Les
     dossiers **privés** (`perso/`, `ctx/`, `mem/`, `history/`) restent hors du
     clone → jamais versionnés.
@@ -782,7 +782,7 @@ rendre le framework observable panneau par panneau pendant un live test.
 - Backend : `catalogue_api.py` (22 routes), `catalogue_agents.py` (agents list/get/save/delete + inline), routes `lib/list|resolve|scan` (daemon).
 - GUI : `AgentSandboxIDE.tsx` (5 onglets skills/behaviors/personalities/roles/agents), `useSandbox.ts` (crud + inline), bouton delete masqué sur skills.
 - Migration 12 rôles → agents complets + rôles purs (classification). Agent normal (refs) vs inline (self-contained, FSM lit `.inline.yaml`).
-- `SkillManager.call` : support `implementation.code` (fonction `run(inputs, ws)`), résolution via registre `AgentsCatalogue/lib`.
+- `SkillManager.call` : support `implementation.code` (fonction `run(inputs, home)`), résolution via registre `AgentsCatalogue/lib`.
 
 ### V0.7.2 — Migration skills 64 → lib + éditeur maison ✅
 
@@ -1058,8 +1058,88 @@ Stratégies d'allocation dynamique de modèles LLM.
 - `services/api/handlers/llm_allocation.py` : NOUVEAU (route handler)
 - `services/api/handlers/__init__.py` : import llm_allocation ajouté
 
-## V1.0 — Release Stable (🎯 Objectif)
-**Objectif** : Version publique distribuable, stable et documentée.
+## V0.8.5 — Shell Interne pour Agents LLM 🐚 (🚧 En cours)
+**Objectif** : Module shell interne pour agents LLM, portable multi-plateforme, avec VFS borné, built-ins natifs, fallback whitelisté et persistance de sessions.
+
+### Architecture
+Approche **lib_système** (pas de switch/case par plateforme) — chaque commande système a un module Python dans `lib_système/` qui est chargé dynamiquement. Le traducteur de commandes (Unix ↔ Windows) est centralisé dans `ShellAuth.translate()` avec mappage par OS.
+
+### Nouveau module `AgentsCatalogue/lib/shell/`
+- `shell.py` — `Shell` classe principale avec machine à états (`created → open → running → suspended → closed/error`)
+- `log.py` — `ShellLog` : trace rotative persistante en JSON dans `{agent_home}/shells/{session_id}/state.json`
+- `auth.py` — `ShellAuth` : bornes VFS (VFSPathError), whitelist commandes, traduction système Unix↔Windows, `load_system_lib()` pour charger dynamiquement les lib_système
+- `executor.py` — lexer, pipelines (`|`), redirections (`>`, `>>`, `<`), dispatch built-in → fallback `execvp`
+- `builtins/` : registre dynamique de commandes intégrées (portables, pas d'appel système)
+  - `cd`, `echo`, `pwd`, `ls`, `read`, `write`
+- `lib_système/` : bibliothèques commandes système multi-plateforme
+  - `grep.py` → `grep` (Unix) / `findstr` (Windows)
+  - Pattern : `{cmd}.py` avec fonction `execute(args, stdin, workdir) -> dict` + loader dynamique via `importlib.util`
+
+### Fonctionnalités
+- Exécution de commandes shell dans VFS borné (home + montages autorisés)
+- Fallback sur commandes système via whitelist (`ALLOWED_SYSTEM_COMMANDS`)
+- Persistance JSON : reprise de session shell après redémarrage
+- `get_shell()` / `list_shells()` — factory et introspection
+- Builtins `read` et `write` pour opérations fichier VFS-native (pas besoin de subprocess)
+
+### En cours / À suivre
+- Enrichir les builtins (~30 commandes style Ubuntu)
+- Ajouter plus de lib_système (cat, head, tail, wc, find, sed, awk… via Python natif)
+- Intégrer les montages VFS dynamiques dans Auth
+- Tests unitaires et E2E du shell module
+
+## V0.8.6 — Agent Shell + Tool Calling + Agents v2 🚀 (Livrée)
+
+### Shell interne enrichi
+- 35+ builtins : sed, awk, chmod, chown, ln, alias, unalias, jobs, fg, bg, source, history
+- Lexer complet : quoting (' et "), expansion $VAR/${VAR}/$$, command substitution $(), globbing *.py
+- `$?` — tracking du dernier exit_code, `!n` — re-execution historique
+- Redirections VFS-aware, pipelines, job control (&), expansion de variables
+- Environnement isolé par shell (export/unset), persistance env dans log
+- Mode interactif (REPL) via `InteractiveShell`
+
+### Tool calling LLM
+- `ChatResponse.tool_calls` — extraction des tool_calls du LLM
+- Boucle autonome `workflow/autonomous@v1` : LLM → tool_calls → exécution → LLM → ...
+- Signaux : `tool_call` (pré-exécution), `tool_finish` (post-exécution), `break_on_signals`, `break_on_counts`
+- Timeouts : `llm_timeout`, `global_timeout`
+- `assign_llm()` avec health check automatique, fallback entre providers, `_mark_model_unavailable`
+- Table `USE_CASE_REQUIREMENTS` : filtrage par capacité (function_calling, chat, etc.)
+- `TRUSTED_MODELS` : modèles de confiance testés en priorité
+- `_inject_env()` : injection des clés API dans l'environnement pour litellm
+
+### Bundles + Agents v2
+- Système de bundles : `dev`, `workflow`, `management` (YAML + résolveur)
+- `workspace/scatter@v1` : décompose une mission en tâches (LLM ou explicite)
+- `git/lite@v1` : git distribué (origin local + upstream distant), PRs, cloud-sync
+- `agent/signal_send@v1` : signaux inter-agents (wakeup, sleep, kill)
+- `workflow/autonomous@v1` : boucle LLM autonome avec bundles de skills
+- Agents v2 simplifiés : `worker@v2` (25 lignes), `manager@v2` (25 lignes)
+
+### Agent Manager
+- Wake/sleep : signaux `wakeup`/`sleep`, `tick()` réveille les endormis
+- Limites : `MAX_THREAD_AGENTS=100`, `MAX_TOTAL_AGENT_DISK_GB=10`, `MIN_DISK_FREE_GB=1`
+- `TICK_INTERVAL=1`
+- CHECK constraint SQL supprimée sur agent_signals (validation Python)
+
+### Tests
+- 97 tests unitaires shell
+- Test E2E sans LLM (Todo CLI, 3 workers, merge avec conflit) ✅
+- Test E2E avec LLM (scatter groq → 8 tâches, workers NVIDIA) ✅
+- `_chat_with_tools` validé avec mocks (break_on_signals, timeout, fallback)
+
+### Fichiers créés
+- `AgentsCatalogue/lib/shell/` (module complet : shell, lexer, executor, auth, log, tracker, tool, interactive, 35+ builtins)
+- `AgentsCatalogue/lib/workflow/` (autonomous.py, bundles.py)
+- `AgentsCatalogue/lib/workspace/scatter.py`
+- `AgentsCatalogue/lib/git/lite.py`
+- `AgentsCatalogue/lib/agent/signal_send.py`
+- `AgentsCatalogue/skills/` (shell, git, workflow, agent, workspace scatter)
+- `AgentsCatalogue/bundles/` (dev, workflow, management)
+- `AgentsCatalogue/agents/worker@v2, manager@v2`
+- `services/agent_shell_manager.py`
+
+
 
 - Tests E2E complets
 - Portabilité Windows (via v0.10)

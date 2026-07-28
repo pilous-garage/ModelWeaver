@@ -1,0 +1,27 @@
+name: system/home/patch@v1
+category: system
+description: "Remplace une chaîne exacte dans un fichier (style OpenCode edit). Le LLM lit le fichier avec read_range, identifie old_string, et propose new_string. Remplacement unique (la 1ère occurrence seulement). Chemin borné au home de l'agent."
+inputs:
+  path:
+    type: string
+    required: true
+    description: Chemin relatif au home de l'agent
+  old_string:
+    type: string
+    required: true
+    description: Texte exact à remplacer (doit correspondre au caractère près)
+  new_string:
+    type: string
+    required: true
+    description: Texte de remplacement
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+  error:
+    type: string
+    description: Message d'erreur si old_string non trouvé
+implementation:
+  type: python
+  function: file.ops.patch_file

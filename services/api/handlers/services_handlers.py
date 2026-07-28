@@ -100,6 +100,30 @@ def _service_command(name: str, action: str):
         return {"status": "error", "error": str(e)}
 
 
+def op_service_start(params):
+    name = params.get("name", "")
+    svc = _mgr.get(name)
+    if svc:
+        svc.start()
+        return {"status": "ok", "action": "start", "name": name}
+    try:
+        db = runtime_db_path()
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT command, args, mode FROM services WHERE name=? AND status='stopped'",
+            (name,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return {"status": "error", "error": "service introuvable ou non arrêté"}
+        return op_service_register({
+            "name": name, "command": row["command"], "args": row["args"], "mode": row["mode"],
+        })
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def op_service_restart(params):
     name = params.get("name", "")
     svc = _mgr.get(name)
@@ -265,6 +289,7 @@ def op_service_routes(params):
 register("service/list",       op_service_list)
 register("service/get",        op_service_get)
 register("service/routes",     op_service_routes)
+register("service/start",      op_service_start)
 register("service/restart",    op_service_restart)
 register("service/stop",       op_service_stop)
 register("service/register",   op_service_register)

@@ -4,7 +4,7 @@ Migrée depuis services/skill_manager.py (_exec_optimize_context).
 """
 
 
-def optimize(inputs: dict, ws: str) -> dict:
+def optimize(inputs: dict, home: str) -> dict:
     messages = list(inputs.get("messages", []))
     max_chars = int(inputs.get("max_chars", 50000))
     budget = inputs.get("budget_remaining")
@@ -30,7 +30,7 @@ def optimize(inputs: dict, ws: str) -> dict:
     return {"messages": kept, "compression_ratio": ratio}
 
 
-def reset_context(inputs: dict, ws: str) -> dict:
+def reset_context(inputs: dict, home: str) -> dict:
     messages = inputs.get("messages", [])
     clear = inputs.get("clear", False)
     keep_system = inputs.get("keep_system", True)
@@ -43,7 +43,7 @@ def reset_context(inputs: dict, ws: str) -> dict:
     return {"messages": kept, "cleared": len(kept) < len(messages), "kept": len(kept)}
 
 
-def add_context(inputs: dict, ws: str) -> dict:
+def add_context(inputs: dict, home: str) -> dict:
     messages = list(inputs.get("messages", []))
     entry = inputs.get("entry")
     role = inputs.get("role", "system")
