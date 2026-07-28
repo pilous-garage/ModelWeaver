@@ -34,7 +34,7 @@ inputs:
   break_on_counts:
     type: object
     required: false
-    description: Seuils de comptage. Ex: {"git.lite.commit": 5, "file.write_file.*": 10}
+    description: "Seuils de comptage. Ex: {\"git.lite.commit\": 5, \"file.write_file.*\": 10}"
   llm_timeout:
     type: integer
     required: false

@@ -68,14 +68,11 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     from services.skill_manager import call_skill
 
     # Initialiser un shell pour le home (nécessaire pour les skills shell/exec)
-    try:
-        from services.agent_shell_manager import agent_shell_manager
-        agent_shell_manager.init()
-        _agent_id = _Path(skill_home).name
-        if agent_shell_manager.get(_agent_id) is None:
-            agent_shell_manager.get_or_create(agent_id=_agent_id, home_root=_Path(skill_home))
-    except Exception:
-        pass
+    from services.agent_shell_manager import agent_shell_manager
+    agent_shell_manager.init()
+    _agent_id = _Path(skill_home).name
+    if agent_shell_manager.get(_agent_id) is None:
+        agent_shell_manager.get_or_create(agent_id=_agent_id, home_root=_Path(skill_home))
 
     # LLMManager pour assignation et fallback (optionnel — si DB lockée, ignore)
     _llm_mgr = None
@@ -90,7 +87,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
         "tok-optimal": ("Un seul outil par réponse. Analyse avant chaque appel."),
     }
     hint = grouping_hints.get(grouping, "")
-    role = f"Tu es un agent autonome. Rôle : {context}" if context else "Tu es un agent autonome."
+    role = f"Utilise les outils à ta disposition. Contexte : {context}" if context else "Utilise les outils à ta disposition."
     system_msg = f"{role} {hint}" if hint else role
     messages = [
         {"role": "system", "content": system_msg},
@@ -125,8 +122,13 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
         try:
             response = bridge.chat(p_ref, m_ref, messages, tools=tools, temperature=0.7)
         except Exception as e:
-            err_str = str(e)[:100]
-            # Fallback seulement si le provider a été auto-assigné (pas de provider explicite)
+            err_str = str(e)[:200]
+            # Ajouter l'erreur aux messages pour que le LLM la voie
+            messages.append({"role": "tool", "tool_call_id": "_api_error",
+                           "content": json.dumps({"error": err_str, "exit_code": 1})})
+            signals.append({"signal": "tool_finish", "tool": "_api_error",
+                           "stdout": "", "stderr": err_str, "exit_code": 1})
+            # Fallback si le provider a été auto-assigné
             if not provider_ref and _llm_mgr:
                 excluded_providers.add(p_ref)
                 excluded_models.add(m_ref)
@@ -182,9 +184,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             except Exception:
                 raw_args = {}
 
-            conv_name = fn_name.replace(".", "/")
-            if "@" not in conv_name:
-                conv_name = conv_name + "@v1"
+            conv_name = fn_name.replace("_v1", "@v1").replace("_", "/")
 
             try:
                 tool_result = call_skill(conv_name, raw_args, home=skill_home)

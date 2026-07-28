@@ -300,7 +300,7 @@ class FSMInterpreter:
                     skill = _yaml.safe_load(f)
             except Exception:
                 continue
-            name = skill.get("name", "").replace("/", ".").replace("@", ".")
+            name = skill.get("name", "").replace("/", "_").replace("@", "_").replace(".", "_")
             desc = skill.get("description", "")
             inputs = skill.get("inputs", {})
             props = {}
@@ -441,9 +441,7 @@ class FSMInterpreter:
                                 raw_args = json.loads(tc["function"]["arguments"])
                             except json.JSONDecodeError:
                                 raw_args = {}
-                            conv_name = fn_name.replace(".", "/")
-                            if "@" not in conv_name:
-                                conv_name = conv_name + "@v1"
+                            conv_name = fn_name.replace("_v1", "@v1").replace("_", "/")
                             try:
                                 from services.skill_manager import call_skill
                                 tool_result = call_skill(conv_name, raw_args)

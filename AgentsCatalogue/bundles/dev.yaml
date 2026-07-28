@@ -1,6 +1,3 @@
 name: dev
 skills:
   - shell/exec@v1
-  - git/lite@v1
-  - file/read_file@v1
-  - file/write_file@v1

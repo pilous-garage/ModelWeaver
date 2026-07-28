@@ -33,7 +33,7 @@ def _load_skill(ref: str) -> Optional[Dict]:
 
 
 def _skill_to_tool(skill: Dict) -> Optional[Dict]:
-    name = skill.get("name", "").replace("/", ".").replace("@", ".")
+    name = skill.get("name", "").replace("/", "_").replace("@", "_").replace(".", "_")
     if not name:
         return None
     desc = skill.get("description", "")
