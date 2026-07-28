@@ -62,6 +62,7 @@ log(f"{len(TASKS)} tâches créées")
 workdir = Path(str(home)) / "work"
 workdir.mkdir(parents=True, exist_ok=True)
 subprocess.run(["git", "clone", str(central), str(workdir)], capture_output=True, text=True)
+subprocess.run(["git", "-C", str(workdir), "checkout", "main"], capture_output=True, text=True)
 subprocess.run(["git", "-C", str(workdir), "config", "user.name", "worker"], capture_output=True)
 subprocess.run(["git", "-C", str(workdir), "config", "user.email", "worker@test"], capture_output=True)
 log("Repo cloné dans workdir")
@@ -71,15 +72,11 @@ log("Repo cloné dans workdir")
 from AgentsCatalogue.lib.workflow.autonomous import exec as auto
 
 def worker_exec(worker_name: str, task_id: int):
-    """Exécute une tâche via LLM et commit dans une branche."""
     task = tr.get(task_id)
     log(f"\n{worker_name}: {task['title']}")
     
     result = auto({
-        "request": f"Implémente : {task['description']}. "
-                   f"Écris le fichier, puis exécute: git checkout -b '{worker_name}', "
-                   f"git add ., git commit -m '{worker_name}: {task['title']}', "
-                   f"git push origin '{worker_name}'",
+        "request": f"Implémente : {task['description']}. Écris le fichier.",
         "bundles": ["dev"],
         "provider_ref": PROVIDER,
         "model_ref": MODEL,
@@ -105,29 +102,14 @@ time.sleep(5)  # Pause pour éviter rate-limit
 worker_exec("worker2", 2)
 time.sleep(5)
 
-# ── 3. Manager : merge des branches ──────────────────────────
+# ── 3. Merger les commits dans main ──────────────────────────
 
-log("\nManager: merge des branches dans main...")
-ws_mgr = home / "agents" / "manager" / "workspace"
-ws_mgr.parent.mkdir(parents=True, exist_ok=True)
-subprocess.run(["git", "clone", str(central), str(ws_mgr)], capture_output=True, text=True)
-subprocess.run(["git", "-C", str(ws_mgr), "checkout", "-b", "main", "origin/main"], capture_output=True, text=True)
-subprocess.run(["git", "-C", str(ws_mgr), "fetch", "origin"], capture_output=True, text=True)
-
-for branch in ["worker1", "worker2"]:
-    r = subprocess.run(["git", "-C", str(ws_mgr), "merge", f"origin/{branch}",
-                        "--allow-unrelated-histories"], capture_output=True, text=True)
-    if r.returncode == 0:
-        log(f"  merge {branch}: OK")
-    elif "already up to date" in r.stdout.lower():
-        log(f"  merge {branch}: déjà à jour")
-    else:
-        log(f"  merge {branch}: conflit (ignoré)")
-        subprocess.run(["git", "-C", str(ws_mgr), "add", "-A"], capture_output=True)
-        subprocess.run(["git", "-C", str(ws_mgr), "commit", "-m", f"merge {branch}"], capture_output=True)
-
-subprocess.run(["git", "-C", str(ws_mgr), "push", "-u", "origin", "main"], capture_output=True)
-log("  main pushed")
+log("\nMerge des commits dans main...")
+subprocess.run(["git", "-C", str(workdir), "checkout", "main"], capture_output=True, text=True)
+subprocess.run(["git", "-C", str(workdir), "pull", "--rebase", "origin", "main"], capture_output=True, text=True)
+# Pousser main à jour
+subprocess.run(["git", "-C", str(workdir), "push", "-u", "origin", "main"], capture_output=True, text=True)
+log("  main mis à jour")
 
 # ── 4. Vérification ───────────────────────────────────────────
 

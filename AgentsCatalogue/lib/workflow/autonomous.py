@@ -18,6 +18,7 @@ Retourne un dict avec signal + résultat :
 import json
 import time
 from pathlib import Path
+from pathlib import Path as _Path
 from typing import Any, Dict, List, Optional
 
 import yaml as _yaml
@@ -87,7 +88,9 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
         "tok-optimal": ("Un seul outil par réponse. Analyse avant chaque appel."),
     }
     hint = grouping_hints.get(grouping, "")
-    role = f"Utilise les outils à ta disposition. Contexte : {context}" if context else "Utilise les outils à ta disposition."
+    role = "Tu exécutes les tâches UNIQUEMENT via les outils. Ne génère JAMAIS de code dans ta réponse. Appelle directement l'outil shell_exec_v1 pour écrire les fichiers."
+    if context:
+        role = f"Tu exécutes les tâches UNIQUEMENT via les outils. Contexte : {context}"
     system_msg = f"{role} {hint}" if hint else role
     messages = [
         {"role": "system", "content": system_msg},
@@ -230,6 +233,24 @@ def exec(inputs: dict, home: str) -> dict:
                                break_on_signals, break_on_counts,
                                llm_timeout, global_timeout,
                                provider_ref, model_ref, home)
+
+    # Auto-commit/push si des fichiers ont été modifiés dans le workdir
+    workdir = _Path(home) / "work"
+    if workdir.exists() and (workdir / ".git").exists():
+        import subprocess as _sp
+        _sp.run(["git", "-C", str(workdir), "config", "user.name", "auto"], capture_output=True, timeout=10)
+        _sp.run(["git", "-C", str(workdir), "config", "user.email", "auto@auto"], capture_output=True, timeout=10)
+        _sp.run(["git", "-C", str(workdir), "checkout", "-b", "main", "origin/main"],
+               capture_output=True, timeout=10)
+        _sp.run(["git", "-C", str(workdir), "add", "."], capture_output=True, timeout=10)
+        r = _sp.run(["git", "-C", str(workdir), "diff", "--cached", "--quiet"],
+                   capture_output=True, timeout=10)
+        if r.returncode != 0:
+            _sp.run(["git", "-C", str(workdir), "commit", "-m", "auto-commit"],
+                   capture_output=True, timeout=10)
+            _sp.run(["git", "-C", str(workdir), "push", "origin", "main"],
+                   capture_output=True, text=True, timeout=10)
+
     return signals[-1] if signals else {"signal": "loop_end", "stdout": "", "exit_code": 0}
 
 
