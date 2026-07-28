@@ -8,3 +8,5 @@ from services.api.handlers import services_handlers as srvh
 from services.api.handlers import chat
 from services.api.handlers import teams_handlers as teamsh
 from services.api.handlers import llm_allocation as llm_alloc
+from services.api.handlers import catalogue_bundles
+from services.api.handlers import catalogue_tools
