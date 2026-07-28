@@ -48,6 +48,7 @@ class RoleDefinition:
         self.description: str = data.get("description", "")
         self.system_prompt: str = data.get("system_prompt", "")
         self.skills: List[str] = data.get("skills", data.get("allowed_skills", []))
+        self.bundles: List[str] = data.get("bundles", [])
         self.model_requirements: Dict[str, Any] = data.get("model_requirements", {})
         self.contexts: List[str] = data.get("contexts", ["general"])
         self.default_config: Dict[str, Any] = data.get("default_config", {})
@@ -59,6 +60,28 @@ class RoleDefinition:
             data = yaml.safe_load(f)
         return cls(data or {})
 
+    @staticmethod
+    def _bundles_dir() -> Path:
+        return Path(__file__).resolve().parent / "bundles"
+
+    @staticmethod
+    def _skills_dir() -> Path:
+        return Path(__file__).resolve().parent / "skills"
+
+    def _skill_exists(self, ref: str) -> bool:
+        """Vérifie si un skill existe (ancien nom court ou ref complète)."""
+        if ref in VALID_SKILLS:
+            return True
+        # Vérifier par fichier .skill.yaml
+        candidates = list(self._skills_dir().rglob(f"{ref}.skill.yaml"))
+        if candidates:
+            return True
+        # Fallback : recherche par nom court
+        for p in self._skills_dir().rglob("*.skill.yaml"):
+            if p.stem == ref or p.stem.startswith(f"{ref}@"):
+                return True
+        return False
+
     def validate(self) -> List[str]:
         errors = []
         if not self.name:
@@ -66,8 +89,12 @@ class RoleDefinition:
         if not self.system_prompt:
             errors.append("system_prompt requis")
         for s in self.skills:
-            if s not in VALID_SKILLS:
-                errors.append(f"skill inconnu: {s} (valides: {', '.join(sorted(VALID_SKILLS))})")
+            if not self._skill_exists(s):
+                errors.append(f"skill inconnu: {s}")
+        for b in self.bundles:
+            candidates = list(self._bundles_dir().rglob(f"{b}.yaml")) + list(self._bundles_dir().rglob(f"{b}.yml"))
+            if not candidates:
+                errors.append(f"bundle introuvable: {b}")
         req = self.model_requirements
         if req:
             for cap in req.get("capabilities", []):
@@ -90,6 +117,7 @@ class RoleDefinition:
             "description": self.description,
             "system_prompt": self.system_prompt,
             "skills": self.skills,
+            "bundles": self.bundles,
             "model_requirements": self.model_requirements,
             "contexts": self.contexts,
             "default_config": self.default_config,

@@ -9,11 +9,8 @@ personality:
     Réponds en français sauf demande contraire.
 
     Base-toi sur le contexte fourni et ne fabrique pas d''informations.'
-skills:
-- chat
-- research
-- summarize
-- search
+bundles:
+  - analysis_only
 model_requirements:
   min_context_tokens: 4096
   capabilities:

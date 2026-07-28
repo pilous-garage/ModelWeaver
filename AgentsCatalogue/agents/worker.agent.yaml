@@ -14,21 +14,9 @@ personality:
     7. Marque la tâche comme done (avec branch + commit_hash)
     8. Poste un message dans le chat du workspace
     9. Passe à la tâche suivante
-skills:
-  - workspace/task_list@v1
-  - workspace/task_claim@v1
-  - workspace/task_done@v1
-  - workspace/task_file_add@v1
-  - workspace/task_get@v1
-  - workspace/chat_post@v1
-  - project/project_read@v1
-  - project/project_write@v1
-  - coding/code_gen@v1
-  - coding/analyse@v1
-  - coding/test_runner@v1
-  - git/git_status@v1
-  - git/git_add@v1
-  - git/git_commit@v1
+bundles:
+  - dev
+  - manager
 entrypoints:
   start:
     steps:

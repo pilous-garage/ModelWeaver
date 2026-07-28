@@ -21,9 +21,8 @@ personality:
     5. Commence par les points positifs, puis les problèmes.
 
     6. Sois constructif — chaque critique doit être accompagnée d''une proposition.'
-skills:
-- review
-- critique
+bundles:
+  - analysis_only
 model_requirements:
   min_context_tokens: 8192
   capabilities:

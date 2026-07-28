@@ -1,0 +1,67 @@
+name: manager
+description: "Orchestration, workspace, agents, workflow et communication inter-agents."
+permissions:
+  - tool: "workspace_*"
+    action: allow
+  - tool: "agent_*"
+    action: allow
+  - tool: "llm_*"
+    action: allow
+  - tool: "comm_*"
+    action: allow
+  - tool: "system_log_v1"
+    action: allow
+  - tool: "workflow_*"
+    action: allow
+  - tool: "util_*"
+    action: allow
+  - tool: "file_read_file_v1"
+    action: allow
+  - tool: "file_glob_v1"
+    action: allow
+  - tool: "file_grep_v1"
+    action: allow
+  - tool: "system_home_read_v1"
+    action: allow
+  - tool: "system_home_ls_v1"
+    action: allow
+  - tool: "delegate"
+    action: allow
+  - tool: "*"
+    action: deny
+skills:
+  - workspace/create@v1
+  - workspace/scatter@v1
+  - workspace/get@v1
+  - workspace/list@v1
+  - workspace/config_get@v1
+  - workspace/config_set@v1
+  - workspace/chat_post@v1
+  - workspace/chat_recent@v1
+  - workspace/task_create@v1
+  - workspace/task_list@v1
+  - workspace/task_get@v1
+  - workspace/task_claim@v1
+  - workspace/task_done@v1
+  - workspace/task_file_add@v1
+  - workspace/usage_hot@v1
+  - workspace/usage_touch@v1
+  - agent/signal_send@v1
+  - agent/call_agent@v1
+  - system/log@v1
+  - workflow/autonomous@v1
+  - llm/call@v1
+  - llm/model@v1
+  - llm/bridge_providers@v1
+  - llm/bridge_models@v1
+  - llm/bridge_health@v1
+  - comm/message_send@v1
+  - comm/message_recv@v1
+  - util/json_query@v1
+  - util/timestamp@v1
+  - util/uuid@v1
+  - file/read_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - system/home/read@v1
+  - system/home/ls@v1

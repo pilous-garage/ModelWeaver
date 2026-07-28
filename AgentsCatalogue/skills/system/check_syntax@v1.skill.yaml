@@ -1,0 +1,24 @@
+name: system/check_syntax@v1
+category: system
+description: "Vérifie la syntaxe d'un fichier et corrige automatiquement les erreurs triviales (indentation, espaces, virgules manquantes...) via ruff ou py_compile."
+inputs:
+  path:
+    type: string
+    required: true
+    description: "Chemin du fichier à vérifier (relatif au home de l'agent ou absolu)"
+  fix:
+    type: boolean
+    required: false
+    description: "Tenter la correction automatique (défaut: true)"
+outputs:
+  ok:
+    type: boolean
+  errors:
+    type: array
+  fixed:
+    type: integer
+  lang:
+    type: string
+implementation:
+  type: python
+  function: system.check_syntax.check_file

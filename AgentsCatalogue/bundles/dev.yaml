@@ -1,3 +1,68 @@
 name: dev
+description: "Développement complet : édition, écriture, git, shell, codage, vérification syntaxique."
+permissions:
+  - tool: "*"
+    action: allow
 skills:
+  - file/read_file@v1
+  - file/write_file@v1
+  - file/append_file@v1
+  - file/delete_file@v1
+  - file/copy_file@v1
+  - file/move_file@v1
+  - file/mkdir@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/diff@v1
+  - file/list_dir@v1
+  - file/file_info@v1
+  - system/home/read@v1
+  - system/home/write@v1
+  - system/home/append@v1
+  - system/home/patch@v1
+  - system/home/insert@v1
+  - system/home/delete@v1
+  - system/home/copy@v1
+  - system/home/move@v1
+  - system/home/mkdir@v1
+  - system/home/ls@v1
+  - system/home/tree@v1
+  - system/home/head@v1
+  - system/home/tail@v1
+  - system/home/glob@v1
+  - system/home/grep@v1
+  - system/home/read_range@v1
+  - system/check_syntax@v1
+  - git/git_add@v1
+  - git/git_branch@v1
+  - git/git_checkout@v1
+  - git/git_clone@v1
+  - git/git_commit@v1
+  - git/git_diff@v1
+  - git/git_fetch@v1
+  - git/git_log@v1
+  - git/git_merge@v1
+  - git/git_pull@v1
+  - git/git_push@v1
+  - git/git_resolve_conflict@v1
+  - git/git_status@v1
+  - git/lite@v1
   - shell/exec@v1
+  - host/host_read@v1
+  - host/host_write@v1
+  - host/host_run@v1
+  - coding/analyse@v1
+  - coding/code_gen@v1
+  - coding/test_runner@v1
+  - util/json_query@v1
+  - util/string_ops@v1
+  - util/template@v1
+  - util/get_env@v1
+  - util/hash@v1
+  - util/random@v1
+  - util/timestamp@v1
+  - util/uuid@v1
+  - memory/memory_read@v1
+  - memory/memory_write@v1
+  - context/add_context@v1
+  - context/optimize@v1

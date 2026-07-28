@@ -23,10 +23,9 @@ personality:
     6. Produis un rapport de synthèse : statut global, blocages, recommandations.
 
     7. N''interviens que quand c''est nécessaire.'
-skills:
-- orchestrate
-- monitor
-- plan
+bundles:
+  - manager
+  - analysis_only
 model_requirements:
   min_context_tokens: 16384
   capabilities:

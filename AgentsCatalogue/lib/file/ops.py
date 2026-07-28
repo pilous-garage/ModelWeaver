@@ -71,20 +71,49 @@ def read_range(inputs: dict, home: str) -> dict:
     }
 
 
-def patch_file(inputs: dict, home: str) -> dict:
-    """Remplace une chaîne exacte dans un fichier (style OpenCode edit).
+def _find_occurrences(content: str, old_string: str) -> list:
+    """Liste toutes les occurrences de old_string dans content."""
+    occurrences = []
+    pos = 0
+    while True:
+        try:
+            idx = content.index(old_string, pos)
+        except ValueError:
+            break
+        line_no = content[:idx].count("\n") + 1
+        col = idx - content[:idx].rfind("\n") - 1
+        start = max(0, idx - 40)
+        end = min(len(content), idx + len(old_string) + 60)
+        occurrences.append({
+            "line": line_no,
+            "col": col,
+            "prefix": content[start:idx],
+            "suffix": content[idx + len(old_string):end],
+        })
+        pos = idx + 1
+    return occurrences
 
-    Utilise old_string → new_string pour un remplacement idempotent.
-    Si old_string n'est pas trouvé, renvoie une erreur détaillée.
+
+def patch_file(inputs: dict, home: str) -> dict:
+    """Remplace une chaîne exacte dans un fichier (old_string → new_string).
+
+    Utilise old_string → new_string pour un remplacement ciblé.
+    Si old_string apparaît plusieurs fois, refuse avec les détails
+    de chaque occurrence. Un paramètre optionnel ``line`` permet de
+    cibler une ligne précise (1-indexed) pour parer les edits
+    concurrents.
 
     inputs:
       path: chemin relatif du fichier
       old_string: texte exact à remplacer
       new_string: texte de remplacement
+      line: ligne supposée (1-indexed, optionnel) — si fournie,
+            la recherche commence à cette ligne
     """
     path = inputs.get("path", "")
     old_string = inputs.get("old_string", "")
     new_string = inputs.get("new_string", "")
+    target_line = inputs.get("line")
 
     if not old_string:
         return {"ok": False, "error": "old_string requis pour un patch"}
@@ -94,24 +123,81 @@ def patch_file(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": f"fichier introuvable: {path}"}
 
     content = Path(full).read_text(encoding="utf-8")
-    if old_string not in content:
-        # Index des premières différences pour aider le LLM
-        context = min(len(old_string), len(content))
+
+    # Si une ligne cible est donnée, on essaye d'abord à cet endroit
+    if target_line is not None:
+        try:
+            target_line = int(target_line)
+        except (ValueError, TypeError):
+            target_line = None
+
+    if target_line and target_line > 0:
+        # Convertir la ligne en position byte
+        lines_to_pos = content.splitlines(keepends=True)
+        byte_pos = 0
+        for i, line_text in enumerate(lines_to_pos):
+            if i + 1 >= target_line:
+                break
+            byte_pos += len(line_text)
+
+        # Chercher old_string à partir de cette position
+        try:
+            idx = content.index(old_string, byte_pos)
+            # Vérifier que c'est bien à la bonne ligne
+            match_line = content[:idx].count("\n") + 1
+            if abs(match_line - target_line) <= 1:
+                new_content = content[:idx] + new_string + content[idx + len(old_string):]
+                Path(full).write_text(new_content, encoding="utf-8")
+                index_add(home, full)
+                return {
+                    "ok": True, "path": path, "replaced": True,
+                    "old_length": len(old_string), "new_length": len(new_string),
+                    "line": match_line,
+                }
+        except ValueError:
+            pass
+
+    # Comportement normal : trouver toutes les occurrences
+    occurrences = _find_occurrences(content, old_string)
+    count = len(occurrences)
+
+    if count == 0:
+        lines = content.splitlines()
+        hint_lines = []
+        for i, line in enumerate(lines, 1):
+            if old_string[:20].strip() in line or old_string[-20:].strip() in line:
+                hint_lines.append(f"  L{i}: {line[:120]}")
+            elif any(word in line for word in old_string.split()[:3] if len(word) > 3):
+                hint_lines.append(f"  L{i}: {line[:120]}")
+        hint = ""
+        if hint_lines:
+            hint = "Lignes proches :\n" + "\n".join(hint_lines[:5])
         return {
-            "ok": False,
-            "error": "old_string introuvable dans le fichier",
-            "hint": "Vérifiez que old_string correspond exactement au contenu (espaces, sauts de ligne, casse).",
+            "ok": False, "error": "old_string introuvable dans le fichier",
+            "count": 0,
+            "hint": hint or "Vérifiez que old_string correspond exactement au contenu (espaces, sauts de ligne, casse).",
         }
 
+    if count > 1:
+        extra = ""
+        if target_line and target_line > 0:
+            extra = f" (introuvable à la ligne {target_line})"
+        return {
+            "ok": False,
+            "error": f"old_string trouvé {count} fois{extra} — fournissez plus de contexte "
+                     "dans old_string (ajoutez des lignes adjacentes) ou précisez le paramètre 'line'",
+            "count": count,
+            "occurrences": occurrences,
+        }
+
+    # Occurrence unique
     new_content = content.replace(old_string, new_string, 1)
     Path(full).write_text(new_content, encoding="utf-8")
     index_add(home, full)
     return {
-        "ok": True,
-        "path": path,
-        "replaced": True,
-        "old_length": len(old_string),
-        "new_length": len(new_string),
+        "ok": True, "path": path, "replaced": True,
+        "old_length": len(old_string), "new_length": len(new_string),
+        "line": occurrences[0]["line"],
     }
 
 
@@ -314,9 +400,106 @@ def downgrade_important(inputs: dict, home: str) -> dict:
     return {"ok": True, "path": os.path.relpath(dst, os.path.abspath(home))}
 
 
+def grep(inputs: dict, home: str) -> dict:
+    """Cherche un motif regex dans les fichiers du workspace.
+
+    inputs:
+      pattern: motif regex à chercher
+      include: glob de filtrage fichiers (ex: "*.py", "src/**/*.ts")
+      exclude: glob de fichiers à ignorer (ex: "*.min.js", "__pycache__")
+      max_results: nombre max de résultats (défaut 50)
+      context_lines: lignes de contexte avant/après chaque match (défaut 0)
+
+    returns:
+      ok (bool)
+      matches (list): [{file, line, col, content, context_before, context_after}]
+      count (int): nombre total de matches
+      truncated (bool): vrai si max_results atteint
+    """
+    pattern = inputs.get("pattern", "")
+    if not pattern:
+        return {"ok": False, "error": "pattern requis"}
+
+    include = inputs.get("include", "**/*")
+    exclude_input = inputs.get("exclude", "")
+    max_results = int(inputs.get("max_results", 50))
+    context_lines = int(inputs.get("context_lines", 0))
+
+    import re
+    try:
+        regex = re.compile(pattern)
+    except re.error as e:
+        return {"ok": False, "error": f"regex invalide: {e}"}
+
+    base = os.path.abspath(home)
+    matches = []
+    count = 0
+    truncated = False
+
+    exclude_patterns = [e.strip() for e in exclude_input.split(",") if e.strip()]
+
+    for filepath in sorted(Path(base).rglob(include)):
+        rel = str(filepath.relative_to(base))
+        if not filepath.is_file():
+            continue
+        if filepath.name.endswith(INDEX_FILE):
+            continue
+
+        # Exclude patterns
+        if exclude_patterns:
+            skip = False
+            for ex in exclude_patterns:
+                if Path(rel).match(ex) or Path(filepath.name).match(ex):
+                    skip = True
+                    break
+            if skip:
+                continue
+
+        try:
+            lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        for i, line in enumerate(lines):
+            for m in regex.finditer(line):
+                col = m.start()
+                ctx_before = []
+                ctx_after = []
+                if context_lines > 0:
+                    for ci in range(max(0, i - context_lines), i):
+                        ctx_before.append(lines[ci].rstrip("\n"))
+                    for ci in range(i + 1, min(len(lines), i + context_lines + 1)):
+                        ctx_after.append(lines[ci].rstrip("\n"))
+
+                matches.append({
+                    "file": rel,
+                    "line": i + 1,
+                    "col": col + 1,
+                    "content": line.rstrip("\n"),
+                    "context_before": ctx_before,
+                    "context_after": ctx_after,
+                })
+                count += 1
+                if count >= max_results:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+
+    return {
+        "ok": True,
+        "matches": matches,
+        "count": count,
+        "truncated": truncated,
+    }
+
+
 __skills__ = [
     "read_file", "write_file", "append_file", "read_range",
     "patch_file", "insert_lines", "delete_file",
     "copy_file", "move_file", "mkdir", "list_dir", "glob",
     "file_info", "tree", "upgrade_important", "downgrade_important",
+    "grep",
 ]

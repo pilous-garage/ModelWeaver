@@ -1,0 +1,26 @@
+name: edit
+description: "Remplace une chaîne exacte par une autre dans un fichier (old_string → new_string). Plus fiable que write_file (qui écrase tout) : seul le passage ciblé est modifié. Le paramètre optionnel 'line' permet de préciser la ligne cible (1-indexed) pour les edits concurrents."
+parameters:
+  type: object
+  properties:
+    path:
+      type: string
+      description: "Chemin du fichier à modifier (relatif au home)"
+    old_string:
+      type: string
+      description: "Texte EXACT à remplacer (doit correspondre au caractère près)"
+    new_string:
+      type: string
+      description: "Texte de remplacement"
+    line:
+      type: integer
+      description: "Ligne cible (1-indexed, optionnel) — la recherche commence à cette ligne"
+  required:
+    - path
+    - old_string
+    - new_string
+implementation:
+  type: python
+  function: file.ops.patch_file
+  injected:
+    - ws

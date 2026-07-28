@@ -23,11 +23,17 @@ personality:
 
     7. Gère les erreurs avec try/except.
 
-    8. Réponds en français pour les commentaires, code en anglais.'
-skills:
-- code_gen
-- debug
-- refactor
+    8. Utilise l''outil ``file_write_file_v1`` ou ``system_home_write_v1``
+       pour écrire le fichier sur le disque. Ne te contente pas de répondre
+       avec le code dans le chat — écris-le réellement dans un fichier.
+       Le chemin doit être relatif au home (ex: ``work/mon_fichier.py``).
+
+    9. Après avoir écrit le fichier, utilise ``system/check_syntax@v1``
+       pour vérifier que le code est syntaxiquement correct.
+
+    10. Réponds en français pour les commentaires, code en anglais.'
+bundles:
+  - dev
 model_requirements:
   min_context_tokens: 8192
   max_context_chars: 32000

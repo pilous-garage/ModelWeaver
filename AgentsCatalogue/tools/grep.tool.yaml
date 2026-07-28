@@ -1,0 +1,27 @@
+name: grep
+description: "Cherche un motif regex dans le contenu des fichiers du workspace. Retourne les matches avec fichier, ligne, colonne, contenu et contexte. Support des filtres include/exclude par glob."
+parameters:
+  type: object
+  properties:
+    pattern:
+      type: string
+      description: "Motif regex à chercher"
+    include:
+      type: string
+      description: "Glob de filtrage fichiers (ex: '*.py', 'src/**/*.ts'). Défaut: '**/*'"
+    exclude:
+      type: string
+      description: "Glob de fichiers à ignorer (ex: '*.min.js, __pycache__')"
+    max_results:
+      type: integer
+      description: "Nombre max de résultats (défaut: 50)"
+    context_lines:
+      type: integer
+      description: "Lignes de contexte avant/après chaque match (défaut: 0)"
+  required:
+    - pattern
+implementation:
+  type: python
+  function: file.ops.grep
+  injected:
+    - ws

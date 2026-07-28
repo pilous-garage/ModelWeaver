@@ -1,0 +1,67 @@
+name: test
+description: "Test, vérification syntaxique, execution et validation de correctitude."
+permissions:
+  - tool: "coding_test_runner_v1"
+    action: allow
+  - tool: "system_check_syntax_v1"
+    action: allow
+  - tool: "shell_exec_v1"
+    action: allow
+  - tool: "file_read_file_v1"
+    action: allow
+  - tool: "file_glob_v1"
+    action: allow
+  - tool: "file_grep_v1"
+    action: allow
+  - tool: "file_diff_v1"
+    action: allow
+  - tool: "file_list_dir_v1"
+    action: allow
+  - tool: "system_home_read_v1"
+    action: allow
+  - tool: "system_home_ls_v1"
+    action: allow
+  - tool: "system_home_head_v1"
+    action: allow
+  - tool: "system_home_tail_v1"
+    action: allow
+  - tool: "system_home_patch_v1"
+    action: ask
+  - tool: "git_git_status_v1"
+    action: allow
+  - tool: "git_git_diff_v1"
+    action: allow
+  - tool: "git_git_log_v1"
+    action: allow
+  - tool: "git_git_checkout_v1"
+    action: allow
+  - tool: "git_git_branch_v1"
+    action: allow
+  - tool: "util_*"
+    action: allow
+  - tool: "net_http_get_v1"
+    action: allow
+  - tool: "*"
+    action: deny
+skills:
+  - coding/test_runner@v1
+  - system/check_syntax@v1
+  - shell/exec@v1
+  - file/read_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/diff@v1
+  - file/list_dir@v1
+  - system/home/read@v1
+  - system/home/ls@v1
+  - system/home/head@v1
+  - system/home/tail@v1
+  - system/home/patch@v1
+  - git/git_status@v1
+  - git/git_diff@v1
+  - git/git_log@v1
+  - git/git_checkout@v1
+  - git/git_branch@v1
+  - util/json_query@v1
+  - util/timestamp@v1
+  - net/http_get@v1

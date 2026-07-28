@@ -19,8 +19,9 @@ personality:
     et passe à la suivante.
 
     Tu as accès à un shell complet, git-lite, et la gestion de fichiers.
-skills:
-  - workflow/autonomous@v1
+bundles:
+  - dev
+  - manager
 entrypoints:
   start:
     steps:
@@ -35,7 +36,7 @@ entrypoints:
         fn: workflow/autonomous@v1
         inputs:
           request: "Surveille le workspace {{workspace_id}} et exécute les tâches"
-          bundles: ["dev", "workflow"]
+          bundles: ["dev", "manager"]
           context: "{{personality.system_prompt}}"
           workspace_id: "{{workspace_id}}"
           max_loops: 50

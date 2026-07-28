@@ -262,6 +262,7 @@ def build_expanded_graph(agent_name: str, port: int, max_depth: int = 5) -> dict
         "role": agent_doc.get("role", ""),
         "personality": agent_doc.get("personality", {}),
         "skills": agent_doc.get("skills", []),
+        "bundles": agent_doc.get("bundles", []),
         "entrypoints": {
             name: {"steps": resolved_steps if name == ep_name else ep.get("steps", [])}
             for name, ep in eps.items()

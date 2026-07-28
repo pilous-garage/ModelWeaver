@@ -1,7 +1,8 @@
-"""LiteLLMBridge — Implémentation concrète de BaseBridge via LiteLLM.
+"""LiteLLMBridge — Bridge universel via LiteLLM (fallback par défaut).
 
-Respecte le contrat déclaratif de BaseBridge (vérifié par hardcheck). 
-Seul bridge officiel fourni ; l'utilisateur peut en brancher d'autres.
+Respecte le contrat déclaratif de BaseBridge (vérifié par hardcheck).
+Bridge par défaut utilisé par BridgeRegistry quand aucun bridge natif
+n'est enregistré pour un provider.
 """
 
 import os
@@ -282,8 +283,15 @@ class LiteLLMBridge(BaseBridge):
 
     def _build_model_id(self, provider_ref: str,
                         model_ref: str) -> str:
-        """Construit l'ID LiteLLM : provider/model ou provider_model_name."""
+        """Construit l'ID LiteLLM : provider/model ou provider_model_name.
+
+        Si ``model_ref`` contient déjà le préfixe ``provider/``, on l'enlève
+        pour éviter un double préfixage (ex: ``groq/groq/...``).
+        """
         provider_ref = _PROVIDER_ALIAS.get(provider_ref, provider_ref)
+        prefix = f"{provider_ref}/"
+        if model_ref.startswith(prefix):
+            model_ref = model_ref[len(prefix):]
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT kem.provider_model_name, p.api_type

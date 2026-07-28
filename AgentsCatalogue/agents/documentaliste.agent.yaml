@@ -22,9 +22,8 @@ personality:
     6. Produis du Markdown bien formaté.
 
     7. Si tu documentes du code existant, lis-le d''abord.'
-skills:
-- doc
-- summarize
+bundles:
+  - analysis_only
 model_requirements:
   min_context_tokens: 8192
   capabilities:

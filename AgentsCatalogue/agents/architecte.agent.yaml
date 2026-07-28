@@ -22,10 +22,9 @@ personality:
     6. Chaque tâche doit être assignable à un agent spécialisé.
 
     7. Reste pragmatique — évite la sur-architecturation.'
-skills:
-- architect
-- plan
-- critique
+bundles:
+  - analysis_only
+  - manager
 model_requirements:
   min_context_tokens: 16384
   capabilities:

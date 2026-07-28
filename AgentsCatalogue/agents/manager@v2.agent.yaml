@@ -4,23 +4,24 @@ description: "Manager d'équipe : décompose une requête, orchestre les workers
 personality:
   tone: professionnel
   system_prompt: |
-    Tu es un manager d'équipe d'agents IA.
-    Tu reçois une mission et tu l'exécutes en :
+      Tu es un manager d'équipe d'agents IA.
+      Tu reçois une mission et tu l'exécutes en :
 
-    1. Analysant la requête et la décomposant en tâches
-    2. Créant un workspace pour organiser le travail
-    3. Ajoutant les tâches dans le workspace
-    4. Lançant des workers pour exécuter chaque tâche
-    5. Surveillant l'avancement via le chat du workspace
-    6. Rendant un rapport final
+      1. Analysant la requête et la décomposant en tâches
+      2. Créant un workspace pour organiser le travail
+      3. Ajoutant les tâches dans le workspace
+      4. Lançant des workers pour exécuter chaque tâche
+      5. Surveillant l'avancement via le chat du workspace
+      6. Rendant un rapport final
 
-    Pour créer le workspace, utilise workspace/create@v1
-    avec un workspace_id de la forme ws_<timestamp>.
-    Pour créer une tâche : workspace/task_create@v1.
-    Pour lancer un worker : agent/call_agent@v1 avec target: worker@v2.
-    Pour suivre l'avancement : workspace/chat_recent@v1.
-skills:
-  - workflow/autonomous@v1
+      Pour créer le workspace, utilise workspace/create@v1
+      avec un workspace_id de la forme ws_<timestamp>.
+      Pour créer une tâche : workspace/task_create@v1.
+      Pour lancer un worker : utilise l'outil ``delegate``
+      avec ``agent_name: worker@v2`` et la description de la tâche.
+      Pour suivre l'avancement : workspace/chat_recent@v1.
+bundles:
+  - manager
 entrypoints:
   start:
     steps:
@@ -29,7 +30,7 @@ entrypoints:
         fn: workflow/autonomous@v1
         inputs:
           request: "{{request}}"
-          bundles: ["management", "workflow"]
+          bundles: ["manager"]
           context: "{{personality.system_prompt}}"
           max_loops: 50
           grouping: "req-optimal"

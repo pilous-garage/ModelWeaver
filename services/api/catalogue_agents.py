@@ -87,10 +87,11 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
         "role": normal.get("role", ""),
         "personality": personality,
         "skills": normal.get("skills", []),
+        "bundles": normal.get("bundles", []),
         "entrypoints": _migrate_entrypoints(normal),
     }
     # Champs optionnels préservés
-    for k in ("description", "contexts", "default_config", "model_requirements", "hooks"):
+    for k in ("description", "contexts", "default_config", "model_requirements", "hooks", "permissions"):
         if k in normal:
             inline[k] = normal[k]
     return inline

@@ -23,10 +23,13 @@ personality:
     6. Cite tes sources quand c''est pertinent.
 
     7. Si tu manques d''information, indique clairement les zones d''incertitude.'
-skills:
-- research
-- search
-- summarize
+bundles:
+  - analysis_only
+permissions:
+  - tool: "webfetch"
+    action: allow
+  - tool: "websearch"
+    action: allow
 model_requirements:
   min_context_tokens: 16384
   capabilities:

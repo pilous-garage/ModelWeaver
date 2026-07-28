@@ -26,18 +26,8 @@ personality:
     - Titre formaté avec tag : [code] Nom, [analyse] Nom, [test] Nom
     - Les dépendances sont implicites (ordre = priorité)
     - Priorité 0 = première, 1 = deuxième, etc.
-skills:
-  - llm/call@v1
-  - workspace/create@v1
-  - workspace/task_create@v1
-  - workspace/config_set@v1
-  - workspace/chat_post@v1
-  - workspace/chat_recent@v1
-  - workspace/task_list@v1
-  - agent/call_agent@v1
-  - util/json_query@v1
-  - util/uuid@v1
-  - util/timestamp@v1
+bundles:
+  - manager
 entrypoints:
   start:
     steps:

@@ -10,6 +10,7 @@ from modules.llm_manager.base_bridge import (
     BaseBridge, ModelCapabilities, ChatResponse, BridgeError, ErrorCategory,
 )
 from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager import catalogue_remote
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -181,97 +182,84 @@ class LLMManager:
                    exclude_providers: Optional[list] = None,
                    exclude_models: Optional[list] = None,
                    max_candidates: int = 8) -> Optional[Dict[str, Any]]:
-        """Demande au gestionnaire de LLM une alternative DISPONIBLE et
-        différente de ``(exclude_provider, exclude_model)``.
+        """Trouve un LLM disponible en interrogeant les providers via DirectBridge.
 
-        Parcourt les providers réellement disponibles (clé présente via le
-        KeyManager, ou provider local/ollama sans clé) et renvoie le premier
-        modèle actif différent. Retourne ``None`` si aucune alternative
-        n'est trouvée (ex. un seul LLM configuré).
+        Parcourt les providers configurés, appelle leur API ``/v1/models``
+        pour découvrir les modèles réellement disponibles, et retourne le
+        premier qui supporte le ``use_case`` demandé.
+
+        Ne retourne ``None`` que si aucun provider n'est joignable.
         """
+        from modules.llm_manager.direct_bridge import DirectBridge
+
         excl_p = set(exclude_providers or [])
         if exclude_provider:
             excl_p.add(exclude_provider)
         excl_m = set(exclude_models or [])
         if exclude_model:
             excl_m.add(exclude_model)
-        from modules.llm_manager.litellm_bridge import LiteLLMBridge
-        from modules.key_manager.key_manager import KeyManager
-        from modules.sql.db import ModelWeaverDB
-        km = self.km or KeyManager(ModelWeaverDB())
-        bridge = LiteLLMBridge(cat=self.cat, km=km)
 
-        # Requête unique : providers avec clé + modèles avec capacités
+        bridge = DirectBridge(cat=self.cat, km=self.km)
         req = USE_CASE_REQUIREMENTS.get(use_case, {})
-        rf = req.get("features", [])
-        needs_fc = "function_calling" in rf
-        needs_chat = "chat" in rf
+        needs_fc = "function_calling" in req.get("features", [])
 
-        rows = self.cat.conn.execute("""
-            SELECT p.ref as provider_ref, m.ref as model_ref,
-                   mc.supports_function_calling, mc.supports_chat,
-                   kem.available, kem.last_error
-            FROM key_endpoint_models kem
-            JOIN catalogue_models m ON m.id = kem.model_id
-            JOIN catalogue_providers p ON p.id = kem.provider_id
-            LEFT JOIN model_capabilities mc ON mc.model_ref = m.ref
-            WHERE kem.available = 1
-               OR (kem.available = 0 AND kem.last_checked_at IS NULL)
-            ORDER BY kem.available DESC, m.name
-        """).fetchall()
+        # Priorité des providers (les plus fiables d'abord)
+        provider_priority = ["openai", "nvidia", "groq", "openrouter",
+                             "together", "deepinfra", "github-models",
+                             "google", "anthropic", "mistral",
+                             "huggingface", "ollama"]
 
-        # Trier : modèles de confiance d'abord, puis le reste
-        trusted_set = set(TRUSTED_MODELS)
-        trusted = []
-        others = []
-        for r in rows:
-            ref = r["model_ref"]
-            if ref in excl_m or r["provider_ref"] in excl_p:
+        for pref in provider_priority:
+            if pref in excl_p:
                 continue
-            # Filtrer par capacités
-            if needs_fc and r["supports_function_calling"] == 0:
-                continue
-            if needs_chat and r["supports_chat"] == 0:
-                continue
-            item = {"provider_ref": r["provider_ref"], "model_ref": ref, "use_case": use_case}
-            if ref in trusted_set:
-                trusted.append(item)
-            else:
-                others.append(item)
-
-        candidates = trusted + others
-
-        # Retourner le premier candidat (les capacités sont déjà vérifiées par la requête)
-        for c in candidates:
-            # Vérification rapide : si model_capabilities a l'info, on l'utilise
-            if needs_fc or needs_chat:
-                mc = self.cat.conn.execute("""
-                    SELECT supports_function_calling, supports_chat
-                    FROM model_capabilities WHERE model_ref = ?
-                """, (c["model_ref"],)).fetchone()
-                if mc:
-                    if needs_fc and not mc["supports_function_calling"]:
-                        continue
-                    if needs_chat and not mc["supports_chat"]:
-                        continue
-                    return c
-            # Fallback health check si capacités inconnues
             try:
-                if needs_fc:
-                    r = bridge.chat(c["provider_ref"], c["model_ref"],
-                        [{"role": "user", "content": "Call test.echo with x=hello"}],
-                        tools=[{"type":"function","function":{"name":"test.echo",
-                            "parameters":{"type":"object","properties":{"x":{"type":"string"}}}}}],
-                        max_tokens=50, temperature=0)
-                else:
-                    r = bridge.chat(c["provider_ref"], c["model_ref"],
-                        [{"role": "user", "content": "ok"}], max_tokens=1)
-                if r and (r.content is not None or getattr(r, "tool_calls", None)):
-                    return c
+                models = bridge.list_available_models(pref)
             except Exception:
                 continue
+            if not models:
+                continue
+            for m in models:
+                mref = m["ref"]
+                if mref in excl_m:
+                    continue
+                # Vérifier les capacités si possible
+                if needs_fc:
+                    caps = bridge.get_capabilities(pref, mref)
+                    if not caps.supports_function_calling:
+                        continue
+                # Test réel : vérifier que le modèle répond
+                try:
+                    test = bridge.chat(pref, mref,
+                        [{"role": "user", "content": "ok"}],
+                        max_tokens=1, temperature=0)
+                    if test is not None:
+                        return {"provider_ref": pref, "model_ref": mref,
+                                "use_case": use_case}
+                except BridgeError as be:
+                    if be.category == ErrorCategory.RATE_LIMIT:
+                        # Rate limit = le modèle marche, juste trop d'appels
+                        return {"provider_ref": pref, "model_ref": mref,
+                                "use_case": use_case}
+                    # Auth (quota, key invalide) → essayer le provider suivant
+                    continue
+                except Exception:
+                    continue
 
         return None
+
+    def sync_from_remote(self, force: bool = False) -> int:
+        """Synchronise le catalogue depuis l'endpoint central.
+
+        Appelle ``catalogue_remote.refresh_sync()`` avec le catalogue
+        et le keymanager de cette instance.
+
+        Args:
+            force: Ignore le TTL du cache et force un fetch distant.
+
+        Returns:
+            Nombre de modèles synchronisés, 0 si indisponible.
+        """
+        return catalogue_remote.refresh_sync(self.cat, self.km, force=force)
 
 
 # ── Seed helpers ──────────────────────────────────────────────

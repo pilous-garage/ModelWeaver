@@ -1,0 +1,28 @@
+name: delegate
+description: "Délègue une requête à un sous-agent spécialisé. Le subagent possède ses propres outils et permissions."
+parameters:
+  type: object
+  properties:
+    agent_name:
+      type: string
+      description: "Nom de l'agent cible (ex: explore, plan, build)"
+    request:
+      type: string
+      description: "Requête détaillée à transmettre au subagent"
+    entrypoint:
+      type: string
+      description: "Point d'entrée du workflow"
+    provider_ref:
+      type: string
+      description: "Provider LLM optionnel"
+    model_ref:
+      type: string
+      description: "Modèle LLM optionnel"
+  required:
+    - agent_name
+    - request
+implementation:
+  type: python
+  function: llm.delegate.delegate
+  injected:
+    - ws

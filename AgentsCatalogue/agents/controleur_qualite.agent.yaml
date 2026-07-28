@@ -23,10 +23,8 @@ personality:
     6. Si un test peut être exécuté, suggère une commande pour le lancer.
 
     7. Sois strict mais constructif — propose des corrections.'
-skills:
-- qa
-- review
-- debug
+bundles:
+  - test
 model_requirements:
   min_context_tokens: 8192
   capabilities:

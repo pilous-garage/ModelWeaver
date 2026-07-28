@@ -23,10 +23,8 @@ personality:
     6. Ton ton doit être constructif, pas destructeur.
 
     7. Conclus par : ADOPTER, MODIFIER, ou REJETER.'
-skills:
-- critique
-- review
-- architect
+bundles:
+  - analysis_only
 model_requirements:
   min_context_tokens: 8192
   capabilities:

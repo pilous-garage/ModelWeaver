@@ -1,0 +1,69 @@
+name: analysis_only
+description: "Outils de lecture/analyse seule — pas d'écriture, pas d'exécution."
+permissions:
+  - tool: "file_read_file_v1"
+    action: allow
+  - tool: "file_glob_v1"
+    action: allow
+  - tool: "file_grep_v1"
+    action: allow
+  - tool: "file_list_dir_v1"
+    action: allow
+  - tool: "file_file_info_v1"
+    action: allow
+  - tool: "file_diff_v1"
+    action: allow
+  - tool: "system_home_read_v1"
+    action: allow
+  - tool: "system_home_ls_v1"
+    action: allow
+  - tool: "system_home_tree_v1"
+    action: allow
+  - tool: "system_home_head_v1"
+    action: allow
+  - tool: "system_home_tail_v1"
+    action: allow
+  - tool: "system_home_wc_v1"
+    action: allow
+  - tool: "system_home_info_v1"
+    action: allow
+  - tool: "system_common_read_v1"
+    action: allow
+  - tool: "system_common_list_v1"
+    action: allow
+  - tool: "project_*"
+    action: allow
+  - tool: "util_*"
+    action: allow
+  - tool: "memory_memory_read_v1"
+    action: allow
+  - tool: "net_http_get_v1"
+    action: allow
+  - tool: "grep"
+    action: allow
+  - tool: "*"
+    action: deny
+skills:
+  - file/read_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/list_dir@v1
+  - file/file_info@v1
+  - file/diff@v1
+  - system/home/read@v1
+  - system/home/ls@v1
+  - system/home/tree@v1
+  - system/home/head@v1
+  - system/home/tail@v1
+  - system/home/wc@v1
+  - system/home/info@v1
+  - system/common_read@v1
+  - system/common_list@v1
+  - project/project_read@v1
+  - project/project_list@v1
+  - project/project_tree@v1
+  - util/json_query@v1
+  - util/string_ops@v1
+  - util/get_all_skills@v1
+  - memory/memory_read@v1
+  - net/http_get@v1

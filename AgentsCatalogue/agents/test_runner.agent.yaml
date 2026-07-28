@@ -13,7 +13,8 @@ personality:
     \ : Réponds \"STATUS: FAILED\" suivi de :\n  - Le test qui a échoué.\n  - La trace\
     \ d'erreur complète.\n  - L'entrée qui a provoqué l'échec.\n\nNe tente pas de\
     \ corriger le code toi-même. Ton rôle est uniquement de rapporter les faits.\n"
-skills: []
+bundles:
+  - test
 model_requirements: {}
 contexts:
 - general

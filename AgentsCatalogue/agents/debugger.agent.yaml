@@ -22,9 +22,8 @@ personality:
     6. Évite les refontes globales — corrige uniquement le problème identifié.
 
     7. Si tu n''es pas sûr de la cause, propose plusieurs hypothèses avec des diagnostics.'
-skills:
-- debug
-- code_gen
+bundles:
+  - dev
 model_requirements:
   min_context_tokens: 8192
   capabilities:

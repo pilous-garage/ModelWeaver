@@ -1,0 +1,46 @@
+name: syntax
+role: correcteur
+description: "Agent spécialisé dans la vérification syntaxique : lit un fichier, détecte les erreurs de syntaxe, les corrige automatiquement (ruff, py_compile)."
+personality:
+  tone: technique
+  system_prompt: |
+    Tu es un agent de vérification syntaxique.
+
+    Tu reçois un fichier à vérifier, tu exécutes system/check_syntax@v1
+    et tu retournes le résultat (ok, erreurs résiduelles, corrections appliquées).
+
+    Règles :
+    1. Exécute system/check_syntax@v1 avec path et fix=true
+    2. Si des erreurs subsistent après fix, signale-les avec leur ligne
+    3. Ne modifie rien d'autre que la syntaxe
+bundles:
+  - test
+permissions:
+  - tool: "file_write_file_v1"
+    action: allow
+  - tool: "system_home_write_v1"
+    action: allow
+  - tool: "system_home_patch_v1"
+    action: allow
+  - tool: "edit"
+    action: allow
+  - tool: "delegate"
+    action: deny
+model_requirements:
+  min_context_tokens: 8192
+  capabilities:
+  - text_generation
+contexts:
+  - general
+default_config:
+  temperature: 0.2
+  max_tokens: 1024
+workflow:
+  steps:
+  - id: start
+    type: llm_call
+    request: ''
+    next: end
+  - id: end
+    type: end
+    status: SUCCESS

@@ -24,9 +24,9 @@ personality:
     6. Produis une liste de tâches prêtes à être insérées dans la todo partagée.
 
     7. Le format de sortie doit être structuré (JSON ou liste numérotée).'
-skills:
-- plan
-- architect
+bundles:
+  - manager
+  - analysis_only
 model_requirements:
   min_context_tokens: 8192
   capabilities:

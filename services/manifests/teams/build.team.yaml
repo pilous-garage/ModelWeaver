@@ -1,0 +1,31 @@
+name: build
+version: 0.1.0
+description: "Équipe de développement : explore + plan + code. Topology peer — pas de director, l'agent appelant coordonne via l'outil delegate."
+workspace_id: ""
+topology: peer
+
+director:
+
+members:
+  - agent_name: explore
+    role: explorateur
+    occupation: noncontinue
+    resources:
+      llm: true
+
+  - agent_name: plan
+    role: planificateur
+    occupation: noncontinue
+    resources:
+      llm: true
+
+  - agent_name: syntax
+    role: correcteur
+    occupation: noncontinue
+    resources:
+      llm: false
+
+resources:
+  budget_per_hour: 0
+  max_concurrent: 5
+  llm_quota_per_day: 0
