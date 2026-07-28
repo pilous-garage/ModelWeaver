@@ -1139,6 +1139,11 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - `AgentsCatalogue/agents/worker@v2, manager@v2`
 - `services/agent_shell_manager.py`
 
+### Roadmap V0.8
+- **Catalogue sync** — interroger les providers API pour lister les modèles disponibles (ébauche faite dans `catalogue_sync.py`)
+- **Correction litellm** — le formatage des tool_calls par litellm est incorrect pour Groq (wrapping XML). Solution : fork litellm ou correction du bridge pour appeler directement l'API Groq/OpenAI
+- **Mode texte + extraction de code** — alternative aux tool_calls pour les providers qui ne les supportent pas
+- **`nullable: true`** pour tous les paramètres optionnels des outils (compatibilité Groq/Anthropic) — déjà fait dans `bundles.py`
 
 
 - Tests E2E complets
