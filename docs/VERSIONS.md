@@ -1140,13 +1140,37 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - `services/agent_shell_manager.py`
 
 ### Roadmap V0.8
-- **Catalogue sync** — interroger les providers API pour lister les modèles disponibles (ébauche faite dans `catalogue_sync.py`)
-- **Correction litellm** — le formatage des tool_calls par litellm est incorrect pour Groq (wrapping XML). Solution : fork litellm ou correction du bridge pour appeler directement l'API Groq/OpenAI
-- **Mode texte + extraction de code** — alternative aux tool_calls pour les providers qui ne les supportent pas
-- **`nullable: true`** pour tous les paramètres optionnels des outils (compatibilité Groq/Anthropic) — déjà fait dans `bundles.py`
+- **Catalogue sync** — interroger les providers API pour lister les modèles disponibles ✅
+- **Correction litellm** — remplacé par **DirectBridge** (appel API direct OpenAI-compatible) ✅
+- **Mode texte + extraction de code** — alternative aux tool_calls (blocs markdown, JSON, bash) ✅
+- **`nullable: true`** pour paramètres optionnels des outils ✅
+- Tests E2E complets (6/6 phases, 97/97 tests) ✅
 
+## V0.8.7 — DirectBridge, Bundles & Permissions 🚀 (Livrée)
 
-- Tests E2E complets
+### DirectBridge (remplace LiteLLM)
+- Appel API direct via HTTP (`modules/llm_manager/direct_bridge.py`)
+- Support OpenAI-compatible : nvidia, groq, openrouter, together, deepinfra, ollama
+- Support API native Google Gemini (gemma, gemini)
+- `assign_llm()` réécrit avec découverte en temps réel des modèles via `/v1/models`
+- Détection rate-limit + backoff progressif 2s→5s→10s→20s→30s
+
+### Bundles & Permissions
+- `AgentsCatalogue/bundles/` : 4 bundles réutilisables (analysis_only, dev, manager, test)
+- Permissions most-specific-first (exact > wildcard > `*`)
+- `AgentsCatalogue/tools/` : tools YAML auto-découverts (delegate, edit, grep)
+- 19 agents migrés vers `bundles:` + `skills:` individuels
+
+### Mode Texte
+- Extraction d'actions depuis réponses markdown (```python → write_file, ```bash → shell_exec)
+- Fallback pour providers sans function calling (step-3.7-flash, gemini, etc.)
+- Intégré dans la boucle LLM : si pas de tool_calls, parsing texte et exécution
+
+### E2E & Tests
+- `tests/e2e_opencode.py` : 6 phases (tools, bundles, agents, LLM, délégation, écriture)
+- `regular-checkup/` : scripts de sync catalogue (providers, awesome-list, capacités)
+- 97/97 tests shell
+- Fichier écrit avec modèle sans tool calling (step-3.7-flash) via mode texte
 - Portabilité Windows (via v0.10)
 - Branding final (via v0.13)
 - Documentation professionnelle
