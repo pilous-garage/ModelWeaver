@@ -610,10 +610,14 @@ class LiteLLMBridge(BaseBridge):
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT DISTINCT m.ref, m.name, m.developer,
-                       kem.provider_model_name
+                       kem.provider_model_name,
+                       mc.supports_chat, mc.supports_function_calling,
+                       mc.supports_vision, mc.supports_embedding,
+                       mc.supports_streaming, mc.source as cap_source
                 FROM key_endpoint_models kem
                 JOIN catalogue_models m ON m.id = kem.model_id
                 JOIN catalogue_providers p ON p.id = kem.provider_id
+                LEFT JOIN model_capabilities mc ON mc.model_ref = m.ref
                 WHERE p.ref = ?
                 ORDER BY kem.available DESC, m.name
             """, (provider_ref,))

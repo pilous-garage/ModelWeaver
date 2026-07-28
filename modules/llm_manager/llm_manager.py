@@ -242,12 +242,32 @@ class LLMManager:
             if len(candidates) >= max_candidates * len(providers):
                 break
 
-        # Health check : tester chaque provider jusqu'à en trouver un qui répond
+        # Filtrer les candidats par capacités via BDD, puis health check si inconnu
         for c in candidates:
             req = USE_CASE_REQUIREMENTS.get(use_case, {})
-            needs_fc = "function_calling" in req.get("features", [])
+            required_features = req.get("features", [])
+
+            # Vérifier les capacités dans la BDD d'abord
+            if required_features:
+                mc = self.cat.conn.execute("""
+                    SELECT supports_chat, supports_function_calling,
+                           supports_vision, supports_embedding
+                    FROM model_capabilities WHERE model_ref = ?
+                """, (c["model_ref"],)).fetchone()
+
+                if mc:
+                    has_fc = bool(mc["supports_function_calling"])
+                    has_chat = bool(mc["supports_chat"])
+                    if "function_calling" in required_features and not has_fc:
+                        continue  # pas les bonnes capacités, passer au suivant
+                    if "chat" in required_features and not has_chat:
+                        continue
+                    # Capacités trouvées en BDD et OK → accepter sans health check
+                    return c
+
+            # Fallback : health check réel si la BDD n'a pas l'info
             try:
-                if needs_fc:
+                if required_features:
                     r = bridge.chat(c["provider_ref"], c["model_ref"],
                         [{"role": "user", "content": "Call test.echo with x=hello"}],
                         tools=[{
@@ -256,12 +276,10 @@ class LLMManager:
                                 "name": "test.echo",
                                 "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}
                             }
-                        }],
-                        max_tokens=50, temperature=0)
+                        }], max_tokens=50, temperature=0)
                 else:
                     r = bridge.chat(c["provider_ref"], c["model_ref"],
-                        [{"role": "user", "content": "ok"}],
-                        max_tokens=1, temperature=0)
+                        [{"role": "user", "content": "ok"}], max_tokens=1, temperature=0)
                 if r and (r.content is not None or getattr(r, "tool_calls", None)):
                     return c
             except Exception:
