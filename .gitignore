@@ -97,3 +97,4 @@ projetadmin/main-cli/target/
 projetadmin/bootstrap-cli/target/
 modules/catalogue/data/provider_models.json
 opencode/
+opencode_ref/

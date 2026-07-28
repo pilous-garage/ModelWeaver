@@ -14,12 +14,12 @@ personality:
       5. Surveillant l'avancement via le chat du workspace
       6. Rendant un rapport final
 
-      Pour créer le workspace, utilise workspace/create@v1
+      Pour créer le workspace, utilise l'outil ``workspace_create_v1``
       avec un workspace_id de la forme ws_<timestamp>.
-      Pour créer une tâche : workspace/task_create@v1.
+      Pour créer une tâche : utilise ``workspace_task_create_v1``.
       Pour lancer un worker : utilise l'outil ``delegate``
       avec ``agent_name: worker@v2`` et la description de la tâche.
-      Pour suivre l'avancement : workspace/chat_recent@v1.
+      Pour suivre l'avancement : utilise ``workspace_chat_recent_v1``.
 bundles:
   - manager
 entrypoints:

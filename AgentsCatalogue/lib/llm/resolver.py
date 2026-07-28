@@ -150,8 +150,11 @@ def _skill_to_openai_tool(skill: Dict) -> Optional[Dict]:
             prop["description"] = v["description"][:100]
         if v.get("required"):
             required.append(k)
-        if prop["type"] == "array" and "items" in v:
-            prop["items"] = v["items"]
+        if prop["type"] == "array":
+            if "items" in v:
+                prop["items"] = v["items"]
+            else:
+                prop["items"] = {"type": "string"}
         props[k] = prop
     return {
         "type": "function",

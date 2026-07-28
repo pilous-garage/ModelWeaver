@@ -11,6 +11,15 @@ inputs:
     description: Mission à décomposer en tâches (utilise LLM)
   tasks:
     type: array
+    items:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
     required: false
     description: Liste explicite de tâches [{title, description, priority}]
   context:
