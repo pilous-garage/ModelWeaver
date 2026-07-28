@@ -326,6 +326,36 @@ def cmd_signal(args):
         _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
 
 
+def cmd_catalogue(args):
+    """Synchronise le catalogue des modèles LLM depuis les providers et la base de connaissance."""
+    from modules.sql.db import CatalogueDB
+    from modules.key_manager.key_manager import KeyManager
+    from modules.llm_manager.catalogue_sync import run_sync, sync_from_local
+
+    cat = CatalogueDB()
+    km = KeyManager()
+    
+    # Sync local (base de connaissance)
+    c1 = sync_from_local(cat)
+    _print(f"[green]Modèles seedés depuis la base de connaissance: {c1}[/green]" if RICH else f"Modèles seedés: {c1}")
+
+    # Sync API (providers avec clés)
+    providers = args.providers.split(",") if args.providers else None
+    results = run_sync(cat, km, providers=providers)
+    for prov, count in results.items():
+        if count > 0:
+            _print(f"[green]  {prov}: {count} modèles synchronisés[/green]" if RICH else f"  {prov}: {count} modèles")
+        elif count == 0:
+            _print(f"[yellow]  {prov}: déjà à jour ou clé manquante[/yellow]" if RICH else f"  {prov}: -")
+        else:
+            _print(f"[red]  {prov}: échec[/red]" if RICH else f"  {prov}: échec")
+    
+    # Stats finales
+    caps = cat.conn.execute("SELECT COUNT(*) FROM model_capabilities").fetchone()[0]
+    kems = cat.conn.execute("SELECT COUNT(*) FROM key_endpoint_models").fetchone()[0]
+    _print(f"\n[bold]Total: {caps} capacités, {kems} modèles endpoints[/bold]" if RICH else f"Total: {caps} capacités, {kems} modèles")
+
+
 # ── CLI ──
 
 def main():
@@ -367,6 +397,10 @@ def main():
     p_signal.add_argument("agent_id", help="ID de l'agent")
     p_signal.add_argument("action", choices=("pause", "resume", "kill"), help="Type de signal")
     p_signal.set_defaults(func=cmd_signal)
+
+    p_catalogue = sub.add_parser("catalogue", help="Synchroniser le catalogue des modèles LLM")
+    p_catalogue.add_argument("--providers", help="Providers à synchroniser (séparés par des virgules, défaut: tous)")
+    p_catalogue.set_defaults(func=cmd_catalogue)
 
     args = p.parse_args()
     if not args.cmd:
