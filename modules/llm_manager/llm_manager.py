@@ -200,91 +200,75 @@ class LLMManager:
         from modules.sql.db import ModelWeaverDB
         km = self.km or KeyManager(ModelWeaverDB())
         bridge = LiteLLMBridge(cat=self.cat, km=km)
-        providers = [p for p in bridge.list_available_providers()
-                     if p.get("available")]
-        candidates = []
 
-        # Ajouter les modèles de confiance en premier
-        for tref in TRUSTED_MODELS:
-            parts = tref.split("/", 1)
-            prov = parts[0]
-            model = parts[1] if len(parts) > 1 else tref
-            if prov in excl_p or tref in excl_m:
-                continue
-            candidates.append({"provider_ref": prov, "model_ref": tref, "use_case": use_case})
+        # Requête unique : providers avec clé + modèles avec capacités
+        req = USE_CASE_REQUIREMENTS.get(use_case, {})
+        rf = req.get("features", [])
+        needs_fc = "function_calling" in rf
+        needs_chat = "chat" in rf
 
-        # Puis les autres modèles du catalogue
-        for p in providers:
-            if p["ref"] in excl_p:
-                continue
-            try:
-                models = bridge.list_available_models(p["ref"])
-            except Exception:
-                continue
-            for m in models[:max_candidates]:
-                if m["ref"] in excl_m:
-                    continue
-                req = USE_CASE_REQUIREMENTS.get(use_case, {})
-                required_features = req.get("features", [])
-                if required_features:
-                    skip_prefixes = ("babbage", "davinci", "curie", "ada", "text-")
-                    if any(m["ref"].startswith(p) for p in skip_prefixes):
-                        continue
-                    if "function_calling" in required_features:
-                        no_fc = ("gemini-2.0-flash-lite", "gemini-2.0-flash-thinking")
-                        if any(nf in m["ref"] for nf in no_fc):
-                            continue
-                candidates.append({"provider_ref": p["ref"],
-                                   "model_ref": m["ref"],
-                                   "use_case": use_case})
-                if len(candidates) >= max_candidates * len(providers):
-                    break
-            if len(candidates) >= max_candidates * len(providers):
-                break
+        rows = self.cat.conn.execute("""
+            SELECT p.ref as provider_ref, m.ref as model_ref,
+                   mc.supports_function_calling, mc.supports_chat,
+                   kem.available, kem.last_error
+            FROM key_endpoint_models kem
+            JOIN catalogue_models m ON m.id = kem.model_id
+            JOIN catalogue_providers p ON p.id = kem.provider_id
+            LEFT JOIN model_capabilities mc ON mc.model_ref = m.ref
+            WHERE kem.available = 1
+               OR (kem.available = 0 AND kem.last_checked_at IS NULL)
+            ORDER BY kem.available DESC, m.name
+        """).fetchall()
 
-        # Filtrer les candidats par capacités via BDD, puis health check si inconnu
+        # Trier : modèles de confiance d'abord, puis le reste
+        trusted_set = set(TRUSTED_MODELS)
+        trusted = []
+        others = []
+        for r in rows:
+            ref = r["model_ref"]
+            if ref in excl_m or r["provider_ref"] in excl_p:
+                continue
+            # Filtrer par capacités
+            if needs_fc and r["supports_function_calling"] == 0:
+                continue
+            if needs_chat and r["supports_chat"] == 0:
+                continue
+            item = {"provider_ref": r["provider_ref"], "model_ref": ref, "use_case": use_case}
+            if ref in trusted_set:
+                trusted.append(item)
+            else:
+                others.append(item)
+
+        candidates = trusted + others
+
+        # Retourner le premier candidat (les capacités sont déjà vérifiées par la requête)
         for c in candidates:
-            req = USE_CASE_REQUIREMENTS.get(use_case, {})
-            required_features = req.get("features", [])
-
-            # Vérifier les capacités dans la BDD d'abord
-            if required_features:
+            # Vérification rapide : si model_capabilities a l'info, on l'utilise
+            if needs_fc or needs_chat:
                 mc = self.cat.conn.execute("""
-                    SELECT supports_chat, supports_function_calling,
-                           supports_vision, supports_embedding
+                    SELECT supports_function_calling, supports_chat
                     FROM model_capabilities WHERE model_ref = ?
                 """, (c["model_ref"],)).fetchone()
-
                 if mc:
-                    has_fc = bool(mc["supports_function_calling"])
-                    has_chat = bool(mc["supports_chat"])
-                    if "function_calling" in required_features and not has_fc:
-                        continue  # pas les bonnes capacités, passer au suivant
-                    if "chat" in required_features and not has_chat:
+                    if needs_fc and not mc["supports_function_calling"]:
                         continue
-                    # Capacités trouvées en BDD et OK → accepter sans health check
+                    if needs_chat and not mc["supports_chat"]:
+                        continue
                     return c
-
-            # Fallback : health check réel si la BDD n'a pas l'info
+            # Fallback health check si capacités inconnues
             try:
-                if required_features:
+                if needs_fc:
                     r = bridge.chat(c["provider_ref"], c["model_ref"],
                         [{"role": "user", "content": "Call test.echo with x=hello"}],
-                        tools=[{
-                            "type": "function",
-                            "function": {
-                                "name": "test.echo",
-                                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}
-                            }
-                        }], max_tokens=50, temperature=0)
+                        tools=[{"type":"function","function":{"name":"test.echo",
+                            "parameters":{"type":"object","properties":{"x":{"type":"string"}}}}}],
+                        max_tokens=50, temperature=0)
                 else:
                     r = bridge.chat(c["provider_ref"], c["model_ref"],
-                        [{"role": "user", "content": "ok"}], max_tokens=1, temperature=0)
+                        [{"role": "user", "content": "ok"}], max_tokens=1)
                 if r and (r.content is not None or getattr(r, "tool_calls", None)):
                     return c
             except Exception:
-                bridge._mark_model_unavailable(c["provider_ref"], c["model_ref"],
-                                               "health check failed")
                 continue
 
         return None
