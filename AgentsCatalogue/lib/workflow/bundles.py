@@ -42,10 +42,18 @@ def _skill_to_tool(skill: Dict) -> Optional[Dict]:
     required = []
     for k, v in inputs.items():
         if v.get("injected"):
-            continue  # injecté par le FSM, pas dans le schema outil
-        if v.get("required"):
+            continue
+        prop = {"type": v.get("type", "string")}
+        if v.get("description"):
+            prop["description"] = v["description"][:100]  # descriptions courtes
+        if not v.get("required"):
+            prop["nullable"] = True  # compatible Groq/Anthropic/OpenAI
+        else:
             required.append(k)
-        props[k] = {"type": v.get("type", "string"), "description": v.get("description", "")}
+        # Si le type est array, ajouter items
+        if prop["type"] == "array" and "items" in v:
+            prop["items"] = v["items"]
+        props[k] = prop
     return {
         "type": "function",
         "function": {
