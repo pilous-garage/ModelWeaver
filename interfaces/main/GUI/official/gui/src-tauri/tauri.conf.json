@@ -3,7 +3,7 @@
   "version": "0.8.6",
   "identifier": "com.modelweaver.main",
   "build": {
-    "beforeDevCommand": "fuser -k 8770/tcp 2>/dev/null; npm run dev",
+    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
@@ -11,6 +11,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "ModelWeaver",
         "width": 2560,
         "height": 1440,

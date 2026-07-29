@@ -103,6 +103,12 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
 
   useEffect(() => {
+    // Fallback URL param pour les fenêtres Tauri sans label
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const wl = params.get('window');
+      if (wl) { setWindowLabel(wl); return; }
+    }
     getWindowLabel().then(setWindowLabel);
   }, []);
 
