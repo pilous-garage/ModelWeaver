@@ -738,44 +738,44 @@ fn cmp_version(a: &str, b: &str) -> i32 {
                 .map(|o| !o.stdout.is_empty())
                 .unwrap_or(false);
             if !table_ok { return; }
-    let mut reg = services_reg().lock().unwrap();
-    for entry in reg.iter_mut() {
-        if !entry.managed { continue; }
-        let rows = db_query_json(&db, &format!(
-            "SELECT pid, version FROM services WHERE name = '{}' AND status = 'running'",
-            entry.info.name.replace('\'', "''")
-        ));
-        for row in &rows {
-            let old_version = row.get("version").and_then(|v| v.as_str()).unwrap_or("");
-            let old_pid = row.get("pid").and_then(|p| p.as_i64()).unwrap_or(-1);
-            if old_pid <= 0 || !process_alive(old_pid as i32) { continue; }
-            if !pid_matches_service(old_pid as i32, &entry.info.name) { continue; }
-                match cmp_version(old_version, &entry.info.version) {
-                    0 => {
-                        // Même version → réutilisation.
-                        entry.info.status = "running".to_string();
-                        entry.info.pid = Some(old_pid as u32);
-                        entry.info.started_at = now_secs();
-                        entry.info.restarts = 0;
-                        entry.child = None;
-                        log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+            let mut reg = services_reg().lock().unwrap();
+            for entry in reg.iter_mut() {
+                if !entry.managed { continue; }
+                let rows = db_query_json(&db, &format!(
+                    "SELECT pid, version FROM services WHERE name = '{}' AND status = 'running'",
+                    entry.info.name.replace('\'', "''")
+                ));
+                for row in &rows {
+                    let old_version = row.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                    let old_pid = row.get("pid").and_then(|p| p.as_i64()).unwrap_or(-1);
+                    if old_pid <= 0 || !process_alive(old_pid as i32) { continue; }
+                    if !pid_matches_service(old_pid as i32, &entry.info.name) { continue; }
+                        match cmp_version(old_version, &entry.info.version) {
+                            0 => {
+                                // Même version → réutilisation.
+                                entry.info.status = "running".to_string();
+                                entry.info.pid = Some(old_pid as u32);
+                                entry.info.started_at = now_secs();
+                                entry.info.restarts = 0;
+                                entry.child = None;
+                                log_to_file("SUPERVISOR", &format!("reuse {} (PID {} v{})", entry.info.name, old_pid, old_version));
+                            }
+                            1 => {
+                                // Running plus récent que le manifest → erreur de versioning.
+                                log_to_file("SUPERVISOR", &format!("VERSION ERROR: {} running v{} > manifest v{} — kill + reboot",
+                                    entry.info.name, old_version, entry.info.version));
+                                kill_process(old_pid as i32);
+                            }
+                            -1 => {
+                                // Running obsolète → mise à jour.
+                                log_to_file("SUPERVISOR", &format!("update {} v{} → v{} — kill + reboot", entry.info.name, old_version, entry.info.version));
+                                kill_process(old_pid as i32);
+                            }
+                            _ => {}
+                        }
                     }
-                    1 => {
-                        // Running plus récent que le manifest → erreur de versioning.
-                        log_to_file("SUPERVISOR", &format!("VERSION ERROR: {} running v{} > manifest v{} — kill + reboot",
-                            entry.info.name, old_version, entry.info.version));
-                        kill_process(old_pid as i32);
-                    }
-                    -1 => {
-                        // Running obsolète → mise à jour.
-                        log_to_file("SUPERVISOR", &format!("update {} v{} → v{} — kill + reboot", entry.info.name, old_version, entry.info.version));
-                        kill_process(old_pid as i32);
                 }
-                _ => {}
             }
-        }
-    }
-}
 
 #[cfg(unix)]
 fn pid_matches_service(pid: i32, name: &str) -> bool {
