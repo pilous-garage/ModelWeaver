@@ -6,6 +6,9 @@
   "theme": "dark",
   "menu": [
     { "id": "file", "label": "Fichier", "items": [
+      { "id": "new-agent", "label": "Nouvel agent", "action": "panel:ide:new-agent" },
+      { "id": "new-skill", "label": "Nouveau skill", "action": "panel:ide:new-skill" },
+      { "type": "separator" },
       { "id": "save-layout", "label": "Enregistrer le layout", "shortcut": "Ctrl+S", "action": "layout:save" },
       { "type": "separator" },
       { "id": "close-window", "label": "Fermer", "shortcut": "Ctrl+W", "action": "window:close" }
@@ -20,26 +23,10 @@
     ]}
   ],
   "panelTree": {
-    "direction": "horizontal",
-    "sizes": [300, 100],
+    "direction": "vertical",
+    "sizes": [100],
     "children": [
-      { "direction": "vertical", "sizes": [40, 60],
-        "children": [
-          { "type": "panel", "id": "agents-composition-equipe", "visible": true, "closable": true },
-          { "type": "panel", "id": "gestion-bundles", "visible": true, "closable": true }
-        ]
-      },
-      { "direction": "vertical", "sizes": [70, 30],
-        "children": [
-          { "type": "panel", "id": "communication-chat", "visible": true, "closable": false },
-          { "direction": "horizontal", "sizes": [50, 50],
-            "children": [
-              { "type": "panel", "id": "gestion-outils", "visible": true, "closable": true },
-              { "type": "panel", "id": "systeme-llm-locaux", "visible": true, "closable": true }
-            ]
-          }
-        ]
-      }
+      { "type": "panel", "id": "sandbox-agent-ide", "visible": true, "closable": false }
     ]
   }
 }

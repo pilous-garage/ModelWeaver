@@ -4,7 +4,6 @@ import { getWindowLabel, daemonPost } from './bridge.ts';
 import { useLayout } from './layout/useLayout.ts';
 import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
-import { AgentSandboxIDE } from './components/AgentSandboxIDE.tsx';
 
 const WINDOW_TO_LAYOUT: Record<string, string> = {
   'main': 'default',
@@ -104,17 +103,8 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('sandbox') !== null) {
-      setWindowLabel('sandbox');
-      return;
-    }
     getWindowLabel().then(setWindowLabel);
   }, []);
-
-  // L'IDE sandbox legacy en attendant sa migration vers le layout system
-  if (windowLabel === 'sandbox') {
-    return <AgentSandboxIDE />;
-  }
 
   const layoutId = WINDOW_TO_LAYOUT[windowLabel] || 'default';
   return <LayoutWindow app={app} layoutId={layoutId} />;
