@@ -66,21 +66,25 @@ export function useLayout(layoutId: string) {
   const loadLayout = useCallback(async (id: string) => {
     setLoading(true);
     setError(null);
+    console.log('[layout] loading layout:', id);
     try {
       let data: LayoutConfig;
       try {
         const resp = await daemonPost('layout/get', { name: id });
+        console.log('[layout] daemon response:', resp ? 'OK' : 'empty');
         data = JSON.parse(resp.yaml || resp);
-      } catch {
+      } catch (e: any) {
+        console.warn('[layout] daemon unreachable, trying ensure_daemon:', e.message);
         // Daemon indisponible → essayer de le démarrer
         try {
           const { invoke } = await import('../bridge.ts');
           const msg = await invoke('ensure_daemon');
-          console.log('[layout]', msg);
+          console.log('[layout] ensure_daemon result:', msg);
           // Réessayer après démarrage
           const resp2 = await daemonPost('layout/get', { name: id });
           data = JSON.parse(resp2.yaml || resp2);
-        } catch {
+        } catch (e2: any) {
+          console.warn('[layout] daemon still unreachable after ensure:', e2.message);
           // Daemon vraiment indisponible → layout minimal de secours
           data = {
             id: id, label: id, theme: 'dark', menu: [],

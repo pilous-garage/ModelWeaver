@@ -1169,22 +1169,29 @@ async fn version() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn ensure_daemon() -> Result<String, String> {
     log_cmd("ensure_daemon");
-    // Vérifier si le daemon répond déjà
+
+    // Vérifier si le daemon répond déjà (via Tauri daemon_post qui utilise curl)
     let is_alive = tauri::async_runtime::spawn_blocking(move || {
         daemon_post_once("version", "{}").is_ok()
     }).await.unwrap_or(false);
 
     if is_alive {
+        log_to_file("INFO", "ensure_daemon: daemon déjà actif");
         return Ok("daemon déjà actif".to_string());
     }
+    log_to_file("INFO", "ensure_daemon: daemon injoignable, tentative de démarrage");
 
     // Lancer le daemon en arrière-plan
     let root = std::env::current_dir()
-        .map_err(|e| format!("current_dir: {}", e))?;
+        .map_err(|e| { log_to_file("ERROR", &format!("ensure_daemon: current_dir failed: {}", e)); format!("current_dir: {}", e) })?;
     let services_dir = root.join("services").join("api");
     let daemon_py = services_dir.join("daemon.py");
+    log_to_file("INFO", &format!("ensure_daemon: CWD={}, daemon_py={}", root.display(), daemon_py.display()));
+
     if !daemon_py.exists() {
-        return Err(format!("daemon.py introuvable: {}", daemon_py.display()));
+        let msg = format!("daemon.py introuvable: {}", daemon_py.display());
+        log_to_file("ERROR", &msg);
+        return Err(msg);
     }
 
     let child = std::process::Command::new(python_bin())
@@ -1193,18 +1200,27 @@ async fn ensure_daemon() -> Result<String, String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("impossible de lancer le daemon: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("impossible de lancer le daemon: {}", e);
+            log_to_file("ERROR", &msg);
+            msg
+        })?;
 
-    log_to_file("INFO", &format!("daemon lancé (pid={})", child.id()));
+    log_to_file("INFO", &format!("ensure_daemon: daemon lancé (pid={})", child.id()));
 
     // Attendre qu'il soit prêt (max 15s)
     for i in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(1));
         if daemon_post_once("version", "{}").is_ok() {
-            return Ok(format!("daemon démarré (pid={}, {}s)", child.id(), i + 1));
+            let msg = format!("daemon démarré (pid={}, {}s)", child.id(), i + 1);
+            log_to_file("INFO", &msg);
+            return Ok(msg);
         }
+        log_to_file("INFO", &format!("ensure_daemon: attente daemon... {}s", i + 1));
     }
-    Err("daemon non joignable après 15s".to_string())
+    let msg = "daemon non joignable après 15s".to_string();
+    log_to_file("ERROR", &msg);
+    Err(msg)
 }
 
 #[tauri::command]

@@ -45,12 +45,18 @@ export async function daemonPost(route: string, body: any): Promise<any> {
   await ensureDaemonConfig();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
-  const res = await fetch(`http://127.0.0.1:${_daemonPort}/v1/${route}`, {
+  const url = `http://127.0.0.1:${_daemonPort}/v1/${route}`;
+  console.log(`[daemonPost] ${route} → ${url} token=${!!_daemonToken}`);
+  const res = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${route}`);
+  if (!res.ok) {
+    const text = await res.text();
+    console.warn(`[daemonPost] HTTP ${res.status} ${route}: ${text.substring(0, 100)}`);
+    throw new Error(`HTTP ${res.status} ${route}: ${text.substring(0, 100)}`);
+  }
   return res.json();
 }
 

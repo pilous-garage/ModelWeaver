@@ -103,17 +103,20 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
 
   useEffect(() => {
+    console.log('[App] startup, hasTauri:', !!(window as any).__TAURI_INTERNALS__);
+    console.log('[App] __MW_WINDOW_LABEL:', (window as any).__MW_WINDOW_LABEL);
+
     // Fallback: window.__MW_WINDOW_LABEL injecté par Rust au setup
     const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
-    if (injected) { setWindowLabel(injected); return; }
+    if (injected) { console.log('[App] label from Rust inject:', injected); setWindowLabel(injected); return; }
 
     // Fallback URL param
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const wl = params.get('window');
-      if (wl) { setWindowLabel(wl); return; }
+      if (wl) { console.log('[App] label from URL param:', wl); setWindowLabel(wl); return; }
     }
-    getWindowLabel().then(setWindowLabel);
+    getWindowLabel().then((l) => { console.log('[App] label from getWindowLabel:', l); setWindowLabel(l); });
   }, []);
 
   const layoutId = WINDOW_TO_LAYOUT[windowLabel] || 'default';
