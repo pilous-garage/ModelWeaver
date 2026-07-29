@@ -67,8 +67,22 @@ export function useLayout(layoutId: string) {
     setLoading(true);
     setError(null);
     try {
-      const resp = await daemonPost('layout/get', { name: id });
-      const data: LayoutConfig = JSON.parse(resp.yaml || resp);
+      let data: LayoutConfig;
+      try {
+        const resp = await daemonPost('layout/get', { name: id });
+        data = JSON.parse(resp.yaml || resp);
+      } catch {
+        // Daemon indisponible → layout minimal de secours
+        data = {
+          id: id,
+          label: id,
+          theme: 'dark',
+          menu: [],
+          panelTree: {
+            type: 'panel', id: 'installator-dashboard', visible: true, closable: false,
+          },
+        };
+      }
       setLayout(data);
 
       // Charger le thème
