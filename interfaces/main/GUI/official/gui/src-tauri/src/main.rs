@@ -724,12 +724,20 @@ fn cmp_version(a: &str, b: &str) -> i32 {
     0
 }
 
-// Vérifie dans runtime.db si un service est déjà en cours d'exécution avec la
-// bonne version. Si oui, on l'adopte sans le respawn (préservation des services
-// entre redémarrages du superviseur ou des interfaces multiples).
-fn reuse_existing_services() {
-    let db = mw_home().join("runtime.db");
-    db_run(&db, "CREATE TABLE IF NOT EXISTS services (version TEXT);");
+        // Vérifie dans runtime.db si un service est déjà en cours d'exécution avec la
+        // bonne version. Si oui, on l'adopte sans le respawn (préservation des services
+        // entre redémarrages du superviseur ou des interfaces multiples).
+        fn reuse_existing_services() {
+            let db = mw_home().join("runtime.db");
+            // La table services est créée par mirror_services_to_db() avec le schéma complet.
+            // Si elle n'existe pas encore, on ne peut pas réutiliser d'anciens services.
+            let table_ok = std::process::Command::new("sqlite3")
+                .arg(&db)
+                .arg("SELECT name FROM sqlite_master WHERE type='table' AND name='services'")
+                .output()
+                .map(|o| !o.stdout.is_empty())
+                .unwrap_or(false);
+            if !table_ok { return; }
     let mut reg = services_reg().lock().unwrap();
     for entry in reg.iter_mut() {
         if !entry.managed { continue; }
