@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs::OpenOptions;
 use std::io::{Write, Read};
 use serde::Serialize;
+use tauri::Manager;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -1664,7 +1665,14 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| {
+        .setup(|app| {
+            // Injecter le label de la fenêtre dans chaque webview
+            // pour que le React App puisse le lire sans Tauri API
+            for (_, window) in app.webview_windows() {
+                let label = window.label().to_string();
+                let script = format!("window.__MW_WINDOW_LABEL = '{}';", label);
+                let _ = window.eval(&script);
+            }
             Ok(())
         })
           .invoke_handler(tauri::generate_handler![

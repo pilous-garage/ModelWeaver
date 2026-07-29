@@ -103,7 +103,11 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('main');
 
   useEffect(() => {
-    // Fallback URL param pour les fenêtres Tauri sans label
+    // Fallback: window.__MW_WINDOW_LABEL injecté par Rust au setup
+    const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
+    if (injected) { setWindowLabel(injected); return; }
+
+    // Fallback URL param
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const wl = params.get('window');
