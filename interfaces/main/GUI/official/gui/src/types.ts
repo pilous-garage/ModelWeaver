@@ -1,27 +1,46 @@
-export interface Dependency {
-  name: string;
-  description: string;
-  check_command?: string;
-  version_regex?: string;
-  min_version?: string;
-  install_commands?: Record<string, string>;
-  installed?: boolean;
-  version?: string;
-  error?: string;
-  // Champs issu du manifeste de dépendances
-  language?: string;
-  safe?: boolean;
-  weight?: string;
-  optional?: boolean;
-  required?: boolean;
-  target_pkg?: string;
+/** PanelDef — Contrat d'un panneau */
+import React from 'react';
+
+export interface DaemonRouteDeclaration {
+  route: string;
+  methods: ("GET" | "POST" | "DELETE" | "PUT")[];
+  desc: string;
+  params?: Record<string, string>;
 }
 
-export interface PackageManager {
-  available: boolean;
-  description: string;
+export interface PanelMenuItemDef {
+  menuPath: string[];
+  id: string;
+  label: string;
+  shortcut?: string;
+  type?: "normal" | "toggle-visibility" | "separator";
+  action: string;
+  disabled?: boolean;
 }
 
-export interface PythonPackageManager extends PackageManager {
-  version?: string;
+export interface PanelContext {
+  api: any;
+  layout: any;
+  theme: any;
+  onMenuAction: (action: string) => void;
+}
+
+export interface PanelDef {
+  id: string;
+  label: string;
+  icon?: string;
+  version: string;
+  description: string;
+  descriptionLong?: string;
+  idWarning?: boolean | string;
+  daemonRoutes: DaemonRouteDeclaration[];
+  menu?: PanelMenuItemDef[];
+  defaultSize?: { width?: number; height?: number };
+
+  declaration(): string;
+  onActivate?(ctx: PanelContext): void;
+  onDeactivate?(ctx: PanelContext): void;
+  onRefresh?(ctx: PanelContext): Promise<void>;
+
+  component: React.FC<{ ctx: PanelContext }>;
 }
