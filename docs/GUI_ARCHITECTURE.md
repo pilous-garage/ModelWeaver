@@ -32,11 +32,104 @@ fenêtres, avec quel menu, quel thème) est entièrement déclaratif et chargé
 
 | Couche | Fichier | Description |
 |--------|---------|-------------|
-| **Panel** | compilé (React) | Composant atomique. Parle au daemon via `daemonPost()`. |
+| **Panel** | `src/panels/**/*.panel.tsx` | Composant atomique. Parle au daemon via `daemonPost()`. |
 | **Layout** | `~/.modelweaver/layouts/{id}.json` | Arbre de `react-resizable-panels` + panneaux + menu + thème |
 | **Fenêtre** | Tauri `tauri.conf.json` + Rust `WindowBuilder` | Brique OS (label, taille, URL). Associe un layout. |
 | **Session** | `~/.modelweaver/sessions/{id}.json` | Liste de fenêtres → leurs layouts |
 | **Extension** | `~/.modelweaver/extensions/{name}/` | Panel externe chargé dans un iframe |
+
+---
+
+## 2. Organisation des panels
+
+### 2.1 Arborescence
+
+```
+src/panels/
+├── index.ts                     # PANEL_REGISTRY — généré automatiquement
+├── Installator/
+│   ├── catalogue-outils.panel.tsx
+│   ├── file-installation.panel.tsx
+│   └── install-queue.panel.tsx
+├── Agents/
+│   ├── liste.panel.tsx
+│   ├── monitoring.panel.tsx
+│   └── composition-equipe.panel.tsx
+├── Communication/
+│   └── chat.panel.tsx
+├── Gestion/
+│   ├── bundles.panel.tsx
+│   ├── outils.panel.tsx
+│   ├── permissions.panel.tsx
+│   ├── sessions.panel.tsx
+│   └── themes.panel.tsx
+├── Systeme/
+│   ├── cles-api.panel.tsx
+│   ├── llm-locaux.panel.tsx
+│   └── catalogue-modeles.panel.tsx
+├── Debug/
+│   ├── logs.panel.tsx
+│   └── services.panel.tsx
+├── Projet/
+│   ├── workspace.panel.tsx
+│   └── equipes.panel.tsx
+└── Sandbox/
+    ├── agent-ide.panel.tsx
+    └── agent-ide/                  # sous-composants du panneau
+        ├── CatalogTree.tsx
+        └── CodeEditor.tsx
+
+### 2.2 Règle d'identifiant
+
+L'`id` d'un panneau doit correspondre à son chemin relatif :
+- `src/panels/Installator/catalogue-outils.panel.tsx` → `id: "installator-catalogue-outils"`
+- `src/panels/Agents/monitoring.panel.tsx` → `id: "agents-monitoring"`
+
+Si un panneau a volontairement un `id` différent, il peut le signaler
+avec `idWarning: false` (ou `idWarning: "raison"`) pour éviter le warning.
+
+### 2.3 Build — Découverte automatique des panels
+
+Le script `scripts/discover-panels.ts` (ou une étape du build Vite) :
+
+1. Parcourt récursivement `src/panels/` à la recherche de `*.panel.tsx`
+2. Pour chaque fichier, calcule l'`id` attendu depuis le chemin
+3. Importe le fichier et vérifie son `PanelDef.id`
+4. Si `id !== idAttendu` et `idWarning !== false` → `console.warn`
+5. Vérifie l'unicité de tous les `id` → `console.error` + exit 1 si conflit
+6. Génère `src/panels/index.ts` avec le `PANEL_REGISTRY`
+
+### 2.4 Contrat PanelDef
+
+Chaque panneau doit exporter un objet `PanelDef` (détaillé dans
+`docs/PANEL_CONTRACT.md`). Résumé :
+
+```typescript
+export const Panel: PanelDef = {
+  id: "agents-liste",                  // identifiant unique
+  label: "Agents",                     // nom affiché
+  icon: "smart_toy",                   // Material icon
+  version: "1.0.0",
+  description: "Liste et contrôle des agents",
+  idWarning: false,                    // optionnel, supprime le warning si id≠chemin
+
+  daemonRoutes: [
+    { route: "agent/list", methods: ["GET"], desc: "Liste les agents" },
+  ],
+  menu: [
+    { menuPath: ["Fichier"], label: "Nouvel agent", action: "panel:agents:new" },
+  ],
+
+  declaration(): string { /* retourne un résumé texte */ },
+  onActivate(ctx): void { /* démarrer le polling */ },
+  onDeactivate(ctx): void { /* arrêter le polling */ },
+  onRefresh(ctx): Promise<void> { /* recharger les données */ },
+
+  component: React.FC<PanelProps>,
+};
+```
+        └── CodeEditor.tsx
+```
 
 ---
 
