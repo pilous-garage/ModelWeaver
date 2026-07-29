@@ -1,7 +1,7 @@
 /** PanelTreeRenderer — Rendu récursif d'un arbre de panneaux */
 
 import React from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Group, Panel, Separator } from 'react-resizable-panels';
 import { PANEL_REGISTRY } from '../panels/index.ts';
 import type { PanelTreeNode } from './useLayout.ts';
 
@@ -44,11 +44,11 @@ export function PanelTreeRenderer({ tree, ctx }: Props) {
   if (children.length === 1) return <PanelTreeRenderer tree={children[0]} ctx={ctx} />;
 
   return (
-    <PanelGroup direction={direction} style={{ height: '100%', width: '100%' }}>
+    <Group direction={direction} style={{ height: '100%', width: '100%' }}>
       {children.map((child, idx) => (
         <React.Fragment key={child.id || `node-${idx}`}>
           {idx > 0 && (
-            <PanelResizeHandle
+            <Separator
               style={{
                 width: direction === 'horizontal' ? '4px' : '100%',
                 height: direction === 'vertical' ? '4px' : undefined,
@@ -65,6 +65,6 @@ export function PanelTreeRenderer({ tree, ctx }: Props) {
           </Panel>
         </React.Fragment>
       ))}
-    </PanelGroup>
+    </Group>
   );
 }
