@@ -1,0 +1,34 @@
+{
+  "$schema": "https://modelweaver.dev/schemas/layout.json",
+  "id": "default",
+  "label": "Installation",
+  "icon": "install",
+  "theme": "dark",
+  "menu": [
+    { "id": "file", "label": "Fichier", "items": [
+      { "id": "quit", "label": "Quitter", "shortcut": "Ctrl+Q", "action": "app:quit" }
+    ]},
+    { "id": "view", "label": "Affichage", "items": [
+      { "id": "panels", "label": "Panneaux", "type": "panel-toggle" },
+      { "type": "separator" },
+      { "id": "fullscreen", "label": "Plein écran", "shortcut": "F11", "action": "window:fullscreen" }
+    ]},
+    { "id": "theme", "label": "Thème", "items": [
+      { "id": "theme-dark", "label": "Sombre", "action": "theme:set", "value": "dark" },
+      { "id": "theme-light", "label": "Clair", "action": "theme:set", "value": "light" }
+    ]}
+  ],
+  "panelTree": {
+    "direction": "vertical",
+    "sizes": [60, 40],
+    "children": [
+      { "type": "panel", "id": "installator-dashboard", "visible": true, "closable": false },
+      { "direction": "horizontal", "sizes": [50, 50],
+        "children": [
+          { "type": "panel", "id": "installator-deps", "visible": true, "closable": true },
+          { "type": "panel", "id": "installator-file-queue", "visible": true, "closable": true }
+        ]
+      }
+    ]
+  }
+}

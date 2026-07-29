@@ -1,0 +1,46 @@
+{
+  "$schema": "https://modelweaver.dev/schemas/layout.json",
+  "id": "dashboard",
+  "label": "Dashboard",
+  "icon": "dashboard",
+  "theme": "dark",
+  "menu": [
+    { "id": "file", "label": "Fichier", "items": [
+      { "id": "save-layout", "label": "Enregistrer le layout", "shortcut": "Ctrl+S", "action": "layout:save" },
+      { "id": "load-layout", "label": "Charger un layout…", "action": "layout:load" },
+      { "type": "separator" },
+      { "id": "new-window", "label": "Nouvelle fenêtre…", "shortcut": "Ctrl+N", "action": "window:select-layout" },
+      { "id": "close-window", "label": "Fermer", "shortcut": "Ctrl+W", "action": "window:close" },
+      { "type": "separator" },
+      { "id": "quit", "label": "Quitter", "shortcut": "Ctrl+Q", "action": "app:quit" }
+    ]},
+    { "id": "view", "label": "Affichage", "items": [
+      { "id": "panels", "label": "Panneaux", "type": "panel-toggle" },
+      { "type": "separator" },
+      { "id": "reset-splits", "label": "Réinitialiser les proportions", "action": "layout:reset-splits" },
+      { "id": "fullscreen", "label": "Plein écran", "shortcut": "F11", "action": "window:fullscreen" }
+    ]},
+    { "id": "theme", "label": "Thème", "items": [
+      { "id": "theme-dark", "label": "Sombre", "action": "theme:set", "value": "dark" },
+      { "id": "theme-light", "label": "Clair", "action": "theme:set", "value": "light" }
+    ]}
+  ],
+  "panelTree": {
+    "direction": "horizontal",
+    "sizes": [250, 100],
+    "children": [
+      { "direction": "vertical", "sizes": [50, 50],
+        "children": [
+          { "type": "panel", "id": "agents-liste", "visible": true, "closable": true },
+          { "type": "panel", "id": "systeme-ressources", "visible": true, "closable": true }
+        ]
+      },
+      { "direction": "vertical", "sizes": [60, 40],
+        "children": [
+          { "type": "panel", "id": "systeme-etat", "visible": true, "closable": true },
+          { "type": "panel", "id": "communication-chat", "visible": true, "closable": true }
+        ]
+      }
+    ]
+  }
+}

@@ -14,32 +14,45 @@ from services.api.router import register
 _LAYOUTS_DIR = mw_home() / "layouts"
 _SESSIONS_DIR = mw_home() / "sessions"
 _THEMES_DIR = mw_home() / "themes"
+_DEFAULT_LAYOUTS = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "defaults" / "layouts"
 
 
 def _ensure_dir(d: Path) -> None:
     d.mkdir(parents=True, exist_ok=True)
 
 
-def _list_json_dir(d: Path) -> list:
+def _list_json_dir(d: Path, default_dir: Optional[Path] = None) -> list:
     _ensure_dir(d)
+    seen = set()
     result = []
-    for p in sorted(d.glob("*.json")):
-        name = p.stem
-        try:
-            data = json.loads(p.read_text())
-            label = data.get("label", data.get("id", name))
-        except Exception:
-            label = name
-        result.append({"name": name, "label": label, "path": str(p)})
+    # Chercher d'abord dans les defaults, puis dans le répertoire user
+    for source_dir in ([default_dir, d] if default_dir else [d]):
+        if not source_dir or not source_dir.exists():
+            continue
+        for p in sorted(source_dir.glob("*.json")):
+            name = p.stem
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                data = json.loads(p.read_text())
+                label = data.get("label", data.get("id", name))
+            except Exception:
+                label = name
+            result.append({"name": name, "label": label, "path": str(p), "default": source_dir == default_dir})
     return result
 
 
-def _get_json(d: Path, name: str) -> Optional[Dict]:
+def _get_json(d: Path, name: str, default_dir: Optional[Path] = None) -> Optional[Dict]:
     _ensure_dir(d)
     for ext in (".json",):
-        p = d / f"{name}{ext}"
-        if p.exists():
-            return {"name": name, "yaml": p.read_text(), "path": str(p)}
+        # D'abord le répertoire user, puis les defaults
+        for source_dir in ([d, default_dir] if default_dir else [d]):
+            if not source_dir:
+                continue
+            p = source_dir / f"{name}{ext}"
+            if p.exists():
+                return {"name": name, "yaml": p.read_text(), "path": str(p), "default": source_dir == default_dir}
     return None
 
 
@@ -61,14 +74,14 @@ def _delete_json(d: Path, name: str) -> Dict:
 # ── Layouts ────────────────────────────────────────────────
 
 def op_layout_list(params: dict) -> Dict[str, Any]:
-    return {"layouts": _list_json_dir(_LAYOUTS_DIR), "count": 0}
+    return {"layouts": _list_json_dir(_LAYOUTS_DIR, _DEFAULT_LAYOUTS), "count": 0}
 
 
 def op_layout_get(params: dict) -> Dict[str, Any]:
     name = params.get("name", "")
     if not name:
         return {"error": "name requis"}
-    result = _get_json(_LAYOUTS_DIR, name)
+    result = _get_json(_LAYOUTS_DIR, name, _DEFAULT_LAYOUTS)
     if not result:
         return {"error": f"layout '{name}' introuvable"}
     return result
