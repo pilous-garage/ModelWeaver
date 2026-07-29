@@ -1166,6 +1166,47 @@ async fn version() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn ensure_daemon() -> Result<String, String> {
+    log_cmd("ensure_daemon");
+    // Vérifier si le daemon répond déjà
+    let is_alive = tauri::async_runtime::spawn_blocking(move || {
+        daemon_post_once("version", "{}").is_ok()
+    }).await.unwrap_or(false);
+
+    if is_alive {
+        return Ok("daemon déjà actif".to_string());
+    }
+
+    // Lancer le daemon en arrière-plan
+    let root = std::env::current_dir()
+        .map_err(|e| format!("current_dir: {}", e))?;
+    let services_dir = root.join("services").join("api");
+    let daemon_py = services_dir.join("daemon.py");
+    if !daemon_py.exists() {
+        return Err(format!("daemon.py introuvable: {}", daemon_py.display()));
+    }
+
+    let child = std::process::Command::new(python_bin())
+        .arg(&daemon_py)
+        .current_dir(&root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("impossible de lancer le daemon: {}", e))?;
+
+    log_to_file("INFO", &format!("daemon lancé (pid={})", child.id()));
+
+    // Attendre qu'il soit prêt (max 15s)
+    for i in 0..15 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if daemon_post_once("version", "{}").is_ok() {
+            return Ok(format!("daemon démarré (pid={}, {}s)", child.id(), i + 1));
+        }
+    }
+    Err("daemon non joignable après 15s".to_string())
+}
+
+#[tauri::command]
 async fn install_dependency(name: String) -> Result<String, String> {
     log_cmd(&format!("install_dependency({})", name));
     // Délégation au daemon API (backend unique, root en container, sudo/pkexec sinon).
@@ -1626,9 +1667,10 @@ fn main() {
         .setup(|_app| {
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+          .invoke_handler(tauri::generate_handler![
             daemon_post,
             daemon_config,
+            ensure_daemon,
             log_message,
             get_system_info,
             check_dependencies,

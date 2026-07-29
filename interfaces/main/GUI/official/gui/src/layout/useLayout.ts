@@ -72,16 +72,23 @@ export function useLayout(layoutId: string) {
         const resp = await daemonPost('layout/get', { name: id });
         data = JSON.parse(resp.yaml || resp);
       } catch {
-        // Daemon indisponible → layout minimal de secours
-        data = {
-          id: id,
-          label: id,
-          theme: 'dark',
-          menu: [],
-          panelTree: {
-            type: 'panel', id: 'installator-dashboard', visible: true, closable: false,
-          },
-        };
+        // Daemon indisponible → essayer de le démarrer
+        try {
+          const { invoke } = await import('../bridge.ts');
+          const msg = await invoke('ensure_daemon');
+          console.log('[layout]', msg);
+          // Réessayer après démarrage
+          const resp2 = await daemonPost('layout/get', { name: id });
+          data = JSON.parse(resp2.yaml || resp2);
+        } catch {
+          // Daemon vraiment indisponible → layout minimal de secours
+          data = {
+            id: id, label: id, theme: 'dark', menu: [],
+            panelTree: {
+              type: 'panel', id: 'installator-dashboard', visible: true, closable: false,
+            },
+          };
+        }
       }
       setLayout(data);
 
