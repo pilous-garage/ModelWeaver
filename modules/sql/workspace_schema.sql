@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Swarm glouton : difficulté de la tâche et rôle requis pour la traiter.
     difficulty   TEXT DEFAULT 'medium',   -- easy / medium / hard / expert
     role_required TEXT DEFAULT '',        -- analyst / coder_junior / coder_senior / tester / reviewer / merger
+    -- Espace de travail : -1 = projet (partagé), sinon team_id de la team qui
+    -- traite la tâche (une team peut travailler sur plusieurs projets).
+    team_id      INTEGER DEFAULT -1,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -49,6 +52,8 @@ CREATE TABLE IF NOT EXISTS issues (
     priority     INTEGER DEFAULT 0,
     assigned_to  TEXT DEFAULT '',
     parent_id    INTEGER,
+    -- Espace de travail : -1 = projet, sinon team_id de la team qui traite.
+    team_id      INTEGER DEFAULT -1,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );

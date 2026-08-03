@@ -158,29 +158,35 @@ class TaskRepository:
 
     def create(self, title: str, description: str = "",
                priority: int = 0, parent_id: int = None,
-               difficulty: str = "medium", role_required: str = "") -> Dict[str, Any]:
+               difficulty: str = "medium", role_required: str = "",
+               team_id: int = -1) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
-                               parent_id, difficulty, role_required, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               parent_id, difficulty, role_required, team_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, title, description, priority, parent_id,
-              difficulty, role_required, now, now))
+              difficulty, role_required, team_id, now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
     def claim_next(self, role_required: str = "",
-                   exclude_assigned: tuple = ()) -> Optional[Dict[str, Any]]:
+                   exclude_assigned: tuple = (),
+                   team_id: int = -1) -> Optional[Dict[str, Any]]:
         """Pioche la prochaine tâche dispo pour un rôle (greedy).
 
         Hiérarchie de capabilité : un rôle `X_senior` peut piocher les tâches
         X_senior, X_mid et X_junior ; X_mid pioche X_mid + X_junior ; X_junior
-        ne pioche que X_junior. Retourne la tâche 'pending' la plus prioritaire
+        ne pioche que X_junior. Ne pioche que les tâches de la team (ou -1 =
+        espace projet partagé). Retourne la tâche 'pending' la plus prioritaire
         compatible, la passe en 'running'. Atomique.
         """
         roles = _compatible_roles(role_required)
         sel_args = [self.wid]
         sel = "SELECT * FROM tasks WHERE workspace_id = ? AND status = 'pending'"
+        # team_id : -1 (projet) OU la team de l'agent
+        sel += " AND (team_id = ? OR team_id = -1)"
+        sel_args.append(team_id)
         if roles:
             ph = ",".join("?" for _ in roles)
             sel += f" AND role_required IN ({ph})"
@@ -270,13 +276,14 @@ class IssueRepository:
             (issue_id, self.wid)).fetchone())
 
     def create(self, title: str, description: str = "",
-               priority: int = 0, parent_id: int = None) -> Dict[str, Any]:
+               priority: int = 0, parent_id: int = None,
+               team_id: int = -1) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute("""
             INSERT INTO issues (workspace_id, title, description, priority,
-                                parent_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (self.wid, title, description, priority, parent_id, now, now))
+                                parent_id, team_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.wid, title, description, priority, parent_id, team_id, now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -429,10 +436,18 @@ class WorkspaceDB:
         from modules.sql.db import _add_column_if_missing
         _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
         _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
+        _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
+        _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
         try:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_role "
                 "ON tasks(workspace_id, role_required, status, priority)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_team "
+                "ON tasks(team_id, status, role_required)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_issues_team "
+                "ON issues(team_id, status)")
         except Exception:
             pass
 

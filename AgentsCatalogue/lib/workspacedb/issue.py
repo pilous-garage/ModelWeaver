@@ -10,11 +10,12 @@ def create(inputs: dict, home: str) -> dict:
     title = inputs.get("title", "")
     description = inputs.get("description", "")
     priority = int(inputs.get("priority", 0))
+    team_id = int(inputs.get("team_id", -1))
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
     try:
         db, scope = _scope(workspace_id)
-        issue = scope.issues.create(title, description, priority)
+        issue = scope.issues.create(title, description, priority, team_id=team_id)
         db.close()
         return {"ok": True, "issue": issue, "issue_id": issue["issue_id"]}
     except Exception as e:

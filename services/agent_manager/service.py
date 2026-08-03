@@ -1000,19 +1000,24 @@ class AgentManager:
         try:
             wdb = WorkspaceDB()
             tasks = wdb.conn.execute("""
-                SELECT DISTINCT role_required, workspace_id FROM tasks
+                SELECT DISTINCT role_required, workspace_id, team_id FROM tasks
                 WHERE status = 'pending' AND role_required != ''
             """).fetchall()
             need_roles = [t["role_required"] for t in tasks]
             ws_with_tasks = {t["workspace_id"] for t in tasks}
+            # teams avec des tâches dispo (team_id=-1 = projet partagé)
+            teams_with_tasks = {t["team_id"] for t in tasks}
             issues = wdb.conn.execute("""
-                SELECT DISTINCT workspace_id FROM issues WHERE status = 'open'
+                SELECT DISTINCT workspace_id, team_id FROM issues WHERE status = 'open'
             """).fetchall()
             ws_with_issues = {i["workspace_id"] for i in issues}
+            teams_with_issues = {i["team_id"] for i in issues}
         except Exception:
             need_roles = []
             ws_with_tasks = set()
             ws_with_issues = set()
+            teams_with_tasks = set()
+            teams_with_issues = set()
         finally:
             try:
                 wdb.close()
@@ -1023,6 +1028,25 @@ class AgentManager:
         # On ne réveille QUE les agents au workflow GREEDY (config avec un step
         # 'pick') — pas les agents V1 (leader-driven) qui ne comprennent pas
         # "wakeup: issue/task pending".
+        # Agents à réveiller : {(agent_id, wakeup_request, workspace_id)}
+        # On ne réveille QUE les agents au workflow GREEDY (config avec un step
+        # 'pick') — pas les agents V1 (leader-driven) qui ne comprennent pas
+        # "wakeup: issue/task pending". Filtre par team : un agent n'est réveillé
+        # que si sa team a du travail (team_id) OU si du travail projet (-1) est
+        # dispo.
+        def _agent_team(name: str) -> str:
+            # "team:swarm-selfimprove-v2/coder-a" → "swarm-selfimprove-v2"
+            if name.startswith("team:") and "/" in name:
+                return name.split("/")[0][len("team:"):]
+            return ""
+
+        def _team_has_work(team: str, role_types: set) -> bool:
+            # -1 = projet partagé : tout le monde peut piocher
+            if -1 in teams_with_tasks or -1 in teams_with_issues:
+                return True
+            # Sinon il faut du travail pour CETTE team
+            return bool(team)
+
         greedy_arch = self.db.conn.execute("""
             SELECT agent_id, name FROM agents
             WHERE role_type = 'architecte'
@@ -1050,6 +1074,12 @@ class AgentManager:
                 """, role_types).fetchall()
                 wake_ws = next(iter(ws_with_tasks), "")
                 for row in rows:
+                    team = _agent_team(row["name"])
+                    # L'agent ne voit que les tâches de sa team + projet (-1) ;
+                    # on le réveille seulement s'il y a du travail qui lui est
+                    # accessible.
+                    if not _team_has_work(team, set(role_types)):
+                        continue
                     to_wake.append((row["agent_id"], "wakeup: task pending",
                                     wake_ws))
 

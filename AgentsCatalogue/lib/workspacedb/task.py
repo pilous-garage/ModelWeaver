@@ -16,12 +16,14 @@ def create(inputs: dict, home: str) -> dict:
     parent_id = inputs.get("parent_id")
     difficulty = inputs.get("difficulty", "medium")
     role_required = inputs.get("role_required", "")
+    team_id = int(inputs.get("team_id", -1))
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
     try:
         db, scope = _scope(workspace_id)
         task = scope.tasks.create(title, description, priority, parent_id,
-                                  difficulty=difficulty, role_required=role_required)
+                                  difficulty=difficulty, role_required=role_required,
+                                  team_id=team_id)
         db.close()
         return {"ok": True, "task": task}
     except Exception as e:
@@ -118,11 +120,12 @@ def claim_next(inputs: dict, home: str) -> dict:
     """
     workspace_id = inputs.get("workspace_id", "")
     role_required = inputs.get("role_required", "")
+    team_id = int(inputs.get("team_id", -1))
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
     try:
         db, scope = _scope(workspace_id)
-        task = scope.tasks.claim_next(role_required=role_required)
+        task = scope.tasks.claim_next(role_required=role_required, team_id=team_id)
         db.close()
         if not task:
             return {"ok": False, "error": "aucune tâche dispo pour ce rôle"}
