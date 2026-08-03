@@ -405,6 +405,11 @@
     "type": "cloud"
   },
   {
+    "id": "opencode-zen",
+    "name": "Opencode Zen",
+    "type": "cloud"
+  },
+  {
     "id": "inference",
     "name": "Inference",
     "type": "cloud"
