@@ -981,11 +981,20 @@ class AgentManager:
                         "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
                         (_json.dumps(vars_j), agent_id))
                     agent.db.conn.commit()
+                    # Sync le snapshot de l'agent : execute() lit self._data.
+                    agent._data["variables_json"] = _json.dumps(vars_j)
                 except Exception:
                     pass
             agent.execute(request=wakeup_request)
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            try:
+                from modules.logger import get_logger
+                get_logger("agent-manager").warning(
+                    "run agent %s échec: %s\n%s",
+                    agent_id, e, traceback.format_exc())
+            except Exception:
+                pass
         if agent:
             try:
                 agent.dehydrate()
