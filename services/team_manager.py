@@ -157,6 +157,11 @@ class Team:
                                        team_name=self.spec.team_name)
             self.member_agent_ids[m.agent_name] = aid
 
+        # Lier le workspace à la team (flat ou leader-driven) : les agents du
+        # swarm en déduisent le project_id git (repo central de référence).
+        if self.spec.workspace_id and not self.spec.team_leader:
+            _set_workspace_director(self.spec.workspace_id, self.spec.team_name)
+
         self.status = "ready"
 
     def _seed_leader_workflow(self):

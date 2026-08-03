@@ -965,10 +965,27 @@ class AgentManager:
                     import json as _json
                     vars_j = _json.loads(agent._data.get("variables_json") or "{}")
                     vars_j["workspace_id"] = workspace_id
+                    # project_id git = le workspace de la TEAM (repo central de
+                    # référence, ex. mw-swarm), pas le workspace des tâches.
+                    name = agent._data.get("name", "")
+                    try:
+                        from modules.sql.workspace import WorkspaceDB
+                        _wdb = WorkspaceDB()
+                        _team_name = name.split("/")[0] if name.startswith("team:") else ""
+                        _ws = _wdb.conn.execute(
+                            "SELECT workspace_id FROM workspaces "
+                            "WHERE director = ?", (_team_name,)).fetchone()
+                        if not _ws:
+                            _ws = _wdb.conn.execute(
+                                "SELECT workspace_id FROM workspaces "
+                                "WHERE director LIKE ?", (_team_name + "%",)).fetchone()
+                        vars_j["project_id"] = _ws["workspace_id"] if _ws else workspace_id
+                        _wdb.close()
+                    except Exception:
+                        vars_j["project_id"] = workspace_id
                     vars_j["role_required"] = ROLE_TO_TASK.get(
                         agent._data.get("role_type"), "")
                     # team_id stable : le plus petit agent_id de la team (ou -1)
-                    name = agent._data.get("name", "")
                     if name.startswith("team:") and "/" in name:
                         team = name.split("/")[0]
                         row = self.db.conn.execute(
@@ -977,6 +994,9 @@ class AgentManager:
                         vars_j["team_id"] = row["mid"] if row and row["mid"] else -1
                     else:
                         vars_j["team_id"] = -1
+                    # Branche auto_code pour les pushes du swarm : ne JAMAIS
+                    # pousser sur la branche principale du repo central.
+                    vars_j["branch_name"] = f"auto_code_{vars_j['team_id']}"
                     agent.db.conn.execute(
                         "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
                         (_json.dumps(vars_j), agent_id))
@@ -1034,9 +1054,19 @@ class AgentManager:
                     "SELECT workspace_id, team_id, role_required FROM tasks "
                     "WHERE status='pending' AND role_required != ''"
                 ).fetchall()}
+            # Workspaces "terminés" : au moins 1 tâche ET toutes done → le
+            # manager peut faire le push de fin sur auto_code_<team_id>.
+            all_done = {
+                w["workspace_id"]
+                for w in wdb.conn.execute(
+                    "SELECT workspace_id FROM tasks GROUP BY workspace_id "
+                    "HAVING COUNT(*) > 0 "
+                    "AND SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) = COUNT(*)"
+                ).fetchall()}
         except Exception:
             open_issues = set()
             pending_tasks = set()
+            all_done = set()
         finally:
             try:
                 wdb.close()
@@ -1060,6 +1090,9 @@ class AgentManager:
                 role = cond.get("role", "")
                 return any(w == ws and (t == team or t == -1) and r == role
                            for w, t, r in pending_tasks)
+            if ctype == "workspace_all_done":
+                # Toutes les tâches du workspace done → le manager pousse.
+                return ws in all_done
             return False
 
         active = len(self.list_active())
@@ -1078,6 +1111,8 @@ class AgentManager:
             ws = cond.get("workspace_id", "")
             req = ("wakeup: issue pending" if cond.get("type") == "issue_open"
                    else "wakeup: task pending")
+            if cond.get("type") == "workspace_all_done":
+                req = "wakeup: workspace done"
             self.db.wait_for.mark_ready(w["id"])
             threading.Thread(target=self._run_sleeping_agent,
                              args=(w["agent_id"], req, ws),

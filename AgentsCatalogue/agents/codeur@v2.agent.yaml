@@ -48,7 +48,7 @@ entrypoints:
       type: call
       fn: workflow/autonomous@v1
       inputs:
-        request: "{{task.description}}"
+        request: "{{task.description}}\n\nDÉPÔT GIT : clone, commit et push UNIQUEMENT sur le dépôt central project_id={{task.workspace_id}}, sur la branche auto_code_{{team_id}} (pas la branche principale)."
         bundles: ["dev"]
         max_loops: 50
       capture:

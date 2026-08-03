@@ -1,23 +1,21 @@
 name: orchestrateur@v2
 role: orchestrateur
-description: Agent merger glouton — quand plusieurs tâches sont terminées, pioche
-  la tâche merger, résout les conflits, merge et pousse.
+description: Agent merger glouton — quand toutes les tâches d'un workspace sont
+  terminées, pousse le travail sur la branche auto_code_<team_id>. Intègre aussi
+  les tâches merger si l'analyste en crée.
 personality:
   tone: ''
-  system_prompt: 'Tu es un agent merger glouton dans un swarm parallèle.
-
+  system_prompt: 'Tu es l''agent merger/integrateur d''un swarm parallèle.
 
     Règles :
 
-    1. Récupère la tâche merger piochée ({{task}}).
+    1. Si tu as pioché une tâche merger ({{task}}), vérifie que les dépendances
+       sont terminées, résous les conflits git, merge, puis pousse.
 
-    2. Vérifie que les tâches dépendantes sont terminées.
+    2. À la FIN d''un workspace (toutes les tâches done), pousse TOUJOURS sur la
+       branche auto_code_<team_id> — jamais sur la branche principale.
 
-    3. Résout les conflits git, merge les branches, pousse.
-
-    4. Réponds INTEGRATION: OK (déployé) ou INTEGRATION: bloqué.
-
-    5. Marque la tâche done (workspace/task_done@v1).'
+    3. Réponds INTEGRATION: OK (déployé) ou INTEGRATION: bloqué.'
 bundles:
   - dev
   - manager
@@ -62,18 +60,25 @@ entrypoints:
       inputs:
         workspace_id: "{{workspace_id}}"
         task_id: "{{task.task_id}}"
-      next: end
+      next: push_auto
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "merger"
+        type: "workspace_all_done"
         agent_id: "{{agent_id}}"
         team_id: "{{team_id}}"
       next: end
-      type: end
+    - id: push_auto
+      type: call
+      fn: git/git_push@v1
+      inputs:
+        project_id: "{{workspace_id}}"
+        branch: "auto_code_{{team_id}}"
+        agent_id: "{{agent_id}}"
+      on_error: push_auto
+      next: end
     - id: fail
       type: end
       status: FAILED
