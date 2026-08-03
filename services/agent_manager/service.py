@@ -915,6 +915,12 @@ class AgentManager:
             result = self.kill(zid)
             killed.append({"agent_id": zid, "result": result})
 
+        # Tasks 'running' orphelines : si PLUS AUCUN agent n'est hydraté (ex.
+        # redémarrage d'agent-manager → threads daemon morts), les tasks en
+        # cours n'ont plus personne pour les finir. On les remet 'pending'
+        # pour qu'un agent les reprenne au prochain réveil.
+        reclaimed = self._reclaim_stale_tasks()
+
         # Réveiller les agents endormis qui ont des signaux en attente
         woken = self._wake_sleeping_agents()
         # Réveiller les agents quand des tâches workspace sont dispo (greedy)
@@ -929,7 +935,36 @@ class AgentManager:
             "zombies_killed": killed,
             "woken_agents": woken,
             "woken_tasks": woken_tasks,
+            "tasks_reclaimed": reclaimed,
         }
+
+    def _reclaim_stale_tasks(self) -> int:
+        """Remet les tasks 'running' à 'pending' si plus aucun agent n'est en
+        cours d'exécution légitime.
+
+        Un agent "légitimement actif" = présent dans agent_runtime ET de statut
+        RUNNING/IDLE (les reliquats de runs morts ont un statut INIT/None après
+        redémarrage). Si aucun agent ne tourne, toutes les tasks 'running' sont
+        orphelines → on les libère pour qu'un agent les reprenne.
+        """
+        try:
+            n_active = self.db.conn.execute("""
+                SELECT COUNT(*) FROM agent_runtime r
+                JOIN agents a ON a.agent_id = r.agent_id
+                WHERE a.status IN ('RUNNING', 'IDLE')
+            """).fetchone()[0]
+            if n_active > 0:
+                return 0
+            from modules.sql.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            n = wdb.conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = datetime('now') "
+                "WHERE status = 'running'").rowcount
+            wdb.conn.commit()
+            wdb.close()
+            return n or 0
+        except Exception:
+            return 0
 
     def _wake_sleeping_agents(self) -> int:
         """Hydrate et exécute les agents endormis qui ont des signaux PENDING."""
