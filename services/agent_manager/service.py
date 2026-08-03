@@ -1123,7 +1123,11 @@ class AgentManager:
                            for w, t in open_issues)
             if ctype == "task_for_role":
                 role = cond.get("role", "")
-                return any(w == ws and (t == team or t == -1) and r == role
+                # Match par rôle + team sur TOUS les workspaces : l'analyste crée
+                # les tasks dans son workspace (ex. audit_io_declarations), pas
+                # celui de la team (mw-swarm). L'agent doit être réveillé dès
+                # qu'une tâche de son rôle est dispo où qu'elle soit.
+                return any((t == team or t == -1) and r == role
                            for w, t, r in pending_tasks)
             if ctype == "workspace_all_done":
                 # Toutes les tâches du workspace done → le manager pousse.
@@ -1148,6 +1152,15 @@ class AgentManager:
                    else "wakeup: task pending")
             if cond.get("type") == "workspace_all_done":
                 req = "wakeup: workspace done"
+            elif cond.get("type") == "task_for_role":
+                # Passer le workspace réel où il y a des tasks (l'analyste les
+                # crée dans SON workspace, pas celui de la team).
+                _role = cond.get("role", "")
+                _team = int(cond.get("team_id", -1))
+                for _w, _t, _r in pending_tasks:
+                    if _r == _role and (_t == _team or _t == -1):
+                        ws = _w
+                        break
             self.db.wait_for.mark_ready(w["id"])
             threading.Thread(target=self._run_sleeping_agent,
                              args=(w["agent_id"], req, ws),
