@@ -1,0 +1,22 @@
+name: workspace/task_claim_next@v1
+category: workspace
+description: Pioche la prochaine tâche disponible pour un rôle (greedy atomique, status pending → running). Retourne la tâche la plus prioritaire correspondant à role_required.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  role_required:
+    type: string
+    required: false
+    description: "Rôle requis par la tâche (coder_junior, coder_senior, tester, reviewer, merger, analyst). Vide = n'importe quelle tâche pending."
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+    description: "La tâche piochée (task_id, title, description, difficulty...)"
+  task_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.task.claim_next

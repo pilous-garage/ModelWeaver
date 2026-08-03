@@ -107,6 +107,27 @@ def done(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def claim_next(inputs: dict, home: str) -> dict:
+    """Pioche la prochaine tâche dispo pour le rôle de l'agent (greedy).
+
+    La tâche 'pending' la plus prioritaire correspondant à role_required
+    passe en 'running'. Retourne la tâche (ou ok=False si aucune).
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    role_required = inputs.get("role_required", "")
+    if not workspace_id:
+        return {"ok": False, "error": "workspace_id requis"}
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.claim_next(role_required=role_required)
+        db.close()
+        if not task:
+            return {"ok": False, "error": "aucune tâche dispo pour ce rôle"}
+        return {"ok": True, "task": task, "task_id": task["task_id"]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def add_file(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
@@ -152,4 +173,4 @@ def list_tasks(inputs: dict, home: str) -> dict:
 
 
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
-              "claim", "done", "add_file", "get_files"]
+              "claim", "claim_next", "done", "add_file", "get_files"]
