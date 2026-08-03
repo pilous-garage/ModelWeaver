@@ -983,13 +983,15 @@ class AgentManager:
                 pass
 
     def _wake_for_tasks(self) -> int:
-        """Réveille les agents dormeurs quand des tâches workspace sont dispo.
+        """Réveille les agents dormeurs quand du travail workspace est dispo.
 
-        Greedy : une tâche 'pending' avec role_required (ex. coder_senior,
-        tester) réveille les agents dont le role_type correspond (via
-        ROLE_TO_TASK). Respecte MAX_THREAD_AGENTS. Ne réveille que les agents
-        non hydratés (pas dans agent_runtime). Les signaux PENDING (supervision
-        directe kill/pause/...) restent gérés par _wake_sleeping_agents.
+        Deux sources :
+          - issues 'open'  → réveille les analystes (architecte) qui piochent
+            l'issue et découpent en tâches (wakeup: issue pending)
+          - tasks 'pending' avec role_required → réveille les rôles concernés
+            (ex. coder_senior → codeur) via ROLE_TO_TASK (wakeup: task pending)
+        Respecte MAX_THREAD_AGENTS. Ne réveille que les agents non hydratés.
+        Les signaux PENDING (supervision directe) restent gérés séparément.
         """
         try:
             from modules.sql.workspace import WorkspaceDB
@@ -997,49 +999,66 @@ class AgentManager:
             return 0
         try:
             wdb = WorkspaceDB()
-            roles = set(ROLE_TO_TASK.values())
-            # Tâches pending avec un rôle requis, dans tous les workspaces
             tasks = wdb.conn.execute("""
                 SELECT DISTINCT role_required, workspace_id FROM tasks
                 WHERE status = 'pending' AND role_required != ''
             """).fetchall()
             need_roles = [t["role_required"] for t in tasks]
             ws_with_tasks = {t["workspace_id"] for t in tasks}
+            issues = wdb.conn.execute("""
+                SELECT DISTINCT workspace_id FROM issues WHERE status = 'open'
+            """).fetchall()
+            ws_with_issues = {i["workspace_id"] for i in issues}
         except Exception:
             need_roles = []
             ws_with_tasks = set()
+            ws_with_issues = set()
         finally:
             try:
                 wdb.close()
             except Exception:
                 pass
-        if not need_roles:
-            return 0
 
-        # Agents dormeurs (non hydratés) capables de ces rôles
-        role_types = [rt for rt, role in ROLE_TO_TASK.items() if role in need_roles]
-        if not role_types:
-            return 0
-        ph = ",".join("?" for _ in role_types)
-        rows = self.db.conn.execute(f"""
-            SELECT agent_id, name FROM agents
-            WHERE role_type IN ({ph})
-              AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
-            LIMIT 20
-        """, role_types).fetchall()
+        # Agents à réveiller : {(agent_id, wakeup_request, workspace_id)}
+        to_wake = []
+        if ws_with_issues:
+            # Analystes (architecte) pour les issues open
+            arch_rows = self.db.conn.execute("""
+                SELECT agent_id, name FROM agents
+                WHERE role_type = 'architecte'
+                  AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+                LIMIT 5
+            """).fetchall()
+            for row in arch_rows:
+                to_wake.append((row["agent_id"], "wakeup: issue pending",
+                                next(iter(ws_with_issues), "")))
+        if need_roles:
+            # Rôles greedy pour les tasks pending
+            role_types = [rt for rt, role in ROLE_TO_TASK.items()
+                          if role in need_roles]
+            if role_types:
+                ph = ",".join("?" for _ in role_types)
+                rows = self.db.conn.execute(f"""
+                    SELECT agent_id, name FROM agents
+                    WHERE role_type IN ({ph})
+                      AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+                    LIMIT 20
+                """, role_types).fetchall()
+                wake_ws = next(iter(ws_with_tasks), "")
+                for row in rows:
+                    to_wake.append((row["agent_id"], "wakeup: task pending",
+                                    wake_ws))
 
-        # workspace à transmettre aux agents réveillés (le premier dispo)
-        wake_ws = next(iter(ws_with_tasks), "")
+        if not to_wake:
+            return 0
 
         active = len(self.list_active())
         count = 0
-        for row in rows:
+        for agent_id, wakeup_request, wake_ws in to_wake:
             if active + count >= MAX_THREAD_AGENTS:
                 break
-            agent_id = row["agent_id"]
             threading.Thread(target=self._run_sleeping_agent,
-                             args=(agent_id, "wakeup: task pending",
-                                   wake_ws),
+                             args=(agent_id, wakeup_request, wake_ws),
                              daemon=True).start()
             count += 1
         return count
