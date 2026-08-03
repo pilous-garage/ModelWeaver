@@ -1044,10 +1044,12 @@ class AgentManager:
         except Exception as e:
             import traceback
             try:
-                from modules.logger import get_logger
-                get_logger("agent-manager").warning(
-                    "run agent %s échec: %s\n%s",
-                    agent_id, e, traceback.format_exc())
+                log_dir = Path(mw_home()) / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with open(log_dir / "agent-manager-errors.log", "a",
+                          encoding="utf-8") as fh:
+                    fh.write(f"[{time.time():.0f}] agent {agent_id} ({wakeup_request}) "
+                             f"échec: {e}\n{traceback.format_exc()}\n")
             except Exception:
                 pass
         if agent:
