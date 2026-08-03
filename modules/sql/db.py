@@ -2306,6 +2306,60 @@ class RuntimeDB:
 #  AgentsDB — Base dédiée aux agents
 # ──────────────────────────────────────────────
 
+class WaitForRepository:
+    """Agents endormis en attente d'une condition (wait_for).
+
+    Chaque ligne = un agent qui attend une condition (JSON) : type de travail
+    dispo (issue_open, task_for_role...). Le waker liste les 'waiting' dont la
+    condition est remplie et les réveille — FIFO (les plus anciens d'abord) et
+    un à la fois par condition (évite de réveiller tous les agents d'un coup).
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def register(self, agent_id: int, condition: dict,
+                 expires_at: Optional[str] = None) -> int:
+        """Enregistre un agent en attente d'une condition (status waiting)."""
+        cur = self.conn.execute(
+            "INSERT INTO wait_for (agent_id, condition, status, expires_at) "
+            "VALUES (?, ?, 'waiting', ?)",
+            (agent_id, json.dumps(condition), expires_at))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def waiting(self) -> List[Dict[str, Any]]:
+        """Agents en attente, triés FIFO (les plus anciens d'abord)."""
+        cur = self.conn.execute(
+            "SELECT * FROM wait_for WHERE status = 'waiting' "
+            "ORDER BY created_at ASC, id ASC")
+        return _rows_to_list(cur.fetchall())
+
+    def ready(self, agent_id: int, condition: dict) -> bool:
+        """Vrai si l'agent attend et que sa condition est remplie (à surcharger
+        par le waker via un prédicat). Ici : simple existence d'attente."""
+        return True
+
+    def mark_ready(self, wait_id: int) -> None:
+        self.conn.execute(
+            "UPDATE wait_for SET status = 'ready', ready_at = datetime('now') "
+            "WHERE id = ?", (wait_id,))
+        self.conn.commit()
+
+    def mark_done(self, agent_id: int) -> None:
+        self.conn.execute(
+            "UPDATE wait_for SET status = 'done' WHERE agent_id = ? "
+            "AND status IN ('waiting','ready')", (agent_id,))
+        self.conn.commit()
+
+    def remove_expired(self) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM wait_for WHERE status != 'done' "
+            "AND expires_at IS NOT NULL AND expires_at < datetime('now')")
+        self.conn.commit()
+        return cur.rowcount
+
+
 class AgentsDB:
     """Point d'entrée pour la base agents (domaine distinct).
 
@@ -2327,6 +2381,7 @@ class AgentsDB:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
+        self.wait_for = WaitForRepository(self.conn)
 
     def _ensure_schema(self):
         schema = Path(__file__).resolve().parent / "agents_schema.sql"
@@ -2336,6 +2391,23 @@ class AgentsDB:
         _add_column_if_missing(self.conn, "agents", "storage_json", "TEXT")
         # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
         _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
+        # Migration V0.8.9 : wait_for — agents endormis en attente d'une
+        # condition (tâche/issue dispo). Le waker les réveille quand la
+        # condition est remplie (un à la fois).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS wait_for (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id    INTEGER NOT NULL,
+                condition   TEXT NOT NULL,   -- JSON {type, workspace_id, role}
+                status      TEXT DEFAULT 'waiting',  -- waiting / ready / done
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                ready_at    TEXT,
+                expires_at  TEXT
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wait_for_status "
+            "ON wait_for(status, agent_id)")
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)

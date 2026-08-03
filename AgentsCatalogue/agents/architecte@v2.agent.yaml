@@ -82,8 +82,14 @@ entrypoints:
         status: "analyzed"
       next: end
     - id: sleep
-      type: end
-      status: SUCCESS
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "issue_open"
+        agent_id: "{{agent_id}}"
+        team_id: "{{team_id}}"
+      next: end
     - id: fail
       type: end
       status: FAILED

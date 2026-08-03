@@ -1,0 +1,33 @@
+name: workspace/wait_for@v1
+category: workspace
+description: L'agent se met en attente d'une condition (tâche/issue dispo pour son
+  rôle et sa team). Il sera réveillé par le waker quand la condition est remplie
+  (un à la fois, FIFO). Enregistre la condition dans la table wait_for.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  type:
+    type: string
+    required: true
+    description: "issue_open ou task_for_role"
+  role:
+    type: string
+    required: false
+    description: "rôle requis (coder_senior, tester...) pour task_for_role"
+  team_id:
+    type: integer
+    required: false
+    default: -1
+    description: "-1 = projet partagé, sinon team_id de la team"
+  agent_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  wait_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.wait.registrer

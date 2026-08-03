@@ -957,16 +957,26 @@ class AgentManager:
         try:
             agent = Agent.hydrate(agent_id, db=self.db)
             if workspace_id:
-                # Injecte le workspace + le rôle greedy dans les variables :
-                # l'agent sait où piocher et avec quel role_required.
+                # Injecte le workspace + le rôle greedy + team_id dans les
+                # variables : l'agent sait où piocher, avec quel rôle, et dans
+                # quelle team. team_id = id du plus ancien membre de la team
+                # (stable par team) ; -1 si pas de team.
                 try:
                     import json as _json
                     vars_j = _json.loads(agent._data.get("variables_json") or "{}")
                     vars_j["workspace_id"] = workspace_id
-                    # Rôle requis dérivé du role_type (ROLE_TO_TASK). Le
-                    # config greedy lit {{role_required}} dans task_claim_next.
                     vars_j["role_required"] = ROLE_TO_TASK.get(
                         agent._data.get("role_type"), "")
+                    # team_id stable : le plus petit agent_id de la team (ou -1)
+                    name = agent._data.get("name", "")
+                    if name.startswith("team:") and "/" in name:
+                        team = name.split("/")[0]
+                        row = self.db.conn.execute(
+                            "SELECT MIN(agent_id) AS mid FROM agents "
+                            "WHERE name LIKE ?", (team + "/%",)).fetchone()
+                        vars_j["team_id"] = row["mid"] if row and row["mid"] else -1
+                    else:
+                        vars_j["team_id"] = -1
                     agent.db.conn.execute(
                         "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
                         (_json.dumps(vars_j), agent_id))
@@ -983,116 +993,85 @@ class AgentManager:
                 pass
 
     def _wake_for_tasks(self) -> int:
-        """Réveille les agents dormeurs quand du travail workspace est dispo.
+        """Réveille les agents greedy en attente (wait_for) quand leur condition
+        est remplie.
 
-        Deux sources :
-          - issues 'open'  → réveille les analystes (architecte) qui piochent
-            l'issue et découpent en tâches (wakeup: issue pending)
-          - tasks 'pending' avec role_required → réveille les rôles concernés
-            (ex. coder_senior → codeur) via ROLE_TO_TASK (wakeup: task pending)
+        Les agents greedy, quand ils n'ont rien à faire, enregistrent une
+        condition via le skill workspace/wait_for@v1 (table wait_for, status
+        'waiting'). Le waker, à chaque tick :
+          - lit les 'waiting' FIFO (les plus anciens d'abord)
+          - vérifie si la condition est remplie (issue open / tâche du rôle,
+            même workspace + team)
+          - réveille les agents concernés UN À LA FOIS par condition
+          - marque 'ready' (puis l'agent re-pioche et vérifie)
         Respecte MAX_THREAD_AGENTS. Ne réveille que les agents non hydratés.
-        Les signaux PENDING (supervision directe) restent gérés séparément.
         """
         try:
             from modules.sql.workspace import WorkspaceDB
+            import json as _json
         except Exception:
             return 0
+        # Conditions remplies (état workspace) : issues open + tasks pending
         try:
             wdb = WorkspaceDB()
-            tasks = wdb.conn.execute("""
-                SELECT DISTINCT role_required, workspace_id, team_id FROM tasks
-                WHERE status = 'pending' AND role_required != ''
-            """).fetchall()
-            need_roles = [t["role_required"] for t in tasks]
-            ws_with_tasks = {t["workspace_id"] for t in tasks}
-            # teams avec des tâches dispo (team_id=-1 = projet partagé)
-            teams_with_tasks = {t["team_id"] for t in tasks}
-            issues = wdb.conn.execute("""
-                SELECT DISTINCT workspace_id, team_id FROM issues WHERE status = 'open'
-            """).fetchall()
-            ws_with_issues = {i["workspace_id"] for i in issues}
-            teams_with_issues = {i["team_id"] for i in issues}
+            open_issues = {
+                (i["workspace_id"], i["team_id"])
+                for i in wdb.conn.execute(
+                    "SELECT workspace_id, team_id FROM issues WHERE status='open'"
+                ).fetchall()}
+            pending_tasks = {
+                (t["workspace_id"], t["team_id"], t["role_required"])
+                for t in wdb.conn.execute(
+                    "SELECT workspace_id, team_id, role_required FROM tasks "
+                    "WHERE status='pending' AND role_required != ''"
+                ).fetchall()}
         except Exception:
-            need_roles = []
-            ws_with_tasks = set()
-            ws_with_issues = set()
-            teams_with_tasks = set()
-            teams_with_issues = set()
+            open_issues = set()
+            pending_tasks = set()
         finally:
             try:
                 wdb.close()
             except Exception:
                 pass
 
-        # Agents à réveiller : {(agent_id, wakeup_request, workspace_id)}
-        # On ne réveille QUE les agents au workflow GREEDY (config avec un step
-        # 'pick') — pas les agents V1 (leader-driven) qui ne comprennent pas
-        # "wakeup: issue/task pending".
-        # Agents à réveiller : {(agent_id, wakeup_request, workspace_id)}
-        # On ne réveille QUE les agents au workflow GREEDY (config avec un step
-        # 'pick') — pas les agents V1 (leader-driven) qui ne comprennent pas
-        # "wakeup: issue/task pending". Filtre par team : un agent n'est réveillé
-        # que si sa team a du travail (team_id) OU si du travail projet (-1) est
-        # dispo.
-        def _agent_team(name: str) -> str:
-            # "team:swarm-selfimprove-v2/coder-a" → "swarm-selfimprove-v2"
-            if name.startswith("team:") and "/" in name:
-                return name.split("/")[0][len("team:"):]
-            return ""
-
-        def _team_has_work(team: str, role_types: set) -> bool:
-            # -1 = projet partagé : tout le monde peut piocher
-            if -1 in teams_with_tasks or -1 in teams_with_issues:
-                return True
-            # Sinon il faut du travail pour CETTE team
-            return bool(team)
-
-        greedy_arch = self.db.conn.execute("""
-            SELECT agent_id, name FROM agents
-            WHERE role_type = 'architecte'
-              AND config_json LIKE '%\"pick\"%'
-              AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
-            LIMIT 5
-        """).fetchall()
-        to_wake = []
-        if ws_with_issues:
-            for row in greedy_arch:
-                to_wake.append((row["agent_id"], "wakeup: issue pending",
-                                next(iter(ws_with_issues), "")))
-        if need_roles:
-            # Rôles greedy pour les tasks pending (config avec step 'pick')
-            role_types = [rt for rt, role in ROLE_TO_TASK.items()
-                          if role in need_roles]
-            if role_types:
-                ph = ",".join("?" for _ in role_types)
-                rows = self.db.conn.execute(f"""
-                    SELECT agent_id, name FROM agents
-                    WHERE role_type IN ({ph})
-                      AND config_json LIKE '%\"pick\"%'
-                      AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
-                    LIMIT 20
-                """, role_types).fetchall()
-                wake_ws = next(iter(ws_with_tasks), "")
-                for row in rows:
-                    team = _agent_team(row["name"])
-                    # L'agent ne voit que les tâches de sa team + projet (-1) ;
-                    # on le réveille seulement s'il y a du travail qui lui est
-                    # accessible.
-                    if not _team_has_work(team, set(role_types)):
-                        continue
-                    to_wake.append((row["agent_id"], "wakeup: task pending",
-                                    wake_ws))
-
-        if not to_wake:
+        # Agents greedy en attente (waiting), FIFO
+        waiting = self.db.wait_for.waiting()
+        if not waiting:
             return 0
+
+        def _cond_matches(cond: dict) -> bool:
+            ctype = cond.get("type", "")
+            ws = cond.get("workspace_id", "")
+            team = int(cond.get("team_id", -1))
+            if ctype == "issue_open":
+                # issue open pour ce workspace (+ team ou projet)
+                return any(w == ws and (t == team or t == -1)
+                           for w, t in open_issues)
+            if ctype == "task_for_role":
+                role = cond.get("role", "")
+                return any(w == ws and (t == team or t == -1) and r == role
+                           for w, t, r in pending_tasks)
+            return False
 
         active = len(self.list_active())
         count = 0
-        for agent_id, wakeup_request, wake_ws in to_wake:
+        for w in waiting:
             if active + count >= MAX_THREAD_AGENTS:
                 break
+            try:
+                cond = _json.loads(w["condition"])
+            except Exception:
+                self.db.wait_for.mark_done(w["agent_id"])
+                continue
+            if not _cond_matches(cond):
+                continue
+            # Condition remplie : réveiller l'agent (un à la fois), marquer ready
+            ws = cond.get("workspace_id", "")
+            req = ("wakeup: issue pending" if cond.get("type") == "issue_open"
+                   else "wakeup: task pending")
+            self.db.wait_for.mark_ready(w["id"])
             threading.Thread(target=self._run_sleeping_agent,
-                             args=(agent_id, wakeup_request, wake_ws),
+                             args=(w["agent_id"], req, ws),
                              daemon=True).start()
             count += 1
         return count

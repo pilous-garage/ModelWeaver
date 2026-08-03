@@ -64,8 +64,16 @@ entrypoints:
         task_id: "{{task.task_id}}"
       next: end
     - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "merger"
+        agent_id: "{{agent_id}}"
+        team_id: "{{team_id}}"
+      next: end
       type: end
-      status: SUCCESS
     - id: fail
       type: end
       status: FAILED
