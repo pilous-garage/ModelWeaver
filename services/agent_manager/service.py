@@ -939,10 +939,24 @@ class AgentManager:
             count += 1
         return count
 
-    def _run_sleeping_agent(self, agent_id: int, wakeup_request: str = "wakeup: signals pending") -> None:
+    def _run_sleeping_agent(self, agent_id: int, wakeup_request: str = "wakeup: signals pending",
+                            workspace_id: str = "") -> None:
         agent = None
         try:
             agent = Agent.hydrate(agent_id, db=self.db)
+            if workspace_id:
+                # Injecte le workspace dans les variables : l'agent greedy
+                # sait où piocher (workspace/task_claim_next@v1).
+                try:
+                    import json as _json
+                    vars_j = _json.loads(agent._data.get("variables_json") or "{}")
+                    vars_j["workspace_id"] = workspace_id
+                    agent.db.conn.execute(
+                        "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
+                        (_json.dumps(vars_j), agent_id))
+                    agent.db.conn.commit()
+                except Exception:
+                    pass
             agent.execute(request=wakeup_request)
         except Exception:
             pass
@@ -970,12 +984,14 @@ class AgentManager:
             roles = set(ROLE_TO_TASK.values())
             # Tâches pending avec un rôle requis, dans tous les workspaces
             tasks = wdb.conn.execute("""
-                SELECT DISTINCT role_required FROM tasks
+                SELECT DISTINCT role_required, workspace_id FROM tasks
                 WHERE status = 'pending' AND role_required != ''
             """).fetchall()
             need_roles = [t["role_required"] for t in tasks]
+            ws_with_tasks = {t["workspace_id"] for t in tasks}
         except Exception:
             need_roles = []
+            ws_with_tasks = set()
         finally:
             try:
                 wdb.close()
@@ -996,6 +1012,9 @@ class AgentManager:
             LIMIT 20
         """, role_types).fetchall()
 
+        # workspace à transmettre aux agents réveillés (le premier dispo)
+        wake_ws = next(iter(ws_with_tasks), "")
+
         active = len(self.list_active())
         count = 0
         for row in rows:
@@ -1003,7 +1022,8 @@ class AgentManager:
                 break
             agent_id = row["agent_id"]
             threading.Thread(target=self._run_sleeping_agent,
-                             args=(agent_id, "wakeup: task pending"),
+                             args=(agent_id, "wakeup: task pending",
+                                   wake_ws),
                              daemon=True).start()
             count += 1
         return count
