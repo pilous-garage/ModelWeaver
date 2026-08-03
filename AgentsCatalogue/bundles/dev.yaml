@@ -44,6 +44,7 @@ skills:
   - git/git_merge@v1
   - git/git_pull@v1
   - git/git_push@v1
+  - git/git_push_remote@v1
   - git/git_resolve_conflict@v1
   - git/git_status@v1
   - git/lite@v1

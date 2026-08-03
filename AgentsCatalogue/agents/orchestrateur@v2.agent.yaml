@@ -1,8 +1,8 @@
 name: orchestrateur@v2
 role: orchestrateur
-description: Agent merger glouton — quand toutes les tâches d'un workspace sont
-  terminées, pousse le travail sur la branche auto_code_<team_id>. Intègre aussi
-  les tâches merger si l'analyste en crée.
+description: Agent merger/integrateur glouton — quand toutes les tâches d'un
+  workspace sont terminées, pousse le travail sur la branche auto_code_<team_id>.
+  Intègre aussi les tâches merger si l'analyste en crée.
 personality:
   tone: ''
   system_prompt: 'Tu es l''agent merger/integrateur d''un swarm parallèle.
@@ -33,6 +33,14 @@ default_config:
 entrypoints:
   main:
     steps:
+    - id: route
+      type: switch
+      variable: "{{request}}"
+      conditions:
+      - operator: CONTAINS
+        value: "workspace done"
+        next: push_auto
+      default: pick
     - id: pick
       type: call
       fn: workspace/task_claim_next@v1
@@ -72,9 +80,9 @@ entrypoints:
       next: end
     - id: push_auto
       type: call
-      fn: git/git_push@v1
+      fn: git/git_push_remote@v1
       inputs:
-        project_id: "{{workspace_id}}"
+        project_id: "{{project_id}}"
         branch: "auto_code_{{team_id}}"
         agent_id: "{{agent_id}}"
       on_error: push_auto

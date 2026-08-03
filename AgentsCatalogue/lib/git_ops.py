@@ -302,8 +302,51 @@ def git_push(inputs: dict, home: str) -> dict:
     return _git_run(root, ["push", "-u", "origin", ref])
 
 
+def git_push_remote(inputs: dict, home: str) -> dict:
+    """Push du REPO CENTRAL LOCAL vers le remote distant (origin) sur une
+    branche dédiée. Utilisé par l'intégrateur en fin de swarm : une fois les
+    workers poussés sur le local, on pousse le local vers github/auto_code.
+
+    inputs :
+      - project_id : le repo central local (~/.modelweaver/repos/<pid>.git)
+      - branch     : branche cible sur le distant (ex. auto_code_<team_id>)
+    Le repo central local doit avoir un remote `origin` (distant réel).
+    """
+    pid = inputs.get("project_id", "")
+    branch = inputs.get("branch", "")
+    if not pid:
+        return {"ok": False, "error": "project_id requis"}
+    bare = _central_repo(pid)
+    if not bare.exists():
+        return {"ok": False, "error": f"repo central inexistant: {bare}"}
+    if not branch:
+        return {"ok": False, "error": "branch requis (ex. auto_code_<team_id>)"}
+    # Git --git-dir pour opérer sur le repo BARE local.
+    def _bare(*args, timeout: int = 60) -> dict:
+        try:
+            stdout, stderr, rc = Sandbox().run(
+                ["git", "--git-dir", str(bare)] + list(args),
+                shell=False, timeout=timeout)
+            return {"stdout": stdout, "stderr": stderr, "exit_code": rc,
+                    "ok": rc == 0}
+        except SandboxError as e:
+            return {"stdout": "", "stderr": str(e), "exit_code": -1, "ok": False}
+
+    remotes = _bare("remote", "-v")
+    if "origin" not in remotes.get("stdout", ""):
+        return {"ok": False,
+                "error": "repo central sans remote origin (push_remote impossible)"}
+    # Pull du distant (best-effort) puis push de la branche locale.
+    try:
+        _bare("fetch", "-q", "origin")
+    except Exception:
+        pass
+    return _bare("push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+
+
 __skills__ = [
     "repo_init", "git_clone", "git_branch", "git_checkout", "git_commit",
     "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
+    "git_push_remote",
 ]
