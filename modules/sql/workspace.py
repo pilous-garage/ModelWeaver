@@ -425,19 +425,41 @@ class WorkspaceDB:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
+        # Fermer la transaction implicite laissée par le DDL (sinon lock
+        # d'écriture tenu à vie par cette connexion → "database is locked"
+        # pour TOUT autre écrivain). Voir fix CatalogueDB/ModelWeaverDB.
+        try:
+            self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
         self.workspaces = WorkspaceRepository(self.conn)
         self.config = WorkspaceConfigRepository(self.conn)
 
     def _ensure_schema(self):
         schema = Path(__file__).resolve().parent / "workspace_schema.sql"
         if schema.exists():
-            self.conn.executescript(schema.read_text())
+            try:
+                self.conn.executescript(schema.read_text())
+            except Exception:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
         # Migrations : colonnes ajoutées sur des tables déjà existantes.
-        from modules.sql.db import _add_column_if_missing
-        _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
-        _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
-        _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
-        _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
+        try:
+            from modules.sql.db import _add_column_if_missing
+            _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
+            _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
+            _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
         try:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_role "
