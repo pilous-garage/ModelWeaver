@@ -45,11 +45,12 @@ entrypoints:
       next: execute
     - id: execute
       type: call
-      fn: workflow/autonomous@v1
+      fn: workflow/autonomous_loop@v1
       inputs:
-        request: "Relis cette tâche : {{task.description}}"
+        request: "Relis cette tâche : {{task.description}}\n\nDÉPÔT GIT : le projet central est project_id={{project_id}}. Utilise git/git_clone@v1 avec project_id={{project_id}} et ton propre agent_id si tu dois lire le code. Pousse sur la branche auto_code_{{team_id}}."
         bundles: ["dev"]
         max_loops: 20
+        max_iter: 6
       capture:
         stdout: result
       on_error: fail
