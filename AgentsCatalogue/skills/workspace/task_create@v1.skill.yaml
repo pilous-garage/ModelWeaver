@@ -19,6 +19,16 @@ inputs:
   parent_id:
     type: integer
     required: false
+  difficulty:
+    type: string
+    required: false
+    default: medium
+    description: "easy / medium / hard / expert"
+  role_required:
+    type: string
+    required: false
+    default: ""
+    description: "coder_senior / coder_mid / coder_junior / tester / reviewer / merger"
 outputs:
   ok:
     type: boolean

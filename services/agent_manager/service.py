@@ -1020,20 +1020,23 @@ class AgentManager:
                 pass
 
         # Agents à réveiller : {(agent_id, wakeup_request, workspace_id)}
+        # On ne réveille QUE les agents au workflow GREEDY (config avec un step
+        # 'pick') — pas les agents V1 (leader-driven) qui ne comprennent pas
+        # "wakeup: issue/task pending".
+        greedy_arch = self.db.conn.execute("""
+            SELECT agent_id, name FROM agents
+            WHERE role_type = 'architecte'
+              AND config_json LIKE '%\"pick\"%'
+              AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+            LIMIT 5
+        """).fetchall()
         to_wake = []
         if ws_with_issues:
-            # Analystes (architecte) pour les issues open
-            arch_rows = self.db.conn.execute("""
-                SELECT agent_id, name FROM agents
-                WHERE role_type = 'architecte'
-                  AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
-                LIMIT 5
-            """).fetchall()
-            for row in arch_rows:
+            for row in greedy_arch:
                 to_wake.append((row["agent_id"], "wakeup: issue pending",
                                 next(iter(ws_with_issues), "")))
         if need_roles:
-            # Rôles greedy pour les tasks pending
+            # Rôles greedy pour les tasks pending (config avec step 'pick')
             role_types = [rt for rt, role in ROLE_TO_TASK.items()
                           if role in need_roles]
             if role_types:
@@ -1041,6 +1044,7 @@ class AgentManager:
                 rows = self.db.conn.execute(f"""
                     SELECT agent_id, name FROM agents
                     WHERE role_type IN ({ph})
+                      AND config_json LIKE '%\"pick\"%'
                       AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
                     LIMIT 20
                 """, role_types).fetchall()

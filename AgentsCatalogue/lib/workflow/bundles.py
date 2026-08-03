@@ -43,7 +43,7 @@ def _skill_to_tool(skill: Dict) -> Optional[Dict]:
     if not name:
         return None
     desc = skill.get("description", "")
-    inputs = skill.get("inputs", {})
+    inputs = skill.get("inputs") or {}
     props = {}
     required = []
     for k, v in inputs.items():

@@ -14,11 +14,14 @@ def create(inputs: dict, home: str) -> dict:
     description = inputs.get("description", "")
     priority = int(inputs.get("priority", 0))
     parent_id = inputs.get("parent_id")
+    difficulty = inputs.get("difficulty", "medium")
+    role_required = inputs.get("role_required", "")
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
     try:
         db, scope = _scope(workspace_id)
-        task = scope.tasks.create(title, description, priority, parent_id)
+        task = scope.tasks.create(title, description, priority, parent_id,
+                                  difficulty=difficulty, role_required=role_required)
         db.close()
         return {"ok": True, "task": task}
     except Exception as e:

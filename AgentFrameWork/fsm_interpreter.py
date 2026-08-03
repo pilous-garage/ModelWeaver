@@ -1117,8 +1117,25 @@ class FSMInterpreter:
     # ── Utils ──────────────────────────────────────────
 
     def _resolve(self, value: str, variables: Dict) -> str:
-        """Remplace {{variable}} dans une chaîne par sa valeur."""
-        result = value
-        for k, v in variables.items():
-            result = result.replace(f"{{{{{k}}}}}", str(v))
-        return result
+        """Remplace {{variable}} dans une chaîne par sa valeur.
+
+        Supporte les accès dict/attributs : {{issue.description}},
+        {{task.task_id}}, {{task.title}}... Retourne la valeur str ou laisse
+        le placeholder si introuvable.
+        """
+        import re
+        def _lookup(path: str):
+            parts = path.split(".")
+            cur = variables
+            for p in parts:
+                if isinstance(cur, dict) and p in cur:
+                    cur = cur[p]
+                elif hasattr(cur, p):
+                    cur = getattr(cur, p)
+                else:
+                    return None
+            return cur
+        def _repl(m):
+            val = _lookup(m.group(1))
+            return str(val) if val is not None else m.group(0)
+        return re.sub(r"\{\{([\w.]+)\}\}", _repl, value)
