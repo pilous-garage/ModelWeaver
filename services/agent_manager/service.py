@@ -1130,8 +1130,10 @@ class AgentManager:
                 return any((t == team or t == -1) and r == role
                            for w, t, r in pending_tasks)
             if ctype == "workspace_all_done":
-                # Toutes les tâches du workspace done → le manager pousse.
-                return ws in all_done
+                # Toutes les tâches d'UN workspace done → le manager pousse.
+                # Le workspace de la condition (mw-swarm) ≠ celui des tasks
+                # (audit_io_declarations) ; on matche sur TOUS les workspaces.
+                return bool(all_done)
             return False
 
         active = len(self.list_active())
@@ -1152,6 +1154,9 @@ class AgentManager:
                    else "wakeup: task pending")
             if cond.get("type") == "workspace_all_done":
                 req = "wakeup: workspace done"
+                # Passer un workspace réel all-done (pour le push_auto).
+                if all_done:
+                    ws = next(iter(all_done))
             elif cond.get("type") == "task_for_role":
                 # Passer le workspace réel où il y a des tasks (l'analyste les
                 # crée dans SON workspace, pas celui de la team).
@@ -1182,14 +1187,20 @@ class AgentManager:
                 if active + count >= MAX_THREAD_AGENTS:
                     break
                 rt = ROLE_TO_TASK.get(row["role_type"], "")
-                # analyste → issue ; rôles greedy → tâche du rôle
+                # analyste → issue ; rôles greedy → SEULEMENT si des tasks de son
+                # rôle (+ team/projet) sont dispo, sinon il re-pioche rien et
+                # spam les wait_for.
                 if open_issues and rt == "analyst":
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: issue pending",
                                            next(iter({w for w, _ in open_issues}), "")),
                                      daemon=True).start()
                     count += 1
-                elif pending_tasks and rt:
+                elif rt:
+                    # Ne réveiller que si des tasks du RÔLE de l'agent sont dispo
+                    # (sinon il re-pioche rien et spam les wait_for).
+                    if not any(_r == rt for _w, _t, _r in pending_tasks):
+                        continue
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: task pending",
                                            next(iter({w for w, _, _ in pending_tasks}), "")),
