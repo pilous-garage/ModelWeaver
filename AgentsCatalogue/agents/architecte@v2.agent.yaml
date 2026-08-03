@@ -24,6 +24,15 @@ personality:
 bundles:
   - manager
   - analysis_only
+# Types de tâches que ce rôle GÉNÈRE (graphe taskflow). L'analyste découpe une
+# issue en tâches de code, test, review et merge.
+generates:
+  - coder_senior
+  - coder_mid
+  - coder_junior
+  - tester
+  - reviewer
+  - merger
 model_requirements:
   min_context_tokens: 16384
   capabilities:

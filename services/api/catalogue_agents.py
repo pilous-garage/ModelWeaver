@@ -91,7 +91,8 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
         "entrypoints": _migrate_entrypoints(normal),
     }
     # Champs optionnels préservés
-    for k in ("description", "contexts", "default_config", "model_requirements", "hooks", "permissions"):
+    for k in ("description", "contexts", "default_config", "model_requirements",
+              "hooks", "permissions", "generates"):
         if k in normal:
             inline[k] = normal[k]
     return inline

@@ -357,6 +357,18 @@ def op_agent_capabilities(_params):
     return router_capabilities()
 
 
+def op_agent_taskflow(params):
+    """Graphe de circulation des tâches (Taskflow) du swarm.
+
+    Pour chaque type d'agent : les types de tâches qu'il CONSOMME (role_type →
+    ROLE_TO_TASK, avec hiérarchie senior/mid/junior) et qu'il GÉNÈRE (champ
+    `generates` du .agent.yaml). Paramètre optionnel team (ex. "team:swarm-...").
+    """
+    from services.swarm_topology import build_taskflow
+    team = params.get("team") or params.get("team_name") or ""
+    return build_taskflow(team)
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
 def op_agent_list_by_team(_params):
@@ -409,8 +421,95 @@ def op_agent_list_by_team(_params):
     }
 
 
+def op_agent_topology(_params):
+    """Graphe de topologie : équipes (leader → membres), successeurs, handoffs.
+    Nœuds : agents avec status/running/preemptible. Liens : team_lead, member, successor."""
+    db = _get_agent_db()
+    rows = db.conn.execute(
+        "SELECT agent_id, name, ref, role_type, occupation, status, resources_json, "
+        "       successor_id, created_at, last_active_at "
+        "FROM agents ORDER BY name"
+    ).fetchall()
+    agents = [dict(r) for r in rows]
+
+    running_ids = set()
+    for a in agents:
+        rt = db.conn.execute(
+            "SELECT current_step FROM agent_runtime WHERE agent_id = ?",
+            (a["agent_id"],)
+        ).fetchone()
+        if rt:
+            running_ids.add(a["agent_id"])
+            a["running"] = True
+            a["current_step"] = rt["current_step"]
+        else:
+            a["running"] = False
+
+    def _parse_resources(raw):
+        try:
+            return json.loads(raw) if raw else {}
+        except Exception:
+            return {}
+
+    for a in agents:
+        res = _parse_resources(a.pop("resources_json", None))
+        a["preemptible"] = bool(res.get("preemptible", False))
+        a["priority"] = res.get("priority", 0)
+        a["llm"] = res.get("llm")
+
+    by_name = {a["name"]: a for a in agents}
+    nodes, edges = [], []
+    for a in agents:
+        nodes.append({
+            "id": a["agent_id"], "name": a["name"], "ref": a["ref"],
+            "role_type": a["role_type"], "occupation": a["occupation"],
+            "status": a["status"], "running": a["running"],
+            "current_step": a.get("current_step"), "preemptible": a["preemptible"],
+            "priority": a["priority"], "llm": a["llm"],
+            "successor_id": a["successor_id"],
+        })
+
+    for a in agents:
+        if a["successor_id"]:
+            edges.append({"from": a["agent_id"], "to": a["successor_id"], "type": "successor"})
+
+    import re
+    teams = {}
+    for a in agents:
+        m = re.match(r"^team:([^/]+)/", a["name"])
+        if m:
+            teams.setdefault(m.group(1), []).append(a)
+
+    from services.team_manager import TeamManager
+    mgr = TeamManager()
+    for tname, members in teams.items():
+        t = mgr.get(f"team:{tname}")
+        leader_id = None
+        if t and t.team_leader_agent_id:
+            leader_id = t.team_leader_agent_id
+            leader = by_name.get(t.spec.team_leader.agent_name) if t.spec.team_leader else None
+            edges.append({
+                "from": None, "to": leader_id, "type": "team_lead",
+                "team": tname, "topology": t.spec.topology,
+                "leader_name": leader["name"] if leader else None,
+            })
+        for m in members:
+            if leader_id is not None and m["agent_id"] != leader_id:
+                edges.append({"from": leader_id, "to": m["agent_id"], "type": "member", "team": tname})
+
+    return {
+        "ok": True,
+        "nodes": nodes,
+        "edges": edges,
+        "teams": list(teams.keys()),
+        "count": len(nodes),
+    }
+
+
 register("agent/list",               op_agent_list)
 register("agent/list-by-team",       op_agent_list_by_team)
+register("agent/topology",           op_agent_topology)
+register("agent/taskflow",           op_agent_taskflow)
 register("capabilities",             op_agent_capabilities)
 register("agent/get",                op_agent_get)
 register("agent/create",             op_agent_create)
