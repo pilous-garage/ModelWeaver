@@ -519,13 +519,17 @@ class DirectBridge(BaseBridge):
     def _log_call(self, provider_ref: str, model_ref: str, success: bool,
                   latency_ms: float, usage: Optional[dict] = None,
                   error_code: str = "", tokens_thinking: int = 0,
-                  agent_id: Optional[str] = None) -> None:
+                  agent_id: Optional[str] = None,
+                  error_msg: str = "", call_type: str = "chat") -> None:
         """Journalise un appel LLM réel dans model_call_log (métriques runtime).
 
         Référencé par ID (provider_id/model_id/provider_model_id), pas par nom.
         ``agent_id`` identifie l'agent appelant (None pour probes/health/sync).
-        Utilisé par le scoring d'allocation (taux de succès, latence, tokens)
-        et les analyses de consommation par agent. Best-effort : ne lève jamais.
+        ``error_code`` = catégorie (rate_limit/unknown/auth/...), ``error_msg`` =
+        message brut tronqué (≤200 ch) pour l'analyse des patterns.
+        ``call_type`` = chat / chat_stream / (futurs).
+        Utilisé par le scoring d'allocation et les analyses de consommation.
+        Best-effort : ne lève jamais.
         """
         if not self.cat:
             return
@@ -534,24 +538,40 @@ class DirectBridge(BaseBridge):
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, agent_id, success,
-                     tokens_in, tokens_out, tokens_thinking, latency_ms, error_code)
+                     tokens_in, tokens_out, tokens_thinking, latency_ms,
+                     error_code, error_msg, call_type)
                 VALUES (
                     COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
                     COALESCE((SELECT id FROM catalogue_models WHERE ref = ?), 0),
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
-                    ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, model_ref, provider_ref, model_ref,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), int(u.get("prompt_tokens") or 0),
                   int(u.get("completion_tokens") or 0), int(tokens_thinking or 0),
-                  float(latency_ms or 0), error_code[:100]))
+                  float(latency_ms or 0), (error_code or "")[:100],
+                  (error_msg or "")[:200], (call_type or "chat")[:30]))
             self.cat.conn.commit()
-            # Fenêtre bornée : purge au-delà de 10k lignes (garder les plus
-            # récentes). Tri par created_at (chronologique) — plus sûr que id
-            # si on change de backend / si des ids sont réutilisés.
+            # Fenêtre bornée : ARCHIVER au-delà de 10k lignes au lieu de
+            # supprimer (garder l'historique pour les analyses de patterns sur
+            # les limites réelles et usages). Les lignes les plus anciennes
+            # (hors 10k plus récentes) sont déplacées vers l'archive.
             try:
+                self.cat.conn.execute("""
+                    INSERT INTO model_call_log_archive
+                        (id, provider_id, model_id, provider_model_id, agent_id,
+                         success, tokens_in, tokens_out, tokens_thinking,
+                         latency_ms, error_code, error_msg, call_type, created_at)
+                    SELECT id, provider_id, model_id, provider_model_id, agent_id,
+                           success, tokens_in, tokens_out, tokens_thinking,
+                           latency_ms, error_code, error_msg, call_type, created_at
+                    FROM model_call_log
+                    WHERE id NOT IN (
+                        SELECT id FROM model_call_log
+                        ORDER BY created_at DESC, id DESC LIMIT 10000)
+                """)
                 self.cat.conn.execute("""
                     DELETE FROM model_call_log WHERE id NOT IN (
                         SELECT id FROM model_call_log
@@ -610,6 +630,7 @@ class DirectBridge(BaseBridge):
         None pour probes/health/sync).
         """
         params["agent_id"] = agent_id
+        params.setdefault("call_type", "chat_stream" if stream else "chat")
         if stream:
             return self._chat_stream_internal(provider_ref, model_ref,
                                               messages, temperature,
@@ -660,7 +681,8 @@ class DirectBridge(BaseBridge):
             self._log_call(provider_ref, model_ref, True,
                            (time.time() - _t0) * 1000.0,
                            usage=(data or {}).get("usage"),
-                           agent_id=params.get("agent_id"))
+                           agent_id=params.get("agent_id"),
+                           call_type=params.get("call_type", "chat"))
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
             _err_cat = getattr(err, "category", None)
@@ -672,10 +694,13 @@ class DirectBridge(BaseBridge):
                 data = retried
             else:
                 _cat = getattr(err, "category", None)
+                _msg = getattr(err, "message", "") or str(exc)
                 self._log_call(provider_ref, model_ref, False,
                                (time.time() - _t0) * 1000.0,
                                error_code=_cat.value if _cat else str(err)[:100],
-                               agent_id=params.get("agent_id"))
+                               error_msg=_msg,
+                               agent_id=params.get("agent_id"),
+                               call_type=params.get("call_type", "chat"))
                 raise err
 
         self._mark_call_ok(provider_ref, model_ref)
@@ -805,7 +830,8 @@ class DirectBridge(BaseBridge):
                     "prompt_tokens": _gm_usage.get("promptTokenCount", 0),
                     "completion_tokens": _gm_usage.get("candidatesTokenCount", 0),
                 },
-                agent_id=params.get("agent_id"))
+                agent_id=params.get("agent_id"),
+                call_type=params.get("call_type", "chat"))
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
             _err_cat = getattr(err, "category", None)
@@ -817,10 +843,13 @@ class DirectBridge(BaseBridge):
                 data = retried
             else:
                 _cat = getattr(err, "category", None)
+                _msg = getattr(err, "message", "") or str(exc)
                 self._log_call(provider_ref, model_ref, False,
                                (time.time() - _t0) * 1000.0,
                                error_code=_cat.value if _cat else str(err)[:100],
-                               agent_id=params.get("agent_id"))
+                               error_msg=_msg,
+                               agent_id=params.get("agent_id"),
+                               call_type=params.get("call_type", "chat"))
                 raise err
 
         self._mark_call_ok(provider_ref, model_ref)

@@ -1529,16 +1529,53 @@ class CatalogueDB:
                     tokens_thinking  INTEGER DEFAULT 0,
                     latency_ms       REAL DEFAULT 0,
                     error_code       TEXT,
+                    error_msg        TEXT,
+                    call_type        TEXT DEFAULT 'chat',
                     created_at       INTEGER DEFAULT (strftime('%s', 'now'))
                 )
             """)
             _add_column_if_missing(self.conn, "model_call_log", "agent_id", "TEXT")
+            _add_column_if_missing(self.conn, "model_call_log", "error_msg", "TEXT")
+            _add_column_if_missing(self.conn, "model_call_log", "call_type", "TEXT DEFAULT 'chat'")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
                 "ON model_call_log(provider_id, model_id, id)")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_agent "
                 "ON model_call_log(agent_id, id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_call_log_created "
+                "ON model_call_log(created_at, id)")
+            # ── Archive des lignes purgées (sur disque, pas en RAM) ──
+            # Quand la table principale dépasse la fenêtre (10k), les lignes
+            # les plus anciennes sont déplacées ici au lieu d'être supprimées.
+            # Permet les analyses de patterns (limites réelles, usages, quotas)
+            # sans alourdir le scoring (qui lit la table principale).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_call_log_archive (
+                    id               INTEGER PRIMARY KEY,
+                    provider_id      INTEGER NOT NULL,
+                    model_id         INTEGER NOT NULL,
+                    provider_model_id INTEGER,
+                    agent_id         TEXT,
+                    success          INTEGER NOT NULL DEFAULT 1,
+                    tokens_in        INTEGER DEFAULT 0,
+                    tokens_out       INTEGER DEFAULT 0,
+                    tokens_thinking  INTEGER DEFAULT 0,
+                    latency_ms       REAL DEFAULT 0,
+                    error_code       TEXT,
+                    error_msg        TEXT,
+                    call_type        TEXT DEFAULT 'chat',
+                    created_at       INTEGER DEFAULT (strftime('%s', 'now')),
+                    archived_at      INTEGER DEFAULT (strftime('%s', 'now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_archive_created "
+                "ON model_call_log_archive(created_at, id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_archive_model "
+                "ON model_call_log_archive(provider_id, model_id, id)")
         except Exception as e:
             self.conn.rollback()
             print(f"⚠️  Migration model_call_log ignorée: {e}")
