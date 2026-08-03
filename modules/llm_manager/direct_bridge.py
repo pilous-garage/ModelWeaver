@@ -477,20 +477,31 @@ class DirectBridge(BaseBridge):
                 WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
                   AND provider_model_name = ?
             """, (now + duration, duration, provider_ref, model_ref))
-            # Problème de CRÉDIT (402 "insufficient credits") : c'est un souci
-            # de COMPTE = provider-wide — tous les modèles du provider sont
-            # morts (ex. openrouter sans crédits). On pose un repos modéré
-            # (1h) sur TOUT le provider pour que le fallback n'enchaîne pas
-            # ses centaines de modèles morts un par un, sans pour autant le
-            # bloquer la journée entière. NE PAS déclencher sur un simple
-            # quota transitoire (429) : un quota google ponctuel ne signifie
-            # pas que tout google est mort.
+            # Problème de CRÉDIT (402 "insufficient credits/balance") : on
+            # blackliste le provider UNIQUEMENT si c'est un vrai souci de COMPTE
+            # — c.-à-d. si le MODÈLE échoué est free_tier=1 (le compte free est
+            # à sec → tous les modèles free sont morts, comme openrouter). Si le
+            # modèle est PAYANT, "insufficient balance" = juste CE modèle est
+            # hors budget : les modèles free du provider (ex. llm7 : 4 free sur
+            # 21) continuent de marcher → on n'exclut QUE ce modèle.
             if provider_wide:
-                self.cat.conn.execute("""
-                    UPDATE provider_models
-                    SET unavailable = 1, noretryuntil = ?, notrytime = ?
-                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-                """, (now + TIME_NO_RESTART_CREDIT_MAX, TIME_NO_RESTART_CREDIT_MAX, provider_ref))
+                _pw = True
+                try:
+                    _r = self.cat.conn.execute("""
+                        SELECT free_tier FROM provider_models
+                        WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                          AND provider_model_name = ?
+                    """, (provider_ref, model_ref)).fetchone()
+                    if _r is not None and not _r["free_tier"]:
+                        _pw = False  # modèle payant : ne pas blacklister le provider
+                except Exception:
+                    _pw = False
+                if _pw:
+                    self.cat.conn.execute("""
+                        UPDATE provider_models
+                        SET unavailable = 1, noretryuntil = ?, notrytime = ?
+                        WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                    """, (now + TIME_NO_RESTART_CREDIT_MAX, TIME_NO_RESTART_CREDIT_MAX, provider_ref))
             try:
                 self.cat.conn.commit()
             except Exception:
