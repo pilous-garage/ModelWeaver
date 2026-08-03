@@ -922,6 +922,19 @@ Définition et gestion d'équipes d'agents via manifests `.team.yaml`.
 - **Éditeur de pipeline** : drag-and-drop pour créer des workflows multi-agents
 - Layout dagre (comme le FSM graph editor V0.7.4)
 
+### V0.8.5 — Vue topologie & dépendances ✅ (panneau Topologie livré)
+- **Route daemon `agent/topology`** (`services/api/handlers/agents.py`) : graphe complet des agents
+  - Nœuds : id, name, role_type, status, running, current_step, **preemptible**, priority, llm, successor_id
+  - Arêtes typées : `team_lead` (leader → équipe), `member` (leader → membres), `successor` (chaîne de succession)
+  - Regroupement par équipe via le préfixe `team:XXX/` + `TeamManager` (status_info, topology)
+  - Tests : 19 agents / 3 équipes / 6 arêtes (bug-busters : leader + 5 membres)
+- **Panneau GUI `Agents/topologie.panel.tsx`** : rendu SVG dagre auto-layout (rankdir TB)
+  - Nœuds colorés par statut (INIT/IDLE/RUNNING/STOPPED/TERMINATED), bordure épaisse si running
+  - Icône ⚡ pour agents préemptibles, badge ★ + nom d'équipe pour le leader, légende des arêtes
+  - Zoom −/+/reset, bouton Actualiser (poll `agent/topology` via `daemonPost`)
+  - Auto-découverte (26 panneaux), accessible via menu Affichage
+  - SSR + layout dagre testés (vite-node)
+
 ### V0.8.6 — Benchmark Scraper & Model Scores 📊 (🚀 Livrée)
 **Date** : 2026-07-26
 
@@ -972,6 +985,29 @@ Infrastructure de scraping de benchmarks LLM + scoring consolidé.
 - L'AFD (Agent Framework Daemon) est visible et contrôlable depuis le dashboard
 - Le dashboard est le point de contrôle unique pour tout le runtime
 
+### V0.8.8 — Mode Docker ✅ (validé sur machine AMD)
+**Objectif** : ModelWeaver entièrement conteneurisé, paramétrable `MODE=gui|vnc`.
+- `Dockerfile.v0.8` : image complète (ubuntu 24.04, daemon + Ollama + GUI/VNC) — build OK
+- `docker/run-v0.8.sh` : lanceur (`gui`|`vnc`, `--rebuild`, ports/env personnalisables) — testé OK
+- `docker-compose.yml` : équivalent compose du lanceur
+- `gui` : daemon + Ollama, API accessible via navigateur — **testé** (health + routes API + start-model + génération tinyllama)
+- `vnc` : en plus Xvfb + x11vnc + noVNC (port 5900/6080) — **testé** (handshake RFB + page noVNC 200)
+- Passthrough GPU : `/dev/dri` (AMD) monté — **vérifié** (`card1` + `renderD128` visibles dans le conteneur)
+- Volumes persistants : `mw-models` (modèles), `mw-data` (config), `mw-hf-cache` (cache HF)
+- Ports exposés : daemon (8770), Ollama (11434), llama.cpp (8080), VNC (5900), noVNC (6080)
+- `daemon.py serve --bind` : option ajoutée (défaut 127.0.0.1, `0.0.0.0` en Docker) — sécurité préservée hors Docker
+- Correctifs découverts en route : `zstd` requis par l'installateur Ollama, `keyring` requis par la chaîne d'imports, `.dockerignore` bloquait l'entrypoint, `openbox` en foreground bloquait l'entrypoint
+
+### V0.8.8b — Fix rendu GUI Tauri dans Docker ✅ (validé)
+**Objectif** : les 3 fenêtres Tauri (Installateur, Dashboard, Agent IDE) s'affichaient **noires/blanches** dans Docker (Xvfb) malgré un frontend qui tournait. Trois causes racines identifiées et corrigées :
+
+1. **Feature `custom-protocol` manquante** (cause principale) : `Cargo.toml` n'activait pas `tauri/custom-protocol` → tauri-build compilait en mode `dev` (`DEP_TAURI_DEV=true`, `--cfg dev`) → le binaire chargeait `devUrl` (localhost:5173) au lieu d'embarquer le frontend → fenêtres vides ("localhost could not connect" hors Docker). Fix : `default = ["custom-protocol"]` + `custom-protocol = ["tauri/custom-protocol"]`.
+2. **Pas de compositeur X sous Xvfb** : sans xcompmgr, le rendu multi-WebView (2+ WebViews dans un même process) restait noir — seule la dernière WebView créée rendait. Fix : `xcompmgr` lancé dans l'entrypoint après openbox (+ paquet ajouté au Dockerfile, Xvfb enrichi `+extension GLX +render`).
+3. **Bug JS `hw.usb_count`** (SystemStatePanel.tsx) : accès sans guard `hw?.` sur le state null initial → crash React au boot → écran blanc. Fix : `hw?.usb_count`.
+
+**Validation** : conteneur `modelweaver-v0.8` (MODE=vnc) → 3 fenêtres détectées, captures par `import -window <WID>` montrant les thèmes React (`#1a1a2e` Dashboard, `#1e293b` cartes, `#1e1e2e` IDE), daemon `{"ok": true, "version": "0.8.6"}`, noVNC 200.
+**Note** : capturer par `import -window <WID>` (jamais `-window root` sans compositeur) ; sans xcompmgr le root reste noir.
+
 ## V0.9 — Mini-Entreprise de Création de Projet (📝 Planifié)
 **Objectif** : Test réel complet : un projet logiciel conçu, développé et livré
 par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
@@ -984,14 +1020,19 @@ par des agents ModelWeaver en autonomie, simulant une mini-entreprise.
 - Livraison et documentation par un agent livraison
 - Bilan : métriques de productivité, coûts tokens, temps réel
 
-## V0.10 — Portage Windows / Fedora (📝 Planifié)
-**Objectif** : Rendre ModelWeaver fonctionnel sur Windows (WSL + natif) et Fedora.
+### Auto-code Swarm
+- Service Swarm dédié : objectif "Rendre ModelWeaver plus stable, plus fonctionnel, plus rapide, plus performant, plus beau, et plus facile d'utilisation"
+- Cycle continu : analyser → coder → tester dans conteneur isolé → déployer si OK
+- Intégration avec le daemon pour validation automatique des changements
 
-- Adaptation des chemins et variables d'environnement Windows
-- Compatibilité shell (PowerShell / CMD)
-- Tests sur Fedora (dnf, SELinux)
-- Installation des dépendances natives par OS
-- CI multi-OS
+## V0.10 — Portabilité Cross-OS (📝 Planifié)
+**Objectif** : tester ModelWeaver sur différents OS (Windows, macOS, Linux) depuis la machine hôte sans changer d'OS physique.
+
+### Virtualisation
+- QEMU+KVM+Firecracker pour tester ModelWeaver sur d'autres OS
+  - QEMU+KVM : émulation complète Windows/macOS/Linux
+  - Firecracker : microVM ultra-rapide pour tests Linux isolés
+  - Images Docker multi-arch pour les environnements de test
 
 ## V0.11 — Préparation Version Stable (📝 Planifié)
 **Objectif** : Dernière ligne droite avant la release publique.
@@ -1144,6 +1185,8 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - **Correction litellm** — remplacé par **DirectBridge** (appel API direct OpenAI-compatible) ✅
 - **Mode texte + extraction de code** — alternative aux tool_calls (blocs markdown, JSON, bash) ✅
 - **`nullable: true`** pour paramètres optionnels des outils ✅
+- **LLM locaux** — panneau gestionnaires groupés par format (GGUF/FLM), boutons Démarrer/Arrêter/Stop, sélection matériel (CPU/GPU/CPU+GPU/NPU), check ressources, catalogue HuggingFace ✅
+- **Monitoring GUI V0.8.6** — CORS daemon + token stable, inventaire hardware, runtime GPU/NPU/bande passante, tokens_thinking, prix reasoning, historique usage 3 niveaux, moniteur LLM distant, 6 panneaux Monitoring ✅
 - Tests E2E complets (6/6 phases, 97/97 tests) ✅
 
 ## V0.8.7 — DirectBridge, Bundles & Permissions 🚀 (Livrée)
@@ -1176,3 +1219,67 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - Documentation professionnelle
 - Cadre légal finalisé (via v0.14)
 - Campagne de lancement
+
+### V0.8.8 — LLM Locaux + Matériel cible + Catalogue HF 🚀 (En cours)
+
+#### Panneau LLM locaux (GUI + Backend)
+- **Gestionnaires groupés par format** : GGUF → ollama + llama.cpp + LM Studio, FLM → NPU
+- **Boutons Démarrer/Arrêter/Stop** au niveau modèle + moteur :
+  - Démarrer = moteur (si arrêté) PUIS charge le modèle
+  - Arrêter = décharge le modèle
+  - Stop = arrête le moteur
+- **Sélection de matériel cible** (dropdown CPU/GPU/CPU+GPU/NPU) à côté des boutons
+  - ollama : cpu (CUDA_VISIBLE_DEVICES=""), gpu (défaut), cpu_gpu
+  - llamacpp : cpu (`-ngl 0`), gpu/cpu_gpu (`-ngl 99`)
+  - flm (FastFlowLM) : npu uniquement
+- **Check ressources** : taille GGUF × 1.3 vs RAM libre, message bloquant si insuffisant
+- **Catalogue HuggingFace** : recherche API HF filtrée GGUF, téléchargement `huggingface_hub` avec progression, association à un seul gestionnaire au choix (pas de doublon)
+- **Fichiers GGUF locaux** : liste des modèles téléchargés via le catalogue, servables par llama.cpp
+
+#### Backend
+- `modules/llm_manager/local_engines.py` : `hardware_modes` par moteur, `start_model(engine, model, hardware)`, `stop_model`, `check_resources(size_gb)`, moteur `flm` (FastFlowLM NPU), `_flm_binary()`, `_start_flm()`, `list_models_grouped()`
+- `modules/llm_manager/hf_catalogue.py` : `hf_search()`, `hf_download()`, `hf_download_status()`, `associate_model()`, `list_local_models()`
+- Routes daemon : `llm/local/models/grouped`, `llm/local/start-model`, `llm/local/stop-model`, `llm/local/hardware-modes`, `llm/local/check-resources`, `llm/local/stop-motor`, `llm/hf/search`, `llm/hf/download`, `llm/hf/status`, `llm/hf/associate`, `llm/hf/local`
+
+#### FastFlowLM NPU
+- Build portable FLM téléchargé (`~/.modelweaver/flm-portable.tar.gz`) et binaire installé (`~/.local/fastflowlm/`)
+- `flm list` : 18 modèles NPU disponibles (llama3.2:1b, gemma3:1b, qwen3.5:9b, etc.)
+- `flm validate` : "No NPU device found" — nécessite `sudo usermod -aG render pierreloup2` + relogin
+- FLM prêt à être testé dès que l'accès NPU est accordé
+
+## V0.8.9 — Swarm self-improve E2E + allocation dynamique + logs FSM 🚀 (Livrée)
+
+### Swarm autonome (`team:swarm-selfimprove`)
+- Workflow leader 9 membres : analyst → planner → coder-a/b/c → tester-a/b → reviewer → integrator
+- **E2E validé** : runs 41, 45, 46, 47, 48, 49 = SUCCESS 9/9 (tous les membres PASSED/OK/INTEGRATION)
+- Fichier `e2e_result.txt` (E2E_OK) poussé dans le repo central `~/.modelweaver/repos/mw-swarm.git`
+- Testeurs : ne testent que ce qui a été modifié (pas `pytest` sur tout le repo) + `git_clone` ajouté au bundle `test`
+
+### Allocation LLM (probes retirés + scoring runtime)
+- **Probes supprimés** (3 endroits) : allocation 206ms au lieu de 10s+, plus aucune requête API gaspillée
+- **Retries directs virés** : 1 retry 1s max, échec rapide → fallback (plus de boucles 0/5/5s ni 15+25s)
+- **Table `model_call_log`** : log de chaque appel réel (latence, tokens, success, error) par ID, purge 10k
+- **Fenêtre glissante par modèle** (200 derniers logs PAR provider_model_id, window function) + tri `created_at`
+- **Scoring déterministe** : `score -= fail_rate; score -= lat_ms/100000` + lissage Laplace `(1+s)/(1+n)`
+- **Bonus fiabilité** (+0.2) pour modèles testés ≥80% succès / ≥3 appels ; pénalité non-testés
+- **Doublons fusionnés** par ref normalisée (préfixe provider retiré) → 733 modèles uniques
+- **Catégorisation erreurs** : 429 "quota exceeded" = rpm (repos ≤10 min, google revient vite) ; 402 crédit = provider-wide 1h
+- **Plafond RPM séparé** (10 min) vs quota durable (1h crédit, 24h daily)
+- **Modèles morts retryable** (deprecated/404/insufficient credits) → fallback automatique
+- **`_TRUSTED_AGENTIC` élargi** : gemini-3.1-flash-lite, gemma-4-26b/31b, gemini-3.6-flash
+
+### Logs FSM par agent
+- `AgentFrameWork/fsm_logger.py` : log `{home}/log/fsm_{ts}.log` par run
+- Trace chaque step FSM, appel LLM (provider/model/prompt court), tool call (args courts), erreurs
+- Niveaux configurables (`config.log_level`, défaut `debug`)
+- Un seul fichier par run, partagé entre AgentManager (steps) et autonomous (LLM/tools) via `attach`
+- **Traçage agent** : colonne `agent_id` dans `model_call_log` — chaque appel réel identifie l'agent appelant (probes restent None)
+
+### Contrôles & diagnostics
+- **Seuil d'échecs LLM consécutifs** (8) : abandonne vite au lieu de 100 tours de fallback mort
+- **Terminaison succès partiel** : un membre qui a fait son travail (tools réussis) termine en succès même si le LLM de confirmation échoue
+- **Retry no_action** : le LLM qui répond en texte sans outils est re-sollicité une fois
+- **`check_google_api.py`** : script de diagnostic direct des modèles Google (état réel des quotas)
+- `git_push` avec `pull --rebase` avant push (fini les boucles non-fast-forward)
+- **Provider `kilo`** : gateway `https://api.kilo.ai/api/gateway`, 10 modèles `:free` onboardés (clé gratuite sans budget)
+

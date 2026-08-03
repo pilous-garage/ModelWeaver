@@ -31,6 +31,44 @@ def op_version(_params):
     return {"version": MW_VERSION, "api": API_VERSION}
 
 
+def op_system_hardware():
+    """Inventaire matériel complet (check système) — CPU, RAM, carte mère,
+    GPU, disques, réseau, USB, températures."""
+    from modules.checker.hardware_check import full_inventory
+    return full_inventory()
+
+
+def op_system_resources(_params=None):
+    """Snapshot runtime : GPU (charge/temp), bande passante réseau."""
+    from modules.checker.hardware_check import runtime_sample
+    return runtime_sample()
+
+
+def op_system_processes(_params=None):
+    """Top processus par CPU/RAM (psutil), triés par utilisation CPU."""
+    try:
+        import psutil
+        out = []
+        for p in psutil.process_iter(["pid", "name", "cpu_percent",
+                                      "memory_info", "cmdline"]):
+            try:
+                info = p.info
+                cmd = info.get("cmdline") or []
+                out.append({
+                    "pid": info["pid"],
+                    "name": info.get("name") or "",
+                    "cpu": round(info.get("cpu_percent") or 0.0, 1),
+                    "rss_kb": round((info.get("memory_info") or {}).rss / 1024),
+                    "command": " ".join(cmd)[:160] if cmd else "",
+                })
+            except Exception:
+                continue
+        out.sort(key=lambda x: x["cpu"], reverse=True)
+        return {"processes": out[:30], "count": len(out)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def check_python_deps():
     import subprocess
     import json as _json
@@ -219,6 +257,52 @@ def save_system_state():
     return {"status": "ok"}
 
 
+def system_services_list():
+    """Liste des services gérés par le superviseur (PID, socket, statut)."""
+    try:
+        from services.supervisor.client import get_supervisor_client
+        res = get_supervisor_client().list_services()
+        return res.get("services", {})
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_service_restart(name: str):
+    """Redémarre un service via le superviseur."""
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().restart(name)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_shutdown():
+    """Arrêt complet : stoppe tous les services via le superviseur."""
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().shutdown()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_system_state_get():
+    """État système complet (statique + hardware temps réel).
+
+    Statique : OS, arch, gestionnaires détectés.
+    Temps réel : RAM/Disque/CPU (global + par cœur).
+    """
+    from modules.checker.checker import Checker
+    checker = Checker()
+    info = checker.get_system_info()
+    return {
+        **info,
+        "detected_managers": checker.get_detected_managers(),
+        **checker.get_hardware_info(),
+    }
+
+
 def sync_catalogue_remote(url=None):
     if not url:
         url = os.environ.get("MODELWEAVER_CATALOGUE_URL", "http://localhost:8765/api")
@@ -233,6 +317,13 @@ def sync_catalogue_remote(url=None):
     except Exception:
         pass
     return {"status": "ok", "url": url, "results": results}
+
+
+def model_sync_run_once(_params=None):
+    """Lance un cycle manuel du synchroniseur de modèles (par clé API)."""
+    from services.model_sync.model_sync import sync_once
+    summary = sync_once()
+    return {"status": "ok", "summary": summary}
 
 
 def update_tools_table():
@@ -423,15 +514,22 @@ def op_provider_endpoint_add(params):
 # ── Route registration ─────────────────────────────────────────────────
 
 register("system/info",              op_system_info)
+register("system/hardware",          _wrap(op_system_hardware))
+register("system/resources",         _wrap(op_system_resources))
+register("system/processes",         _wrap(op_system_processes))
 register("version",                  op_version)
 register("system/deps/check",        _wrap(check_python_deps))
-register("system/state/get",         _wrap(save_system_state))
+register("system/state/get",         _wrap(op_system_state_get))
 register("system/state/save",        _wrap(save_system_state))
+register("system/services",          _wrap(system_services_list))
+register("system/services/restart",  lambda p: _quiet(system_service_restart, p.get("name")))
+register("system/shutdown",          _wrap(system_shutdown))
 register("db/init",                  _wrap(init_databases))
 register("db/check",                 _wrap(check_databases))
 register("catalogue/tools/list",     _wrap(get_catalogue_tools))
 register("catalogue/seed",           _wrap(seed_catalogue))
 register("catalogue/sync",           lambda p: _quiet(sync_catalogue_remote, p.get("url")))
+register("catalogue/models/sync",    lambda p: _quiet(model_sync_run_once))
 register("catalogue/tools_table/update", _wrap(update_tools_table))
 register("catalogue/fetch/remote",   lambda p: _quiet(fetch_remote_to_local))
 register("tools/installed/list",     _wrap(get_installed_tools))

@@ -14,9 +14,9 @@ from typing import Dict, List, Optional
 
 def _decompose_with_llm(request: str, context: str = "",
                          provider_ref: str = "", model_ref: str = "") -> List[Dict]:
-    from modules.llm_manager.litellm_bridge import LiteLLMBridge
+    from modules.llm_manager.llm_manager import LLMManager
     from modules.llm_manager.resilient import resilient_chat
-    bridge = LiteLLMBridge()
+    bridge = LLMManager(cat=None).get_bridge()
 
     system = "Tu décomposes une mission en tâches. Réponds UNIQUEMENT un JSON list."
     if context:

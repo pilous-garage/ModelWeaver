@@ -63,6 +63,7 @@ class ShellAuth:
             "whoami", "id", "clear", "sleep", "type", "true", "false",
             "exit", "help", "alias", "source", "export", "unset",
             "cut", "tr", "paste", "join", "split", "xargs",
+            "git", "python3", "python", "pytest",
         }
 
     # ── autorisation pkill ──────────────────────
@@ -145,6 +146,7 @@ class ShellAuth:
             "sort", "uniq", "wc", "diff", "patch", "mkdir", "rm", "cp", "mv",
             "touch", "ln", "chmod", "chown", "ps", "kill", "top", "env",
             "which", "uname", "date", "hostname", "whoami", "id",
+            "git", "python3", "python", "pytest",
         }
 
     # ── vérification VFS ──────────────────────────────

@@ -244,6 +244,46 @@ class ShellExecutor:
 
     # ── fallback subprocess ──────────────────────────
 
+    def _rewrite_git_clone(self, args: List[str]) -> Optional[Tuple[List[str], Optional[str]]]:
+        """Réécrit `git clone <url-github>` vers le dépôt central BARE local.
+
+        Équivalent du skill git_clone (git_ops.py) : si l'URL cible un projet
+        présent dans {mw_home}/repos/, on clone depuis le bare local au lieu
+        du réseau (le repo GitHub mw-swarm n'existe pas publiquement). Retourne
+        (args_réécrits, destination_du_clone) ou None si rien à réécrire.
+        """
+        try:
+            from services._common import mw_home
+        except Exception:
+            return None
+        if not args or args[0] != "clone":
+            return None
+        url_idx = None
+        for i, a in enumerate(args[1:], start=1):
+            if a.startswith(("https://", "http://", "git@")) or a.endswith(".git"):
+                url_idx = i
+                break
+        if url_idx is None:
+            return None
+        url = args[url_idx].rstrip("/")
+        name = url.rsplit("/", 1)[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        local = mw_home() / "repos" / f"{name}.git"
+        if not local.exists():
+            return None
+        new_args = list(args)
+        new_args[url_idx] = str(local)
+        # Destination du clone : dernier argument non optionnel, sinon défaut
+        # (nom du repo dans le workdir courant).
+        dest = None
+        for a in new_args[url_idx + 1:]:
+            if not a.startswith("-"):
+                dest = a
+        if dest is None:
+            dest = name
+        return new_args, dest
+
     def _run_fallback(self, cmd: str, args: List[str], stdin: Optional[str], redirects: Dict[str, str]) -> dict:
         if not self.auth.is_command_allowed(cmd):
             return {"status": "error", "error": f"commande '{cmd}' non autorisée (whitelist)", "exit_code": 126, "stdout": "", "stderr": f"Command '{cmd}' not in whitelist"}
@@ -267,6 +307,14 @@ class ShellExecutor:
                 executable = found_path
             full_args = [executable] + args
 
+        # git clone d'une URL non publique → dépôt central local
+        cloned_dest = None
+        if cmd == "git":
+            rewritten = self._rewrite_git_clone(args)
+            if rewritten is not None:
+                new_args, cloned_dest = rewritten
+                full_args = [executable] + new_args
+
         full_env = {**os.environ, **self._env}
         try:
             proc = subprocess.Popen(
@@ -288,5 +336,19 @@ class ShellExecutor:
             proc.kill()
             stdout, stderr = proc.communicate()
             exit_code = 124
+
+        if exit_code == 0 and cloned_dest:
+            # Identité git locale (sinon commit échoue en env vierge) —
+            # identique au comportement de git_clone (git_ops._git_identity).
+            dest_path = Path(self.workdir / cloned_dest)
+            if dest_path.exists():
+                for c in (["config", "user.email", f"{self.auth.agent_id}@modelweaver.local"],
+                          ["config", "user.name", f"agent-{self.auth.agent_id}"]):
+                    try:
+                        subprocess.run(["git", "-C", str(dest_path)] + c,
+                                       capture_output=True, timeout=10)
+                    except Exception:
+                        pass
+                stderr += "\n[git_clone] cloné depuis le dépôt central local"
 
         return {"status": "success" if exit_code == 0 else "error", "stdout": stdout, "stderr": stderr, "exit_code": exit_code}

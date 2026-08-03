@@ -292,6 +292,13 @@ def git_push(inputs: dict, home: str) -> dict:
         return err
     branch = inputs.get("branch", "")
     ref = branch if branch else "HEAD"
+    # Pull --rebase AVANT push : dans un swarm, d'autres membres peuvent avoir
+    # avancé le repo central depuis notre clone (push non-fast-forward → erreur
+    # → le LLM boucle). On réconcilie d'abord, best-effort.
+    try:
+        _git_run(root, ["pull", "-q", "--rebase", "origin"])
+    except Exception:
+        pass
     return _git_run(root, ["push", "-u", "origin", ref])
 
 

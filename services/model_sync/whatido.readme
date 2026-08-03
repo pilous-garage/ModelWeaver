@@ -1,0 +1,34 @@
+# model_sync — Synchronisation périodique des modèles par clé API
+
+Processe séparé (lancé par le daemon via `_start_model_sync`, supervisé toutes
+les 2 min). Boucle une fois par heure (config `models.sync_interval_hours`,
+défaut 1.0).
+
+## Ce que fait chaque cycle
+
+1. **Découverte** : pour chaque clé API liée à un endpoint dans
+   `key_endpoint_models`, interroge l'API du provider
+   (`DirectBridge.list_available_models`) pour lister les modèles réellement
+   disponibles.
+2. **Mise à jour `key_endpoint_models`** :
+   - modèles présents → `declared=1, available=1, last_checked_at`
+   - modèles absents → `declared=0, available=0`
+   - nouveaux modèles découverts → insérés (modèle + provider_models + KEM)
+3. **Backoff `model_probe_state`** (par endpoint+key+model) :
+   - succès → reset compteur/backoff, `defunct=0`
+   - échec → `consecutive_failures+1`, `backoff_s` croissant (60s ×2, plafond
+     24h), `next_probe_at = now + backoff_s`
+   - `consecutive_failures >= 5` → `defunct=1` (modèle obsolète)
+   - un modèle en backoff (`next_probe_at` futur ou `defunct`) est ignoré au
+     cycle suivant → on ne martèle pas une API en erreur
+
+## API
+
+- `POST /v1/catalogue/models/sync` — cycle manuel (route daemon).
+
+## Fichiers
+
+- `services/model_sync/model_sync.py` : implémentation (exécutable seul)
+- `services/manifests/model-sync.service.yaml` : manifest
+- `services/api/daemon.py` : démarrage + supervision au boot
+- `services/api/handlers/system.py` : route `catalogue/models/sync`

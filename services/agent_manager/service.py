@@ -21,7 +21,7 @@ from pathlib import Path
 
 from services._common import mw_home, acquire_instance_lock
 from modules.sql.db import AgentsDB
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
 from AgentFrameWork.stream_bus import stream_bus
@@ -89,9 +89,9 @@ def _get_key_manager():
     return _km
 
 
-def make_bridge() -> "LiteLLMBridge":
-    """Construit un bridge LiteLLM avec Key Manager (clés BDD) + catalogue."""
-    return LiteLLMBridge(cat=_get_catalogue_db(), km=_get_key_manager())
+def make_bridge():
+    """Construit le bridge actif via LLMManager (DirectBridge par défaut)."""
+    return LLMManager(cat=_get_catalogue_db(), km=_get_key_manager()).get_bridge()
 
 
 # Workflow minimal d'un tour de chat : un seul `llm_call` qui consomme le
@@ -132,7 +132,7 @@ class Agent:
     def __init__(self, db: AgentsDB, agent_data: Dict[str, Any]):
         self.db = db
         self._data = agent_data
-        self._bridge: Optional[LiteLLMBridge] = None
+        self._bridge = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
@@ -214,6 +214,27 @@ class Agent:
         self._mark_running()
         stream_bus.reset(self.agent_id)
 
+        # Logger FSM : trace chaque step/appel LLM/tool dans {home}/log/.
+        # Home par AGENT_ID (agent_home/{id}) — le même que celui utilisé par
+        # les skills (autonomous.py) — pour que steps FSM + appels LLM/tools
+        # atterrissent dans UN SEUL fichier par run.
+        # Niveau depuis la config de l'agent (défaut debug).
+        self._fsm_log = None
+        try:
+            from AgentFrameWork.fsm_logger import FSMLogger
+            from services._common import mw_home
+            home_root = (mw_home() / "agent_home" / str(self.agent_id)).resolve()
+            cfg0 = json.loads(self._data.get("config_json") or "{}")
+            lvl = (cfg0.get("log_level")
+                   or (cfg0.get("llm") or {}).get("log_level")
+                   or "debug")
+            self._fsm_log = FSMLogger(str(home_root),
+                                      agent_name=self.name, level=lvl)
+            self._fsm_log.log("info", "fsm/start",
+                              f"agent={self.name} request={request[:80]}")
+        except Exception:
+            self._fsm_log = None
+
         # Charger le bridge si pas déjà fait
         if not self._bridge:
             self._bridge = make_bridge()
@@ -275,6 +296,7 @@ class Agent:
                         messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
+                        agent_id=str(self.agent_id),
                     )
                     elapsed_ms = int((time.time() - t0) * 1000)
                     content = result.content if hasattr(result, 'content') else str(result)
@@ -488,6 +510,11 @@ class Agent:
         Phase 5 : spawn + handoff)."""
         import json
         variables = json.loads(self._data.get("variables_json") or "{}")
+        # Purger les variables de capture du run précédent (_member_*, sorties
+        # d'agent_call) : sans quoi un nouveau run réaffiche les anciennes
+        # sorties des membres dans ses variables finales.
+        for _k in [k for k in variables if k.startswith("_member_")]:
+            del variables[_k]
         # Injecte agent_id pour les skills (memory, log) via {{agent_id}}.
         variables.setdefault("agent_id", self.agent_id)
         # Injecte la requête utilisateur (dernier message user) via {{request}}.
@@ -515,6 +542,18 @@ class Agent:
                     "heartbeat_at = datetime('now') WHERE agent_id = ?",
                     (event.step_id or "running", _agent_id))
                 _db.conn.commit()
+            except Exception:
+                pass
+            # Log FSM : chaque step exécuté, avec type + args courts.
+            try:
+                _l = getattr(self, "_fsm_log", None)
+                if _l is not None:
+                    _st = event.step or {}
+                    _args = {k: v for k, v in (_st.get("inputs") or {}).items()
+                             if not isinstance(v, (dict, list))}
+                    _l.log("debug", "fsm/step",
+                           f"id={event.step_id or '?'} type={_st.get('type', '?')} "
+                           f"args={_args}")
             except Exception:
                 pass
 
@@ -602,9 +641,12 @@ class Agent:
             from services.api.afd_client import get_afd_client
             import json as _json
             client = get_afd_client()
+            # Le membre attend la VRAIE requête (pas le JSON de transport) :
+            # les inputs du step contiennent `request` + paramètres auxiliaires.
+            request = inputs.get("request", _json.dumps(inputs))
             return client.call(
                 agent_name, "execute",
-                request=_json.dumps(inputs),
+                request=request,
                 entrypoint=entrypoint,
                 provider_ref=inputs.get("provider_ref", self._call_provider_ref),
                 model_ref=inputs.get("model_ref", self._call_model_ref),

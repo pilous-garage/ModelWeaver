@@ -15,7 +15,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from modules.sql.db import AgentsDB
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.router import resolve as router_resolve, routes_for as router_routes_for
 from AgentFrameWork.fsm_interpreter import AgentAbort
@@ -25,6 +25,29 @@ from services.agent_manager.service import AgentManager, Agent
 
 def _get_agent_db() -> AgentsDB:
     return AgentsDB()
+
+
+def _resolve_llm(resources: dict, use_case: str = "coding") -> Optional[Dict[str, Any]]:
+    """Résout provider/model via le service LLM Manager, sinon Organisateur."""
+    try:
+        from services.llm_manager.client import get_llm_client
+        client = get_llm_client()
+        if client.ping():
+            res = client.allocate({"strategy": "best-fallback",
+                                   "task_type": use_case})
+            if res.get("status") == "ok" and res.get("provider_ref"):
+                return {"allocated": True,
+                        "provider_ref": res["provider_ref"],
+                        "model_ref": res["model_ref"]}
+            return {"allocated": False, "reason": res.get("error", "llm_service")}
+    except Exception:
+        pass
+    try:
+        from modules.llm_manager.organisateur import Organisateur
+        alloc = Organisateur().allocate(resources)
+        return dict(alloc)
+    except Exception:
+        return {"allocated": False, "reason": "allocateur indisponible"}
 
 
 def _resolve_agent_ref(db: AgentsDB, agent_ref) -> Optional[Dict[str, Any]]:
@@ -262,7 +285,8 @@ class AgentDaemon:
         """Capability : chat / research / summarize / … → exécution FSM."""
         agent_id = agent["agent_id"]
 
-        # Résoudre provider/model (Phase 3 : Organisateur si non imposé)
+        # Résoudre provider/model (Phase 3 : service LLM Manager si dispo,
+        # sinon Organisateur en fallback)
         provider_ref = kwargs.get("provider_ref") or kwargs.get("provider") or ""
         model_ref = kwargs.get("model_ref") or kwargs.get("model") or ""
         if not provider_ref or not model_ref:
@@ -271,15 +295,15 @@ class AgentDaemon:
             except (json.JSONDecodeError, TypeError):
                 resources = {}
             if resources.get("llm"):
-                from modules.llm_manager.organisateur import Organisateur
-                alloc = Organisateur().allocate(resources)
-                if alloc["allocated"]:
+                alloc = _resolve_llm(resources, use_case="coding")
+                if alloc and alloc.get("allocated"):
                     if not provider_ref:
                         provider_ref = alloc["provider_ref"]
                     if not model_ref:
                         model_ref = alloc["model_ref"]
-                else:
-                    return {"status": "error", "error": f"LLM non allouable : {alloc['reason']}"}
+                elif not alloc or not alloc.get("allocated"):
+                    reason = (alloc or {}).get("reason", "indisponible")
+                    return {"status": "error", "error": f"LLM non allouable : {reason}"}
 
         a = Agent.hydrate(agent_id, db)
         try:
@@ -312,8 +336,8 @@ class AgentDaemon:
     def _execute_op(db: AgentsDB, agent: dict, kwargs: dict) -> Dict[str, Any]:
         """Exécution directe d'un agent (héritée de agent/execute).
 
-        Résout le provider/LLM (Phase 3 : Organisateur si non imposé),
-        hydrate l'agent, exécute, déshydrate.
+        Résout le provider/LLM (Phase 3 : service LLM Manager si dispo,
+        sinon Organisateur en fallback), hydrate l'agent, exécute, déshydrate.
         """
         agent_id = agent["agent_id"]
         request = kwargs.get("request", "")
@@ -328,15 +352,15 @@ class AgentDaemon:
             except (json.JSONDecodeError, TypeError):
                 resources = {}
             if resources.get("llm"):
-                from modules.llm_manager.organisateur import Organisateur
-                alloc = Organisateur().allocate(resources)
-                if alloc["allocated"]:
+                alloc = _resolve_llm(resources, use_case="coding")
+                if alloc and alloc.get("allocated"):
                     if not provider_ref:
                         provider_ref = alloc["provider_ref"]
                     if not model_ref:
                         model_ref = alloc["model_ref"]
-                else:
-                    return {"status": "error", "error": f"LLM non allouable : {alloc['reason']}"}
+                elif not alloc or not alloc.get("allocated"):
+                    reason = (alloc or {}).get("reason", "indisponible")
+                    return {"status": "error", "error": f"LLM non allouable : {reason}"}
 
         try:
             a = Agent.hydrate(agent_id, db)

@@ -1,0 +1,27 @@
+name: llm-manager
+version: 0.1.0
+description: Service LLM Manager — allocation et état centralisés (socket llm.sock)
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/llm_manager/service.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: pid
+  interval: 15
+  timeout: 5
+
+entrypoints:
+  allocate:
+    type: inline
+    handler: |
+      def handler(params):
+          return {"service": "llm-manager", "socket": "llm.sock"}

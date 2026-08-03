@@ -60,7 +60,11 @@ def host_write(inputs: dict, home: str) -> dict:
 def host_run(inputs: dict, home: str) -> dict:
     agent_id = _agent_id_from_home(home, inputs)
     command = inputs.get("command", "")
-    cwd = inputs.get("cwd", "/")
+    cwd = inputs.get("cwd", "")
+    # cwd vide ou "/" (défaut peu utile pour un agent) → home de l'agent :
+    # un LLM qui appelle run_v1 sans cwd ne doit pas être bloqué par "/".
+    if not cwd or cwd == "/":
+        cwd = home
     try:
         mgr = FsAuthManager()
         if not mgr.check(int(agent_id), cwd, want_write=True):

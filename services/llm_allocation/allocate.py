@@ -50,14 +50,69 @@ def _query_candidates() -> List[Dict[str, Any]]:
                 kem.available,
                 kem.declared,
                 me.score_chat, me.score_coding, me.score_reasoning,
-                me.score_knowledge, me.score_agentic, me.is_synthetic
+                me.score_knowledge, me.score_agentic, me.is_synthetic,
+                -- Métriques runtime (fenêtre glissante ~200 derniers appels) :
+                -- compteurs BRUTS (success/total) pour lisser au scoring
+                -- (Laplace) plutôt qu'un taux moyenné (0/1 et 1/1 extrêmes).
+                COALESCE(cl_stats.success_count, 0) AS runtime_success_count,
+                COALESCE(cl_stats.total_calls, 0) AS runtime_calls,
+                COALESCE(cl_stats.avg_latency_ms, 0.0) AS runtime_latency_ms
             FROM key_endpoint_models kem
             JOIN catalogue_providers cp ON cp.id = kem.provider_id
             JOIN catalogue_models cm ON cm.id = kem.model_id
             JOIN provider_models pm ON pm.provider_id = kem.provider_id AND pm.model_id = kem.model_id
             LEFT JOIN model_efficacy me ON me.model_id = cm.id AND me.use_case = 'general'
+            LEFT JOIN (
+                -- Métriques runtime AGRÉGÉES par (provider, provider_model_name) :
+                -- fenêtre glissante des 200 derniers logs PAR MODÈLE (pas les
+                -- 200 derniers totaux, sinon un modèle bavard comme gemini-
+                -- flash-lite pousse les autres hors fenêtre). On garde les 200
+                -- plus récents de CHAQUE provider_model_id, triés par created_at.
+                SELECT pm.provider_id AS provider_id,
+                       pm.provider_model_name AS pname,
+                       SUM(cl.success_count) AS success_count,
+                       SUM(cl.total_calls) AS total_calls,
+                       AVG(cl.avg_latency_ms) AS avg_latency_ms
+                FROM (
+                    SELECT provider_model_id,
+                           SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
+                           AVG(latency_ms) AS avg_latency_ms,
+                           COUNT(*) AS total_calls
+                    FROM (
+                        SELECT provider_model_id, success, latency_ms,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY provider_model_id
+                                   ORDER BY created_at DESC, id DESC) AS rn
+                        FROM model_call_log
+                    )
+                    WHERE rn <= 200
+                    GROUP BY provider_model_id
+                ) cl
+                JOIN provider_models pm ON pm.id = cl.provider_model_id
+                GROUP BY pm.provider_id, pm.provider_model_name
+            ) cl_stats ON cl_stats.provider_id = kem.provider_id
+                       AND cl_stats.pname = (
+                           -- Nom normalisé : retirer le préfixe provider redondant
+                           -- (google/gemma-4-31b-it → gemma-4-31b-it) pour matcher
+                           -- les logs qui stockent le nom brut côté provider.
+                           CASE WHEN kem.provider_model_name LIKE cp.ref || '/%'
+                                THEN substr(kem.provider_model_name, length(cp.ref) + 2)
+                                ELSE kem.provider_model_name
+                           END
+                       )
             WHERE kem.available = 1 AND kem.declared = 1
               AND pm.status = 'active'
+            -- Dédupliquer : un même (provider, model) peut exister via
+            -- plusieurs key_endpoint_models (endpoints/clés). On garde UNE
+            -- ligne par modèle — sinon un doublon à 0/0 ressort en tête avec
+            -- score plein pendant que son jumeau pénalisé est ignoré.
+            GROUP BY cp.ref, cm.ref, kem.provider_model_name,
+                     pm.context_window_effective, pm.context_window_tokens,
+                     pm.cost_per_input_token, pm.cost_per_output_token,
+                     cm.modality, pm.free_tier, me.score_chat, me.score_coding,
+                     me.score_reasoning, me.score_knowledge, me.score_agentic,
+                     me.is_synthetic, cl_stats.success_count,
+                     cl_stats.total_calls, cl_stats.avg_latency_ms
             ORDER BY cp.ref, cm.ref
         """).fetchall()
         return [dict(r) for r in rows]
@@ -107,14 +162,24 @@ def _has_vision(modality: str) -> bool:
     return "image" in ml or "vision" in ml or "multimodal" in ml
 
 
-def _build_candidates(raw_rows: List[Dict], request: AllocationRequest) -> List[ModelOption]:
+def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
+                      exclude_providers: Optional[list] = None,
+                      exclude_models: Optional[list] = None) -> List[ModelOption]:
     """Filtre les lignes brutes du catalogue en ModelOption prêtes pour la stratégie."""
     candidates: List[ModelOption] = []
     exclude_set = set(request.exclude or [])
+    excl_p = set(exclude_providers or [])
+    excl_m = set(exclude_models or [])
 
     for row in raw_rows:
-        ref = f"{row['provider_ref']}/{row['model_ref']}"
+        # Ref complète provider/model (ref brute côté provider)
+        raw_model = row.get("provider_model_name") or row["model_ref"]
+        ref = f"{row['provider_ref']}/{raw_model}"
         if ref in exclude_set:
+            continue
+        if row["provider_ref"] in excl_p:
+            continue
+        if raw_model in excl_m:
             continue
 
         # Vérifier clé API
@@ -142,7 +207,10 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest) -> List[
 
         candidates.append(ModelOption(
             provider_ref=row["provider_ref"],
-            model_ref=row["model_ref"],
+            # model_ref = ref brute côté provider (ce que le bridge attend).
+            # provider_model_name porte la même valeur ; on préfère la ref
+            # catalogue complète si provider_model_name est vide.
+            model_ref=row.get("provider_model_name") or row["model_ref"],
             provider_model_name=row.get("provider_model_name", ""),
             context_window=row["context_window"],
             cost_per_input=row["cost_per_input"],
@@ -156,7 +224,43 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest) -> List[
             score_knowledge=float(row.get("score_knowledge") or 0),
             score_agentic=float(row.get("score_agentic") or 0),
             is_synthetic=int(row.get("is_synthetic") or 0),
+            runtime_success_count=int(row.get("runtime_success_count") or 0),
+            runtime_calls=int(row.get("runtime_calls") or 0),
+            runtime_latency_ms=float(row.get("runtime_latency_ms") or 0.0),
         ))
+
+    # Déduplication par ref NORMALISÉ : le même modèle réel peut exister sous
+    # plusieurs refs catalogue — soit 2 refs de models (openai/gpt-5 ET
+    # gpt-5), soit le provider préfixé en redondance (google/gemini-3.5-
+    # flash-lite ET google/google/gemini-3.5-flash-lite). On normalise la clé
+    # en retirant le préfixe `{provider_ref}/` redondant du model_ref, puis on
+    # fusionne : compteurs runtime sommés, scores benchmark max. Sinon un
+    # doublon à 0/0 sort en tête avec score plein pendant que son jumeau
+    # pénalisé est ignoré.
+    if candidates:
+        by_ref: Dict[str, ModelOption] = {}
+        for c in candidates:
+            mref = c.model_ref
+            # Retirer le préfixe provider redondant (ex. google/gemini-x →
+            # gemini-x) pour que les doublons fusionnent.
+            if mref.startswith(c.provider_ref + "/"):
+                mref = mref[len(c.provider_ref) + 1:]
+            key = f"{c.provider_ref}/{mref}"
+            if key not in by_ref:
+                c.model_ref = mref
+                by_ref[key] = c
+            else:
+                prev = by_ref[key]
+                prev.runtime_success_count += c.runtime_success_count
+                prev.runtime_calls += c.runtime_calls
+                prev.runtime_latency_ms = max(prev.runtime_latency_ms,
+                                              c.runtime_latency_ms)
+                prev.score_chat = max(prev.score_chat, c.score_chat)
+                prev.score_coding = max(prev.score_coding, c.score_coding)
+                prev.score_agentic = max(prev.score_agentic, c.score_agentic)
+                prev.score_reasoning = max(prev.score_reasoning, c.score_reasoning)
+                prev.score_knowledge = max(prev.score_knowledge, c.score_knowledge)
+        candidates = list(by_ref.values())
 
     return candidates
 
@@ -171,6 +275,8 @@ def allocate_llm(params: dict) -> dict:
         needs_vision: bool
         max_cost_per_call : float (coût max estimé en $)
         exclude     : list de str (refs à exclure, format "provider/model")
+        exclude_providers : list de str (noms de providers à exclure)
+        exclude_models    : list de str (noms de modèles à exclure, ref brute)
         agent_name  : str (pour contexte budget, optionnel)
 
     Retourne :
@@ -214,7 +320,9 @@ def allocate_llm(params: dict) -> dict:
         }
 
     # 2. Filtrer (clé, budget, window, vision, coût)
-    candidates = _build_candidates(raw_rows, request)
+    candidates = _build_candidates(raw_rows, request,
+                                   exclude_providers=params.get("exclude_providers"),
+                                   exclude_models=params.get("exclude_models"))
     if not candidates:
         return {
             "status": "error",

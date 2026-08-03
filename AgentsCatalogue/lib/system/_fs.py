@@ -18,13 +18,25 @@ INDEX_FILE = "index.json"
 
 
 def safe_path(path: str, home_root: str) -> str:
+    home_root_abs = os.path.abspath(home_root)
     norm = os.path.normpath(path)
-    if norm.startswith("..") or norm.startswith("/"):
-        norm = norm.lstrip("/")
-    full = os.path.join(home_root, norm)
-    if not full.startswith(os.path.abspath(home_root)):
+    if os.path.isabs(norm):
+        # Chemin absolu pointant déjà dans le home de l'agent : le re-router
+        # vers son équivalent relatif — sinon on crée une arborescence
+        # dupliquée home/{home_root}/… (ex. /home/…/agent_home/359/workspace/x
+        # → agent_home/359/home/pierreloup2/… au lieu du workspace réel).
+        if norm == home_root_abs or norm.startswith(home_root_abs + os.sep):
+            norm = os.path.relpath(norm, home_root_abs)
+        else:
+            # Chemin absolu hors home (ex. /tmp/…) : réécrit sous le home
+            # (comportement sandbox conservé).
+            norm = norm.lstrip("/")
+    full = os.path.join(home_root_abs, norm)
+    full_norm = os.path.normpath(full)
+    if not (full_norm == home_root_abs
+            or full_norm.startswith(home_root_abs + os.sep)):
         raise PermissionError("chemin hors home")
-    return full
+    return full_norm
 
 
 def read_index(home: str) -> dict:

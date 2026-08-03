@@ -59,13 +59,26 @@ class ToolExecutor:
             return f"Erreur : {e}"
 
     def _safe_path(self, path: str) -> str:
-        """Empêche la sortie du répertoire racine (Path Traversal)."""
+        """Empêche la sortie du répertoire racine (Path Traversal).
+
+        Un chemin absolu pointant déjà dans le home de l'agent est re-routé
+        vers son équivalent relatif (sinon arborescence dupliquée
+        home/{home_root}/…). Les autres chemins absolus (/tmp, /etc…) sont
+        réécrits sous le home (comportement sandbox).
+        """
+        home_root_abs = os.path.abspath(self.home_root)
         normalized = os.path.normpath(path)
-        if normalized.startswith("..") or normalized.startswith("/"):
-            normalized = normalized.lstrip("/")
-        
-        full_path = os.path.join(self.home_root, normalized)
-        if not full_path.startswith(os.path.abspath(self.home_root)):
+        if os.path.isabs(normalized):
+            if (normalized == home_root_abs
+                    or normalized.startswith(home_root_abs + os.sep)):
+                normalized = os.path.relpath(normalized, home_root_abs)
+            else:
+                normalized = normalized.lstrip("/")
+
+        full_path = os.path.join(home_root_abs, normalized)
+        full_norm = os.path.normpath(full_path)
+        if not (full_norm == home_root_abs
+                or full_norm.startswith(home_root_abs + os.sep)):
             raise PermissionError("Accès refusé : Tentative de sortir du workspace.")
-        
-        return full_path
+
+        return full_norm

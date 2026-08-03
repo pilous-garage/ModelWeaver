@@ -1,0 +1,22 @@
+name: model-sync
+version: 0.1.0
+description: Synchroniseur périodique des modèles par clé API (key_endpoint_models + model_probe_state)
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/model_sync/model_sync.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 120
+
+entrypoints:
+  models-sync:
+    type: daemon-api
+    method: POST
+    path: catalogue/models/sync
+    description: Déclenche un cycle manuel de synchronisation

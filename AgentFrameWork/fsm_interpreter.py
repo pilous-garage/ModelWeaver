@@ -1,7 +1,7 @@
 """FSM Interpreter — Moteur universel d'exécution d'agents.
 
 Remplace l'ancien Worker. Exécute un workflow (graphe d'étapes) où
-`llm_call` utilise le LiteLLMBridge (pas d'HTTP direct), et `tool_call`
+`llm_call` utilise le bridge via LLMManager (pas d'HTTP direct), et `tool_call`
 délègue au ToolExecutor.
 
 Étapes supportées (Phase 2) :
@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.tool_executor import ToolExecutor
 
@@ -119,6 +119,7 @@ class FSMResult:
             "tokens_used": self.tokens_used,
             "budget": self.budget,
             "paused": self._paused,
+            "error": self.end_reason if self.status in ("failed", "error", "aborted") else "",
         }
 
 
@@ -136,11 +137,11 @@ class FSMInterpreter:
 
     def __init__(
         self,
-        bridge: Optional[LiteLLMBridge] = None,
+        bridge=None,
         tool_executor: Optional[ToolExecutor] = None,
         max_iterations: int = 100,
     ):
-        self.bridge = bridge or LiteLLMBridge()
+        self.bridge = bridge or LLMManager(cat=None).get_bridge()
         self.tool_executor = tool_executor or ToolExecutor(home_root="/tmp")
         self.max_iterations = max_iterations
 
@@ -542,6 +543,15 @@ class FSMInterpreter:
             for out_key, var_name in capture.items():
                 if out_key in out:
                     result.variables[var_name] = out[out_key]
+            # Remplir result.content si vide : la sortie d'un skill autonome
+            # (ex. workflow/autonomous@v1 → stdout) devient le contenu final
+            # du membre — sinon les captures agent_call du leader sont vides.
+            if not result.content:
+                for out_key, var_name in capture.items():
+                    val = result.variables.get(var_name)
+                    if isinstance(val, str) and val.strip():
+                        result.content = val
+                        break
         result.messages.append({
             "role": "system",
             "content": f"[{fn}] {json.dumps(out, ensure_ascii=False)[:500]}",
@@ -576,14 +586,14 @@ class FSMInterpreter:
         if not isinstance(out, dict):
             return True, ""
         if out.get("ok") is False:
-            err = out.get("stderr") or out.get("error") or ""
+            err = out.get("stderr") or out.get("stdout") or out.get("error") or ""
             if out.get("conflict"):
                 err = "CONFLIT DE MERGE — " + err
             return False, str(err)
         if out.get("status") in ("error", "failed", "FAILED"):
-            return False, str(out.get("error") or out.get("message") or "")
+            return False, str(out.get("error") or out.get("message") or out.get("stdout") or "")
         if isinstance(out.get("exit_code"), int) and out["exit_code"] != 0:
-            return False, str(out.get("stderr") or "")
+            return False, str(out.get("stderr") or out.get("stdout") or "")
         return True, ""
 
     def _step_tool_call(

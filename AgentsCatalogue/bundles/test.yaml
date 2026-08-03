@@ -29,6 +29,8 @@ permissions:
     action: ask
   - tool: "git_git_status_v1"
     action: allow
+  - tool: "git_git_clone_v1"
+    action: allow
   - tool: "git_git_diff_v1"
     action: allow
   - tool: "git_git_log_v1"
@@ -40,6 +42,8 @@ permissions:
   - tool: "util_*"
     action: allow
   - tool: "net_http_get_v1"
+    action: allow
+  - tool: "docker_run_v1"
     action: allow
   - tool: "*"
     action: deny
@@ -58,6 +62,7 @@ skills:
   - system/home/tail@v1
   - system/home/patch@v1
   - git/git_status@v1
+  - git/git_clone@v1
   - git/git_diff@v1
   - git/git_log@v1
   - git/git_checkout@v1
@@ -65,3 +70,4 @@ skills:
   - util/json_query@v1
   - util/timestamp@v1
   - net/http_get@v1
+  - docker/run@v1

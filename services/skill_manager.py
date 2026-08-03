@@ -78,13 +78,20 @@ class SkillManager:
         return dict(self._defs[resolved])
 
     def _resolve_ref(self, ref: str) -> str:
+        # Format sans catégorie : "read_file@v1" -> base="read_file" ver="v1"
+        if "/" not in ref:
+            base, _, ver = ref.partition("@")
+            return self._resolve_by_suffix(base, ver)
         cat, rest = (ref.split("/", 1) + [""])[:2]
         base, _, ver = rest.partition("@")
         if ver:
-            return f"{cat}/{base}@{ver}"
+            exact = f"{cat}/{base}@{ver}"
+            if exact in self._defs:
+                return exact
+            return self._resolve_by_suffix(base, ver)
         entries = [k for k in self._defs if k.startswith(f"{cat}/{base}")]
         if not entries:
-            return ref
+            return self._resolve_by_suffix(base, "")
         if len(entries) == 1:
             return entries[0]
         vers = []
@@ -95,6 +102,45 @@ class SkillManager:
             vers.append((v, e))
         vers.sort(reverse=True)
         return vers[0][1]
+
+    def _resolve_by_suffix(self, base: str, ver: str) -> str:
+        """Match par fin de nom normalisé : 'git/clone@v1' et 'clone@v1'
+        doivent matcher 'git/git_clone@v1' (le segment contient le préfixe)."""
+        norm = base.replace("_", "")
+        if not norm:
+            return base or ver
+        hits = []
+        for k in self._defs:
+            kbase = k.split("/")[-1].split("@")[0]
+            kver = k.split("@")[-1] if "@" in k else ""
+            knorm = kbase.replace("_", "")
+            if ver and kver != ver:
+                continue
+            if not ver and kver != "v1":
+                continue
+            if knorm.endswith(norm) or norm.endswith(knorm):
+                hits.append(k)
+        if not hits:
+            return base or ver
+        if len(hits) == 1:
+            return hits[0]
+        # Plusieurs hits : prioriser les matchs exacts (fin de nom complète),
+        # puis le nom le plus long (le plus précis).
+        # Règle clé : un skill dont la BASE == norm (ex. docker/run@v1 pour
+        # "run") prime sur un skill dont la base contient juste le suffixe
+        # (ex. host/host_run@v1) — sinon le LLM qui appelle `run_v1` reçoit
+        # host_run au lieu du skill voulu.
+        exact = [k for k in hits
+                 if k.split("/")[-1].split("@")[0].replace("_", "").endswith(norm)]
+        exact_base = [k for k in exact
+                      if k.split("/")[-1].split("@")[0].replace("_", "") == norm]
+        if exact_base:
+            exact = exact_base
+        if len(exact) == 1:
+            return exact[0]
+        if exact:
+            return sorted(exact, key=len)[-1]
+        return sorted(hits, key=len)[-1]
 
     def expand(self, workflow: dict) -> dict:
         self.load_all()
@@ -189,13 +235,22 @@ class SkillManager:
         raise SkillInputError(f"skill '{fn}' : fonction lib introuvable : {lib_ref}")
 
     def _safe_path(self, path: str, home_root: str) -> str:
+        home_root_abs = os.path.abspath(home_root)
         norm = os.path.normpath(path)
-        if norm.startswith("..") or norm.startswith("/"):
-            norm = norm.lstrip("/")
-        full = os.path.join(home_root, norm)
-        if not full.startswith(os.path.abspath(home_root)):
+        if os.path.isabs(norm):
+            # Chemin absolu pointant déjà dans le home de l'agent : le
+            # re-router vers son équivalent relatif (sinon arborescence
+            # dupliquée home/{home_root}/…).
+            if norm == home_root_abs or norm.startswith(home_root_abs + os.sep):
+                norm = os.path.relpath(norm, home_root_abs)
+            else:
+                norm = norm.lstrip("/")
+        full = os.path.join(home_root_abs, norm)
+        full_norm = os.path.normpath(full)
+        if not (full_norm == home_root_abs
+                or full_norm.startswith(home_root_abs + os.sep)):
             raise PermissionError("chemin hors home")
-        return full
+        return full_norm
 
     # ── Résolution de chemin dans le home de l'agent (relatif) ──
     def _read_index(self, home: str) -> dict:

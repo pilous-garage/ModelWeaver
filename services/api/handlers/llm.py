@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 
 from services.api._shared import _mw_dir, _get_mw, _get_cat, _get_km, _get_llm, _get_bridge
 from services.api.router import register, register_streaming
@@ -77,6 +78,7 @@ def op_llm_chat(params):
             max_tokens=params.get("max_tokens"),
             system_prompt=params.get("system_prompt"),
             stream=False,
+            agent_id=params.get("agent_id"),
         )
         tokens = 0
         if resp.usage:
@@ -286,6 +288,126 @@ def op_llm_local_models(params):
     return mgr.list_models(engine_ref)
 
 
+def op_llm_local_models_grouped(params):
+    """Modèles locaux groupés par format d'entrée (ex. GGUF → ollama,
+    llama.cpp, LM Studio) + fichiers GGUF présents dans ~/.modelweaver/models."""
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
+    from modules.llm_manager.hf_catalogue import list_local_models
+    mgr = get_local_engine_manager()
+    result = mgr.list_models_grouped()
+    result["local_gguf_files"] = list_local_models()
+    return result
+
+
+def op_llm_local_start_model(params):
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    model_ref = params.get("model")
+    hardware = params.get("hardware", "auto")
+    if not engine_ref or not model_ref:
+        return {"status": "error", "error": "paramètres engine et model requis"}
+    return mgr.start_model(engine_ref, model_ref, hardware=hardware)
+
+
+def op_llm_local_hardware_modes(params):
+    """Modes matériel supportés par chaque moteur + état GPU détecté."""
+    from modules.llm_manager.local_engines import ENGINE_SPECS
+    out = {}
+    for ref, spec in ENGINE_SPECS.items():
+        out[ref] = {
+            "name": spec.get("name"),
+            "hardware_modes": spec.get("hardware_modes", []),
+        }
+    # Détection matériel
+    try:
+        import psutil
+        import shutil
+        gpu = shutil.which("nvidia-smi") or shutil.which("rocm-smi") \
+            or any(Path("/sys/class/drm").glob("card*/device/gpu_busy_percent"))
+    except Exception:
+        gpu = None
+    return {"status": "ok", "modes": out,
+            "hardware": {"gpu": bool(gpu)}}
+
+
+def op_llm_local_stop_model(params):
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    model_ref = params.get("model")
+    if not engine_ref or not model_ref:
+        return {"status": "error", "error": "paramètres engine et model requis"}
+    return mgr.stop_model(engine_ref, model_ref)
+
+
+def op_llm_local_check_resources(params):
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
+    mgr = get_local_engine_manager()
+    model_ref = params.get("model")
+    size_gb = params.get("size_gb")
+    if not model_ref:
+        return {"status": "error", "error": "paramètre model requis"}
+    try:
+        size_gb = float(size_gb) if size_gb else None
+    except (TypeError, ValueError):
+        size_gb = None
+    return mgr.check_resources(model_ref, size_gb=size_gb)
+
+
+def op_llm_local_stop_motor(params):
+    from modules.llm_manager.llm_manager_module import get_local_engine_manager
+    mgr = get_local_engine_manager()
+    engine_ref = params.get("engine")
+    if not engine_ref:
+        return {"status": "error", "error": "paramètre engine requis"}
+    return mgr.stop(engine_ref)
+
+
+# ── HF Catalogue ───────────────────────────────────────────────────────
+
+def op_llm_hf_search(params):
+    from modules.llm_manager.hf_catalogue import hf_search
+    query = params.get("query", "")
+    limit = params.get("limit", 20)
+    return hf_search(query=query, limit=limit)
+
+
+def op_llm_hf_download(params):
+    from modules.llm_manager.hf_catalogue import hf_download
+    repo_id = params.get("repo_id")
+    filename = params.get("filename")
+    if not repo_id:
+        return {"status": "error", "error": "paramètre repo_id requis"}
+    return hf_download(repo_id, filename)
+
+
+def op_llm_hf_status(params):
+    from modules.llm_manager.hf_catalogue import hf_downloads_all, hf_download_status
+    download_id = params.get("download_id")
+    if download_id:
+        return hf_download_status(download_id)
+    return hf_downloads_all()
+
+
+def op_llm_hf_associate(params):
+    from modules.llm_manager.hf_catalogue import associate_model
+    repo_id = params.get("repo_id")
+    filename = params.get("filename")
+    engine = params.get("engine")
+    tag = params.get("tag")
+    if not repo_id or not filename or not engine:
+        return {"status": "error",
+                "error": "paramètres repo_id, filename et engine requis"}
+    return associate_model(repo_id, filename, engine, tag)
+
+
+def op_llm_hf_local(params):
+    from modules.llm_manager.hf_catalogue import list_local_models
+    return {"status": "ok", "count": len(list_local_models()),
+            "models": list_local_models()}
+
+
 # ── Route registration ─────────────────────────────────────────────────
 
 register("llm/models/list",       op_llm_models_list)
@@ -300,6 +422,17 @@ register("llm/local/list",        op_llm_local_list)
 register("llm/local/start",       op_llm_local_start)
 register("llm/local/stop",        op_llm_local_stop)
 register("llm/local/models",      op_llm_local_models)
+register("llm/local/models/grouped", op_llm_local_models_grouped)
+register("llm/local/start-model", op_llm_local_start_model)
+register("llm/local/stop-model",  op_llm_local_stop_model)
+register("llm/local/hardware-modes", op_llm_local_hardware_modes)
+register("llm/local/check-resources", op_llm_local_check_resources)
+register("llm/local/stop-motor",  op_llm_local_stop_motor)
+register("llm/hf/search",         op_llm_hf_search)
+register("llm/hf/download",       op_llm_hf_download)
+register("llm/hf/status",         op_llm_hf_status)
+register("llm/hf/associate",      op_llm_hf_associate)
+register("llm/hf/local",          op_llm_hf_local)
 register("auth/info",             op_auth_info)
 
 register_streaming("llm/chat/stream", op_llm_chat_stream_sse)

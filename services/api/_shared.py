@@ -13,7 +13,7 @@ from typing import Callable
 
 
 API_VERSION = "v1"
-MW_VERSION = "0.8.6"
+MW_VERSION = "0.8.9"
 
 # ── Racine du dépôt (référence pour les chemins absolus) ────────────────
 def repo_root() -> Path:
@@ -25,7 +25,6 @@ _MW_INSTANCE = None
 _CAT_INSTANCE = None
 _KM_INSTANCE = None
 _LLM_INSTANCE = None
-_BRIDGE_INSTANCE = None
 _RT_INSTANCE = None
 
 
@@ -83,16 +82,13 @@ def _get_llm():
     from modules.llm_manager.llm_manager_module import LLMManager
     global _LLM_INSTANCE
     if _LLM_INSTANCE is None:
-        _LLM_INSTANCE = LLMManager(cat=_get_cat())
+        _LLM_INSTANCE = LLMManager(cat=_get_cat(), km=_get_km())
     return _LLM_INSTANCE
 
 
 def _get_bridge():
-    from modules.llm_manager.llm_manager_module import LiteLLMBridge
-    global _BRIDGE_INSTANCE
-    if _BRIDGE_INSTANCE is None:
-        _BRIDGE_INSTANCE = LiteLLMBridge(cat=_get_cat(), km=_get_km())
-    return _BRIDGE_INSTANCE
+    """Bridge actif via la façade LLMManager (DirectBridge par défaut)."""
+    return _get_llm().get_bridge()
 
 
 def _wrap(fn: Callable) -> Callable:

@@ -50,11 +50,19 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         "SELECT agent_id, resources_json FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
     if row:
-        # Mettre à jour resources_json si le spec contient provider/model
-        if spec.provider_ref:
+        # Toujours réécrire resources_json : le manifest est la source de
+        # vérité (retire les anciennes préférences provider/model si le
+        # spec n'en définit plus → allocation automatique par le LLMManager).
+        updates = ["resources_json = ?"]
+        params = [resources_json]
+        # Mettre à jour config_json si le spec définit un config (workflow…)
+        if spec.config:
+            updates.append("config_json = ?")
+            params.append(json.dumps(spec.config or {}))
+        if updates:
             db.conn.execute(
-                "UPDATE agents SET resources_json = ? WHERE agent_id = ?",
-                (resources_json, row["agent_id"]))
+                f"UPDATE agents SET {', '.join(updates)} WHERE agent_id = ?",
+                (*params, row["agent_id"]))
             db.conn.commit()
         return row["agent_id"]
 

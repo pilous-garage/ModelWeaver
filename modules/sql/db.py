@@ -1140,13 +1140,11 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         try:
             self.conn.execute("ALTER TABLE api_keys ADD COLUMN key_display TEXT")
         except Exception:
-            pass
-
-        # Migration: ajouter locked à api_keys
+            self.conn.rollback()        # Migration: ajouter locked à api_keys
         try:
             self.conn.execute("ALTER TABLE api_keys ADD COLUMN locked INTEGER DEFAULT 0")
         except Exception:
-            pass
+            self.conn.rollback()
 
         # Table d'état système
         self.conn.execute("""
@@ -1204,7 +1202,14 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
                         (cid, row["local_outil_id"]))
             self.conn.commit()
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration classes_outils (local) ignorée: {e}")
+        # Commit final : ferme la transaction implicite du DDL ci-dessus
+        # (sinon le lock d'écriture WAL reste tenu par le process toute sa vie).
+        try:
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
 
     def scan_installed_tools(self) -> int:
         """Détecte les outils installés et met à jour local_outils/versions/installs."""
@@ -1333,13 +1338,14 @@ class CatalogueDB:
                         max_output_tokens INTEGER,
                         cost_per_input_token TEXT,
                         cost_per_output_token TEXT,
+                        cost_per_thinking_token TEXT,
                         status TEXT DEFAULT 'active' CHECK(status IN ('active','deprecated','experimental')),
                         created_at INTEGER DEFAULT (strftime('%s','now')),
                         updated_at INTEGER DEFAULT (strftime('%s','now')),
                         UNIQUE(provider_id, model_id))
                 """)
             except Exception:
-                pass
+                self.conn.rollback()
             # Migration: nouvelles tables catalogue outils/versions/recettes/popularité
             try:
                 self.conn.executescript("""
@@ -1373,12 +1379,12 @@ class CatalogueDB:
                     CREATE INDEX IF NOT EXISTS idx_outils_ref ON catalogue_outils(ref);
                 """)
             except Exception:
-                pass
+                self.conn.rollback()
             # Migration: ajouter tool_type aux DB existantes
             try:
                 self.conn.execute("ALTER TABLE catalogue_outils ADD COLUMN tool_type TEXT")
             except Exception:
-                pass
+                self.conn.rollback()
 
         # ── Migration classes_outils (taxonomie métier) ──
         # Couvre les deux branches ci-dessus :
@@ -1399,7 +1405,7 @@ class CatalogueDB:
                     "ON catalogue_outils(classe_outil_id)"
                 )
             except Exception:
-                pass
+                self.conn.rollback()
             # Backfill : tout outil sans classe_outil_id reçoit la classe par défaut
             # déduite de son ref (fallback 'other').
             for row in self.conn.execute(
@@ -1413,6 +1419,7 @@ class CatalogueDB:
                         (cid, row["outil_id"]))
             self.conn.commit()
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration classes_outils ignorée: {e}")
 
         # ── Migration catalogue_aliases (réconciliation noms externes) ──
@@ -1444,6 +1451,7 @@ class CatalogueDB:
                 "ON catalogue_aliases(canonical_ref)")
             self.conn.commit()
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration catalogue_aliases ignorée: {e}")
 
         # ── Seed si tables vides ──
@@ -1460,6 +1468,7 @@ class CatalogueDB:
                 self.conn.executescript(schema.read_text())
                 self.conn.commit()
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Seed ignoré: {e}")
 
         # ── Migration colonnes provider_endpoints ──
@@ -1467,6 +1476,7 @@ class CatalogueDB:
             _add_column_if_missing(self.conn, "provider_endpoints", "local_latency", "REAL")
             _add_column_if_missing(self.conn, "provider_endpoints", "global_quality", "REAL")
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration provider_endpoints ignorée: {e}")
 
         # ── Migration context_window_effective + context_audit_log ──
@@ -1474,6 +1484,14 @@ class CatalogueDB:
             _add_column_if_missing(self.conn, "provider_models", "context_window_effective", "INTEGER")
             _add_column_if_missing(self.conn, "provider_models", "available", "INTEGER DEFAULT 1")
             _add_column_if_missing(self.conn, "provider_models", "free_tier", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "provider_models", "cost_per_thinking_token", "TEXT")
+            # Repos après échec runtime d'appel LLM (rate-limit / erreur) :
+            #   unavailable      -> le dernier appel a échoué (booléen)
+            #   noretryuntil     -> deadline (seconde) avant laquelle on ne retente pas
+            #   notrytime        -> durée d'interdiction posée la dernière fois (×2)
+            _add_column_if_missing(self.conn, "provider_models", "unavailable", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "provider_models", "noretryuntil", "REAL DEFAULT 0")
+            _add_column_if_missing(self.conn, "provider_models", "notrytime", "REAL DEFAULT 0")
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS context_audit_log (
                     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1489,7 +1507,41 @@ class CatalogueDB:
                 "CREATE INDEX IF NOT EXISTS idx_audit_provider_model "
                 "ON context_audit_log(provider_ref, model_ref)")
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration context_audit_log ignorée: {e}")
+
+        # ── Migration : journal des appels LLM réels (métriques runtime) ──
+        # Chaque appel bridge.log_call_* écrit une ligne ici. Utilisé par le
+        # scoring d'allocation (taux de succès, latence, tokens) via une
+        # fenêtre glissante. Référencé par ID (provider_id/model_id), pas par
+        # nom. Fenêtre bornée : on purge au-delà de 10k lignes.
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_call_log (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id      INTEGER NOT NULL,
+                    model_id         INTEGER NOT NULL,
+                    provider_model_id INTEGER,
+                    agent_id         TEXT,
+                    success          INTEGER NOT NULL DEFAULT 1,
+                    tokens_in        INTEGER DEFAULT 0,
+                    tokens_out       INTEGER DEFAULT 0,
+                    tokens_thinking  INTEGER DEFAULT 0,
+                    latency_ms       REAL DEFAULT 0,
+                    error_code       TEXT,
+                    created_at       INTEGER DEFAULT (strftime('%s', 'now'))
+                )
+            """)
+            _add_column_if_missing(self.conn, "model_call_log", "agent_id", "TEXT")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
+                "ON model_call_log(provider_id, model_id, id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_call_log_agent "
+                "ON model_call_log(agent_id, id)")
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration model_call_log ignorée: {e}")
 
         # ── Migration : nouvelles tables d'acces modeles (V0.7.0.4+) ──
         try:
@@ -1578,8 +1630,32 @@ class CatalogueDB:
                     created_at INTEGER DEFAULT (strftime('%s','now'))
                 )
             """)
+            # ── State des probes modèles (sync périodique des clés) ──
+            # Timeout croissant par (endpoint, key, model) : quand un modèle
+            # échoue au probe, son prochain essai est retardé de plus en plus
+            # (backoff) pour ne pas marteler une API qui répond en erreur.
+            # Après trop d'échecs consécutifs, le modèle est marqué defunct.
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_probe_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+                    endpoint_id INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
+                    key_ref TEXT NOT NULL,
+                    model_id INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    consecutive_failures INTEGER DEFAULT 0,
+                    backoff_s INTEGER DEFAULT 0,
+                    next_probe_at INTEGER DEFAULT 0,
+                    last_status TEXT,
+                    last_error TEXT,
+                    last_probed_at INTEGER,
+                    defunct INTEGER DEFAULT 0,
+                    created_at INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(endpoint_id, key_ref, model_id)
+                )
+            """)
         except Exception as e:
             import sys as _sys
+            self.conn.rollback()
             print(f"⚠️  Migration tables d'acces ignoree: {e}", file=_sys.stderr)
 
         # ── Seed modèles + provider_models si vides ──
@@ -1608,7 +1684,15 @@ class CatalogueDB:
                     seed_provider_models(self)
                     self.conn.commit()
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Seed modèles ignoré: {e}")
+        # Commit final : ferme la transaction implicite des CREATE TABLE
+        # ci-dessus (sinon le lock d'écriture WAL reste tenu par le process
+        # tant que la connexion vit — daemon, collecteurs, sync…).
+        try:
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
 
     @contextmanager
     def transaction(self):
@@ -2044,6 +2128,7 @@ class RuntimeDB:
                     received_at   INTEGER,
                     tokens_in     INTEGER DEFAULT 0,
                     tokens_out    INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
                     cost          REAL DEFAULT 0,
                     status        TEXT CHECK(status IN ('ok','rate_limited','error','quota_exhausted')),
                     error_code    TEXT,
@@ -2078,6 +2163,7 @@ class RuntimeDB:
                     requests      INTEGER DEFAULT 0,
                     tokens_in     INTEGER DEFAULT 0,
                     tokens_out    INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
                     cost          REAL DEFAULT 0,
                     last_call_at  INTEGER,
                     last_call_working INTEGER DEFAULT 1,
@@ -2118,9 +2204,51 @@ class RuntimeDB:
                     updated_at      INTEGER DEFAULT (strftime('%s','now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
+
+                -- Historique 3 niveaux (moniteur LLM) :
+                --   1m : détails agrégés par minute, conservés 24h
+                --   1h : agrégats horaires, conservés 30j
+                CREATE TABLE IF NOT EXISTS usage_history_1m (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1m_bucket ON usage_history_1m(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_1h (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1h_bucket ON usage_history_1h(bucket);
             """)
         except Exception as e:
+            self.conn.rollback()
             print(f"⚠️  Migration tables usage ignorée: {e}")
+
+        # Migration V0.8.6 : tokens de raisonnement (thinking) dans l'usage
+        try:
+            _add_column_if_missing(self.conn, "real_call_models",
+                                   "tokens_thinking", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "endpoint_model_usage",
+                                   "tokens_thinking", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "real_call_models",
+                                   "rolled_at", "INTEGER")
+        except Exception:
+            self.conn.rollback()
 
         self.conn.commit()
 
