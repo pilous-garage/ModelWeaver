@@ -48,7 +48,7 @@ entrypoints:
       type: call
       fn: workflow/autonomous@v1
       inputs:
-        request: "{{task.description}}\n\nDÉPÔT GIT : clone, commit et push UNIQUEMENT sur le dépôt central project_id={{task.workspace_id}}, sur la branche auto_code_{{team_id}} (pas la branche principale)."
+        request: "{{task.description}}\n\nDÉPÔT GIT : le projet central à cloner/commiter/pusher est project_id={{project_id}} (branche auto_code_{{team_id}}). Utilise git/git_clone@v1 avec project_id={{project_id}} et ton propre agent_id, puis git_add/git_commit/git_push sur la branche auto_code_{{team_id}}. Ne JAMAIS créer d'autre projet."
         bundles: ["dev"]
         max_loops: 50
       capture:

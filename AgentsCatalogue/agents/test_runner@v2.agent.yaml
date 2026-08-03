@@ -46,7 +46,7 @@ entrypoints:
       type: call
       fn: workflow/autonomous@v1
       inputs:
-        request: "Teste cette tâche : {{task.description}}"
+        request: "Teste cette tâche : {{task.description}}\n\nDÉPÔT GIT : le projet central est project_id={{project_id}}. Clone-le si besoin (git/git_clone@v1 avec project_id={{project_id}} et ton agent_id) et pousse sur la branche auto_code_{{team_id}}."
         bundles: ["test"]
         max_loops: 30
       capture:
