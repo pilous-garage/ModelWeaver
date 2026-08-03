@@ -46,11 +46,12 @@ entrypoints:
       next: execute
     - id: execute
       type: call
-      fn: workflow/autonomous@v1
+      fn: workflow/autonomous_loop@v1
       inputs:
         request: "{{task.description}}\n\nDÉPÔT GIT : le projet central à cloner/commiter/pusher est project_id={{project_id}} (branche auto_code_{{team_id}}). Utilise git/git_clone@v1 avec project_id={{project_id}} et ton propre agent_id, puis git_add/git_commit/git_push sur la branche auto_code_{{team_id}}. Ne JAMAIS créer d'autre projet."
         bundles: ["dev"]
         max_loops: 50
+        max_iter: 10
       capture:
         stdout: result
       on_error: fail

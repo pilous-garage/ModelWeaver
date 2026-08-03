@@ -1,0 +1,64 @@
+name: workflow/autonomous_loop@v1
+category: workflow
+description: >
+  Boucle EXTERNE autour de autonomous : exécute la boucle LLM interne
+  (max_loops court) jusqu'à max_iter fois, mesure le progrès (fichiers écrits,
+  commits git) entre chaque itération, et escalade vers un meilleur LLM si
+  pas de progrès. Se termine quand le travail est fait ou 3 itérations sans
+  progrès.
+inputs:
+  request:
+    type: string
+    required: true
+  bundles:
+    type: array
+    items:
+      type: string
+    required: true
+  context:
+    type: string
+    required: false
+  max_loops:
+    type: integer
+    required: false
+    default: 50
+    description: Boucle interne (autonomous), gardée basse
+  max_iter:
+    type: integer
+    required: false
+    default: 10
+    description: Boucle externe (tentatives avec escalade LLM)
+  grouping:
+    type: string
+    required: false
+    default: none
+  break_on_signals:
+    type: array
+    items:
+      type: string
+    required: false
+  break_on_counts:
+    type: object
+    required: false
+  llm_timeout:
+    type: integer
+    required: false
+  global_timeout:
+    type: integer
+    required: false
+  provider_ref:
+    type: string
+    required: false
+  model_ref:
+    type: string
+    required: false
+outputs:
+  signal:
+    type: string
+  stdout:
+    type: string
+  exit_code:
+    type: int
+implementation:
+  type: python
+  function: workflow.autonomous_loop.exec

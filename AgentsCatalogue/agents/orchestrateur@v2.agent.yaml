@@ -53,11 +53,12 @@ entrypoints:
       next: execute
     - id: execute
       type: call
-      fn: workflow/autonomous@v1
+      fn: workflow/autonomous_loop@v1
       inputs:
         request: "Intègre et merge cette tâche : {{task.description}}"
         bundles: ["dev", "manager"]
         max_loops: 40
+        max_iter: 8
       capture:
         stdout: result
       on_error: fail
