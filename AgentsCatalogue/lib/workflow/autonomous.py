@@ -236,7 +236,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     m_ref = model_ref or ""
     if not p_ref:
         try:
-            llm = _llm_mgr.assign_llm(use_case="coding")
+            llm = _llm_mgr.assign_llm(use_case="coding", agent_id=_aid_from_home or None)
             if llm:
                 p_ref = llm.get("provider_ref", "")
                 m_ref = llm.get("model_ref", "")
@@ -385,7 +385,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                             llm = _llm_mgr.assign_llm(use_case="coding",
                                                       exclude_providers=list(excluded_providers),
                                                       exclude_models=list(excluded_models),
-                                                      min_window=_hist_tokens)
+                                                      min_window=_hist_tokens,
+                                                      agent_id=_aid_from_home or None)
                             if not llm:
                                 break
                             np_ = llm.get("provider_ref", "")

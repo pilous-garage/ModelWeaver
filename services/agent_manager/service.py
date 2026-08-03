@@ -686,6 +686,15 @@ class Agent:
         """Déshydrate l'agent : ferme le shell, sauve état, supprime runtime."""
         db = self.db
 
+        # Libérer les claims de modèles LLM de cet agent (anti-affinité) :
+        # quand l'agent se rendort, ses modèles redeviennent allouables aux
+        # autres. Best-effort (TTL du service en secours).
+        try:
+            from services.llm_manager.client import get_llm_client
+            get_llm_client().report_end(str(self.agent_id))
+        except Exception:
+            pass
+
         # Fermer le shell interne si présent
         try:
             from services.agent_shell_manager import agent_shell_manager

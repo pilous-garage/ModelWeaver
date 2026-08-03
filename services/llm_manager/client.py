@@ -64,6 +64,16 @@ class LLMClient:
                     "error": resp.get("error", "llm_service_erreur")}
         return resp.get("result", {})
 
+    def report_end(self, agent_id: str) -> Dict[str, Any]:
+        """Libère les claims de modèles de cet agent (fin de tâche)."""
+        resp = self._client.send({"call": "report_end",
+                                  "params": {"agent_id": agent_id},
+                                  "id": "gw-llm-end"})
+        if not resp.get("ok"):
+            return {"status": "error",
+                    "error": resp.get("error", "llm_service_erreur")}
+        return resp.get("result", {})
+
 
 _llm_client: Optional[LLMClient] = None
 

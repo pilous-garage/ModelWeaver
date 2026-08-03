@@ -23,7 +23,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -93,9 +93,49 @@ def _probe_model(provider_ref: str, model_ref: str) -> bool:
 
 
 class LLMManagerService:
+    # Durée de validité d'un claim de modèle (secondes). Au-delà, un claim sans
+    # libération (agent mort/crash) est considéré expiré et le modèle redevient
+    # allouable. En mémoire seulement (pas de table BDD → pas de lock SQLite,
+    # et le service est l'unique allocateur).
+    CLAIM_TTL = 300.0
+
     def __init__(self):
         self._sock: Any = None
         self._running = True
+        # Anti-affinité : {model_key: (agent_id, claimed_at)}
+        # Un modèle déjà pris par un agent actif n'est pas ré-alloué à un autre.
+        self._claims: Dict[str, tuple] = {}
+
+    # ── Anti-affinité (claims en mémoire) ──
+
+    def _purge_expired_claims(self) -> None:
+        now = time_now()
+        stale = [k for k, (_, at) in self._claims.items()
+                 if now - at > self.CLAIM_TTL]
+        for k in stale:
+            self._claims.pop(k, None)
+
+    def _normalize_key(self, provider_ref: str, model_ref: str) -> str:
+        """Clé de modèle normalisée : retire le préfixe provider redondant.
+
+        Ex. (google, 'google/gemini-3.1-flash-lite') → 'google/gemini-3.1-flash-lite'.
+        Le pool contient des doublons (avec/sans préfixe) ; sans normalisation,
+        le claim de A ('google/gemini-x') n'exclut pas le doublon préfixé que
+        B reçoit ('google/google/gemini-x').
+        """
+        m = model_ref or ""
+        if m.startswith(provider_ref + "/"):
+            m = m[len(provider_ref) + 1:]
+        return f"{provider_ref}/{m}"
+
+    def _taken_model_keys(self, agent_id: str) -> List[str]:
+        """Clés de modèles pris par D'AUTRES agents (pas self)."""
+        self._purge_expired_claims()
+        return [k for k, (aid, _) in self._claims.items() if aid != agent_id]
+
+    def _release_claims(self, agent_id: str) -> None:
+        self._claims = {k: v for k, v in self._claims.items()
+                        if v[0] != agent_id}
 
     # ── Allocation ──
 
@@ -121,6 +161,21 @@ class LLMManagerService:
         rest = _read_rest_models()
         for prov, model in rest:
             exclude.append(f"{prov}/{model}")
+        # Anti-affinité : un modèle déjà pris par un AUTRE agent actif est
+        # exclu — sinon 2 codeurs parallèles se partagent le même gemini à
+        # RPM bas et se saturent mutuellement. On exclut la clé normalisée
+        # ET sa variante préfixée (google/gemini-x vs google/google/gemini-x).
+        agent_id = str(params.get("agent_id") or "")
+        for key in self._taken_model_keys(agent_id):
+            exclude.append(key)
+            prov, _, rest = key.partition("/")
+            if rest.startswith(prov + "/"):
+                exclude.append(f"{prov}/{rest}")
+            elif "/" in rest:
+                # forme google/gemini-x → ajouter google/google/gemini-x
+                prefix = rest.split("/", 1)[0]
+                if prefix == prov:
+                    exclude.append(f"{prov}/{rest}")
         p = dict(params)
         p["exclude"] = exclude
 
@@ -131,6 +186,12 @@ class LLMManagerService:
                 "error": result.get("error", "aucun modèle alloué"),
                 "rest_models_count": len(rest),
             }
+        # Enregistrer le claim si l'appelant est identifié (clé normalisée)
+        if agent_id:
+            key = self._normalize_key(
+                result["provider_ref"],
+                result.get("provider_model_name") or result.get("model_ref"))
+            self._claims[key] = (agent_id, time_now())
         result["probed"] = False
         result["rest_models_count"] = len(rest)
         return result
@@ -237,6 +298,12 @@ class LLMManagerService:
                 result = self.report_failure(req.get("params") or {})
             elif call == "report_ok":
                 result = self.report_ok(req.get("params") or {})
+            elif call == "report_end":
+                # Libère les claims de modèles de cet agent (fin de tâche)
+                aid = str((req.get("params") or {}).get("agent_id") or "")
+                if aid:
+                    self._release_claims(aid)
+                result = {"status": "ok"}
             else:
                 result = {"status": "error", "error": f"call inconnu: {call}"}
         except Exception as e:

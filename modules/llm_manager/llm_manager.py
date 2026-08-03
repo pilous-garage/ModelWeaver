@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from modules.llm_manager.base_bridge import (
     BaseBridge, ModelCapabilities, ChatResponse, BridgeError, ErrorCategory,
 )
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.litellm_bridge import LiteLLMBridgeDefunct
 from modules.llm_manager import catalogue_remote
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -42,7 +42,7 @@ RECOMMENDATIONS = {
         {"ref": "gemini-2.5-pro", "provider": "google", "reason": "Très long contexte (1M tokens)"},
     ],
     ("chat", "free"): [
-        {"ref": "gemini-2.5-flash", "provider": "google", "reason": "Gratuit, très long contexte"},
+        {"ref": "gemini-3.5-flash-lite", "provider": "google", "reason": "Gratuit, très long contexte"},
         {"ref": "llama-3.3-70b", "provider": "groq", "reason": "Gratuit, ultra-rapide"},
         {"ref": "gpt-4o-mini", "provider": "github-models", "reason": "Gratuit via GitHub Models"},
     ],
@@ -58,7 +58,7 @@ RECOMMENDATIONS = {
         {"ref": "gemini-2.5-pro", "provider": "google", "reason": "Long contexte, multimodal"},
     ],
     ("analysis", "free"): [
-        {"ref": "gemini-2.5-flash", "provider": "google", "reason": "Gratuit, bon raisonnement"},
+        {"ref": "gemini-3.5-flash-lite", "provider": "google", "reason": "Gratuit, bon raisonnement"},
         {"ref": "deepseek-r1", "provider": "groq", "reason": "Gratuit, raisonnement pas-à-pas"},
     ],
     ("analysis", "local"): [
@@ -72,7 +72,7 @@ RECOMMENDATIONS = {
         {"ref": "mistral-large", "provider": "mistral", "reason": "Bon pour texte long français"},
     ],
     ("writing", "free"): [
-        {"ref": "gemini-2.5-flash", "provider": "google", "reason": "Gratuit, long contexte"},
+        {"ref": "gemini-3.5-flash-lite", "provider": "google", "reason": "Gratuit, long contexte"},
         {"ref": "llama-3.3-70b", "provider": "groq", "reason": "Gratuit, génération rapide"},
     ],
     ("writing", "local"): [
@@ -107,6 +107,61 @@ class LLMManager:
     def __init__(self, cat, km=None):
         self.cat = cat
         self.km = km
+        self._bridge = None
+
+    # ── Façade bridge (DirectBridge par défaut) ──────────────────
+
+    def _bridge_name(self) -> str:
+        """Nom du bridge actif (config ``llm.bridge``, défaut ``direct``)."""
+        try:
+            from modules.config.config_manager import config
+            return str(config.get("llm.bridge", "direct")).lower()
+        except Exception:
+            return "direct"
+
+    def get_bridge(self) -> BaseBridge:
+        """Retourne le bridge actif (créé une fois, sélection par config)."""
+        if self._bridge is None:
+            name = self._bridge_name()
+            if name == "litellm":
+                self._bridge = LiteLLMBridgeDefunct(cat=self.cat, km=self.km)
+            else:
+                from modules.llm_manager.direct_bridge import DirectBridge
+                self._bridge = DirectBridge(cat=self.cat, km=self.km)
+        return self._bridge
+
+    def chat(self, provider_ref: str, model_ref: str,
+             messages: List[Dict[str, str]], **params) -> Optional[ChatResponse]:
+        """Appelle le LLM via le bridge actif."""
+        return self.get_bridge().chat(provider_ref, model_ref, messages, **params)
+
+    def chat_stream(self, provider_ref: str, model_ref: str,
+                    messages: List[Dict[str, str]], **params):
+        """Appelle le LLM en streaming via le bridge actif."""
+        return self.get_bridge().chat_stream(provider_ref, model_ref, messages, **params)
+
+    def list_available_models(self, provider_ref: str) -> List[Dict[str, Any]]:
+        """Liste les modèles disponibles d'un provider via le bridge actif."""
+        return self.get_bridge().list_available_models(provider_ref)
+
+    def list_available_providers(self) -> List[Dict[str, Any]]:
+        """Liste les providers disponibles via le bridge actif."""
+        return self.get_bridge().list_available_providers()
+
+    def get_capabilities(self, provider_ref: str,
+                         model_ref: str) -> ModelCapabilities:
+        """Retourne les capacités d'un modèle via le bridge actif."""
+        return self.get_bridge().get_capabilities(provider_ref, model_ref)
+
+    def health_check(self, provider_ref: Optional[str] = None) -> Dict[str, Any]:
+        """Vérifie la santé d'un provider via le bridge actif."""
+        return self.get_bridge().health_check(provider_ref)
+
+    def classify_error(self, error: Any,
+                       provider_ref: str = "",
+                       model_ref: str = "") -> BridgeError:
+        """Classifie une erreur via le bridge actif."""
+        return self.get_bridge().classify_error(error, provider_ref, model_ref)
 
     def list_providers(self) -> List[Dict[str, Any]]:
         cur = self.cat.conn.execute(
@@ -181,15 +236,42 @@ class LLMManager:
                    exclude_model: Optional[str] = None,
                    exclude_providers: Optional[list] = None,
                    exclude_models: Optional[list] = None,
-                   max_candidates: int = 8) -> Optional[Dict[str, Any]]:
-        """Trouve un LLM disponible en interrogeant les providers via DirectBridge.
+                   max_candidates: int = 8,
+                   min_window: int = 0,
+                   agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Trouve un LLM disponible via le service LLM Manager (ou fallback).
 
-        Parcourt les providers configurés, appelle leur API ``/v1/models``
-        pour découvrir les modèles réellement disponibles, et retourne le
-        premier qui supporte le ``use_case`` demandé.
-
-        Ne retourne ``None`` que si aucun provider n'est joignable.
+        Si le service LLM Manager (socket llm.sock) est disponible, on lui
+        délègue l'allocation (il respecte l'état global : noretryuntil,
+        budgets, exclusions, anti-affinité entre agents). Sinon, fallback
+        local en interrogeant les providers via DirectBridge.
+        ``agent_id`` permet l'anti-affinité : un modèle pris par un autre agent
+        actif n'est pas ré-alloué (les agents parallèles ont des modèles
+        différents, sinon les RPM bas se saturent).
         """
+        # Délégation au service LLM Manager (décision centralisée)
+        try:
+            from services.llm_manager.client import get_llm_client
+            client = get_llm_client()
+            if client.ping():
+                excl_models = list(exclude_models or [])
+                if exclude_model:
+                    excl_models.append(exclude_model)
+                res = client.allocate({
+                    "strategy": "best-fallback",
+                    "task_type": use_case,
+                    "min_window": int(min_window or 0),
+                    "exclude_providers": list(exclude_providers or [])
+                                          + ([exclude_provider] if exclude_provider else []),
+                    "exclude_models": excl_models,
+                    "agent_id": agent_id or "",
+                })
+                if res.get("status") == "ok" and res.get("provider_ref"):
+                    return {"provider_ref": res["provider_ref"],
+                            "model_ref": res["model_ref"],
+                            "use_case": use_case}
+        except Exception:
+            pass
         from modules.llm_manager.direct_bridge import DirectBridge
 
         excl_p = set(exclude_providers or [])
@@ -202,6 +284,26 @@ class LLMManager:
         bridge = DirectBridge(cat=self.cat, km=self.km)
         req = USE_CASE_REQUIREMENTS.get(use_case, {})
         needs_fc = "function_calling" in req.get("features", [])
+
+        # Modèles en repos (échec runtime) : unavailable ou noretryuntil futur
+        # → on les écarte de l'assignation (ne pas retenter un modèle qui vient
+        # de rater un appel).
+        rest_models: set = set()
+        if self.cat:
+            try:
+                import time as _t
+                _now = _t.time()
+                rows = self.cat.conn.execute("""
+                    SELECT pm.provider_model_name, p.ref AS provider_ref
+                    FROM provider_models pm
+                    JOIN catalogue_providers p ON p.id = pm.provider_id
+                    WHERE pm.noretryuntil > ?
+                """, (_now,)).fetchall()
+                # Clés (provider, model) en repos — le runtime utilise la ref
+                # brute côté provider (provider_model_name), pas la ref préfixée.
+                rest_models = {(r["provider_ref"], r["provider_model_name"]) for r in rows}
+            except Exception:
+                pass
 
         # Priorité des providers (les plus fiables d'abord)
         provider_priority = ["openai", "nvidia", "groq", "openrouter",
@@ -220,30 +322,20 @@ class LLMManager:
                 continue
             for m in models:
                 mref = m["ref"]
-                if mref in excl_m:
+                if mref in excl_m or (pref, mref) in rest_models:
                     continue
                 # Vérifier les capacités si possible
                 if needs_fc:
                     caps = bridge.get_capabilities(pref, mref)
                     if not caps.supports_function_calling:
                         continue
-                # Test réel : vérifier que le modèle répond
-                try:
-                    test = bridge.chat(pref, mref,
-                        [{"role": "user", "content": "ok"}],
-                        max_tokens=1, temperature=0)
-                    if test is not None:
-                        return {"provider_ref": pref, "model_ref": mref,
-                                "use_case": use_case}
-                except BridgeError as be:
-                    if be.category == ErrorCategory.RATE_LIMIT:
-                        # Rate limit = le modèle marche, juste trop d'appels
-                        return {"provider_ref": pref, "model_ref": mref,
-                                "use_case": use_case}
-                    # Auth (quota, key invalide) → essayer le provider suivant
-                    continue
-                except Exception:
-                    continue
+                # Pas de test réel (probe) : prober consomme une vraie requête
+                # API (RPM) — pour un modèle à RPM=1, le probe consomme le slot
+                # de la minute et garantit le rate-limit du membre qui suit.
+                # Un modèle mort sera marqué unavailable par le premier appel
+                # réel (via _mark_call_failed) et le fallback passera au suivant.
+                return {"provider_ref": pref, "model_ref": mref,
+                        "use_case": use_case}
 
         return None
 
@@ -299,14 +391,23 @@ def seed_provider_models(cat) -> int:
         if not prow or not mrow:
             continue
         cat.conn.execute("""
-            INSERT OR IGNORE INTO provider_models
+            INSERT INTO provider_models
                 (provider_id, model_id, provider_model_name,
                  context_window_tokens, max_output_tokens,
-                 cost_per_input_token, cost_per_output_token, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 cost_per_input_token, cost_per_output_token,
+                 cost_per_thinking_token, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                provider_model_name = excluded.provider_model_name,
+                cost_per_input_token = COALESCE(excluded.cost_per_input_token, provider_models.cost_per_input_token),
+                cost_per_output_token = COALESCE(excluded.cost_per_output_token, provider_models.cost_per_output_token),
+                cost_per_thinking_token = COALESCE(excluded.cost_per_thinking_token, provider_models.cost_per_thinking_token),
+                status = excluded.status,
+                updated_at = strftime('%s','now')
         """, (prow[0], mrow[0], row.get("provider_model_name", row.get("model_ref")),
               row.get("context_window_tokens"), row.get("max_output_tokens"),
               row.get("cost_per_input_token"), row.get("cost_per_output_token"),
+              row.get("cost_per_thinking_token"),
               row.get("status", "active")))
         count += 1
     cat.conn.commit()

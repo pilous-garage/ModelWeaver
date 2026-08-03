@@ -175,7 +175,13 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
         # Ref complète provider/model (ref brute côté provider)
         raw_model = row.get("provider_model_name") or row["model_ref"]
         ref = f"{row['provider_ref']}/{raw_model}"
-        if ref in exclude_set:
+        # Ref normalisée : retire le préfixe provider redondant (google/gemini-x
+        # vs google/google/gemini-x) pour matcher les exclusions d'anti-affinité.
+        if raw_model.startswith(row["provider_ref"] + "/"):
+            norm_ref = f"{row['provider_ref']}/{raw_model[len(row['provider_ref']) + 1:]}"
+        else:
+            norm_ref = ref
+        if ref in exclude_set or norm_ref in exclude_set:
             continue
         if row["provider_ref"] in excl_p:
             continue
