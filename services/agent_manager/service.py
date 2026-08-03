@@ -121,6 +121,17 @@ MAX_SLEEPING_AGENTS = 10000  # agents endormis max dans la BDD
 MIN_DISK_FREE_GB = 1       # espace disque libre minimum avant de créer un agent
 MAX_TOTAL_AGENT_DISK_GB = 10  # espace disque total max utilisé par tous les agents
 
+# Mapping role_type d'agent → rôle requis par une tâche (workspace greedy).
+# Une tâche avec role_required='coder_senior' réveille les agents 'codeur'.
+ROLE_TO_TASK = {
+    "architecte": "analyst",
+    "planificateur": "analyst",
+    "codeur": "coder_junior",   # défaut : les codeurs traitent les tâches easy/medium
+    "test_runner": "tester",
+    "relecteur": "reviewer",
+    "orchestrateur": "merger",
+}
+
 
 class Agent:
     """Wrapper runtime d'un agent hydraté.
@@ -894,6 +905,8 @@ class AgentManager:
 
         # Réveiller les agents endormis qui ont des signaux en attente
         woken = self._wake_sleeping_agents()
+        # Réveiller les agents quand des tâches workspace sont dispo (greedy)
+        woken_tasks = self._wake_for_tasks()
 
         active = len(self.list_active())
 
@@ -903,6 +916,7 @@ class AgentManager:
             "zombies_found": len(zombies),
             "zombies_killed": killed,
             "woken_agents": woken,
+            "woken_tasks": woken_tasks,
         }
 
     def _wake_sleeping_agents(self) -> int:
@@ -925,11 +939,11 @@ class AgentManager:
             count += 1
         return count
 
-    def _run_sleeping_agent(self, agent_id: int) -> None:
+    def _run_sleeping_agent(self, agent_id: int, wakeup_request: str = "wakeup: signals pending") -> None:
         agent = None
         try:
             agent = Agent.hydrate(agent_id, db=self.db)
-            agent.execute(request="wakeup: signals pending")
+            agent.execute(request=wakeup_request)
         except Exception:
             pass
         if agent:
@@ -937,6 +951,62 @@ class AgentManager:
                 agent.dehydrate()
             except Exception:
                 pass
+
+    def _wake_for_tasks(self) -> int:
+        """Réveille les agents dormeurs quand des tâches workspace sont dispo.
+
+        Greedy : une tâche 'pending' avec role_required (ex. coder_senior,
+        tester) réveille les agents dont le role_type correspond (via
+        ROLE_TO_TASK). Respecte MAX_THREAD_AGENTS. Ne réveille que les agents
+        non hydratés (pas dans agent_runtime). Les signaux PENDING (supervision
+        directe kill/pause/...) restent gérés par _wake_sleeping_agents.
+        """
+        try:
+            from modules.sql.workspace import WorkspaceDB
+        except Exception:
+            return 0
+        try:
+            wdb = WorkspaceDB()
+            roles = set(ROLE_TO_TASK.values())
+            # Tâches pending avec un rôle requis, dans tous les workspaces
+            tasks = wdb.conn.execute("""
+                SELECT DISTINCT role_required FROM tasks
+                WHERE status = 'pending' AND role_required != ''
+            """).fetchall()
+            need_roles = [t["role_required"] for t in tasks]
+        except Exception:
+            need_roles = []
+        finally:
+            try:
+                wdb.close()
+            except Exception:
+                pass
+        if not need_roles:
+            return 0
+
+        # Agents dormeurs (non hydratés) capables de ces rôles
+        role_types = [rt for rt, role in ROLE_TO_TASK.items() if role in need_roles]
+        if not role_types:
+            return 0
+        ph = ",".join("?" for _ in role_types)
+        rows = self.db.conn.execute(f"""
+            SELECT agent_id, name FROM agents
+            WHERE role_type IN ({ph})
+              AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+            LIMIT 20
+        """, role_types).fetchall()
+
+        active = len(self.list_active())
+        count = 0
+        for row in rows:
+            if active + count >= MAX_THREAD_AGENTS:
+                break
+            agent_id = row["agent_id"]
+            threading.Thread(target=self._run_sleeping_agent,
+                             args=(agent_id, "wakeup: task pending"),
+                             daemon=True).start()
+            count += 1
+        return count
 
     # ── Phase 3 : ressources & préemption ──
 
