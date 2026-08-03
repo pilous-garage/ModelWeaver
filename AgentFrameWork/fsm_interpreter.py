@@ -516,7 +516,13 @@ class FSMInterpreter:
         # agent — s'il fournit un agent_id différent, on force le sien.
         agent_id = result.variables.get("agent_id", "")
         if agent_id:
-            if "agent_id" in resolved and resolved["agent_id"] != agent_id:
+            # Forcer l'agent_id NUMÉRIQUE (pas le nom "agent_388") : les skills
+            # git/workspace s'en servent pour le home et le clone.
+            try:
+                agent_id = int(str(agent_id).split("_")[-1]) if str(agent_id).startswith("agent_") else int(agent_id)
+            except (ValueError, TypeError):
+                pass
+            if "agent_id" in resolved and str(resolved["agent_id"]) != str(agent_id):
                 resolved["agent_id"] = agent_id
             elif "agent_id" not in resolved:
                 resolved["agent_id"] = agent_id

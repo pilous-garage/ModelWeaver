@@ -498,7 +498,10 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             # skills git/workspace le requièrent).
             tool_result = None
             _injected = dict(raw_args)
-            if _aid_from_home and "agent_id" not in _injected:
+            # L'agent_id du home est TOUJOURS forcé (le LLM l'invente souvent,
+            # ex. "agent_388" ou un nom de membre) — les skills git/workspace
+            # s'en servent pour le home et le clone.
+            if _aid_from_home:
                 _injected["agent_id"] = _aid_from_home
             candidates = _resolve_skill_candidates(fn_name)
             for cand in candidates:
