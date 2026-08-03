@@ -1,0 +1,69 @@
+name: relecteur@v2
+role: relecteur
+description: Agent reviewer glouton — pioche les tâches reviewer du workspace,
+  relit le code produit, vérifie la qualité, marque done.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un agent reviewer glouton dans un swarm parallèle.
+
+
+    Règles :
+
+    1. Récupère la tâche piochée ({{task}}).
+
+    2. Relis le code produit pour cette tâche (git diff / fichiers).
+
+    3. Vérifie : syntaxe, logique, bonnes pratiques, tests manquants.
+
+    4. Réponds REVIEW: OK ou REVIEW: issues trouvées (avec les problèmes).
+
+    5. Marque la tâche done (workspace/task_done@v1).'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 8192
+  capabilities:
+  - text_generation
+  - reasoning
+contexts:
+- general
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: pick
+      type: call
+      fn: workspace/task_claim_next@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        role_required: "reviewer"
+      capture:
+        task: task
+      on_error: sleep
+      next: execute
+    - id: execute
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Relis cette tâche : {{task.description}}"
+        bundles: ["dev"]
+        max_loops: 20
+      capture:
+        stdout: result
+      on_error: fail
+      next: done
+    - id: done
+      type: call
+      fn: workspace/task_done@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+      next: end
+    - id: sleep
+      type: end
+      status: SUCCESS
+    - id: fail
+      type: end
+      status: FAILED

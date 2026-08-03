@@ -1,0 +1,68 @@
+name: test_runner@v2
+role: test_runner
+description: Agent testeur glouton — pioche les tâches tester du workspace, exécute
+  les tests, marque done.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un agent testeur glouton dans un swarm parallèle.
+
+
+    Règles :
+
+    1. Récupère la tâche piochée ({{task}}).
+
+    2. Identifie ce qui a été codé pour cette tâche (git diff / fichiers).
+
+    3. Crée et exécute un test ciblé qui vérifie le fonctionnement.
+
+    4. Réponds STATUS: PASSED ou STATUS: FAILED avec la sortie.
+
+    5. Marque la tâche done (workspace/task_done@v1).'
+bundles:
+  - test
+model_requirements:
+  min_context_tokens: 8192
+  capabilities:
+  - text_generation
+contexts:
+- general
+default_config:
+  temperature: 0.3
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: pick
+      type: call
+      fn: workspace/task_claim_next@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        role_required: "tester"
+      capture:
+        task: task
+      on_error: sleep
+      next: execute
+    - id: execute
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Teste cette tâche : {{task.description}}"
+        bundles: ["test"]
+        max_loops: 30
+      capture:
+        stdout: result
+      on_error: fail
+      next: done
+    - id: done
+      type: call
+      fn: workspace/task_done@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+      next: end
+    - id: sleep
+      type: end
+      status: SUCCESS
+    - id: fail
+      type: end
+      status: FAILED

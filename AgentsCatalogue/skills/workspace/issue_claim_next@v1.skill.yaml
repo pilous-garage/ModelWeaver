@@ -1,0 +1,20 @@
+name: workspace/issue_claim_next@v1
+category: workspace
+description: Pioche la prochaine issue 'open' du workspace (greedy, status open → analysing). Retourne l'issue la plus prioritaire.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  agent_name:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  issue:
+    type: object
+  issue_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.issue.claim_next

@@ -21,7 +21,7 @@ L'IDE affiche le normal, peut basculer sur l'inline, et save les 2.
 
 import yaml
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from services.api.catalogue_api import (
     _CATALOGUE, _read_yaml, _write_yaml, _slug,
@@ -95,6 +95,35 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
         if k in normal:
             inline[k] = normal[k]
     return inline
+
+
+def _load_agent_yaml_config(role: str, agent_name: str = "") -> Optional[Dict[str, Any]]:
+    """Charge le config d'un .agent.yaml par rôle (ou nom d'agent).
+
+    Cherche d'abord `{role}@v2.agent.yaml` (version gloutonne), puis
+    `{role}.agent.yaml`, puis `{agent_name}@v2.agent.yaml`. Retourne le
+    dict config utilisable (entrypoints migrés) ou None si introuvable.
+    """
+    candidates = []
+    base = (role or agent_name or "").strip()
+    if base:
+        candidates.append(f"{base}@v2.agent.yaml")
+        candidates.append(f"{base}.agent.yaml")
+    if agent_name and agent_name != base:
+        candidates.append(f"{agent_name}@v2.agent.yaml")
+        candidates.append(f"{agent_name}.agent.yaml")
+    for fname in candidates:
+        p = _AGENTS_DIR / fname
+        if not p.exists():
+            continue
+        try:
+            data = _read_yaml(p)
+            if not isinstance(data, dict):
+                continue
+            return inline_agent(data)
+        except Exception:
+            continue
+    return None
 
 
 # ── Routes daemon ──

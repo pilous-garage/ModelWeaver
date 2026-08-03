@@ -1,0 +1,74 @@
+name: architecte@v2
+role: architecte
+description: Agent analyste glouton — pioche une issue du workspace, l'analyse et
+  la découpe en tâches avec niveau de difficulté (easy/medium/hard/expert) et
+  rôle requis (coder_junior / coder_senior / tester).
+personality:
+  tone: ''
+  system_prompt: 'Tu es un analyste glouton dans un swarm parallèle.
+
+
+    Règles :
+
+    1. Récupère l''issue piochée ({{issue}}).
+
+    2. Analyse le problème et découpe-le en sous-tâches indépendantes.
+
+    3. Pour chaque tâche : définis un titre, une description claire, une
+       difficulté (easy/medium/hard/expert) et un rôle requis.
+
+    4. Crée les tâches via workspace/task_create@v1 avec difficulty et
+       role_required.
+
+    5. Marque l''issue analysée (workspace/issue_update@v1 status=analyzed).'
+bundles:
+  - manager
+  - analysis_only
+model_requirements:
+  min_context_tokens: 16384
+  capabilities:
+  - text_generation
+  - reasoning
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.4
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: pick
+      type: call
+      fn: workspace/issue_claim_next@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+      capture:
+        issue: issue
+      on_error: sleep
+      next: analyze
+    - id: analyze
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Analyse l'issue et découpe-la en tâches : {{issue.description}}"
+        bundles: ["manager", "analysis_only"]
+        max_loops: 30
+      capture:
+        stdout: result
+      on_error: fail
+      next: done
+    - id: done
+      type: call
+      fn: workspace/issue_update@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        issue_id: "{{issue.issue_id}}"
+        status: "analyzed"
+      next: end
+    - id: sleep
+      type: end
+      status: SUCCESS
+    - id: fail
+      type: end
+      status: FAILED

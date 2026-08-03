@@ -67,6 +67,14 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         return row["agent_id"]
 
     config_json = json.dumps(spec.config or {})
+    # Si le membre ne définit pas de workflow explicite, charger le .agent.yaml
+    # du rôle (ex. codeur → codeur@v2.agent.yaml, greedy). Permet de réutiliser
+    # la même déclaration d'agent pour plusieurs membres (codeur-a, codeur-b…).
+    if not spec.config:
+        from services.api.catalogue_agents import _load_agent_yaml_config
+        loaded = _load_agent_yaml_config(spec.role, spec.agent_name)
+        if loaded:
+            config_json = json.dumps(loaded)
 
     if isinstance(spec, TeamLeaderSpec):
         effective_role = role

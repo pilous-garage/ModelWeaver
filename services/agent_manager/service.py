@@ -945,12 +945,16 @@ class AgentManager:
         try:
             agent = Agent.hydrate(agent_id, db=self.db)
             if workspace_id:
-                # Injecte le workspace dans les variables : l'agent greedy
-                # sait où piocher (workspace/task_claim_next@v1).
+                # Injecte le workspace + le rôle greedy dans les variables :
+                # l'agent sait où piocher et avec quel role_required.
                 try:
                     import json as _json
                     vars_j = _json.loads(agent._data.get("variables_json") or "{}")
                     vars_j["workspace_id"] = workspace_id
+                    # Rôle requis dérivé du role_type (ROLE_TO_TASK). Le
+                    # config greedy lit {{role_required}} dans task_claim_next.
+                    vars_j["role_required"] = ROLE_TO_TASK.get(
+                        agent._data.get("role_type"), "")
                     agent.db.conn.execute(
                         "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
                         (_json.dumps(vars_j), agent_id))

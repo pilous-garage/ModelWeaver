@@ -1,0 +1,70 @@
+name: codeur@v2
+role: codeur
+description: Agent de codage glouton — pioche les tâches pending du workspace (via
+  task_claim_next), les code, puis les marque done. Se rendort si aucune tâche.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un agent de codage glouton dans un swarm parallèle.
+
+
+    Règles :
+
+    1. Récupère la tâche piochée (variable {{task}}) et EXÉCUTE sa description.
+
+    2. Écris le code réellement dans les fichiers (file_write_file_v1).
+
+    3. Vérifie la syntaxe (system/check_syntax@v1).
+
+    4. Commit et push via git (git_lite commit + push) sur la branche de la tâche.
+
+    5. Réponds en français pour les commentaires, code en anglais.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 8192
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.3
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: pick
+      type: call
+      fn: workspace/task_claim_next@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        role_required: "{{role_required}}"
+      capture:
+        task: task
+      on_error: sleep
+      next: execute
+    - id: execute
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "{{task.description}}"
+        bundles: ["dev"]
+        max_loops: 50
+      capture:
+        stdout: result
+      on_error: fail
+      next: done
+    - id: done
+      type: call
+      fn: workspace/task_done@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+      next: end
+    - id: sleep
+      type: end
+      status: SUCCESS
+    - id: fail
+      type: end
+      status: FAILED

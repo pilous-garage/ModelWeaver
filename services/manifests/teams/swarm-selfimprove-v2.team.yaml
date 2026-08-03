@@ -1,0 +1,63 @@
+name: swarm-selfimprove-v2
+version: 0.2.0
+description: "Swarm glouton parallèle — les agents piochent les tâches du workspace (greedy), se rendorment si rien à faire, réveillés par le wake_up par tâche. Issue → analyste (découpe en tâches) → codeurs (junior/senior selon difficulté) → reviewers/testers → merger. Pas de leader central."
+workspace_id: mw-swarm
+topology: flat
+
+members:
+  # ── Analyste : pioche une issue, la découpe en tâches (difficulty + rôle) ──
+  - agent_name: analyst
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── Codeurs : piochent les tâches selon la difficulté ──
+  # coder-a/b : traitent les tâches easy/medium (coder_junior)
+  # coder-c : traite les tâches hard/expert (coder_senior)
+  - agent_name: coder-a
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: coder-b
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: coder-c
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── Testeurs : vérifient le code fonctionne ──
+  - agent_name: tester-a
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: tester-b
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── Reviewer : relit le code (optionnel, anti-affinité modèle) ──
+  - agent_name: reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── Merger : intègre les branches une fois les tâches terminées ──
+  - agent_name: integrator
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+
+resources:
+  budget_per_hour: 100
+  max_concurrent: 8
+  llm_quota_per_day: 500

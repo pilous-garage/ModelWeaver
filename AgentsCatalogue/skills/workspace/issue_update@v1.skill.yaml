@@ -1,0 +1,30 @@
+name: workspace/issue_update@v1
+category: workspace
+description: Met à jour une issue du workspace (status, title, description, priority, assigned_to).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  issue_id:
+    type: integer
+    required: true
+  status:
+    type: string
+    required: false
+  title:
+    type: string
+    required: false
+  description:
+    type: string
+    required: false
+  priority:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  issue:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.issue.update

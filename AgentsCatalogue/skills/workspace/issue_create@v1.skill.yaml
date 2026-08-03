@@ -1,0 +1,26 @@
+name: workspace/issue_create@v1
+category: workspace
+description: Crée une nouvelle issue dans le workspace (demande de haut niveau).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  title:
+    type: string
+    required: true
+  description:
+    type: string
+    required: false
+  priority:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  issue:
+    type: object
+  issue_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.issue.create
