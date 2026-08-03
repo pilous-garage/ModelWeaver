@@ -132,15 +132,44 @@ class TaskRepository:
             (task_id, self.wid)).fetchone())
 
     def create(self, title: str, description: str = "",
-               priority: int = 0, parent_id: int = None) -> Dict[str, Any]:
+               priority: int = 0, parent_id: int = None,
+               difficulty: str = "medium", role_required: str = "") -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
-                               parent_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (self.wid, title, description, priority, parent_id, now, now))
+                               parent_id, difficulty, role_required, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.wid, title, description, priority, parent_id,
+              difficulty, role_required, now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
+
+    def claim_next(self, role_required: str = "",
+                   exclude_assigned: tuple = ()) -> Optional[Dict[str, Any]]:
+        """Pioche la prochaine tâche dispo pour un rôle (greedy).
+
+        Retourne la tâche 'pending' la plus prioritaire correspondant au rôle,
+        la passe en 'running'. Atomique (UPDATE ... WHERE status='pending').
+        """
+        sel_args = [self.wid]
+        sel = "SELECT * FROM tasks WHERE workspace_id = ? AND status = 'pending'"
+        if role_required:
+            sel += " AND role_required = ?"
+            sel_args.append(role_required)
+        if exclude_assigned:
+            ph = ",".join("?" for _ in exclude_assigned)
+            sel += f" AND COALESCE(assigned_to,'') NOT IN ({ph})"
+            sel_args.extend(exclude_assigned)
+        sel += " ORDER BY priority DESC, created_at LIMIT 1"
+        row = _row(self.conn.execute(sel, sel_args).fetchone())
+        if not row:
+            return None
+        cur = self.conn.execute(
+            "UPDATE tasks SET status = 'running', updated_at = ? "
+            "WHERE task_id = ? AND workspace_id = ? AND status = 'pending'",
+            (datetime.utcnow().isoformat(), row["task_id"], self.wid))
+        self.conn.commit()
+        return self.get(row["task_id"]) if cur.rowcount else None
 
     def update(self, task_id: int, **kwargs) -> Optional[Dict[str, Any]]:
         sets = []
@@ -187,6 +216,65 @@ class TaskRepository:
     def get_files(self, task_id: int) -> List[Dict[str, Any]]:
         return _rows(self.conn.execute(
             "SELECT * FROM task_files WHERE task_id = ?", (task_id,)).fetchall())
+
+
+class IssueRepository:
+    """Issues d'un workspace (demandes de haut niveau → découpées en tâches)."""
+
+    def __init__(self, conn: sqlite3.Connection, workspace_id: str):
+        self.conn = conn
+        self.wid = workspace_id
+
+    def list_open(self) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM issues WHERE workspace_id = ? AND status IN ('open','analysing','analyzed') "
+            "ORDER BY priority DESC, created_at", (self.wid,)).fetchall())
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM issues WHERE workspace_id = ? ORDER BY priority DESC, created_at",
+            (self.wid,)).fetchall())
+
+    def get(self, issue_id: int) -> Optional[Dict[str, Any]]:
+        return _row(self.conn.execute(
+            "SELECT * FROM issues WHERE issue_id = ? AND workspace_id = ?",
+            (issue_id, self.wid)).fetchone())
+
+    def create(self, title: str, description: str = "",
+               priority: int = 0, parent_id: int = None) -> Dict[str, Any]:
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.execute("""
+            INSERT INTO issues (workspace_id, title, description, priority,
+                                parent_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (self.wid, title, description, priority, parent_id, now, now))
+        self.conn.commit()
+        return self.get(cur.lastrowid)
+
+    def update(self, issue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return self.get(issue_id)
+        sets.append("updated_at = ?")
+        vals.append(datetime.utcnow().isoformat())
+        vals.extend([issue_id, self.wid])
+        self.conn.execute(
+            f"UPDATE issues SET {', '.join(sets)} "
+            "WHERE issue_id = ? AND workspace_id = ?", vals)
+        self.conn.commit()
+        return self.get(issue_id)
+
+    def claim(self, issue_id: int, agent_name: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE issues SET status = 'analysing', assigned_to = ?, updated_at = ? "
+            "WHERE issue_id = ? AND workspace_id = ? AND status = 'open'",
+            (agent_name, datetime.utcnow().isoformat(), issue_id, self.wid))
+        self.conn.commit()
+        return cur.rowcount > 0
 
 
 class ChatroomRepository:
@@ -308,6 +396,16 @@ class WorkspaceDB:
         schema = Path(__file__).resolve().parent / "workspace_schema.sql"
         if schema.exists():
             self.conn.executescript(schema.read_text())
+        # Migrations : colonnes ajoutées sur des tables déjà existantes.
+        from modules.sql.db import _add_column_if_missing
+        _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
+        _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_role "
+                "ON tasks(workspace_id, role_required, status, priority)")
+        except Exception:
+            pass
 
     def for_workspace(self, workspace_id: str) -> "WorkspaceScope":
         return WorkspaceScope(self.conn, workspace_id)
@@ -327,5 +425,6 @@ class WorkspaceScope:
         self.conn = conn
         self.wid = workspace_id
         self.tasks = TaskRepository(conn, workspace_id)
+        self.issues = IssueRepository(conn, workspace_id)
         self.chat = ChatroomRepository(conn, workspace_id)
         self.usage = UsageFileRepository(conn, workspace_id)
