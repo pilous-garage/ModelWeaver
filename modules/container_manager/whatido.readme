@@ -1,13 +1,22 @@
 # Container Manager — Exécution isolée dans des conteneurs Docker
 
-Module d'abstraction pour lancer des commandes dans des conteneurs Docker
-éphémères (environnement d'exécution isolé et reproductible).
+Module d'abstraction pour lancer des commandes dans des conteneurs Docker.
 
 Responsabilités :
-- `run_command(command, volume_mounts)` : lance une commande dans un conteneur
-  temporaire (`docker run --rm`), avec montages de volumes host↔conteneur, et
-  renvoie la sortie (ou lève `RuntimeError` en cas d'échec).
-- `list_images()` : liste les images Docker disponibles localement.
+- `run_command(command, volume_mounts)` : conteneur temporaire (`docker run --rm`),
+  montages host↔conteneur, renvoie la sortie (ou lève `RuntimeError`).
+- `list_images()` : liste les images Docker locales.
+
+## Conteneurs persistants (ajoutés pour le swarm / DockerManager)
+Opérations sans `--rm` : le conteneur nommé survit entre les appels pour
+permettre des batteries de tests sur un même environnement.
+- `create(name, image, volumes, env, workdir)` — crée (sans démarrer)
+- `start(name)` — démarre
+- `exec(name, command, workdir, timeout)` — exécute dedans (conteneur démarré)
+- `commit(name, image_tag)` — snapshot de l'état comme image (cache)
+- `stop(name)` / `remove(name)` — arrêt / suppression (persistance gérée ailleurs)
+- `exists(name)` / `status(name)` — introspection
 
 Classe notable : `ContainerManager` (image par défaut `python:3.12-slim`).
-État : logique d'orchestration/supervision plus poussée non implémentée ici.
+L'orchestration (registre de caches, association agent↔conteneur, fork+install)
+vit dans `services/docker_manager/`.

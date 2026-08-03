@@ -120,7 +120,7 @@ def _pid_matches_service(pid: int, name: str) -> bool:
         "catalogue": ("catalogue",),
         "installer": ("installer_worker",),
         "tester": ("tester",),
-        "supervisor": ("modelweaver",),
+        "supervisor": ("supervisor/main.py",),
     }.get(name, (name,))
     return any(m in text for m in markers)
 

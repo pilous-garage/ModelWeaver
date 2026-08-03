@@ -1,13 +1,14 @@
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
+from modules.llm_manager.llm_manager import LLMManager
 
 
 def _bridge():
     try:
         from modules.sql.db import CatalogueDB, ModelWeaverDB
         from modules.key_manager.key_manager import KeyManager
-        return LiteLLMBridge(cat=CatalogueDB(), km=KeyManager(ModelWeaverDB()))
+        return LLMManager(cat=CatalogueDB(),
+                          km=KeyManager(ModelWeaverDB())).get_bridge()
     except ImportError:
-        return LiteLLMBridge()
+        return LLMManager(cat=None).get_bridge()
 
 
 def llm_model(inputs: dict, ws: str) -> dict:

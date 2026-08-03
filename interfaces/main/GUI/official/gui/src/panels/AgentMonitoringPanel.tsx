@@ -28,9 +28,9 @@ export function AgentMonitoringPanel() {
     const poll = async () => {
       try {
         const m = await daemonPost('agent/metrics', {});
-        if (m?.agents) setMetrics(m.agents);
+        if (m?.result?.agents) setMetrics(m.result.agents);
         const s = await daemonPost('service/resources', {});
-        if (s?.services) setServices(s.services);
+        if (s?.result?.services) setServices(s.result.services);
         setErr('');
       } catch (e: any) {
         setErr(e.message || 'daemon indisponible');

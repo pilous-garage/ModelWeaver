@@ -1,6 +1,6 @@
 """BridgeRegistry — Chargement dynamique des bridges par provider.
 
-Au lieu d'un seul LiteLLMBridge pour tous les providers, chaque provider
+Au lieu d'un seul bridge pour tous les providers, chaque provider
 peut avoir son propre bridge python chargé via ``importlib.import_module()``.
 
 Les providers non listés dans ``PROVIDER_BRIDGES`` utilisent DirectBridge

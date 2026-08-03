@@ -14,13 +14,12 @@ from typing import Any, Dict, List, Optional
 from modules.llm_manager.base_bridge import (
     BridgeError, ErrorCategory,
 )
-from modules.llm_manager.litellm_bridge import LiteLLMBridge
 from modules.llm_manager.llm_manager import LLMManager
 from modules.sql.db import CatalogueDB, ModelWeaverDB
 from modules.key_manager.key_manager import KeyManager
 
 
-def _run_with_timeout(bridge: LiteLLMBridge, provider_ref: str, model_ref: str,
+def _run_with_timeout(bridge, provider_ref: str, model_ref: str,
                       messages: List[Dict[str, str]], timeout: int,
                       kwargs: Dict[str, Any]):
     """Lance `bridge.chat` dans un thread ; lève TimeoutError si dépassé."""
@@ -57,7 +56,7 @@ def resilient_chat(provider_ref: str, model_ref: str,
                    timeout: int = 60, fallback: bool = True,
                    max_retries: int = 3, use_case: str = "coding",
                    agent_id: Optional[str] = None,
-                   bridge: Optional[LiteLLMBridge] = None,
+                   bridge=None,
                    cat=None, km=None, **kwargs) -> Any:
     """Appel LLM résilient avec repli sur un autre LLM.
 
@@ -72,7 +71,7 @@ def resilient_chat(provider_ref: str, model_ref: str,
     if km is None:
         km = KeyManager(ModelWeaverDB())
     if bridge is None:
-        bridge = LiteLLMBridge(cat=cat, km=km)
+        bridge = LLMManager(cat, km=km).get_bridge()
 
     cur_p, cur_m = provider_ref, model_ref
     last_err: Optional[BridgeError] = None

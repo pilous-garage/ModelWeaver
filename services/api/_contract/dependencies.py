@@ -13,9 +13,6 @@ CONSUMES = {
         'BridgeError',
         'ErrorCategory',
     ],
-    'modules.llm_manager.litellm_bridge': [
-        'LiteLLMBridge',
-    ],
     'modules.llm_manager.llm_manager': [
         'LLMManager',
         'seed_models',

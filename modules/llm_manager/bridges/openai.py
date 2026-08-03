@@ -30,7 +30,7 @@ class Bridge(BaseBridge):
     le SDK ``openai`` avec la clé résolue par le KeyManager.
 
     Les providers OpenAI-compatible (api_base personnalisé) restent sur
-    LiteLLMBridge — ce bridge est réservé à l'API OpenAI officielle.
+    LiteLLMBridgeDefunct — ce bridge est réservé à l'API OpenAI officielle.
     """
 
     def __init__(self, cat=None, km=None):
@@ -120,8 +120,8 @@ class Bridge(BaseBridge):
             raise self.classify_error(exc, provider_ref, model_ref)
 
     def get_capabilities(self, provider_ref: str, model_ref: str) -> ModelCapabilities:
-        from modules.llm_manager.litellm_bridge import LiteLLMBridge
-        fallback = LiteLLMBridge(cat=self.cat, km=self.km)
+        from modules.llm_manager.llm_manager import LLMManager
+        fallback = LLMManager(self.cat, km=self.km).get_bridge()
         return fallback.get_capabilities(provider_ref, model_ref)
 
     def list_available_providers(self) -> List[Dict[str, Any]]:

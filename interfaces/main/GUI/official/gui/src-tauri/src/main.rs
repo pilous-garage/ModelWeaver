@@ -1190,11 +1190,10 @@ async fn ensure_daemon() -> Result<String, String> {
     log_to_file("INFO", "ensure_daemon: daemon injoignable, tentative de démarrage");
 
     // Lancer le daemon en arrière-plan
-    let root = std::env::current_dir()
-        .map_err(|e| { log_to_file("ERROR", &format!("ensure_daemon: current_dir failed: {}", e)); format!("current_dir: {}", e) })?;
+    let root = find_repo_root();
     let services_dir = root.join("services").join("api");
     let daemon_py = services_dir.join("daemon.py");
-    log_to_file("INFO", &format!("ensure_daemon: CWD={}, daemon_py={}", root.display(), daemon_py.display()));
+    log_to_file("INFO", &format!("ensure_daemon: repo_root={}, daemon_py={}", root.display(), daemon_py.display()));
 
     if !daemon_py.exists() {
         let msg = format!("daemon.py introuvable: {}", daemon_py.display());
@@ -1615,6 +1614,8 @@ fn main() {
     let _ = std::process::Command::new("sqlite3")
         .arg(&db_path)
         .arg("ALTER TABLE services ADD COLUMN version TEXT DEFAULT ''")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 
     // Root of the process tree: the main calling process ("modelweaver-main").

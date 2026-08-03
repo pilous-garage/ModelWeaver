@@ -49,12 +49,14 @@ def _agent_actif_max_rows() -> int:
 
 
 def _cost_for(cat, provider_ref: str, model_ref: str,
-              tokens_in: int, tokens_out: int) -> float:
-    """Cout USD estime via provider_models.cost_per_input/output_token.
+              tokens_in: int, tokens_out: int,
+              tokens_thinking: int = 0) -> float:
+    """Cout USD estime via provider_models.cost_per_input/output/thinking_token.
     Retourne 0.0 si tarifs manquants (NULL). Best-effort."""
     try:
         row = cat.conn.execute("""
-            SELECT pm.cost_per_input_token, pm.cost_per_output_token
+            SELECT pm.cost_per_input_token, pm.cost_per_output_token,
+                   pm.cost_per_thinking_token
             FROM provider_models pm
             JOIN catalogue_providers p ON p.id = pm.provider_id
             JOIN catalogue_models m ON m.id = pm.model_id
@@ -63,15 +65,19 @@ def _cost_for(cat, provider_ref: str, model_ref: str,
         """, (provider_ref, model_ref)).fetchone()
         if not row:
             return 0.0
-        cin, cout = row["cost_per_input_token"], row["cost_per_output_token"]
-        if cin is None and cout is None:
+        cin, cout, cthink = (row["cost_per_input_token"],
+                             row["cost_per_output_token"],
+                             row["cost_per_thinking_token"])
+        if cin is None and cout is None and cthink is None:
             return 0.0
         try:
             cin = float(cin) if cin is not None else 0.0
             cout = float(cout) if cout is not None else 0.0
+            cthink = float(cthink) if cthink is not None else 0.0
         except (TypeError, ValueError):
             return 0.0
-        return cin * tokens_in + cout * tokens_out
+        return (cin * tokens_in + cout * tokens_out
+                + cthink * tokens_thinking)
     except Exception:
         return 0.0
 
@@ -111,22 +117,25 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
             endpoint_id = rec.get("endpoint_id")
             tokens_in = int(rec.get("tokens_in", 0) or 0)
             tokens_out = int(rec.get("tokens_out", 0) or 0)
+            tokens_thinking = int(rec.get("tokens_thinking", 0) or 0)
             # cout : priorite a la valeur deja calculee, sinon on la deduit.
             cost = float(rec.get("cost") or 0.0)
             if cost == 0.0:
-                cost = _cost_for(cat, provider_ref, model_ref, tokens_in, tokens_out)
+                cost = _cost_for(cat, provider_ref, model_ref,
+                                 tokens_in, tokens_out, tokens_thinking)
 
             conn.execute("""
                 INSERT INTO real_call_models
                     (provider_ref, endpoint_id, key_ref, model_ref, agent_id,
-                     sent_at, received_at, tokens_in, tokens_out, cost,
+                     sent_at, received_at, tokens_in, tokens_out,
+                     tokens_thinking, cost,
                      status, error_code, error_detail, window_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 provider_ref, endpoint_id, rec.get("key_ref"),
                 model_ref, rec.get("agent_id"),
                 rec.get("sent_at"), rec.get("received_at"),
-                tokens_in, tokens_out, cost, status,
+                tokens_in, tokens_out, tokens_thinking, cost, status,
                 rec.get("error_code"), rec.get("error_detail"),
                 rec.get("window_key"),
             ))
@@ -143,21 +152,25 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
                         requests = requests + 1,
                         tokens_in = tokens_in + ?,
                         tokens_out = tokens_out + ?,
+                        tokens_thinking = tokens_thinking + ?,
                         cost = cost + ?,
                         last_call_at = ?,
                         last_call_working = ?,
                         error_count = error_count + ?
                     WHERE id = ?
-                """, (tokens_in, tokens_out, cost, rec.get("received_at"),
+                """, (tokens_in, tokens_out, tokens_thinking, cost,
+                      rec.get("received_at"),
                       working, 0 if status == "ok" else 1, row["id"]))
             else:
                 conn.execute("""
                     INSERT INTO endpoint_model_usage
                         (endpoint_id, model_ref, agent_id, requests, tokens_in,
-                         tokens_out, cost, last_call_at, last_call_working, error_count)
-                    VALUES (?,?,?,1,?,?,?,?,?,?)
+                         tokens_out, tokens_thinking, cost,
+                         last_call_at, last_call_working, error_count)
+                    VALUES (?,?,?,1,?,?,?,?,?,?,?)
                 """, (endpoint_id, model_ref, rec.get("agent_id"),
-                      tokens_in, tokens_out, cost, rec.get("received_at"),
+                      tokens_in, tokens_out, tokens_thinking, cost,
+                      rec.get("received_at"),
                       working, 0 if status == "ok" else 1))
 
             if status != "ok":
@@ -258,6 +271,105 @@ def _rotate_archives(log_dir: Path) -> None:
             pass
 
 
+# ── Historique 3 niveaux (moniteur LLM) ────────────────────────────────
+#  real_call_models  : détail par appel, conservé  1h
+#  usage_history_1m  : agrégats par minute, conservés 24h
+#  usage_history_1h  : agrégats horaires, conservés 30j
+HISTORY_KEEP_1M_SECONDS = 3600        # détail : 1h
+HISTORY_KEEP_1M_AGG_SECONDS = 24 * 3600   # agrégats 1m : 24h
+HISTORY_KEEP_1H_AGG_SECONDS = 30 * 24 * 3600  # agrégats 1h : 30j
+
+
+def _history_tiers() -> Dict[str, int]:
+    """Durées de rétention configurables (config usage.history_keep_*)."""
+    try:
+        from modules.config.config_manager import config
+        return {
+            "detail": int(config.get("usage.history_keep_detail_hours", 1)) * 3600,
+            "m1": int(config.get("usage.history_keep_minutes_hours", 24)) * 3600,
+            "h1": int(config.get("usage.history_keep_hours_days", 30)) * 24 * 3600,
+        }
+    except Exception:
+        return {
+            "detail": HISTORY_KEEP_1M_SECONDS,
+            "m1": HISTORY_KEEP_1M_AGG_SECONDS,
+            "h1": HISTORY_KEEP_1H_AGG_SECONDS,
+        }
+
+
+def _rollup_1m_to_history(conn) -> int:
+    """Agrège les appels détaillés récents (jamais traités) par fenêtre de
+    1 minute vers usage_history_1m (upsert). Les lignes traitées sont
+    marquées `rolled_at` pour rendre le rollup idempotent."""
+    now = int(time.time())
+    cutoff_detail = now - _history_tiers()["detail"]
+    n = 0
+    try:
+        cur = conn.execute("""
+            INSERT INTO usage_history_1m
+                (bucket, provider_ref, model_ref, agent_id,
+                 requests, tokens_in, tokens_out, tokens_thinking, cost)
+            SELECT
+                CAST(sent_at / 60 AS INTEGER) * 60,
+                COALESCE(provider_ref, ''), COALESCE(model_ref, ''), COALESCE(agent_id, ''),
+                COUNT(*), SUM(tokens_in), SUM(tokens_out), SUM(tokens_thinking), SUM(cost)
+            FROM real_call_models
+            WHERE rolled_at IS NULL AND sent_at >= ?
+            GROUP BY 1, 2, 3, 4
+            ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
+                requests = usage_history_1m.requests + excluded.requests,
+                tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
+                tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
+                tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
+                cost = usage_history_1m.cost + excluded.cost
+        """, (cutoff_detail,))
+        n = cur.rowcount
+        conn.execute(
+            "UPDATE real_call_models SET rolled_at = ? "
+            "WHERE rolled_at IS NULL AND sent_at >= ?",
+            (now, cutoff_detail))
+    except Exception:
+        pass
+    return n
+    return conn.execute(
+        "SELECT changes() AS n").fetchone()["n"] if conn.row_factory else 0
+
+
+def _rollup_1h_from_1m(conn) -> int:
+    """Agrège les fenêtres minute périmées vers usage_history_1h."""
+    cutoff_1m = int(time.time()) - _history_tiers()["m1"]
+    conn.execute("""
+        INSERT INTO usage_history_1h
+            (bucket, provider_ref, model_ref, agent_id,
+             requests, tokens_in, tokens_out, tokens_thinking, cost)
+        SELECT
+            CAST(bucket / 3600 AS INTEGER) * 3600,
+            COALESCE(provider_ref, ''), COALESCE(model_ref, ''), COALESCE(agent_id, ''),
+            SUM(requests), SUM(tokens_in), SUM(tokens_out),
+            SUM(tokens_thinking), SUM(cost)
+        FROM usage_history_1m
+        WHERE bucket < ?
+        GROUP BY 1, 2, 3, 4
+        ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
+            requests = usage_history_1h.requests + excluded.requests,
+            tokens_in = usage_history_1h.tokens_in + excluded.tokens_in,
+            tokens_out = usage_history_1h.tokens_out + excluded.tokens_out,
+            tokens_thinking = usage_history_1h.tokens_thinking + excluded.tokens_thinking,
+            cost = usage_history_1h.cost + excluded.cost
+    """, (cutoff_1m,))
+    conn.execute("DELETE FROM usage_history_1m WHERE bucket < ?", (cutoff_1m,))
+    return 0
+
+
+def _purge_history(conn) -> None:
+    """Purge TTL des 3 niveaux (détail 1h, 1m 24h, 1h 30j)."""
+    tiers = _history_tiers()
+    cutoff_detail = int(time.time()) - tiers["detail"]
+    cutoff_h1 = int(time.time()) - tiers["h1"]
+    conn.execute("DELETE FROM real_call_models WHERE sent_at < ?", (cutoff_detail,))
+    conn.execute("DELETE FROM usage_history_1h WHERE bucket < ?", (cutoff_h1,))
+
+
 def _enforce_agent_actif_cap(mw: ModelWeaverDB) -> None:
     """Borne la table agent_actif (FIFO) : si elle depasse le max, on supprime
     les plus anciens (dernier heartbeat le plus vieux). Borne configurable via
@@ -348,9 +460,17 @@ def run_once() -> int:
                     pass
         # 4) rotation d'archive si besoin
         _rotate_archives(log_dir)
-        # 5) borne taille table agent_actif (FIFO)
+        # 5) historique 3 niveaux : rollup 1m + 1h + purge TTL
+        try:
+            _rollup_1m_to_history(mw.conn)
+            _rollup_1h_from_1m(mw.conn)
+            _purge_history(mw.conn)
+            mw.conn.commit()
+        except Exception:
+            pass
+        # 6) borne taille table agent_actif (FIFO)
         _enforce_agent_actif_cap(mw)
-        # 6) purge TTL des agents morts (heartbeat depasse le timeout)
+        # 7) purge TTL des agents morts (heartbeat depasse le timeout)
         _sweep_agent_actif_ttl(mw)
     finally:
         mw.close()

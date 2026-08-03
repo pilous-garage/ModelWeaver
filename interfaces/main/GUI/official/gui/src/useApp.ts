@@ -22,7 +22,7 @@ function useDomainVersions(enabled: boolean, onChange: (domains: Domain[]) => vo
         const prev = prevRef.current;
         const ch: Domain[] = [];
         for (const k of Object.keys(v) as Domain[]) {
-          if (prev[k] !== undefined && prev[k] !== v[k]) ch.push(k);
+          if (prev[k] === undefined || prev[k] !== v[k]) ch.push(k);
         }
         prevRef.current = v;
         if (ch.length) cbRef.current(ch);
@@ -139,6 +139,16 @@ export function useApp() {
   const [localLoading, setLocalLoading] = useState(false);
   const [localBusy, setLocalBusy] = useState<string>('');
   const [localMsg, setLocalMsg] = useState('');
+  const [localGrouped, setLocalGrouped] = useState<any>(null);
+  const [localHardware, setLocalHardware] = useState<any>(null);
+  const [localHwMode, setLocalHwMode] = useState<Record<string, string>>({});
+  const [hfQuery, setHfQuery] = useState('');
+  const [hfResults, setHfResults] = useState<any[]>([]);
+  const [hfLoading, setHfLoading] = useState(false);
+  const [hfDownloading, setHfDownloading] = useState<Record<string, boolean>>({});
+  const [hfDownloadStatus, setHfDownloadStatus] = useState<any>(null);
+  const [hfLocalModels, setHfLocalModels] = useState<any[]>([]);
+  const [hfAssociateEngine, setHfAssociateEngine] = useState('llamacpp');
 
   // Agents (Phase 4 : signaux + streaming)
   const [showAgents, setShowAgents] = useState(false);
@@ -424,7 +434,7 @@ export function useApp() {
     'debug': 'right',
   };
 
-  const ALL_PANELS = ['system-state', 'resources', 'installed-tools', 'catalogue', 'chat', 'install-queue', 'agents', 'teams', 'local-models', 'keys', 'debug'];
+  const ALL_PANELS = ['system-state', 'resources', 'installed-tools', 'catalogue', 'chat', 'install-queue', 'agents', 'teams', 'local-models', 'keys', 'debug', 'docker-ressources'];
 
   const setDebug = (v: boolean) => {
     setShowDebug(v);
@@ -440,13 +450,11 @@ export function useApp() {
 
   const fetchProviders = async () => {
     try {
-      const res = await invoke<any>('get_providers');
-      const list = res?.providers || [];
+      const data = await daemonPost('providers/list', {});
+      const list = (data?.result?.providers || []) as any[];
       setProvidersList(list);
-      // Auto-sélection du 1er provider pour éviter un retour silencieux du "+"
       if (!keysNewProvider && list.length > 0) setKeysNewProvider(list[0].ref);
-    }
-    catch { /* ignore */ }
+    } catch { /* ignore */ }
   };
 
   // Fetch des modèles : uniquement pour les providers ayant une clé API
@@ -481,6 +489,104 @@ export function useApp() {
       const data = await daemonPost(`llm/local/${action}`, { engine });
       if (data?.status !== 'ok') setLocalMsg(`⚠️ ${data?.error || 'échec'}`);
       await fetchLocalEngines();
+    } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
+    finally { setLocalBusy(''); }
+  };
+
+  const fetchGroupedEngines = async () => {
+    try {
+      const data = await daemonPost('llm/local/models/grouped', {});
+      if (data?.ok) setLocalGrouped(data.result);
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const fetchHardwareModes = async () => {
+    try {
+      const data = await daemonPost('llm/local/hardware-modes', {});
+      if (data?.ok) setLocalHardware(data.result);
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const handleStartModel = async (engine: string, model: string, hardware: string) => {
+    setLocalBusy(engine);
+    setLocalMsg('');
+    try {
+      const data = await daemonPost('llm/local/start-model', { engine, model, hardware });
+      if (data?.status !== 'ok') setLocalMsg(`⚠️ ${data?.error || 'échec'}`);
+      else setLocalMsg(`✅ ${model} lancé sur ${hardware}`);
+      await fetchGroupedEngines();
+    } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
+    finally { setLocalBusy(''); }
+  };
+
+  const handleStopModel = async (engine: string, model: string) => {
+    setLocalBusy(engine);
+    setLocalMsg('');
+    try {
+      const data = await daemonPost('llm/local/stop-model', { engine, model });
+      if (data?.status !== 'ok') setLocalMsg(`⚠️ ${data?.error || 'échec'}`);
+      else setLocalMsg(`🛑 ${model} déchargé`);
+      await fetchGroupedEngines();
+    } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
+    finally { setLocalBusy(''); }
+  };
+
+  const handleCheckResources = async (model: string, sizeGb?: number) => {
+    try {
+      const data = await daemonPost('llm/local/check-resources', { model, size_gb: sizeGb || undefined });
+      if (data?.ok) return data.result;
+      return { status: 'error', error: 'échec vérification' };
+    } catch (e: any) { return { status: 'error', error: String(e) }; }
+  };
+
+  const hfDoSearch = async (query: string) => {
+    if (!query.trim()) { setHfResults([]); return; }
+    setHfLoading(true);
+    setHfQuery(query);
+    try {
+      const data = await daemonPost('llm/hf/search', { query, limit: 15 });
+      if (data?.ok) setHfResults(data.result.results || []);
+      else setHfResults([]);
+    } catch (e: any) { setHfResults([]); }
+    finally { setHfLoading(false); }
+  };
+
+  const hfDoDownload = async (repoId: string, filename: string) => {
+    setHfDownloading(prev => ({ ...prev, [`${repoId}:${filename}`]: true }));
+    try {
+      const data = await daemonPost('llm/hf/download', { repo_id: repoId, filename });
+      if (data?.ok) {
+        setHfDownloadStatus(data.result);
+        // poll status every 2s for 30s
+        const id = data.result.download_id;
+        let done = false;
+        for (let i = 0; i < 15 && !done; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const st = await daemonPost('llm/hf/status', { download_id: id });
+          if (st?.ok && st.result.done) { done = true; setHfDownloadStatus(st.result); }
+        }
+        if (!done) setHfDownloadStatus({ error: 'timeout' });
+        await fetchHfLocal();
+      }
+    } catch (e: any) { /* ignore */ }
+    finally { setHfDownloading(prev => { const n = { ...prev }; delete n[`${repoId}:${filename}`]; return n; }); }
+  };
+
+  const fetchHfLocal = async () => {
+    try {
+      const data = await daemonPost('llm/hf/local', {});
+      if (data?.ok) setHfLocalModels(data.result.models || []);
+    } catch (e: any) { /* ignore */ }
+  };
+
+  const hfDoAssociate = async (repoId: string, filename: string, engine: string) => {
+    setLocalBusy(`hf:${repoId}`);
+    try {
+      const data = await daemonPost('llm/hf/associate', { repo_id: repoId, filename, engine });
+      if (data?.status !== 'ok') setLocalMsg(`⚠️ ${data?.error || 'échec association'}`);
+      else setLocalMsg(`✅ ${filename} → ${engine}`);
+      await fetchHfLocal();
+      await fetchGroupedEngines();
     } catch (e: any) { setLocalMsg(`⚠️ ${e}`); }
     finally { setLocalBusy(''); }
   };
@@ -765,10 +871,21 @@ export function useApp() {
   useEffect(() => {
     fetchAppVersion();
     checkDependencies();
+    fetchAgents();
+    fetchProviders();
+    fetchLocalEngines();
+    fetchGroupedEngines();
+    fetchHardwareModes();
+    fetchHfLocal();
     try {
       invoke<boolean>('autotest_enabled_cmd').then(setAutotestEnabled).catch(() => setAutotestEnabled(false));
     } catch { setAutotestEnabled(false); }
-    return () => { if (autoInstallTimer) clearTimeout(autoInstallTimer); };
+    // Chargement initial différé : les watch threads Rust peuplent le cache en ~3s
+    const initialLoad = setTimeout(async () => {
+      await refreshInstalled();
+      await refreshSysState();
+    }, 4000);
+    return () => { if (autoInstallTimer) clearTimeout(autoInstallTimer); clearTimeout(initialLoad); };
   }, []);
 
   // Dès qu'un outil apparaît dans installedTools, on retire son « added »
@@ -816,8 +933,8 @@ export function useApp() {
         await fetchKeys();
       }
       if (d.has('catalogue')) {
-        const cat = await invoke<any>('get_catalogue_tools');
-        setCatalogueTools(cat.tools || []);
+        const data = await daemonPost('catalogue/tools/list', {});
+        setCatalogueTools(data?.result?.tools || []);
         await refreshInstalled();
       }
       if (d.has('runtime')) {
@@ -852,16 +969,19 @@ export function useApp() {
     installQueueRef.current = [];
   }, [showDashboard]);
 
-  // Polling temps réel des ressources GLOBALES (CPU/RAM/Disque machine) :
-  // get_system_state lit Checker.get_hardware_info() qui track le CPU global.
+  // Polling temps réel depuis le cache Rust (watch_sys_state_rust tourne toutes les 2s)
   useEffect(() => {
     if (!showDashboard) return;
     const poll = async () => {
       try {
-        setSystemState(await invoke<any>('get_system_state'));
-      } catch { /* daemon indisponible */ }
+        const cached = await invoke<string>('watch_get', { name: 'sys-state' });
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          setSystemState(parsed?.result ?? parsed);
+        }
+      } catch { /* cache pas encore prêt */ }
     };
-    const h = setInterval(poll, 1500);
+    const h = setInterval(poll, 2000);
     poll();
     return () => clearInterval(h);
   }, [showDashboard]);
@@ -885,8 +1005,8 @@ export function useApp() {
           prevStatusRef.current[j.id] = j.status;
         }
         if (changed) {
-          const cat = await invoke<any>('get_catalogue_tools');
-          setCatalogueTools(cat.tools || []);
+          const data = await daemonPost('catalogue/tools/list', {});
+          setCatalogueTools(data?.result?.tools || []);
         }
       } catch (e) {
         // worker indisponible : on ignore
@@ -1068,17 +1188,19 @@ export function useApp() {
         return;
       }
     } catch { /* fallthrough */ }
-    const inst = await invoke<any>('get_installed_tools');
-    setInstalledTools(inst.tools || []);
-    installedRef.current = inst.tools || [];
+    // Pas de fallback — le watch thread Rust peuple le cache en ~3s
   };
 
   const refreshSysState = async () => {
     try {
       const cached = await invoke<string>('watch_get', { name: 'sys-state' });
-      if (cached) { setSystemState(JSON.parse(cached)); return; }
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        setSystemState(parsed?.result ?? parsed);
+        return;
+      }
     } catch { /* fallthrough */ }
-    setSystemState(await invoke<any>('get_system_state'));
+    // Pas de fallback — le watch thread Rust peuple le cache en ~3s
   };
 
   const loadLogitheque = async () => {
@@ -1086,16 +1208,14 @@ export function useApp() {
     setLogithequeError(null);
     try {
       addLog('[LOGITH] start');
-      await invoke('init_databases'); addLog('[LOGITH] init_databases ok');
-      await invoke('seed_catalogue'); addLog('[LOGITH] seed_catalogue ok');
-      await invoke('save_system_state'); addLog('[LOGITH] save_system_state ok');
       await refreshSysState(); addLog('[LOGITH] refreshSysState ok');
-      const cat = await invoke<any>('get_catalogue_tools'); addLog('[LOGITH] get_catalogue_tools ok');
-      setCatalogueTools(cat.tools || []);
+      const data = await daemonPost('catalogue/tools/list', {}); addLog('[LOGITH] catalogue/tools/list ok');
+      setCatalogueTools(data?.result?.tools || []);
       await refreshInstalled(); addLog('[LOGITH] refreshInstalled ok');
+      // Seed catalogue via daemon (non-bloquant si DB locked)
+      daemonPost('catalogue/seed', {}).catch(() => {});
       addLog('Logithèque chargée (catalogue local)');
-      // Auto-install tous les outils non installés (une seule fois au premier
-      // chargement) — uniquement si MODELWEAVER_ENABLE_AUTOTEST est actif.
+      // Auto-install tous les outils non installés (opt-in autotest)
       if (autotestEnabled && !autoInstalledRef.current) {
         autoInstalledRef.current = true;
         addLog('Déclenchement auto-install de tous les outils...');
@@ -1103,16 +1223,6 @@ export function useApp() {
           .then((r: any) => addLog(`Auto-install résultat: ${JSON.stringify(r)}`))
           .catch((e: any) => addLog(`Auto-install erreur: ${e}`));
       }
-      // Sync distante ASYNCHRONE : ne bloque pas l'UI
-      invoke<any>('sync_catalogue', { url: CATALOGUE_URL })
-        .then(async (r: any) => {
-          addLog(`Sync catalogue distant OK: ${JSON.stringify(r.results)}`);
-          const cat2 = await invoke<any>('get_catalogue_tools');
-          setCatalogueTools(cat2.tools || []);
-        })
-        .catch((e: any) => {
-          addLog(`Sync catalogue distant impossible (hors-ligne?): ${e}`);
-        });
     } catch (err: any) {
       addLog(`[LOGITH] ERROR: ${err}`);
       setLogithequeError(`Logithèque: ${err}`);
@@ -1235,6 +1345,16 @@ export function useApp() {
     localLoading, setLocalLoading,
     localBusy, setLocalBusy,
     localMsg, setLocalMsg,
+    localGrouped, setLocalGrouped,
+    localHardware, setLocalHardware,
+    localHwMode, setLocalHwMode,
+    hfQuery, setHfQuery,
+    hfResults, setHfResults,
+    hfLoading, setHfLoading,
+    hfDownloading, setHfDownloading,
+    hfDownloadStatus, setHfDownloadStatus,
+    hfLocalModels, setHfLocalModels,
+    hfAssociateEngine, setHfAssociateEngine,
     showAgents, setShowAgents,
     agentList, setAgentList,
     agentTeams, setAgentTeams,
@@ -1270,6 +1390,15 @@ export function useApp() {
     fetchModels,
     fetchLocalEngines,
     handleLocalToggle,
+    fetchGroupedEngines,
+    fetchHardwareModes,
+    handleStartModel,
+    handleStopModel,
+    handleCheckResources,
+    hfDoSearch,
+    hfDoDownload,
+    fetchHfLocal,
+    hfDoAssociate,
     fetchAgents,
     fetchTeams,
     fetchCapabilities,

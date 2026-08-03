@@ -117,6 +117,23 @@ def _job_processor_loop(interval: float = 5.0):
 _collector_proc = None
 
 
+def _rollback_shared_dbs():
+    """Rollback best-effort des connexions partagées (mw/cat/rt).
+
+    Un handler en échec au milieu d'écritures laisse une transaction
+    implicite OUVERTE sur le singleton (sqlite3 isolation_level="") :
+    le lock d'écriture WAL reste tenu par le daemon et tout écrivain
+    externe échoue avec « database is locked ». Appelé sur tout code
+    HTTP >= 400 avant l'envoi de la réponse.
+    """
+    for getter in ("_get_mw", "_get_cat", "_get_rt"):
+        try:
+            db = globals().get(getter)()
+            db.conn.rollback()
+        except Exception:
+            pass
+
+
 def _collector_pidfile() -> Path:
     return _mw_dir() / "run" / "usage_collector.pid"
 
@@ -210,6 +227,173 @@ def _collector_supervisor_loop(interval: float = 30.0):
     while True:
         try:
             _supervise_usage_collector(log)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+_model_sync_proc = None
+
+
+def _model_sync_pidfile() -> Path:
+    return _mw_dir() / "run" / "model_sync.pid"
+
+
+def _kill_old_model_sync():
+    """Tue le synchroniseur de modèles précédent (même fichier PID) s'il est
+    encore vivant. Évite l'accumulation de processes orphelins."""
+    pidfile = _model_sync_pidfile()
+    if not pidfile.exists():
+        return
+    try:
+        old_pid = int(pidfile.read_text().strip())
+        import subprocess
+        try:
+            import os, signal
+            with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+            if "model_sync" not in cmdline:
+                return  # PID recyclé, ne pas tuer
+        except OSError:
+            return  # déjà mort
+        os.kill(old_pid, signal.SIGTERM)
+        for _ in range(50):
+            try:
+                os.kill(old_pid, 0)
+                time.sleep(0.1)
+            except OSError:
+                return  # mort
+        os.kill(old_pid, signal.SIGKILL)
+    except (ValueError, OSError):
+        pass
+    finally:
+        try:
+            pidfile.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _start_model_sync(log=None):
+    """Lance le synchroniseur de modèles (process séparé, 1 cycle/heure).
+
+    Si le superviseur est disponible, on lui délègue (il est la seule source
+    de vérité) — sinon fallback local (daemon autonome).
+    """
+    global _model_sync_proc
+    try:
+        if _delegate_to_supervisor("model-sync"):
+            return
+        import subprocess
+        script = (Path(__file__).resolve().parent.parent.parent
+                  / "services" / "model_sync" / "model_sync.py")
+        if not script.exists():
+            return
+        _kill_old_model_sync()
+        proc = subprocess.Popen(
+            [sys.executable, str(script)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _model_sync_proc = proc
+        _model_sync_pidfile().parent.mkdir(parents=True, exist_ok=True)
+        _model_sync_pidfile().write_text(str(proc.pid))
+        if log is not None:
+            log.info("Synchroniseur de modèles démarré", pid=proc.pid)
+    except Exception as e:
+        if log is not None:
+            log.warning("Lancement synchroniseur de modèles échoué", error=str(e))
+
+
+def _supervise_model_sync(log=None):
+    """Relance le synchroniseur de modèles s'il est mort (crash hors reboot)."""
+    global _model_sync_proc
+    try:
+        if _model_sync_proc is None:
+            _start_model_sync(log)
+            return
+        if _model_sync_proc.poll() is not None:
+            if log is not None:
+                log.warning("Synchroniseur de modèles mort, relance",
+                            code=_model_sync_proc.returncode)
+            _model_sync_proc = None
+            _start_model_sync(log)
+    except Exception:
+        pass
+
+
+def _delegate_to_supervisor(service: str) -> bool:
+    """Si le superviseur tourne, lui délègue le lancement de `service`.
+
+    Retourne True si délégué (le superviseur gère), False si on doit lancer
+    nous-même (superviseur absent → daemon autonome).
+    """
+    try:
+        from services.supervisor.client import get_supervisor_client
+        client = get_supervisor_client()
+        if not client.ping():
+            return False
+        resp = client.start(service)
+        return resp.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def _start_supervisor():
+    """Lance le superviseur de services en process séparé (si absent)."""
+    try:
+        from services.supervisor.client import get_supervisor_client
+        if get_supervisor_client().ping():
+            return True
+        import subprocess
+        script = (Path(__file__).resolve().parent.parent.parent
+                  / "services" / "supervisor" / "main.py")
+        if not script.exists():
+            return False
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent.parent)
+        subprocess.Popen([sys.executable, str(script)],
+                         start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env=env)
+        return True
+    except Exception:
+        return False
+
+
+def _supervise_supervisor_loop(interval: float = 10.0):
+    """Surveille le superviseur de services ; le relance s'il meurt.
+
+    Supervision mutuelle : le superviseur lance/gère le daemon, et le daemon
+    relance le superviseur s'il disparaît (crash hors reboot).
+    """
+    import time
+    try:
+        from services.logger import MWLogger
+        log = MWLogger("daemon")
+    except Exception:
+        log = None
+    while True:
+        try:
+            from services.supervisor.client import get_supervisor_client
+            if not get_supervisor_client().ping():
+                log.warning("Superviseur absent, relance") if log else None
+                _start_supervisor()
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def _model_sync_supervisor_loop(interval: float = 120.0):
+    """Boucle de supervision du synchroniseur de modèles (thread daemon)."""
+    import time
+    try:
+        from services.logger import MWLogger
+        log = MWLogger("daemon")
+    except Exception:
+        log = None
+    while True:
+        try:
+            _supervise_model_sync(log)
         except Exception:
             pass
         time.sleep(interval)
@@ -357,12 +541,38 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         pass  # silence le logging par défaut sur stderr
 
     def _send(self, code, payload):
+        # Ferme toute transaction implicite laissée ouverte par un handler en
+        # échec (sinon le lock d'écriture SQLite reste tenu par le daemon et
+        # bloque tous les écrivains externes — "database is locked").
+        if code >= 400:
+            _rollback_shared_dbs()
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # CORS : la webview Tauri (http://localhost:5173 en dev) fait des fetch
+        # directs vers le daemon (bridge.ts daemonPost).
+        origin = self.headers.get("Origin")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        # Preflight CORS (les fetch avec Authorization déclenchent un preflight).
+        origin = self.headers.get("Origin")
+        self.send_response(204)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _authorized(self):
         auth = self.headers.get("Authorization", "")
@@ -503,7 +713,7 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "unknown_route", "route": route})
 
 
-def serve(port: int = 8770) -> None:
+def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     """Point d'entrée du service `api` (supervisé). Un seul daemon à la fois."""
     from services._common import acquire_instance_lock
     if not acquire_instance_lock("api"):
@@ -514,16 +724,23 @@ def serve(port: int = 8770) -> None:
     log = MWLogger("daemon")
 
     mw = _mw_dir()
-    token = secrets.token_hex(32)
     token_file = mw / "api.token"
-    token_file.write_text(token)
-    os.chmod(token_file, 0o600)
+    # Réutiliser le token existant : le lock (kill-and-replace) relance le daemon
+    # fréquemment ; régénérer le token à chaque redémarrage invaliderait les
+    # clients (Rust watch thread, frontend) qui l'ont déjà lu → 401 en boucle.
+    token = token_file.read_text().strip() if token_file.exists() else None
+    if not token or len(token) != 64:
+        token = secrets.token_hex(32)
+        token_file.write_text(token)
+        os.chmod(token_file, 0o600)
+    else:
+        os.chmod(token_file, 0o600)
 
     # bind avec retry (port occupé au boot)
     server = None
     for attempt in range(10):
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), MWAPIHandler)
+            server = ThreadingHTTPServer((bind, port), MWAPIHandler)
             break
         except OSError as e:
             log.warning("Bind échoué", port=port, attempt=attempt+1, error=str(e))
@@ -587,6 +804,24 @@ def serve(port: int = 8770) -> None:
     _supervisor = threading.Thread(
         target=_collector_supervisor_loop, args=(30.0,), daemon=True)
     _supervisor.start()
+
+    # Démarre le synchroniseur de modèles (process séparé, 1 cycle/heure).
+    # Interroge les APIs des clés, met à jour key_endpoint_models et gère
+    # le backoff/defunct via model_probe_state. Best-effort au boot.
+    _start_model_sync(log)
+
+    # Supervise le synchroniseur de modèles : relance s'il meurt.
+    _model_sync_supervisor = threading.Thread(
+        target=_model_sync_supervisor_loop, args=(120.0,), daemon=True)
+    _model_sync_supervisor.start()
+
+    # Surveille le superviseur de services : s'il meurt, le daemon le relance
+    # (supervision mutuelle : le superviseur gère le daemon, le daemon gère le
+    # superviseur). Le superviseur est la source de vérité pour lancer/arrêter
+    # les services ; le daemon le relance s'il disparaît.
+    _sup_supervisor = threading.Thread(
+        target=_supervise_supervisor_loop, args=(10.0,), daemon=True)
+    _sup_supervisor.start()
 
     # Service supervisor : lit service_commands, monitore et relance les services.
     from services.service_manager import ServiceManager
@@ -704,16 +939,32 @@ def _ensure_teams(log):
 
 
 def main():
+    # Charger .env (racine du projet) pour exposer les clés API aux agents
+    # (le process daemon en setsid n'hérite pas des clés du shell parent).
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+    # Alias de clés : le .env utilise GOOGLE_GEMINI_API_KEY, mais litellm
+    # (et les bridges) lisent GOOGLE_API_KEY / GEMINI_API_KEY.
+    for src, dst in (("GOOGLE_GEMINI_API_KEY", "GOOGLE_API_KEY"),
+                     ("GOOGLE_GEMINI_API_KEY", "GEMINI_API_KEY")):
+        if not os.environ.get(dst) and os.environ.get(src):
+            os.environ[dst] = os.environ[src]
+
     parser = argparse.ArgumentParser()
     parser.add_argument("cmd", nargs="?", default="serve",
                         help="commande (serve par défaut)")
     parser.add_argument("--port", type=int, default=8770)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="adresse de bind (127.0.0.1 par défaut ; 0.0.0.0 pour le mode Docker)")
     args = parser.parse_args()
     # `serve` est la commande par défaut ; tout autre argument positionnel
     # inconnu est ignoré (compatibilité avec les superviseurs qui le passent).
     if args.cmd not in ("serve", None):
         pass
-    serve(args.port)
+    serve(args.port, bind=args.bind)
 
 
 if __name__ == "__main__":

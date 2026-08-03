@@ -10,6 +10,10 @@ import { DebugPanel } from './DebugPanel.tsx';
 import AgentLauncherPanel from './AgentLauncherPanel.tsx';
 import { ServicesMonitorPanel } from './ServicesMonitorPanel.tsx';
 import { AgentMonitoringPanel } from './AgentMonitoringPanel.tsx';
+import { LlmMonitorPanel } from './LlmMonitorPanel.tsx';
+import { ProcessesPanel } from './Monitoring/processus.panel.tsx';
+import { ProjectsPanel } from './Monitoring/projets.panel.tsx';
+import { TeamCompositionPanel } from './TeamCompositionPanel.tsx';
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -103,16 +107,60 @@ export function SystemDashboardPanel({ app }: { app: AppApi }) {
           </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <SectionCard title=" Moniteur de services">
-            <ServicesMonitorPanel app={app} />
-          </SectionCard>
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" LLM distant (coûts & tokens)">
+              <LlmMonitorPanel />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Équipes">
+              <TeamCompositionPanel app={app} />
+            </SectionCard>
+          </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <SectionCard title=" Métriques agents & services">
-            <AgentMonitoringPanel />
-          </SectionCard>
+        <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#64748b', marginTop: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Monitoring
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Services">
+              <ServicesMonitorPanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Processus (top CPU)">
+              <ProcessesPanel />
+            </SectionCard>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Agents">
+              <AgentsPanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Métriques agents & services">
+              <AgentMonitoringPanel />
+            </SectionCard>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.3rem', flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" LLM locaux">
+              <LocalModelsPanel app={app} />
+            </SectionCard>
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionCard title=" Projets">
+              <ProjectsPanel />
+            </SectionCard>
+          </div>
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>

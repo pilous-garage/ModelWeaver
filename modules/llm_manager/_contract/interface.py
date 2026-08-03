@@ -4,21 +4,22 @@ MODULE = "modules.llm_manager.llm_manager"
 EXPORTS = [
     'LLMManager',
     # Bridges
-    'BaseBridge', 'LiteLLMBridge',
+    'BaseBridge', 'LiteLLMBridgeDefunct',
     'ModelCapabilities', 'ChatResponse', 'BridgeError', 'ErrorCategory',
 ]
 
-# Bridges disponibles (interface déclarative)
+# Bridges disponibles (interface déclarative). Les appels passent par la
+# façade LLMManager (config `llm.bridge`, défaut "direct") qui instancie
+# l'un de ces bridges.
 BRIDGES = {
+    "direct": {
+        "module": "modules.llm_manager.direct_bridge",
+        "class": "DirectBridge",
+        "description": "DirectBridge — appels directs à l'API OpenAI-compatible (défaut)",
+    },
     "litellm": {
         "module": "modules.llm_manager.litellm_bridge",
-        "class": "LiteLLMBridge",
-        "description": "LiteLLM — Tous providers cloud + OpenAI-compatible locaux",
+        "class": "LiteLLMBridgeDefunct",
+        "description": "LiteLLM — tous providers cloud (legacy, non défaut)",
     },
-    # Exemple pour un bridge custom plus tard :
-    # "openai_direct": {
-    #     "module": "modules.llm_manager.bridges.openai_direct",
-    #     "class": "OpenAIDirectBridge",
-    #     "description": "OpenAI SDK direct (sans LiteLLM)",
-    # },
 }

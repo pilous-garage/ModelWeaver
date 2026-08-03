@@ -11,8 +11,8 @@
   "app": {
     "windows": [
       {
-        "label": "main",
-        "title": "ModelWeaver",
+        "label": "installator",
+        "title": "ModelWeaver \u2014 Installateur",
         "width": 2560,
         "height": 1440,
         "minWidth": 800,
@@ -20,15 +20,15 @@
       },
       {
         "label": "dashboard",
-        "title": "ModelWeaver — Dashboard",
+        "title": "ModelWeaver \u2014 Dashboard",
         "width": 1400,
         "height": 900,
         "minWidth": 800,
         "minHeight": 600
       },
       {
-        "label": "sandbox",
-        "title": "ModelWeaver — Agent Sandbox",
+        "label": "agentIde",
+        "title": "ModelWeaver \u2014 Agent IDE",
         "width": 1400,
         "height": 900,
         "minWidth": 800,
@@ -41,7 +41,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb"],
+    "targets": [
+      "deb"
+    ],
     "resources": {},
     "icon": [
       "icons/32x32.png",

@@ -6,9 +6,9 @@ import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
 
 const WINDOW_TO_LAYOUT: Record<string, string> = {
-  'main': 'default',
+  'installator': 'default',
   'dashboard': 'dashboard',
-  'sandbox': 'agentIde',
+  'agentIde': 'agentIde',
 };
 
 function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
@@ -100,17 +100,15 @@ function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
 
 export default function App() {
   const app = useApp();
-  const [windowLabel, setWindowLabel] = useState<string>('main');
+  const [windowLabel, setWindowLabel] = useState<string>('installator');
 
   useEffect(() => {
     console.log('[App] startup, hasTauri:', !!(window as any).__TAURI_INTERNALS__);
     console.log('[App] __MW_WINDOW_LABEL:', (window as any).__MW_WINDOW_LABEL);
 
-    // Fallback: window.__MW_WINDOW_LABEL injecté par Rust au setup
     const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
     if (injected) { console.log('[App] label from Rust inject:', injected); setWindowLabel(injected); return; }
 
-    // Fallback URL param
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const wl = params.get('window');

@@ -356,6 +356,117 @@ def cmd_catalogue(args):
     _print(f"\n[bold]Total: {caps} capacités, {kems} modèles endpoints[/bold]" if RICH else f"Total: {caps} capacités, {kems} modèles")
 
 
+# ── Docker (ressources swarm) ──
+
+def cmd_docker(args):
+    sub = args.docker_action or "status"
+    if sub == "caches":
+        _docker_caches(args)
+    elif sub == "cache-create":
+        _docker_cache_create(args)
+    elif sub == "fork":
+        _docker_fork(args)
+    elif sub == "associate":
+        _docker_associate(args)
+    elif sub == "tests":
+        _docker_tests(args)
+    elif sub == "snapshot":
+        _docker_snapshot(args)
+    elif sub == "release":
+        _docker_release(args)
+    else:  # status
+        _docker_status(args)
+
+
+def _docker_caches(args):
+    data = _post("docker/caches/list")
+    caches = data.get("caches") or []
+    if not caches:
+        _print("[yellow]Aucun cache Docker[/yellow]" if RICH else "Aucun cache Docker")
+        return
+    rows = [(c.get("name", "?"), c.get("image", "?"),
+             "oui" if c.get("local") else "non")
+            for c in caches]
+    _print_table("Caches Docker (mw-cache/*)", ("Nom", "Image", "Locale",), rows)
+
+
+def _docker_cache_create(args):
+    tools = args.tools.split(",") if args.tools else []
+    r = _post("docker/cache/create", {
+        "name": args.name, "base": args.base, "tools": tools,
+    })
+    if r.get("ok"):
+        _print(f"[green]Cache créé: {r.get('image')}[/green]" if RICH else f"Cache créé: {r.get('image')}")
+    else:
+        _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
+
+
+def _docker_fork(args):
+    r = _post("docker/fork", {
+        "cache": args.cache, "agent_id": args.agent, "project_id": args.project,
+    })
+    if r.get("ok"):
+        _print(f"[green]Conteneur: {r.get('container')}[/green]" if RICH else f"Conteneur: {r.get('container')}")
+    else:
+        _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
+
+
+def _docker_associate(args):
+    r = _post("docker/associate", {
+        "agent_id": args.agent, "container": args.container, "project_id": args.project,
+    })
+    if r.get("ok"):
+        _print(f"[green]Associé: {args.agent} ↔ {args.container}[/green]" if RICH else f"Associé: {args.agent} ↔ {args.container}")
+    else:
+        _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
+
+
+def _docker_tests(args):
+    r = _post("docker/run-tests", {
+        "container": args.container, "command": args.command,
+        "timeout": args.timeout,
+    })
+    code = r.get("exit_code")
+    ok = r.get("ok", False)
+    status = "[green]PASSED[/green]" if ok else "[red]FAILED[/red]" if RICH else ("PASSED" if ok else "FAILED")
+    _print(f"{status} (exit={code})")
+    out = (r.get("stdout") or "").strip()
+    if out:
+        _print(out[-1500:])
+    err = (r.get("stderr") or "").strip()
+    if err:
+        _print(f"[yellow]{err[-500:]}[/yellow]" if RICH else err[-500:])
+
+
+def _docker_snapshot(args):
+    r = _post("docker/snapshot", {"container": args.container, "image": args.image or ""})
+    if r.get("ok"):
+        _print(f"[green]Snapshot: {r.get('image')}[/green]" if RICH else f"Snapshot: {r.get('image')}")
+    else:
+        _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
+
+
+def _docker_release(args):
+    r = _post("docker/release", {"container": args.container})
+    if r.get("ok"):
+        _print(f"[green]Ressource libérée: {args.container}[/green]" if RICH else f"Ressource libérée: {args.container}")
+    else:
+        _print(f"[red]Erreur: {r.get('error', '?')}[/red]" if RICH else f"Erreur: {r.get('error', '?')}")
+
+
+def _docker_status(args):
+    data = _post("docker/status")
+    containers = data.get("containers") or {}
+    if not containers:
+        _print("[yellow]Aucun conteneur géré[/yellow]" if RICH else "Aucun conteneur géré")
+        return
+    rows = []
+    for cname, meta in containers.items():
+        rows.append((cname, meta.get("agent_id", ""), meta.get("cache", ""),
+                     meta.get("project_id", ""), meta.get("status", "?")))
+    _print_table("Conteneurs swarm", ("Nom", "Testeur", "Cache", "Projet", "Status",), rows)
+
+
 # ── CLI ──
 
 def main():
@@ -401,6 +512,22 @@ def main():
     p_catalogue = sub.add_parser("catalogue", help="Synchroniser le catalogue des modèles LLM")
     p_catalogue.add_argument("--providers", help="Providers à synchroniser (séparés par des virgules, défaut: tous)")
     p_catalogue.set_defaults(func=cmd_catalogue)
+
+    p_docker = sub.add_parser("docker", help="Ressources Docker du swarm (caches, fork, tests)")
+    p_docker.add_argument("docker_action", nargs="?",
+                          choices=("status", "caches", "cache-create", "fork", "associate", "tests", "snapshot", "release"),
+                          default="status")
+    p_docker.add_argument("--name", help="Nom du cache (cache-create)")
+    p_docker.add_argument("--base", default="python:3.12-slim", help="Image de base (cache-create)")
+    p_docker.add_argument("--tools", help="Outils à installer, séparés par des virgules (cache-create)")
+    p_docker.add_argument("--cache", help="Nom du cache à forker")
+    p_docker.add_argument("--agent", help="ID de l'agent testeur")
+    p_docker.add_argument("--project", default="", help="project_id (fork/associate)")
+    p_docker.add_argument("--container", help="Nom du conteneur (tests/associate/snapshot/release)")
+    p_docker.add_argument("--command", default="python3 -m pytest -q", help="Commande de test (tests)")
+    p_docker.add_argument("--timeout", type=int, default=600, help="Timeout (tests)")
+    p_docker.add_argument("--image", help="Tag image pour snapshot")
+    p_docker.set_defaults(func=cmd_docker)
 
     args = p.parse_args()
     if not args.cmd:

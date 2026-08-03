@@ -1,0 +1,29 @@
+name: agent-manager
+version: 0.1.0
+description: Agent Manager — tick de supervision (zombies, wakeup des agents
+  par tâche/issue workspace, limites de threads). Appelé par le superviseur.
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - -c
+    - "import sys; sys.path.insert(0, '.'); from services.agent_manager.service import run_service; run_service(interval=5.0)"
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: pid
+  interval: 15
+  timeout: 5
+
+entrypoints:
+  tick:
+    type: inline
+    handler: |
+      def handler(params):
+          return {"service": "agent-manager", "mode": "loop"}

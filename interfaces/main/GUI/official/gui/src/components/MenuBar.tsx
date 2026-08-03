@@ -2,21 +2,21 @@ import React, { useState, useRef, useEffect } from 'react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { AppApi } from '../useApp.ts';
 
-export function openSandboxWindow() {
-  const existing = WebviewWindow.getByLabel('sandbox');
+export function openAgentIdeWindow() {
+  const existing = WebviewWindow.getByLabel('agentIde');
   if (existing) {
     existing.show().catch(() => {});
     existing.setFocus().catch(() => {});
     return;
   }
-  const w = new WebviewWindow('sandbox', {
-    title: 'ModelWeaver — Agent Sandbox',
+  const w = new WebviewWindow('agentIde', {
+    title: 'ModelWeaver — Agent IDE',
     width: 1400,
     height: 900,
     url: '/',
   });
   w.once('tauri://created', () => {});
-  w.once('tauri://error', (e) => console.error('sandbox window error', e));
+  w.once('tauri://error', (e) => console.error('agentIde window error', e));
 }
 
 interface Menu {
@@ -48,6 +48,7 @@ const PANEL_LABELS: Record<string, string> = {
   'local-models': 'LLM locaux',
   'keys': 'Clés API',
   'debug': 'Debug',
+  'docker-ressources': 'Ressources Docker',
 };
 
 export function MenuBar({ app }: { app: AppApi }) {
@@ -92,7 +93,7 @@ export function MenuBar({ app }: { app: AppApi }) {
     {
       label: 'Outils',
       children: [
-        { type: 'item', label: '🛠️ Agent Sandbox (IDE)', action: () => { openSandboxWindow(); setOpenMenu(null); } },
+        { type: 'item', label: '🛠️ Agent IDE', action: () => { openAgentIdeWindow(); setOpenMenu(null); } },
       ],
     },
   ];

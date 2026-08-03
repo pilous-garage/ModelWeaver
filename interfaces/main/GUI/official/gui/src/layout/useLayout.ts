@@ -43,6 +43,46 @@ export interface ThemeConfig {
   fonts?: Record<string, string>;
 }
 
+const FALLBACK_LAYOUTS: Record<string, LayoutConfig> = {
+  'default': {
+    id: 'default', label: 'default', theme: 'dark', menu: [],
+    panelTree: {
+      direction: 'horizontal',
+      sizes: [33, 34, 33],
+      children: [
+        { type: 'panel', id: 'systeme-dashboard', visible: true, closable: false },
+        { type: 'panel', id: 'communication-chat', visible: true, closable: false },
+        { type: 'panel', id: 'agents-liste', visible: true, closable: false },
+      ],
+    },
+  },
+  'dashboard': {
+    id: 'dashboard', label: 'dashboard', theme: 'dark', menu: [],
+    panelTree: {
+      direction: 'horizontal',
+      sizes: [34, 33, 33],
+      children: [
+        { type: 'panel', id: 'systeme-etat', visible: true, closable: false },
+        { type: 'panel', id: 'systeme-ressources', visible: true, closable: false },
+        { type: 'panel', id: 'docker-ressources', visible: true, closable: false },
+      ],
+    },
+  },
+  'agentIde': {
+    id: 'agentIde', label: 'agentIde', theme: 'dark', menu: [],
+    panelTree: {
+      type: 'panel', id: 'sandbox-agent-ide', visible: true, closable: false,
+    },
+  },
+};
+
+export function getFallbackLayout(layoutId: string): LayoutConfig {
+  return FALLBACK_LAYOUTS[layoutId] || {
+    id: layoutId, label: layoutId, theme: 'dark', menu: [],
+    panelTree: { type: 'panel', id: 'installator-dashboard', visible: true, closable: false },
+  };
+}
+
 const DEFAULT_THEME: ThemeConfig = {
   id: 'dark',
   label: 'Sombre',
@@ -85,13 +125,8 @@ export function useLayout(layoutId: string) {
           data = JSON.parse(resp2.yaml || resp2);
         } catch (e2: any) {
           console.warn('[layout] daemon still unreachable after ensure:', e2.message);
-          // Daemon vraiment indisponible → layout minimal de secours
-          data = {
-            id: id, label: id, theme: 'dark', menu: [],
-            panelTree: {
-              type: 'panel', id: 'installator-dashboard', visible: true, closable: false,
-            },
-          };
+          // Daemon vraiment indisponible → layout de secours
+          data = getFallbackLayout(id);
         }
       }
       setLayout(data);

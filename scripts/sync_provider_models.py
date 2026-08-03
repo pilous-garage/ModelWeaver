@@ -207,8 +207,8 @@ def sync_provider(cat, km, provider, dry_run=False, ping=False):
 
     bridge = None
     if ping and not dry_run:
-        from modules.llm_manager.litellm_bridge import LiteLLMBridge
-        bridge = LiteLLMBridge(cat=cat, km=km)
+        from modules.llm_manager.llm_manager import LLMManager
+        bridge = LLMManager(cat, km=km).get_bridge()
 
     total = 0
     for ep in endpoints:

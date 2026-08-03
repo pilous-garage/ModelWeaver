@@ -63,6 +63,11 @@ def scan() -> None:
     _SCAN_DONE = True
 
 
+def register_alias(ref: str, target: str) -> None:
+    """Enregistre un alias manuel ref -> target (résolu via get_func)."""
+    _ALIASES[ref] = target
+
+
 def get_func(ref: str) -> Optional[callable]:
     scan()
     if ref in _REGISTRY:

@@ -6,7 +6,7 @@ function BundlesPanel() {
   const [bundles, setBundles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    daemonPost('catalogue/bundles/list', {}).then(r => { setBundles(r.bundles || []); setLoading(false); }).catch(() => setLoading(false));
+    daemonPost('catalogue/bundles/list', {}).then(r => { setBundles(r?.result?.bundles || []); setLoading(false); }).catch(() => setLoading(false));
   }, []);
   if (loading) return React.createElement('div', { style: { color: '#94a3b8', padding: '1rem' } }, 'Chargement…');
   return React.createElement('div', { style: { padding: '0.5rem', fontSize: '0.78rem' } },

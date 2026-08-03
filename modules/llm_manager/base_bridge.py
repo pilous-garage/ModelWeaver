@@ -61,6 +61,13 @@ class BridgeError(Exception):
     model_ref: str
     retry_after_seconds: Optional[float] = None
     detected_context_limit: Optional[int] = None
+    # Type de limite rencontrée (pour que l'agent/fallback décide) :
+    #   "rpm" (req/min), "tokens" (tokens/min), "daily" (quota jour),
+    #   "quota" (solde épuisé), "other"
+    limit_type: Optional[str] = None
+    # Limite + fenêtre connues (depuis tarif.json ou l'API)
+    limit: Optional[float] = None
+    window: Optional[float] = None
     raw: Any = None
 
     def __str__(self):

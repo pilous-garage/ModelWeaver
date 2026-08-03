@@ -5,8 +5,8 @@ CONSUMES = {
     'modules.llm_manager.base_bridge': [
         'BridgeError',
     ],
-    'modules.llm_manager.litellm_bridge': [
-        'LiteLLMBridge',
+    'modules.llm_manager.llm_manager': [
+        'LLMManager',
     ],
     'modules.sql.db': [
         'AgentsDB',

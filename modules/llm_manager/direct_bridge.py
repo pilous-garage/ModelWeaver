@@ -159,6 +159,7 @@ _DEFAULT_ENDPOINTS = {
     "together": "https://api.together.xyz/v1",
     "deepinfra": "https://api.deepinfra.com/v1/openai",
     "ollama": "http://localhost:11434/v1",
+    "ollama-cloud": "https://ollama.com/v1",
     "github-models": "https://models.inference.ai.azure.com",
     "openai": "https://api.openai.com/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta",
@@ -179,6 +180,7 @@ _ENV_KEY_MAP = {
     "anthropic": ["ANTHROPIC_API_KEY"],
     "github-models": ["GITHUB_TOKEN"],
     "huggingface": ["HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "ollama-cloud": ["OLLAMA_API_KEY"],
 }
 
 
@@ -1070,6 +1072,14 @@ class DirectBridge(BaseBridge):
             candidates = [f"{stripped}/models"]
         else:
             candidates = [f"{stripped}/models", f"{stripped}/v1/models"]
+        # Ollama-native listing endpoint (local & cloud)
+        if "ollama" in provider_ref:
+            ollama_base = stripped
+            if ollama_base.endswith("/v1"):
+                ollama_base = ollama_base[:-3]
+            elif ollama_base.endswith("/v1beta"):
+                ollama_base = ollama_base[:-7]
+            candidates.append(f"{ollama_base}/api/tags")
 
         data = None
         last_err = None

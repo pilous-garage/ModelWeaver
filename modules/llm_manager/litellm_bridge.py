@@ -1,4 +1,4 @@
-"""LiteLLMBridge — Bridge universel via LiteLLM (fallback par défaut).
+"""LiteLLMBridgeDefunct — Bridge universel via LiteLLM (legacy, non défaut).
 
 Respecte le contrat déclaratif de BaseBridge (vérifié par hardcheck).
 Bridge par défaut utilisé par BridgeRegistry quand aucun bridge natif
@@ -184,9 +184,12 @@ class ContextValidator:
         return effective
 
 
-# ── LiteLLMBridge ──────────────────────────────────────────────
+# ── LiteLLMBridgeDefunct ────────────────────────────────────────
+# Ancien bridge via LiteLLM. Conservé pour compat (config llm.bridge=litellm)
+# mais plus utilisé par défaut — les appels passent par LLMManager (façade)
+# qui délègue à DirectBridge.
 
-class LiteLLMBridge(BaseBridge):
+class LiteLLMBridgeDefunct(BaseBridge):
     """Bridge via LiteLLM (cloud + local OpenAI-compatible + Ollama).
 
     Ne dépend que de `litellm`. Pas besoin d'adaptateur par provider :
@@ -399,6 +402,7 @@ class LiteLLMBridge(BaseBridge):
             self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                            tokens_in=response.usage.prompt_tokens or 0,
                            tokens_out=response.usage.completion_tokens or 0,
+                           tokens_thinking=self._extract_thinking(response),
                            latency_ms=elapsed_ms)
 
             # Extraire tool_calls de la réponse
@@ -443,6 +447,7 @@ class LiteLLMBridge(BaseBridge):
                     self._log_call(provider_ref, model_ref, "ok", agent_id=agent_id,
                                    tokens_in=response.usage.prompt_tokens or 0,
                                    tokens_out=response.usage.completion_tokens or 0,
+                                   tokens_thinking=self._extract_thinking(response),
                                    latency_ms=elapsed_ms)
                     msg2 = response.choices[0].message
                     tool_calls2 = None
@@ -659,9 +664,33 @@ class LiteLLMBridge(BaseBridge):
     # (usage_collector.py) consolide ce journal dans real_call_models /
     # endpoint_model_usage / agent_actif de façon asynchrone, et degrade
     # key_endpoint_models.available sur echec.
+    @staticmethod
+    def _extract_thinking(response) -> int:
+        """Tokens de raisonnement (tokens_thinking) depuis la réponse litellm.
+
+        Priorité : completion_tokens_details.reasoning_tokens (OpenAI),
+        puis reasoning_tokens direct sur usage (Anthropic/autres).
+        """
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return 0
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                rt = getattr(details, "reasoning_tokens", None)
+                if rt:
+                    return int(rt)
+            rt = getattr(usage, "reasoning_tokens", None)
+            if rt:
+                return int(rt)
+            return 0
+        except Exception:
+            return 0
+
     def _log_call(self, provider_ref, model_ref, status, agent_id=None,
-                  tokens_in=0, tokens_out=0, cost=0.0, error_code=None,
-                  error_detail=None, sent_at=None, latency_ms=None):
+                  tokens_in=0, tokens_out=0, tokens_thinking=0, cost=0.0,
+                  error_code=None, error_detail=None, sent_at=None,
+                  latency_ms=None):
         """Journalise un appel LLM reel sur disque (append atomique).
         Best-effort : n'interrompt jamais le flux principal."""
         try:
@@ -687,7 +716,8 @@ class LiteLLMBridge(BaseBridge):
             usage_log.log_call(
                 provider_ref, model_ref, status,
                 agent_id=agent_id, endpoint_id=endpoint_id, key_ref=key_ref,
-                tokens_in=tokens_in, tokens_out=tokens_out, cost=cost,
+                tokens_in=tokens_in, tokens_out=tokens_out,
+                tokens_thinking=tokens_thinking, cost=cost,
                 error_code=error_code, error_detail=error_detail,
                 sent_at=sent_at, received_at=now,
                 latency_ms=latency_ms,

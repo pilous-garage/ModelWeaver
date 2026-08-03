@@ -77,19 +77,19 @@ export async function invoke(cmd: string, args?: Record<string, unknown>): Promi
 }
 
 export async function getWindowLabel(): Promise<string> {
-  if (!_hasTauri) return 'main';
+  if (!_hasTauri) return 'installator';
   await loadModules();
   if (_tauriWindow) {
     const w = _tauriWindow.getCurrentWindow();
     return w.label;
   }
-  return 'main';
+  return 'installator';
 }
 
 class MockLogicalSize { constructor(public w: number, public h: number) {} }
 
 class MockWindow {
-  label = 'main';
+  label = 'installator';
   async setSize(_size?: any) {}
   async setFullscreen(_fullscreen?: boolean) {}
 }

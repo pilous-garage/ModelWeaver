@@ -1,0 +1,20 @@
+# Docker Manager — Ressources Docker pour le swarm
+
+Orchestration des conteneurs de test au niveau ressources (pas skill).
+Répond au besoin : « créer un docker depuis 0 prend du temps → caches,
+fork+install, association testeur, batteries de tests persistantes ».
+
+Responsabilités :
+- **Registre de caches** : images pré-installées (mw-cache/*) — tout sauf le
+  projet en cours. `create_cache` fork une image + installe une liste d'outils
+  via l'installeur ModelWeaver, puis commit.
+- **Fork + association** : `fork(cache, agent_id)` crée un conteneur nommé
+  persistant lié à un testeur ; `associate`/`get_for_agent` pour retrouver le
+  conteneur d'un agent.
+- **Batteries de tests persistantes** : `run_tests` exécute une commande dans
+  le conteneur SANS le supprimer — réutilisé tant que le projet installé reste
+  le même. `snapshot` commit l'état, `release` libère la ressource.
+- Registre persistant JSON dans `~/.modelweaver/docker_registry.json`.
+
+Le skill `docker/run@v1` (AgentsCatalogue) est l'interface des agents ; ce
+service fournit la gestion (routes API docker/*, registre, cycle de vie).

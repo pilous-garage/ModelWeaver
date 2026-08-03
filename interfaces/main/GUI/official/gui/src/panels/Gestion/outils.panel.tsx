@@ -6,7 +6,7 @@ function ToolsPanel() {
   const [tools, setTools] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    daemonPost('catalogue/tools/list', {}).then(r => { setTools(r.tools || []); setLoading(false); }).catch(() => setLoading(false));
+    daemonPost('catalogue/tools/list', {}).then(r => { setTools(r?.result?.tools || []); setLoading(false); }).catch(() => setLoading(false));
   }, []);
   if (loading) return React.createElement('div', { style: { color: '#94a3b8', padding: '1rem' } }, 'Chargement…');
   return React.createElement('div', { style: { padding: '0.5rem', fontSize: '0.78rem' } },

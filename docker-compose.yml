@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  modelweaver:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.v0.8
+    image: modelweaver-v0.8
+    container_name: modelweaver-v0.8
+    ports:
+      - "${MW_PORT:-8770}:8770"
+      - "${MW_OLLAMA_PORT:-11434}:11434"
+      - "${MW_LLAMACPP_PORT:-8080}:8080"
+      - "${MW_VNC_PORT:-5900}:5900"
+      - "${MW_NOVNC_PORT:-6080}:6080"
+    environment:
+      - MODE=${MODE:-gui}
+      - MW_PORT=${MW_PORT:-8770}
+      - MW_OLLAMA_PORT=${MW_OLLAMA_PORT:-11434}
+      - MW_LLAMACPP_PORT=${MW_LLAMACPP_PORT:-8080}
+    volumes:
+      - ${PWD}:/app
+      - modelweaver-data:/app/.modelweaver
+      - model-cache:/root/.cache/huggingface
+    devices:
+      - /dev/dri:/dev/dri
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  modelweaver-data:
+    driver: local
+  model-cache:
+    driver: local
