@@ -39,7 +39,7 @@ entrypoints:
       fn: workspace/task_claim_next@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        role_required: "coder_senior"
       capture:
         task: task
       on_error: sleep

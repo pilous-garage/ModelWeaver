@@ -31,6 +31,31 @@ def _rows(rows):
     return [dict(r) for r in rows]
 
 
+# Hiérarchie de capabilité : un niveau peut traiter les tâches de son niveau
+# et des niveaux inférieurs (senior > mid > junior). Pour chaque catégorie de
+# rôle (coder, tester, reviewer...), on étend le niveau demandé vers le bas.
+_LEVEL_RANK = {"junior": 0, "mid": 1, "senior": 2}
+
+
+def _compatible_roles(role_required: str) -> List[str]:
+    """Rôles compatibles pour un rôle demandé (hiérarchie de capabilité).
+
+    Ex. 'coder_senior' → [coder_senior, coder_mid, coder_junior].
+    Ex. 'tester' (sans niveau) → [tester]. Ex. '' → [] (toutes tâches).
+    """
+    if not role_required:
+        return []
+    if "_" not in role_required:
+        return [role_required]
+    base, level = role_required.rsplit("_", 1)
+    rank = _LEVEL_RANK.get(level)
+    if rank is None:
+        return [role_required]
+    levels = [lv for lv, r in sorted(_LEVEL_RANK.items(), key=lambda x: x[1])
+              if r <= rank]
+    return [f"{base}_{lv}" for lv in levels]
+
+
 # ── Repositories ──────────────────────────────────
 
 
@@ -148,14 +173,18 @@ class TaskRepository:
                    exclude_assigned: tuple = ()) -> Optional[Dict[str, Any]]:
         """Pioche la prochaine tâche dispo pour un rôle (greedy).
 
-        Retourne la tâche 'pending' la plus prioritaire correspondant au rôle,
-        la passe en 'running'. Atomique (UPDATE ... WHERE status='pending').
+        Hiérarchie de capabilité : un rôle `X_senior` peut piocher les tâches
+        X_senior, X_mid et X_junior ; X_mid pioche X_mid + X_junior ; X_junior
+        ne pioche que X_junior. Retourne la tâche 'pending' la plus prioritaire
+        compatible, la passe en 'running'. Atomique.
         """
+        roles = _compatible_roles(role_required)
         sel_args = [self.wid]
         sel = "SELECT * FROM tasks WHERE workspace_id = ? AND status = 'pending'"
-        if role_required:
-            sel += " AND role_required = ?"
-            sel_args.append(role_required)
+        if roles:
+            ph = ",".join("?" for _ in roles)
+            sel += f" AND role_required IN ({ph})"
+            sel_args.extend(roles)
         if exclude_assigned:
             ph = ",".join("?" for _ in exclude_assigned)
             sel += f" AND COALESCE(assigned_to,'') NOT IN ({ph})"

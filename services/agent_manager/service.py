@@ -123,10 +123,13 @@ MAX_TOTAL_AGENT_DISK_GB = 10  # espace disque total max utilisé par tous les ag
 
 # Mapping role_type d'agent → rôle requis par une tâche (workspace greedy).
 # Une tâche avec role_required='coder_senior' réveille les agents 'codeur'.
+# Pour l'instant TOUS les rôles sont "senior" (pas de junior) : on ajustera
+# quand on connaîtra mieux le catalogue (les juniors prendraient les modèles
+# peu coûteux comme gemma-4, qui bouclent sur les tâches complexes).
 ROLE_TO_TASK = {
     "architecte": "analyst",
     "planificateur": "analyst",
-    "codeur": "coder_junior",   # défaut : les codeurs traitent les tâches easy/medium
+    "codeur": "coder_senior",
     "test_runner": "tester",
     "relecteur": "reviewer",
     "orchestrateur": "merger",
