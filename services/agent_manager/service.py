@@ -1118,9 +1118,10 @@ class AgentManager:
             ws = cond.get("workspace_id", "")
             team = int(cond.get("team_id", -1))
             if ctype == "issue_open":
-                # issue open pour ce workspace (+ team ou projet)
-                return any(w == ws and (t == team or t == -1)
-                           for w, t in open_issues)
+                # issue open pour ce workspace (+ team ou projet). Match sur
+                # TOUS les workspaces : l'analyste attend une issue, peu importe
+                # où elle est.
+                return any(t == team or t == -1 for w, t in open_issues)
             if ctype == "task_for_role":
                 role = cond.get("role", "")
                 # Match par rôle + team sur TOUS les workspaces : l'analyste crée
@@ -1152,7 +1153,15 @@ class AgentManager:
             ws = cond.get("workspace_id", "")
             req = ("wakeup: issue pending" if cond.get("type") == "issue_open"
                    else "wakeup: task pending")
-            if cond.get("type") == "workspace_all_done":
+            if cond.get("type") == "issue_open":
+                # Passer le workspace d'une issue ouverte réelle (l'analyste y
+                # piochera l'issue).
+                if open_issues:
+                    for _w, _t in open_issues:
+                        if _t == int(cond.get("team_id", -1)) or _t == -1:
+                            ws = _w
+                            break
+            elif cond.get("type") == "workspace_all_done":
                 req = "wakeup: workspace done"
                 # Passer un workspace réel all-done (pour le push_auto).
                 if all_done:
