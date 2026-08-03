@@ -2375,7 +2375,13 @@ class AgentsDB:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_agents_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # Autocommit : les agents tournent en threads dans agent-manager et
+        # partagent cette connexion. Sans autocommit, une transaction implicite
+        # laissée par un thread bloque/imbrique les écritures des autres
+        # ("cannot start a transaction within a transaction", "database is
+        # locked"). Chaque execute est immédiat.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
+                                    isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
