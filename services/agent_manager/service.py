@@ -1208,6 +1208,15 @@ class AgentManager:
                                      daemon=True).start()
                     count += 1
                 elif rt:
+                    # Réveiller l'intégrateur (merger) quand un workspace est
+                    # all-done : il doit faire le push final sur auto_code.
+                    if rt == "merger" and all_done:
+                        threading.Thread(target=self._run_sleeping_agent,
+                                         args=(row["agent_id"], "wakeup: workspace done",
+                                               next(iter(all_done))),
+                                         daemon=True).start()
+                        count += 1
+                        continue
                     # Ne réveiller que si des tasks du RÔLE de l'agent sont dispo
                     # (sinon il re-pioche rien et spam les wait_for).
                     if not any(_r == rt for _w, _t, _r in pending_tasks):
