@@ -86,6 +86,7 @@ mistral/
 # Rangement workspace : archives / tooling (sur disque, hors git)
 oldcode/
 autoanalyse/
+analyse-auto/
 docker/
 
 # Logs et rapports
@@ -97,4 +98,10 @@ projetadmin/main-cli/target/
 projetadmin/bootstrap-cli/target/
 modules/catalogue/data/provider_models.json
 opencode/
+
+# artefacts locaux de debug
+ROOTTEST
+reboot-npu.md
+modelweaver.db
+interfaces/main/GUI/official/gui/dump-ssr.css
 opencode_ref/
