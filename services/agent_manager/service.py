@@ -1036,8 +1036,8 @@ class AgentManager:
 
         # Agents greedy en attente (waiting), FIFO
         waiting = self.db.wait_for.waiting()
-        if not waiting:
-            return 0
+        # (pas de return ici : même sans wait_for, l'amorce réveille les agents
+        # greedy au premier cycle)
 
         def _cond_matches(cond: dict) -> bool:
             ctype = cond.get("type", "")
@@ -1074,6 +1074,35 @@ class AgentManager:
                              args=(w["agent_id"], req, ws),
                              daemon=True).start()
             count += 1
+
+        # AMORCE : si aucun agent n'est encore en wait_for (premier cycle) mais
+        # qu'il y a du travail et des agents greedy non hydratés, on les réveille
+        # pour lancer le swarm. Le wait_for prend le relais ensuite (re-endormir).
+        if count == 0 and (open_issues or pending_tasks):
+            rows = self.db.conn.execute("""
+                SELECT agent_id, name, role_type FROM agents
+                WHERE config_json LIKE '%\"pick\"%'
+                  AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+                  AND agent_id NOT IN (SELECT agent_id FROM wait_for WHERE status='waiting')
+                LIMIT 20
+            """).fetchall()
+            for row in rows:
+                if active + count >= MAX_THREAD_AGENTS:
+                    break
+                rt = ROLE_TO_TASK.get(row["role_type"], "")
+                # analyste → issue ; rôles greedy → tâche du rôle
+                if open_issues and rt == "analyst":
+                    threading.Thread(target=self._run_sleeping_agent,
+                                     args=(row["agent_id"], "wakeup: issue pending",
+                                           next(iter({w for w, _ in open_issues}), "")),
+                                     daemon=True).start()
+                    count += 1
+                elif pending_tasks and rt:
+                    threading.Thread(target=self._run_sleeping_agent,
+                                     args=(row["agent_id"], "wakeup: task pending",
+                                           next(iter({w for w, _, _ in pending_tasks}), "")),
+                                     daemon=True).start()
+                    count += 1
         return count
 
     # ── Phase 3 : ressources & préemption ──
