@@ -534,6 +534,33 @@ def _fs_auth_route(agent_id: int, method: str, sub_parts: List[str], params: dic
         mgr.close()
 
 
+def _team_dynamic_route(method: str, parts: List[str], params: dict):
+    """Route dynamique `team/{team_name}/{action}` — pause/resume d'équipe.
+
+    Gère les routes :
+      - team/pause/{team_name}  → met en pause TOUS les agents de la team
+      - team/resume/{team_name} → reprend tous les agents en pause de la team
+    """
+    if len(parts) < 3 or parts[0] != "team":
+        return None
+    action = parts[1]
+    team_name = parts[2]
+
+    if action == "pause":
+        from services.team_manager import TeamManager
+        mgr = TeamManager()
+        result = mgr.pause(team_name)
+        return {"code": 200, "payload": result}
+
+    if action == "resume":
+        from services.team_manager import TeamManager
+        mgr = TeamManager()
+        result = mgr.resume(team_name)
+        return {"code": 200, "payload": result}
+
+    return None
+
+
 class MWAPIHandler(BaseHTTPRequestHandler):
     server_version = "ModelWeaverDaemon/1.0"
 
@@ -599,6 +626,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             check_rate_limit(route, client_ip)
         except Exception as e:
             self._send(429, {"error": "rate_limited", "detail": str(e)})
+            return
+        # Route dynamique team/{team_name}/{action} ?
+        dyn = _team_dynamic_route("GET", parts, {})
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
             return
         # Route dynamique agents/{id}/routes ?
         dyn = _agent_dynamic_route("GET", parts, {})
@@ -668,6 +701,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         if stream_handler:
             self._handle_stream(route, stream_handler, params)
             return
+        # Route dynamique team/{team_name}/{action} ?
+        dyn = _team_dynamic_route("POST", parts, params)
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
+            return
         # Route dynamique agents/{id}/{op} ?
         parts = [p for p in route.split("/") if p]
         dyn = _agent_dynamic_route("POST", parts, params)
@@ -704,8 +743,8 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(400, {"error": "bad_request", "detail": str(e)})
             return
-        parts = [p for p in route.split("/") if p]
-        dyn = _agent_dynamic_route("DELETE", parts, params)
+        # Route dynamique team/{team_name}/{action} ?
+        dyn = _team_dynamic_route("DELETE", parts, params)
         if dyn is not None:
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
                                      "route": route, "result": dyn["payload"]})
