@@ -1,0 +1,40 @@
+name: comm/ask-humain-opinion@v1
+category: comm
+description: >
+  Pose une question ouverte à l'utilisateur pour recueillir son opinion
+  humaine sur un sujet donné (choix de conception, priorité, évaluation
+  qualitative, etc.). Stocke la question dans ctx/ask/ et renvoie un id
+  de question ainsi que le statut pending.
+inputs:
+  question:
+    type: string
+    required: true
+    description: Question ouverte posée à l'utilisateur
+  context:
+    type: object
+    required: false
+    default: {}
+    description: Contexte supplémentaire (données, options, contraintes) à communiquer avec la question
+  options:
+    type: list[string]
+    required: false
+    default: []
+    description: Liste d'options prédéfinies parmi lesquelles l'utilisateur peut choisir (vide = réponse libre)
+  timeout_seconds:
+    type: integer
+    required: false
+    default: 300
+    description: Délai d'attente maximal en secondes avant expiration de la question
+outputs:
+  question_id:
+    type: string
+    description: Identifiant unique de la question (à utiliser pour lire la réponse)
+  answered:
+    type: boolean
+    description: false à la création ; true lorsque l'utilisateur a répondu
+  status:
+    type: string
+    description: "pending | answered | expired"
+implementation:
+  type: python
+  function: agent.ops.ask_humain_opinion
