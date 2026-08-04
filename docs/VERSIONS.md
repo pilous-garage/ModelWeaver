@@ -1284,7 +1284,12 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - **Provider `kilo`** : gateway `https://api.kilo.ai/api/gateway`, 10 modèles `:free` onboardés (clé gratuite sans budget)
 
 
-## V0.9.0 — Swarm Auto-Code, Watcher, Pause/Resume & Refactor db.py 🚀 (Livrée)
+## V0.8.10 — Swarm Auto-Code, Watcher, Pause/Resume & Refactor db.py 🚀 (Livrée)
+
+> **Note de version** : le backend prévu pour V0.9 a été livré en avance (le
+> swarm auto-code, le watcher, etc.). On reste donc en V0.8 — le **GUI 0.8
+> (parties GUI reportées)** est la priorité suivante. La V0.9 (mini-entreprise
+> complète) sera bouclée une fois la GUI terminée.
 
 ### Swarm self-improve v2 (greedy, sans leader)
 - Team `swarm-selfimprove-v2` : 8 membres flat (analyst, coder-a/b/c, tester-a/b, reviewer, integrator)
