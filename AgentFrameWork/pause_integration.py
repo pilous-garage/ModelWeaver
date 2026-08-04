@@ -52,7 +52,12 @@ def build_signal_check(
                 effective.get("scope_id"),
                 effective.get("reason"),
             )
-            raise PauseSignalError(effective.get("reason") or "pause")
+        else:
+            if getattr(result, "_paused", False):
+                result._paused = False
+                result.status = "running"
+                result.end_reason = None
+                logger.info("Resume signal reçu")
 
     return signal_check
 
