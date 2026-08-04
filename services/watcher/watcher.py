@@ -127,6 +127,119 @@ def _hb_age_s(hb: str, now: float) -> Optional[float]:
         return None
 
 
+# Seuils P8 (agent qui travaille mais semble bloqué / LLM mort ou très lent)
+P8_MAX_LOG_SILENCE_S = 300      # pas de nouvelle ligne FSM depuis 5 min
+P8_MAX_LLM_LATENCY_S = 120      # llm/call → llm/ok > 2 min → LLM très lent
+P8_CONSEC_ERRORS = 6            # ≥6 llm/error consécutifs sans tool ok → boucle
+
+
+def _fsm_log_path(agent_id: int) -> Optional[Path]:
+    """Dernier log FSM de l'agent (le plus récent par mtime)."""
+    try:
+        from services._common import mw_home
+        log_dir = Path(mw_home()) / "agent_home" / str(agent_id) / "log"
+        if not log_dir.is_dir():
+            return None
+        files = sorted(log_dir.glob("fsm_*.log"), key=lambda p: p.stat().st_mtime)
+        return files[-1] if files else None
+    except Exception:
+        return None
+
+
+def _fsm_activity(agent_id: int) -> Dict[str, Any]:
+    """Analyse le FSM log récent d'un agent.
+
+    Retourne : {mtime_age_s, last_round, llm_latencies, consec_errors,
+    errors, total_lines, has_recent_tool_ok}. Ne lève jamais."""
+    import re
+    out = {"mtime_age_s": None, "last_round": None, "max_llm_latency_s": 0.0,
+           "consec_errors": 0, "errors": 0, "total_lines": 0,
+           "has_recent_tool_ok": False, "error_types": []}
+    path = _fsm_log_path(agent_id)
+    if not path:
+        return out
+    try:
+        out["mtime_age_s"] = time.time() - path.stat().st_mtime
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return out
+    out["total_lines"] = len(lines)
+    # erreurs consécutives SANS tool/ok (boucle d'erreur LLM)
+    consec = 0
+    err_types = []
+    for line in lines:
+        if "llm/error" in line:
+            consec += 1
+            m = re.search(r"err=\[?([a-z_]+)", line)
+            if m and m.group(1) not in err_types:
+                err_types.append(m.group(1))
+            out["errors"] += 1
+        elif "tool/ok" in line:
+            consec = 0
+        else:
+            consec = max(0, consec)
+    out["consec_errors"] = consec
+    out["error_types"] = err_types
+    # round max + latence llm/call → llm/ok
+    last_call_ts = None
+    max_lat = 0.0
+    for line in lines:
+        if "llm/call" in line:
+            m = re.match(r"(\d\d):(\d\d):(\d\d)\.\d+", line)
+            if m:
+                h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                last_call_ts = h * 3600 + mi * 60 + s
+                rm = re.search(r"round=(\d+)", line)
+                if rm:
+                    out["last_round"] = int(rm.group(1))
+        elif "llm/ok" in line and last_call_ts is not None:
+            m = re.match(r"(\d\d):(\d\d):(\d\d)\.\d+", line)
+            if m:
+                h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                lat = (h * 3600 + mi * 60 + s) - last_call_ts
+                if lat < 0:
+                    lat += 24 * 3600  # minuit
+                max_lat = max(max_lat, lat)
+            last_call_ts = None
+    out["max_llm_latency_s"] = max_lat
+    # un tool/ok récent (dans les ~60 dernières lignes) → l'agent agit
+    out["has_recent_tool_ok"] = any("tool/ok" in l for l in lines[-60:])
+    return out
+
+
+def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """P8 — agent actif mais qui semble bloqué (FSM).
+
+    Cas détectés :
+      - silence FSM : aucune nouvelle ligne depuis P8_MAX_LOG_SILENCE_S
+      - LLM très lent : latence llm/call→llm/ok > P8_MAX_LLM_LATENCY_S
+      - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool ok
+    Correction : kill l'agent + remet sa task running en pending (le watcher
+    fait la purge ; on signale le problème).
+    """
+    out = []
+    for r in st["runtime"]:
+        aid = r.get("agent_id")
+        act = _fsm_activity(aid)
+        if act["mtime_age_s"] is None:
+            continue
+        problems = []
+        if act["mtime_age_s"] > P8_MAX_LOG_SILENCE_S:
+            problems.append(f"FSM silencieux depuis {act['mtime_age_s']:.0f}s")
+        if act["max_llm_latency_s"] > P8_MAX_LLM_LATENCY_S:
+            problems.append(f"latence LLM max {act['max_llm_latency_s']:.0f}s")
+        if act["consec_errors"] >= P8_CONSEC_ERRORS:
+            problems.append(f"{act['consec_errors']} erreurs LLM consécutives "
+                            f"({','.join(act['error_types'])})")
+        if not problems:
+            continue
+        out.append({"type": "P8_stalled_agent",
+                    "agent_id": aid,
+                    "details": "; ".join(problems),
+                    "refs": {"activity": act}})
+    return out
+
+
 def detect_orphan_running_tasks(st: Dict[str, Any]) -> List[Dict[str, Any]]:
     """P1 — task 'running' orpheline : aucune ligne agent_runtime avec un
     heartbeat frais ne correspond à un agent légitimement actif."""
@@ -281,6 +394,20 @@ def _apply(st: Dict[str, Any], problem: Dict[str, Any],
             wdb.conn.commit()
             return f"task {tid} rôle normalisé → {role.strip()}"
 
+        if ptype == "P8_stalled_agent":
+            # kill l'agent bloqué + libérer sa task running (il est probablement
+            # coincé sur une boucle LLM). L'agent pourra être re-réveillé.
+            aid = problem.get("agent_id")
+            n = 0
+            # task running de cet agent ? (assigned_to peut être vide ; on
+            # libère les running du workspace par sécurité seulement si l'agent
+            # est le seul à tourner sur elles — on se limite à kill + re-wait)
+            db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (aid,))
+            db.conn.execute(
+                "UPDATE agents SET status='IDLE' WHERE agent_id = ?", (aid,))
+            db.conn.commit()
+            return f"agent {aid} arrêté (stall FSM), runtime purgé"
+
         return "aucune action (type inconnu)"
     except Exception as e:
         return f"échec: {e}"
@@ -304,7 +431,8 @@ def watcher_cycle() -> List[Dict[str, Any]]:
     problems = []
     for det in (detect_stale_runtime, detect_orphan_running_tasks,
                 detect_idle_with_pending, detect_wait_for_spam,
-                detect_stuck_analysing_issues, detect_multi_role_tasks):
+                detect_stuck_analysing_issues, detect_multi_role_tasks,
+                detect_stalled_agent):
         try:
             problems.extend(det(st))
         except Exception:
