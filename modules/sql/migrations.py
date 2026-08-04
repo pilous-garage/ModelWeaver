@@ -1,8 +1,7 @@
 """MigrationManager — Gestion des versions du schéma SQLite.
 
 Permet d'appliquer des scripts SQL de migration de manière séquentielle.
-Contient également les helpers de migration inline utilisés par db.py
-(colonnes manquantes, classes_outils, etc.).
+Contient également les helpers de migration utilisés par db.py.
 """
 
 import sqlite3
@@ -15,7 +14,7 @@ logger = logging.getLogger("modelweaver.migrations")
 
 
 # ──────────────────────────────────────────────
-#  Helpers migrations inline (extraits de db.py)
+#  Helpers migration (extraits de db.py)
 # ──────────────────────────────────────────────
 
 _DEFAULT_CLASS_MAP = {
