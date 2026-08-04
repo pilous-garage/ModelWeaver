@@ -4,6 +4,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# Import handlers to register routes (monitoring, usage, etc.)
+import services.api.handlers  # noqa: F401
+
 
 def test_monitoring_metrics_route_registered():
     from services.api.router import ROUTES

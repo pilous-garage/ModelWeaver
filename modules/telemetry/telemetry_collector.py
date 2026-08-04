@@ -1,4 +1,4 @@
-from modules.telemetry.provider_metrics import TelemetryCollector
+from modules.telemetry.provider_metrics import ProviderMetrics, TelemetryCollector
 
 _collector = TelemetryCollector()
 
