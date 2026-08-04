@@ -5,11 +5,10 @@ from enum import Enum, auto
 from typing import Any, Dict, Optional
 
 try:
-    from AgentFrameWork.pause_flag_store import is_paused, set_paused, wait_while_paused
+    from modules.control.pause_flag import is_paused, wait_for_resume
 except Exception:  # pragma: no cover - dépendance optionnelle selon l'environnement
     is_paused = lambda **kwargs: False  # type: ignore[assignment]
-    set_paused = lambda *args, **kwargs: None  # type: ignore[assignment]
-    wait_while_paused = lambda **kwargs: None  # type: ignore[assignment]
+    wait_for_resume = lambda **kwargs: None  # type: ignore[assignment]
 
 
 class PauseScope(Enum):

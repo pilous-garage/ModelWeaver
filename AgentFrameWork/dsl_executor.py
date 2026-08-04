@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+from modules.control.pause_flag import wait_for_resume, is_paused
 from AgentFrameWork.pipeline_executor import PipelineExecutor, PipelineError
 
 logger = logging.getLogger("modelweaver.dsl")
@@ -98,6 +99,14 @@ class DSLExecutor:
             return result
 
         while current_id and result.iterations < max_iterations:
+            # ── Pause globale projet/team/agent avant chaque step ──
+            project_id = result.variables.get("project_id")
+            team_name = result.variables.get("team_name")
+            agent_id = result.variables.get("agent_id")
+            if is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
+                wait_for_resume(project_id=project_id, team_name=team_name, agent_id=agent_id)
+                continue
+
             step = steps_by_id.get(current_id)
             if not step:
                 result.status = "failed"

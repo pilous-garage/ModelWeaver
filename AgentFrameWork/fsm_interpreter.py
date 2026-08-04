@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
-from modules.control.pause_flag import get_pause_store
+from modules.control.pause_flag import get_pause_store, is_paused, wait_for_resume
 from AgentFrameWork.tool_executor import ToolExecutor
 
 logger = logging.getLogger("modelweaver.fsm")
@@ -35,16 +35,7 @@ _FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
 
 
 def _strip_code_fences(text: str) -> str:
-    """Nettoie une sortie LLM censée être du code brut.
-
-    1. Si le texte entier est un unique bloc fencé (```lang ... ```), ne
-       garde que le corps.
-    2. Sinon retire toute ligne de fence isolée (```...).
-    3. Retire un éventuel bloc de prose ajouté en fin par le LLM
-       (ex. « Note: This code is a basic implementation… ») : on tronque à
-       la dernière ligne qui ressemble à du code, si les lignes suivantes
-       ressemblent à du texte naturel.
-    """
+    """Nettoie une sortie LLM censée être du code brut."""
     if not text:
         return text
     m = _FENCE_RE.match(text)
@@ -138,6 +129,11 @@ class FSMInterpreter:
         traités par l'appelant.
       - stream_sink(chunk) : callable recevant chaque morceau de texte produit
         par un llm_call (diffusion temps réel).
+
+    Pause globale : avant chaque step, le FSM interroge le store partagé
+    ``modules.control.pause_flag`` pour les niveaux projet/team/agent. Si un
+    flag actif est détecté, l'exécution se met en attente via
+    ``wait_for_resume`` jusqu'au changement d'état signalé par ``notify_all``.
     """
 
     def __init__(
@@ -209,9 +205,9 @@ class FSMInterpreter:
                     continue
 
             # ── Pause globale projet/team/agent avant chaque step ──
-            project_id = result.variables.get("project_id")
-            team_name = result.variables.get("team_name")
-            agent_id = result.variables.get("agent_id")
+            project_id = result.variables.get("project_id") or self._project_id
+            team_name = result.variables.get("team_name") or self._team_id
+            agent_id = result.variables.get("agent_id") or self._agent_id
             if is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
                 wait_for_resume(project_id=project_id, team_name=team_name, agent_id=agent_id)
                 continue
@@ -371,9 +367,6 @@ class FSMInterpreter:
         )
         output_capture = step.get("output_capture")
 
-        # Construire les messages : le skill_prompt devient le message
-        # utilisateur principal, pour éviter qu'un user message précédent
-        # (ex: "request") noie l'instruction.
         msgs = []
         if result.messages and result.messages[0].get("role") == "system":
             msgs.append(result.messages[0])
@@ -390,11 +383,8 @@ class FSMInterpreter:
         try:
             content = ""
             tokens = 0
-            # agent_id disponible pour le journal d'usage (si l'agent l'a
-            # fourni via {{agent_id}} ou le contexte d'exécution).
             _agent_id = result.variables.get("agent_id", "")
             if stream_sink is not None:
-                # Streaming : diffusion chunk par chunk
                 for delta in self.bridge.chat_stream(
                     provider_ref=p_ref, model_ref=m_ref,
                     messages=msgs, temperature=temperature, max_tokens=max_tokens,
@@ -402,8 +392,6 @@ class FSMInterpreter:
                 ):
                     content += delta
                     stream_sink(delta)
-                    # Interjection (Phase 4) : vérifier les signaux à chaque
-                    # chunk (kill interrompt la génération en cours).
                     if self._signal_check is not None:
                         try:
                             self._signal_check(result)
@@ -411,13 +399,11 @@ class FSMInterpreter:
                             result.status = "aborted"
                             result.end_reason = "Interrompu par signal kill"
                             return False
-                # Estimation tokens (approximation) pour compat metrics
                 tokens = max(0, len(content) // 4)
                 result.variables["_llm_provider"] = p_ref
                 result.variables["_llm_model"] = m_ref
                 result.variables["_llm_fallbacks"] = 0
             else:
-                # Tools : convertir les skills disponibles au format OpenAI
                 tools = self._build_llm_tools()
                 tool_kwargs = {"tools": tools} if tools else {}
 
@@ -443,7 +429,6 @@ class FSMInterpreter:
                     result.variables["_llm_model"] = m_ref
                     result.variables["_llm_fallbacks"] = getattr(response, "fallbacks", 0)
                 else:
-                    # Boucle tool_calls : LLM → tool → LLM → ... → text
                     for _tool_round in range(15):
                         response = self.bridge.chat(
                             provider_ref=p_ref, model_ref=m_ref,
@@ -456,9 +441,8 @@ class FSMInterpreter:
 
                         tool_calls = getattr(response, "tool_calls", None)
                         if not tool_calls:
-                            break  # réponse textuelle → on sort
+                            break
 
-                        # Ajouter la réponse assistant avec tool_calls
                         asst_msg = {"role": "assistant", "content": response.content or ""}
                         tc_list = []
                         for tc in tool_calls:
@@ -475,7 +459,6 @@ class FSMInterpreter:
                             asst_msg["tool_calls"] = tc_list
                         msgs.append(asst_msg)
 
-                        # Exécuter chaque tool
                         for tc in tool_calls:
                             fn_name = tc["function"]["name"]
                             try:
@@ -494,11 +477,8 @@ class FSMInterpreter:
                                 "content": json.dumps(tool_result, default=str),
                             })
 
-                        # Un seul tool_calls round supprime les tools suivants
-                        # pour éviter les boucles infinies
                         tool_kwargs = {}
                     else:
-                        # 15 rounds sans réponse textuelle → erreur
                         content = "Tool call limit exceeded"
                         tokens = 0
                 content = response.content if hasattr(response, 'content') else str(response)
@@ -532,17 +512,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appel unifié d'un skill (remplace tool_call). step: {type: call, fn, inputs, capture, on_error}.
-
-        V0.6.23 : un échec de skill (ex. merge/commit/push git en erreur,
-        agent introuvable…) est désormais détecté et remonté au FSM au lieu
-        de passer inaperçu :
-          - `result.variables["_last_call_ok"]` / `_last_call_error` exposent
-            le résultat à l'étape suivante (exploitable par switch/model).
-          - si `step["on_error"]` est défini, le FSM branche vers cette étape
-            (l'agent peut réagir : résoudre un conflit, notifier…) ;
-          - sinon le workflow s'arrête en `status="failed"` avec un motif
-            explicite dans `end_reason`."""
+        """Appel unifié d'un skill (remplace tool_call)."""
         fn = step.get("fn", "")
         if not fn:
             result.status = "failed"
@@ -551,13 +521,8 @@ class FSMInterpreter:
         inputs = step.get("inputs", {})
         resolved = {k: self._resolve(v, result.variables) if isinstance(v, str) else v
                     for k, v in inputs.items()}
-        # agent_id disponible pour les skills (memory/host/log)
-        # Anti-spoof : un 'call' ne peut pas usurper l'identité d'un autre
-        # agent — s'il fournit un agent_id différent, on force le sien.
         agent_id = result.variables.get("agent_id", "")
         if agent_id:
-            # Forcer l'agent_id NUMÉRIQUE (pas le nom "agent_388") : les skills
-            # git/workspace s'en servent pour le home et le clone.
             try:
                 agent_id = int(str(agent_id).split("_")[-1]) if str(agent_id).startswith("agent_") else int(agent_id)
             except (ValueError, TypeError):
@@ -589,9 +554,6 @@ class FSMInterpreter:
             for out_key, var_name in capture.items():
                 if out_key in out:
                     result.variables[var_name] = out[out_key]
-            # Remplir result.content si vide : la sortie d'un skill autonome
-            # (ex. workflow/autonomous@v1 → stdout) devient le contenu final
-            # du membre — sinon les captures agent_call du leader sont vides.
             if not result.content:
                 for out_key, var_name in capture.items():
                     val = result.variables.get(var_name)
@@ -610,7 +572,6 @@ class FSMInterpreter:
             })
             on_error = step.get("on_error")
             if on_error:
-                # Branche vers un gestionnaire d'erreur ; le FSM continue.
                 result.next_step_id = on_error
                 return True
             result.status = "failed"
@@ -623,12 +584,7 @@ class FSMInterpreter:
 
     @staticmethod
     def _skill_outcome(out: Any) -> tuple:
-        """Renvoie `(ok, message_erreur)` pour le résultat d'un skill.
-
-        Un skill est considéré en échec si :
-          - `ok` vaut explicitement False, ou
-          - `status` vaut "error"/"failed", ou
-          - `exit_code` (présent) est != 0."""
+        """Renvoie `(ok, message_erreur)` pour le résultat d'un skill."""
         if not isinstance(out, dict):
             return True, ""
         if out.get("ok") is False:
@@ -647,10 +603,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appel d'outil système (déprécié — utiliser `type: call` à la place).
-
-        Mappe les tools legacy vers les skills correspondants.
-        """
+        """Appel d'outil système (déprécié — utiliser `type: call` à la place)."""
         tool_name = step.get("tool", "")
         args = step.get("args", {})
 
@@ -659,7 +612,6 @@ class FSMInterpreter:
             resolved_args[k] = self._resolve(v, result.variables) \
                 if isinstance(v, str) else v
 
-        # Mapping backward-compat : tool -> skill
         TOOL_TO_SKILL = {
             "read_file": ("system/read_file@v1", {"path": "path"}),
             "write_file": ("system/write_file@v1", {"path": "path", "content": "content"}),
@@ -708,7 +660,6 @@ class FSMInterpreter:
                 result.end_reason = f"Tool->skill error: {e}"
                 return False
         else:
-            # Fallback : legacy tool_executor
             if not self.tool_executor:
                 result.status = "failed"
                 result.end_reason = f"Tool '{tool_name}' inconnu et pas de ToolExecutor"
@@ -784,11 +735,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Fin du workflow — copie les variables capturées dans le résultat.
-
-        Capture convention (key=source, value=target) :
-          {team_outputs: content} → result.content = variables['team_outputs']
-        """
+        """Fin du workflow — copie les variables capturées dans le résultat."""
         end_status = step.get("status", "SUCCESS")
         result.status = "success" if end_status == "SUCCESS" else "failed"
         result.end_reason = end_status
@@ -822,12 +769,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Phase 5 : spawn d'un agent enfant (souvent occupation `disparate`).
-
-        Le handler (fourni par l'Agent) crée, exécute et renvoie dormir
-        l'agent enfant, puis renvoie son résultat. Le contenu est capturé
-        dans `output_capture`.
-        """
+        """Phase 5 : spawn d'un agent enfant."""
         if self._spawn_handler is None:
             result.status = "failed"
             result.end_reason = "spawn_handler non configuré"
@@ -868,11 +810,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Phase 5 : succession — transfert de session vers un agent cible.
-
-        `to` = nom ou id de l'agent successeur. Le handler (lié à l'agent
-        courant) effectue le transfert de variables/état et chaîne successor_id.
-        """
+        """Phase 5 : succession — transfert de session vers un agent cible."""
         if self._handoff_handler is None:
             result.status = "failed"
             result.end_reason = "handoff_handler non configuré"
@@ -897,11 +835,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appel synchrone d'un entrypoint d'un autre agent.
-
-        step: {type: agent_call, agent, entrypoint, inputs, capture, on_error}.
-        Délègue à `agent_call_handler` fourni par l'Agent (service.py).
-        """
+        """Appel synchrone d'un entrypoint d'un autre agent."""
         if self._agent_call_handler is None:
             result.status = "failed"
             result.end_reason = "agent_call_handler non configuré"
@@ -933,7 +867,6 @@ class FSMInterpreter:
             result.end_reason = f"agent_call échoué: {out.get('error', 'inconnu')}"
             return False
 
-        # Capture la sortie dans les variables
         capture = step.get("capture", {})
         for out_key, var_name in capture.items():
             result.variables[var_name] = out.get(out_key, out.get("content", ""))
@@ -944,10 +877,7 @@ class FSMInterpreter:
     # ── Gestion d'erreur commune (llm_call / call / tool_call) ──
 
     def _branch_on_error(self, step: Dict, result: "FSMResult", msg: str) -> bool:
-        """Échec d'un step : branche vers `on_error` si défini, sinon échoue.
-
-        Expose `_last_error` (+ `_last_call_ok=False`) pour l'étape suivante.
-        Retourne True si le FSM doit continuer (branche on_error), False sinon."""
+        """Échec d'un step : branche vers `on_error` si défini, sinon échoue."""
         result.variables["_last_error"] = msg
         result.variables["_last_call_ok"] = False
         on_error = step.get("on_error")
@@ -961,7 +891,7 @@ class FSMInterpreter:
     # ── Contrôle de boucle ─────────────────────────────
 
     def _step_break(self, step: Dict, result: "FSMResult", **kwargs: Any) -> bool:
-        """Sort de la boucle englobante (consommé par _run_body/for/while)."""
+        """Sort de la boucle englobante."""
         result._loop_ctl = "break"
         return False
 
@@ -974,11 +904,7 @@ class FSMInterpreter:
 
     @staticmethod
     def _eval_condition(cond: Dict, variables: Dict) -> bool:
-        """Évalue une condition {variable, operator, value}.
-
-        operator ∈ EQUALS | NOT_EQUALS | CONTAINS | GREATER | LESS | TRUTHY.
-        TRUTHY (défaut si pas de value) : la variable est non vide / non nulle.
-        """
+        """Évalue une condition {variable, operator, value}."""
         if not cond:
             return False
         raw = variables.get(cond.get("variable", "").strip("{}").strip(), "")
@@ -1003,7 +929,7 @@ class FSMInterpreter:
 
     @staticmethod
     def _body_steps(step: Dict) -> List[Dict]:
-        """Extrait les steps du corps d'une boucle (body: {steps:[...]} ou [...])."""
+        """Extrait les steps du corps d'une boucle."""
         body = step.get("body")
         if isinstance(body, dict):
             return body.get("steps", []) or []
@@ -1015,13 +941,7 @@ class FSMInterpreter:
         self, body_steps: List[Dict], result: "FSMResult",
         provider_ref: str, model_ref: str, stream_sink: Optional[Any],
     ) -> str:
-        """Exécute une passe du corps de boucle (partage variables/messages).
-
-        Retourne un code de contrôle :
-          - 'normal'   : le corps est « tombé » à court d'étapes (itération OK) ;
-          - 'break'    : un step `break` a été rencontré → sortir de la boucle ;
-          - 'continue' : un step `continue` → itération suivante ;
-          - 'stop'     : le workflow doit s'arrêter (status ≠ running / `end`)."""
+        """Exécute une passe du corps de boucle."""
         if not body_steps:
             return "normal"
         sub_by_id = {s["id"]: s for s in body_steps}
@@ -1067,7 +987,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         stream_sink: Optional[Any] = None, **kwargs: Any,
     ) -> bool:
-        """Boucle conditionnelle : exécute le corps tant que `condition` est vraie."""
+        """Boucle conditionnelle."""
         body_steps = self._body_steps(step)
         cond = step.get("condition", {})
         max_iter = getattr(self, "_max_iter", self.max_iterations)
@@ -1089,13 +1009,9 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         stream_sink: Optional[Any] = None, **kwargs: Any,
     ) -> bool:
-        """Boucle bornée : itère sur une plage (start/end/step) ou une liste (items).
-
-        La variable `var` reçoit la valeur courante à chaque itération et est
-        disponible dans le corps via {{var}}."""
+        """Boucle bornée."""
         body_steps = self._body_steps(step)
         var = step.get("var", "i")
-        # Mode liste
         if "items" in step:
             items = step.get("items")
             if isinstance(items, str):
@@ -1105,7 +1021,6 @@ class FSMInterpreter:
                 items = []
             values: List[Any] = list(items)
         else:
-            # Mode plage
             def _num(v, default):
                 try:
                     return int(v)
@@ -1135,7 +1050,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         stream_sink: Optional[Any] = None, **kwargs: Any,
     ) -> bool:
-        """Condition simple : si vrai → exécute le corps ; sinon → next."""
+        """Condition simple."""
         cond = step.get("condition", {})
         if self._eval_condition(cond, result.variables):
             body_steps = self._body_steps(step)
@@ -1151,7 +1066,7 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         stream_sink: Optional[Any] = None, **kwargs: Any,
     ) -> bool:
-        """Groupe : exécute le corps séquentiellement, puis next."""
+        """Groupe : exécute le corps séquentiellement."""
         body_steps = self._body_steps(step)
         if body_steps:
             code = self._run_body(body_steps, result, provider_ref, model_ref, stream_sink)
@@ -1163,12 +1078,7 @@ class FSMInterpreter:
     # ── Utils ──────────────────────────────────────────
 
     def _resolve(self, value: str, variables: Dict) -> str:
-        """Remplace {{variable}} dans une chaîne par sa valeur.
-
-        Supporte les accès dict/attributs : {{issue.description}},
-        {{task.task_id}}, {{task.title}}... Retourne la valeur str ou laisse
-        le placeholder si introuvable.
-        """
+        """Remplace {{variable}} dans une chaîne par sa valeur."""
         import re
         def _lookup(path: str):
             parts = path.split(".")

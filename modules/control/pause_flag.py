@@ -219,12 +219,16 @@ class PauseFlagStore:
         team_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         poll_interval: float = 0.25,
-    ) -> None:
+        timeout: Optional[float] = None,
+    ) -> bool:
         """Bloque tant que le flag effectif est actif.
+
+        Retourne True si le flag a été désactivé, False si timeout atteint.
 
         Utilise un `Condition` pour être réveillé par `set_flag`/`clear_all`
         sans polling actif.
         """
+        deadline = time.time() + timeout if timeout is not None else None
         while True:
             with self._cond:
                 state = self.effective_state(
@@ -233,8 +237,14 @@ class PauseFlagStore:
                     agent_id=agent_id,
                 )
                 if not state.get("paused"):
-                    return
-                self._cond.wait(timeout=poll_interval)
+                    return True
+                if deadline is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        return False
+                    self._cond.wait(timeout=min(poll_interval, remaining))
+                else:
+                    self._cond.wait(timeout=poll_interval)
 
 
 # Singleton
@@ -248,3 +258,37 @@ def get_pause_store(db_path: Optional[str] = None) -> PauseFlagStore:
         if _store is None:
             _store = PauseFlagStore(db_path=db_path)
         return _store
+
+
+def is_paused(project_id: Optional[str] = None,
+              team_id: Optional[str] = None,
+              agent_id: Optional[str] = None) -> bool:
+    """Retourne True si un flag de pause est actif pour le scope donné."""
+    store = get_pause_store()
+    state = store.effective_state(project_id=project_id, team_id=team_id, agent_id=agent_id)
+    return bool(state.get("paused"))
+
+
+def wait_for_resume(project_id: Optional[str] = None,
+                    team_id: Optional[str] = None,
+                    agent_id: Optional[str] = None,
+                    poll_interval: float = 0.25,
+                    timeout: Optional[float] = None) -> bool:
+    """Bloque tant que le flag de pause est actif, puis se réveille à la
+    première notification de changement.
+
+    Retourne True si le flag a été désactivé, False si timeout atteint.
+    """
+    store = get_pause_store()
+    deadline = (time.time() + timeout) if timeout else None
+    while True:
+        state = store.effective_state(project_id=project_id, team_id=team_id, agent_id=agent_id)
+        if not state.get("paused"):
+            return True
+        if deadline is not None:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            store.wait_while_paused(project_id=project_id, team_id=team_id, agent_id=agent_id, poll_interval=min(poll_interval, remaining))
+        else:
+            store.wait_while_paused(project_id=project_id, team_id=team_id, agent_id=agent_id, poll_interval=poll_interval)
