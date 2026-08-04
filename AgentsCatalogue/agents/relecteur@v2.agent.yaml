@@ -73,7 +73,6 @@ entrypoints:
         agent_id: "{{agent_id}}"
         team_id: "{{team_id}}"
       next: end
-      type: end
     - id: fail
       type: end
       status: FAILED
