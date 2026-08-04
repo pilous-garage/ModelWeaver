@@ -528,6 +528,77 @@ def _safe_json(s: Any) -> Dict[str, Any]:
 # ── Cycle complet ────────────────────────────────────────────────────
 
 
+def _detect_warnings(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Warnings (pas des problèmes bloquants) : état du repo central.
+
+    - taille du repo mw-swarm (croissance anormale)
+    - fichiers disparus récents dans le working tree des agents (le bug
+      git add -A qui supprimait des fichiers)
+    - repos par-workspace créés à tort (au lieu de pousser vers mw-swarm)
+    """
+    out = []
+    try:
+        from services._common import mw_home
+        repos = mw_home() / "repos"
+        # 1) taille du repo central mw-swarm
+        mw_repo = repos / "mw-swarm.git"
+        if mw_repo.exists():
+            size_mb = sum(f.stat().st_size for f in mw_repo.rglob("*")
+                          if f.is_file()) / (1024 * 1024)
+            if size_mb > 200:
+                out.append({"type": "W_git_repo_size",
+                            "detail": f"mw-swarm.git {size_mb:.0f} Mo "
+                                      f"(>200 Mo)"})
+        # 2) repos par-workspace créés à tort (le bug project_id)
+        try:
+            workspace_repos = [p.name for p in repos.glob("*.git")
+                               if p.name not in ("mw-swarm.git",)]
+            if len(workspace_repos) > 10:
+                out.append({"type": "W_many_workspace_repos",
+                            "detail": f"{len(workspace_repos)} repos "
+                                      f"par-workspace créés (bug project_id ?)"})
+        except Exception:
+            pass
+        # 3) fichiers disparus dans les clones récents (bug git add -A)
+        try:
+            gone = _detect_disappeared_files()
+            if gone:
+                out.append({"type": "W_files_disappeared",
+                            "detail": f"{len(gone)} fichiers disparus récents "
+                                      f"(bug git add -A ?) ex: {gone[0][:80]}"})
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return out
+
+
+def _detect_disappeared_files() -> List[str]:
+    """Détecte les fichiers qui ont disparu du working tree des agents
+    (le bug git add -A qui supprimait des fichiers du framework)."""
+    gone = []
+    try:
+        import subprocess
+        from services._common import mw_home
+        for clone_dir in (mw_home() / "agent_home").glob("*/workspace/*"):
+            if not (clone_dir / ".git").exists():
+                continue
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(clone_dir), "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=15)
+                for line in (r.stdout or "").splitlines():
+                    if line.startswith(" D ") or line.startswith("D "):
+                        f = line[3:].strip()
+                        if f and "modules/" in f or "services/" in f:
+                            gone.append(f"{clone_dir.name}: {f}")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return gone[:20]
+
+
 def watcher_cycle() -> List[Dict[str, Any]]:
     """Un cycle complet : collecte → détection → résolution → log. Retourne
     les actions appliquées (pour tests / debug)."""
@@ -543,6 +614,8 @@ def watcher_cycle() -> List[Dict[str, Any]]:
         except Exception:
             pass
 
+    warnings = _detect_warnings(st)
+
     actions = []
     if problems:
         try:
@@ -557,7 +630,27 @@ def watcher_cycle() -> List[Dict[str, Any]]:
             db.close()
         except Exception as e:
             actions.append({"type": "internal", "action": f"échec résolution: {e}"})
+
+    # Logging : détaillé (tout le cycle) + synthèse (problèmes récurrents).
+    try:
+        from services.watcher.watcher_log import cycle_detail, summary
+        cycle_detail(_CYCLE[0], st, problems, actions, warnings)
+        for a in actions:
+            if a.get("action", "").startswith("échec") or "internal" in a["type"]:
+                res = "non_resolu"
+            else:
+                res = "script"
+            summary(a["type"], res, a.get("details", ""))
+        for w in warnings:
+            summary(w["type"], "warning", w.get("detail", ""))
+    except Exception:
+        pass
+
+    _CYCLE[0] += 1
     return actions
+
+
+_CYCLE = [0]
 
 
 def run(interval: float = DEFAULT_INTERVAL_S) -> None:
