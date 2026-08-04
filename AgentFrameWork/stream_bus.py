@@ -34,9 +34,24 @@ class StreamBus:
         self._buffers: Dict[int, List[Dict[str, Any]]] = {}
         self._seq = 0
         self._max = max_per_agent
+        self._paused: Dict[int, bool] = {}
+
+    def set_paused(self, agent_id: int, paused: bool) -> None:
+        with self._lock:
+            self._paused[agent_id] = paused
+            if not paused:
+                # purge les chunks en attente ? on garde le buffer tel quel
+                pass
+
+    def is_paused(self, agent_id: int) -> bool:
+        with self._lock:
+            return self._paused.get(agent_id, False)
 
     def publish(self, agent_id: int, chunk: str, kind: str = "token") -> int:
         with self._lock:
+            if self._paused.get(agent_id, False):
+                # pendant la pause, on ignore les chunks (stream suspendu)
+                return -1
             self._seq += 1
             seq = self._seq
             buf = self._buffers.setdefault(agent_id, [])
@@ -57,6 +72,7 @@ class StreamBus:
     def reset(self, agent_id: int) -> None:
         with self._lock:
             self._buffers.pop(agent_id, None)
+            self._paused.pop(agent_id, None)
 
 
 class StreamBusDB:
@@ -95,15 +111,37 @@ class StreamBusDB:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_stream_agent_seq ON stream_events (agent_id, seq)"
         )
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS stream_pause_state (
+                agent_id INTEGER NOT NULL PRIMARY KEY,
+                paused   INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )
+        """)
         self._conn.commit()
 
-    def publish(self, agent_id: int, chunk: str, kind: str = "token") -> int:
-        with self._seq_lock:
-            self._seq += 1
-            seq = self._seq
-        row = {"agent_id": agent_id, "seq": seq, "ts": time.time(),
-               "chunk": chunk, "kind": kind}
+    def set_paused(self, agent_id: int, paused: bool) -> None:
         with self._write_lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO stream_pause_state (agent_id, paused, updated_at) VALUES (?, ?, ?)",
+                (agent_id, 1 if paused else 0, time.time()),
+            )
+            self._conn.commit()
+
+    def is_paused(self, agent_id: int) -> bool:
+        row = self._conn.execute(
+            "SELECT paused FROM stream_pause_state WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+        return bool(row["paused"]) if row else False
+
+    def publish(self, agent_id: int, chunk: str, kind: str = "token") -> int:
+        with self._write_lock:
+            if self.is_paused(agent_id):
+                return -1
+            with self._seq_lock:
+                self._seq += 1
+                seq = self._seq
             self._conn.execute(
                 "INSERT INTO stream_events (agent_id, seq, ts, chunk, kind) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -156,6 +194,12 @@ class _StreamBusFacade:
 
     def reset(self, agent_id: int) -> None:
         _active().reset(agent_id)
+
+    def set_paused(self, agent_id: int, paused: bool) -> None:
+        _active().set_paused(agent_id, paused)
+
+    def is_paused(self, agent_id: int) -> bool:
+        return _active().is_paused(agent_id)
 
 
 # Singleton unique — dispatch automatique entre mémoire et cross-process.
