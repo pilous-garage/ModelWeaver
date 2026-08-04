@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Iterator
 from urllib.parse import urljoin
 
+import requests
+
 from modules.llm_manager.base_bridge import (
     BaseBridge, BridgeError, ErrorCategory,
     ChatResponse, ModelCapabilities,
@@ -60,6 +62,15 @@ TIME_NO_RESTART_RPM_MAX = 10 * 60
 # de l'ordre de la minute).
 RETRY_AUTO_DELAY_S = 2.0            # délai par défaut si retry_after inconnu
 RETRY_AUTO_MAX_S = 15.0             # au-delà → laisser l'agent basculer
+
+# Timeout HTTP global pour les probes/appels LLM : lisible depuis l'env
+# ``MODELWEAVER_HTTP_TIMEOUT`` (secondes). Utilisé pour tous les appels réseau
+# du bridge direct, y compris la découverte de modèles et les health checks.
+# Valeur par défaut : 120s si la variable n'est pas définie.
+try:
+    HTTP_TIMEOUT = float(os.environ.get("MODELWEAVER_HTTP_TIMEOUT", "120"))
+except (TypeError, ValueError):
+    HTTP_TIMEOUT = 120.0
 
 def _load_provider_endpoints(cat) -> Dict[str, dict]:
     """Charge les endpoints et clés API depuis le catalogue DB.
@@ -623,7 +634,7 @@ class DirectBridge(BaseBridge):
         for _ in range(max_retries):
             time.sleep(min(retry_after, RETRY_AUTO_MAX_S))
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                     return json.loads(resp.read().decode())
             except Exception as exc:
                 retry_after = retry_after * 2  # backoff doux sur place
@@ -689,7 +700,7 @@ class DirectBridge(BaseBridge):
 
         _t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode())
             self._log_call(provider_ref, model_ref, True,
                            (time.time() - _t0) * 1000.0,
