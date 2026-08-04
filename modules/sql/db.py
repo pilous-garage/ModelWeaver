@@ -1944,6 +1944,13 @@ class RuntimeDB:
     `PRAGMA data_version` de cette DB (voir `read_db_version`).
     """
 
+    def check_health(self) -> bool:
+        """Vérifie que la connexion SQLite est ouverte et répond."""
+        try:
+            self.conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path or _default_runtime_db())
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -2221,6 +2228,13 @@ class AgentsDB:
 
     Banque séparée de modelweaver.db — contient l'identité, le runtime,
     les métriques et les signaux des agents.
+    def check_health(self) -> bool:
+        """Vérifie que la connexion SQLite est ouverte et répond."""
+        try:
+            self.conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
 
     Usage:
         db = AgentsDB()
