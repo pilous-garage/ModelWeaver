@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from modules.sql.migrations import (
     MigrationManager,
-    ModelWeaverMigrations,
-    CatalogueMigrations,
-    RuntimeMigrations,
-    AgentsMigrations,
+    _ensure_classes_outils_table,
+    _add_column_if_missing,
+    resolve_classe_id,
+    _default_class_for_ref,
 )
 from services._common import mw_home
 
