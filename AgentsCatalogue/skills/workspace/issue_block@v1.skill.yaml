@@ -1,0 +1,33 @@
+name: workspace/issue_block@v1
+category: workspace
+description: Signale un choix humain bloquant sur une issue. Bloque l'issue
+  (status=blocked, le swarm ne la repioche pas) et enregistre la question dans
+  la table human_choice (status=pending). L'humain répond via l'API
+  human_choice/answer ; le watcher débloque ensuite l'issue automatiquement.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  issue_id:
+    type: integer
+    required: true
+  question:
+    type: string
+    required: true
+    description: Question posée à l'humain (décision bloquante)
+  options:
+    type: list
+    items:
+      type: string
+    required: false
+    description: Options prédéfinies (vide = réponse libre)
+outputs:
+  ok:
+    type: boolean
+  choice_id:
+    type: string
+  blocked:
+    type: boolean
+implementation:
+  type: python
+  function: workspacedb.issue_block.block

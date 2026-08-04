@@ -456,6 +456,28 @@ class WorkspaceDB:
             # tasks de découpage vivent). Permet de marquer l'issue 'done'
             # quand toutes ses tasks sont terminées.
             _add_column_if_missing(self.conn, "issues", "analysis_workspace_id", "TEXT")
+            # V0.8.9 : human_choice — choix humain requis (issue/task bloquée
+            # en attente d'une réponse). L'agent signale via issue_block ; le
+            # watcher débloque quand l'humain répond via l'API human_choice/*.
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS human_choice (
+                    choice_id    TEXT PRIMARY KEY,
+                    issue_id     INTEGER,
+                    task_id      INTEGER,
+                    question     TEXT NOT NULL,
+                    options_json TEXT,
+                    status       TEXT DEFAULT 'pending',
+                    response     TEXT,
+                    asked_at     INTEGER DEFAULT (strftime('%s','now')),
+                    answered_at  INTEGER
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_human_choice_status "
+                "ON human_choice(status)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_human_choice_issue "
+                "ON human_choice(issue_id)")
         except Exception:
             try:
                 self.conn.rollback()

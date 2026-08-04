@@ -68,3 +68,83 @@ def op_workspace_issues_list(params):
 
 register("workspace/issues/add",  op_workspace_issues_add)
 register("workspace/issues/list", op_workspace_issues_list)
+
+
+# ── human_choice : choix humain requis (issues bloquées) ─────────────
+
+def op_human_choice_list(params):
+    """Liste les choix humains en attente (issues bloquées).
+
+    params :
+      - status : filtre (default 'pending')
+      - workspace_id : filtre optionnel
+    Retourne {status, choices: [{choice_id, issue_id, question, options, ...}]}
+    """
+    status = params.get("status", "pending")
+    workspace_id = params.get("workspace_id", "")
+    try:
+        from modules.sql.workspace import WorkspaceDB
+        wdb = WorkspaceDB()
+        if workspace_id:
+            rows = wdb.conn.execute(
+                "SELECT h.* FROM human_choice h "
+                "JOIN issues i ON i.issue_id = h.issue_id "
+                "WHERE h.status = ? AND i.workspace_id = ? "
+                "ORDER BY h.asked_at", (status, workspace_id)).fetchall()
+        else:
+            rows = wdb.conn.execute(
+                "SELECT * FROM human_choice WHERE status = ? "
+                "ORDER BY asked_at", (status,)).fetchall()
+        wdb.close()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                import json
+                d["options"] = json.loads(d.get("options_json")) if d.get("options_json") else []
+            except Exception:
+                d["options"] = []
+            out.append(d)
+        return {"status": "ok", "choices": out, "count": len(out)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_human_choice_answer(params):
+    """Répond à un choix humain → débloque l'issue (le watcher la remet open).
+
+    params :
+      - choice_id : l'id du choix (human_choice/ask)
+      - response  : la réponse de l'humain (texte libre ou option choisie)
+    """
+    choice_id = params.get("choice_id", "")
+    response = params.get("response", "")
+    if not choice_id or not response:
+        return {"status": "error", "error": "choice_id et response requis"}
+    try:
+        from modules.sql.workspace import WorkspaceDB
+        wdb = WorkspaceDB()
+        row = wdb.conn.execute(
+            "SELECT * FROM human_choice WHERE choice_id = ?",
+            (choice_id,)).fetchone()
+        if not row:
+            wdb.close()
+            return {"status": "error", "error": "choice_id introuvable"}
+        if row["status"] == "answered":
+            wdb.close()
+            return {"status": "ok", "note": "déjà répondu", "choice_id": choice_id}
+        wdb.conn.execute(
+            "UPDATE human_choice SET status='answered', response=?, "
+            "answered_at=strftime('%s','now') WHERE choice_id = ?",
+            (response, choice_id))
+        # L'issue reste 'blocked' ; le watcher la débloquera au prochain cycle
+        # (injecte la réponse + remet open).
+        wdb.conn.commit()
+        wdb.close()
+        return {"status": "ok", "choice_id": choice_id, "answered": True}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+register("human_choice/list",   op_human_choice_list)
+register("human_choice/answer", op_human_choice_answer)

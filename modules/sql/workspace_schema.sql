@@ -68,6 +68,21 @@ CREATE TABLE IF NOT EXISTS task_files (
     PRIMARY KEY (task_id, path)
 );
 
+-- Choix humain requis : une issue/tâche bloquée en attente d'une décision.
+-- L'agent signale via issue_block ; l'humain répond via l'API human_choice/* ;
+-- le watcher débloque l'issue quand status='answered'.
+CREATE TABLE IF NOT EXISTS human_choice (
+    choice_id    TEXT PRIMARY KEY,
+    issue_id     INTEGER,
+    task_id      INTEGER,
+    question     TEXT NOT NULL,
+    options_json TEXT,
+    status       TEXT DEFAULT 'pending',  -- pending / answered
+    response     TEXT,
+    asked_at     INTEGER DEFAULT (strftime('%s','now')),
+    answered_at  INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS chatroom_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace_id    TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,

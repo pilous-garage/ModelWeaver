@@ -242,7 +242,39 @@ def detect_unlinked_issue_workspace(st: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def detect_unblocked_issues(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """P10 — issue 'blocked' dont un human_choice est 'answered' → la décision
+    humaine est arrivée, l'issue doit être débloquée (open + réponse injectée).
+    """
+    out = []
+    try:
+        from modules.sql.workspace import WorkspaceDB
+        wdb = WorkspaceDB()
+        rows = wdb.conn.execute(
+            "SELECT h.choice_id, h.issue_id, h.response, i.title "
+            "FROM human_choice h JOIN issues i ON i.issue_id = h.issue_id "
+            "WHERE h.status = 'answered' AND i.status = 'blocked'").fetchall()
+        wdb.close()
+        for r in rows:
+            out.append({"type": "P10_unblock_issue",
+                        "details": f"issue {r['issue_id']} débloquée (choix {r['choice_id']})",
+                        "refs": {"issue_id": r["issue_id"],
+                                 "response": r["response"] or "",
+                                 "choice_id": r["choice_id"]}})
+    except Exception:
+        pass
+    return out
+
+
 def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """P8 — agent actif mais qui semble bloqué (FSM).
+
+    Cas détectés :
+      - silence FSM : aucune nouvelle ligne depuis P8_MAX_LOG_SILENCE_S
+      - LLM très lent : latence llm/call→llm/ok > P8_MAX_LLM_LATENCY_S
+      - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool ok
+    """
+    out = []
     """P8 — agent actif mais qui semble bloqué (FSM).
 
     Cas détectés :
@@ -463,6 +495,23 @@ def _apply(st: Dict[str, Any], problem: Dict[str, Any],
             wdb.conn.commit()
             return f"issue {iid} liée au workspace {ws}"
 
+        if ptype == "P10_unblock_issue":
+            iid = problem["refs"]["issue_id"]
+            resp = problem["refs"]["response"]
+            choice_id = problem["refs"]["choice_id"]
+            # injecter la réponse humaine dans l'issue + la débloquer
+            r = wdb.conn.execute(
+                "SELECT description FROM issues WHERE issue_id = ?", (iid,)).fetchone()
+            desc = (r["description"] or "") if r else ""
+            note = (chr(10) + chr(10)
+                    + f"[DÉCISION HUMAINE ({choice_id})] {resp}")
+            wdb.conn.execute(
+                "UPDATE issues SET status='open', assigned_to='', "
+                "description=?, updated_at=datetime('now') WHERE issue_id = ?",
+                (desc + note, iid))
+            wdb.conn.commit()
+            return f"issue {iid} débloquée, réponse humaine injectée"
+
         return "aucune action (type inconnu)"
     except Exception as e:
         return f"échec: {e}"
@@ -487,7 +536,8 @@ def watcher_cycle() -> List[Dict[str, Any]]:
     for det in (detect_stale_runtime, detect_orphan_running_tasks,
                 detect_idle_with_pending, detect_wait_for_spam,
                 detect_stuck_analysing_issues, detect_multi_role_tasks,
-                detect_stalled_agent, detect_unlinked_issue_workspace):
+                detect_stalled_agent, detect_unlinked_issue_workspace,
+                detect_unblocked_issues):
         try:
             problems.extend(det(st))
         except Exception:
