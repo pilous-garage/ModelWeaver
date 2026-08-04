@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
+from modules.control.pause_flag import get_pause_store
+from AgentFrameWork.pause_flag_store import is_paused, wait_for_resume
 from AgentFrameWork.tool_executor import ToolExecutor
 
 logger = logging.getLogger("modelweaver.fsm")
@@ -87,6 +89,10 @@ def _strip_trailing_prose(text: str) -> str:
 
 class AgentAbort(Exception):
     """Levée par un signal_check (kill) pour interrompre le FSM."""
+
+
+class PauseSignalError(Exception):
+    """Levée par un signal_check (pause) pour mettre le FSM en attente."""
 
 
 class FSMResult:
@@ -196,6 +202,14 @@ class FSMInterpreter:
                     # Reprendre sans avancer l'étape
                     continue
 
+            # ── Pause globale projet/team/agent avant chaque step ──
+            project_id = result.variables.get("project_id")
+            team_name = result.variables.get("team_name")
+            agent_id = result.variables.get("agent_id")
+            if is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
+                wait_for_resume(project_id=project_id, team_name=team_name, agent_id=agent_id)
+                continue
+
             step = steps_by_id.get(current_id)
             if not step:
                 result.status = "failed"
@@ -255,6 +269,26 @@ class FSMInterpreter:
         except AgentAbort:
             result.status = "aborted"
             result.end_reason = "Interrompu par signal kill"
+
+    def _build_pause_check(self, variables: Dict[str, Any]) -> Any:
+        """Retourne un callable utilisé par le bridge pour interrompre/reprendre
+        les streams SSE selon le flag de pause partagé.
+
+        Le callable lit les identifiants depuis les variables d'exécution :
+        project_id, team_name, agent_id.
+        """
+        project_id = variables.get("project_id") or getattr(self, "_pause_project_id", None)
+        team_name = variables.get("team_name") or getattr(self, "_pause_team_name", None)
+        agent_id = variables.get("agent_id") or getattr(self, "_pause_agent_id", None)
+
+        def _check() -> bool:
+            return bool(is_paused(
+                project_id=str(project_id) if project_id else None,
+                team_name=str(team_name) if team_name else None,
+                agent_id=str(agent_id) if agent_id else None,
+            ))
+
+        return _check
 
     def _find_entry_point(self, steps: List[Dict]) -> Optional[str]:
         referenced = set()
