@@ -12,3 +12,4 @@ from services.api.handlers import catalogue_bundles
 from services.api.handlers import catalogue_tools
 from services.api.handlers import layouts
 from services.api.handlers import docker_handlers as dockerh
+from services.api.handlers import workspace
