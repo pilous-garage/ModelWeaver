@@ -975,6 +975,22 @@ class AgentManager:
         except Exception:
             return 0
 
+    def _agent_team_id(self, agent_id: int) -> int:
+        """team_id stable d'un agent = MIN(agent_id) de sa team (ou -1)."""
+        try:
+            row = self.db.conn.execute(
+                "SELECT name FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if not row or not row["name"].startswith("team:"):
+                return -1
+            team = row["name"].split("/")[0]
+            r = self.db.conn.execute(
+                "SELECT MIN(agent_id) AS mid FROM agents WHERE name LIKE ?",
+                (team + "/%",)).fetchone()
+            return r["mid"] if r and r["mid"] else -1
+        except Exception:
+            return -1
+
     def _has_unpushed(self, team_id: int) -> bool:
         """Vrai si la branche auto_code_<team_id> du repo central a des commits
         non encore poussés vers github (origin).
@@ -1296,8 +1312,12 @@ class AgentManager:
                     count += 1
                 elif rt:
                     # Réveiller l'intégrateur (merger) quand un workspace est
-                    # all-done : il doit faire le push final sur auto_code.
+                    # all-done ET qu'il y a des commits non poussés sur la
+                    # branche auto_code (sinon il boucle : réveil → push vide).
                     if rt == "merger" and all_done:
+                        _tid = self._agent_team_id(row["agent_id"])
+                        if not self._has_unpushed(_tid):
+                            continue
                         threading.Thread(target=self._run_sleeping_agent,
                                          args=(row["agent_id"], "wakeup: workspace done",
                                                next(iter(all_done))),
