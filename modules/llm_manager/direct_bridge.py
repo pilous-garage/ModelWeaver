@@ -929,8 +929,174 @@ class DirectBridge(BaseBridge):
                     temperature: float = 0.7,
                     max_tokens: Optional[int] = None,
                     system_prompt: Optional[str] = None,
+                    pause_check: Optional[Any] = None,
                     **params) -> Iterator[str]:
-        raise NotImplementedError("stream à implémenter")
+        """Streaming chunk par chunk avec vérification de pause optionnelle.
+
+        ``pause_check`` est un callable sans argument qui retourne True si une
+        pause est active. Dans ce cas, le générateur s'interrompt jusqu'à ce que
+        ``pause_check()`` redevienne False.
+        """
+        ep = self._get_endpoint(provider_ref)
+        api_type = ep.get("api_type", "openai")
+        if api_type == "gemini":
+            yield from self._gemini_chat_stream(
+                ep, provider_ref, model_ref, messages,
+                temperature, max_tokens, system_prompt,
+                pause_check=pause_check, **params)
+            return
+
+        model_id = _build_model_id(provider_ref, model_ref)
+        msgs = _build_messages(messages, system_prompt)
+        url = urljoin(ep["base_url"].rstrip("/") + "/", "chat/completions")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {ep.get('api_key', '')}" if ep.get('api_key') else "",
+            "User-Agent": _USER_AGENT,
+        }
+        body = {
+            "model": model_id,
+            "messages": msgs,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        tools = params.get("tools")
+        if tools:
+            body["tools"] = _build_tools_param(tools)
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={k: v for k, v in headers.items() if v},
+            method="POST",
+        )
+        _t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                buffer = ""
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        payload = line[6:]
+                    else:
+                        payload = line
+                    try:
+                        msg_obj = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = msg_obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    delta_content = delta.get("content") or ""
+                    if not delta_content:
+                        continue
+                    buffer += delta_content
+                    # Vérification de pause pendant le streaming
+                    if pause_check is not None:
+                        try:
+                            should_pause = pause_check()
+                        except Exception:
+                            should_pause = False
+                        if should_pause:
+                            logger.info("chat_stream interrompu par pause_check, attente...")
+                            while pause_check():
+                                time.sleep(0.2)
+                            logger.info("chat_stream repris après pause")
+                    yield delta_content
+            self._log_call(provider_ref, model_ref, True,
+                           (time.time() - _t0) * 1000.0,
+                           agent_id=params.get("agent_id"),
+                           call_type=params.get("call_type", "chat_stream"))
+        except Exception as exc:
+            err = _classify_exception(exc, provider_ref, model_ref)
+            self._mark_call_failed(provider_ref, model_ref, limit_type=err.limit_type,
+                                   provider_wide=(getattr(err.category, "value", "") == "auth"))
+            self._log_call(provider_ref, model_ref, False,
+                           (time.time() - _t0) * 1000.0,
+                           error_code=getattr(err.category, "value", str(err)[:100]),
+                           error_msg=getattr(err, "message", "") or str(exc),
+                           agent_id=params.get("agent_id"),
+                           call_type=params.get("call_type", "chat_stream"))
+            raise err
+
+    def _gemini_chat_stream(self, ep: dict, provider_ref: str, model_ref: str,
+                            messages: List[Dict[str, str]],
+                            temperature: float, max_tokens: Optional[int],
+                            system_prompt: Optional[str] = None,
+                            pause_check: Optional[Any] = None,
+                            **params) -> Iterator[str]:
+        """Streaming Gemini (best-effort)."""
+        base = ep.get("base_url", "https://generativelanguage.googleapis.com/v1beta")
+        api_key = ep.get("api_key") or ""
+        url = f"{base.rstrip('/')}/models/{model_ref}:streamGenerateContent?alt=sse"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+            "User-Agent": _USER_AGENT,
+        }
+        body = {"contents": []}
+        generation_config = {"temperature": temperature}
+        if max_tokens:
+            generation_config["maxOutputTokens"] = max_tokens
+        body["generationConfig"] = generation_config
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers=headers,
+            method="POST",
+        )
+        _t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    try:
+                        msg_obj = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    candidates = msg_obj.get("candidates") or []
+                    if not candidates:
+                        continue
+                    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+                    for part in parts:
+                        text = part.get("text")
+                        if text:
+                            if pause_check is not None:
+                                try:
+                                    should_pause = pause_check()
+                                except Exception:
+                                    should_pause = False
+                                if should_pause:
+                                    logger.info("gemini chat_stream interrompu par pause_check, attente...")
+                                    while pause_check():
+                                        time.sleep(0.2)
+                                    logger.info("gemini chat_stream repris après pause")
+                            yield text
+            self._log_call(provider_ref, model_ref, True,
+                           (time.time() - _t0) * 1000.0,
+                           agent_id=params.get("agent_id"),
+                           call_type=params.get("call_type", "chat_stream"))
+        except Exception as exc:
+            err = _classify_exception(exc, provider_ref, model_ref)
+            self._mark_call_failed(provider_ref, model_ref, limit_type=err.limit_type,
+                                   provider_wide=(getattr(err.category, "value", "") == "auth"))
+            self._log_call(provider_ref, model_ref, False,
+                           (time.time() - _t0) * 1000.0,
+                           error_code=getattr(err.category, "value", str(err)[:100]),
+                           error_msg=getattr(err, "message", "") or str(exc),
+                           agent_id=params.get("agent_id"),
+                           call_type=params.get("call_type", "chat_stream"))
+            raise err
 
     def _chat_stream_internal(self, *args, **kwargs) -> ChatResponse:
         raise NotImplementedError("stream à implémenter")
