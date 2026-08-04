@@ -1014,6 +1014,14 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         db.close()
     """
 
+    def check_health(self) -> bool:
+        """Vérifie que la connexion SQLite est ouverte et répond."""
+        try:
+            self.conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_local_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1142,6 +1150,14 @@ class CatalogueDB:
         cat.sync_from_url("http://localhost:8765/api")
         cat.close()
     """
+
+    def check_health(self) -> bool:
+        """Vérifie que la connexion SQLite est ouverte et répond."""
+        try:
+            self.conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
 
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_catalogue_db()
