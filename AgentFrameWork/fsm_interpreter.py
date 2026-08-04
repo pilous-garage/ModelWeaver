@@ -253,16 +253,12 @@ class FSMInterpreter:
 
     @staticmethod
     def _check_signals(signal_check, result: "FSMResult") -> None:
-        """Appelle le contrôleur de signaux ; traite AgentAbort (kill) et PauseSignalError (pause)."""
+        """Appelle le contrôleur de signaux ; traite AgentAbort (kill)."""
         try:
             signal_check(result)
         except AgentAbort:
             result.status = "aborted"
             result.end_reason = "Interrompu par signal kill"
-        except PauseSignalError as exc:
-            result._paused = True
-            result.status = "paused"
-            result.end_reason = str(exc) or "Pause active"
 
     def _build_pause_check(self, variables: Dict[str, Any]) -> Any:
         """Retourne un callable sans argument utilisé par le bridge pour
