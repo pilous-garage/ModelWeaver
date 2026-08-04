@@ -1,0 +1,11 @@
+name: gestion
+label: Gestion
+version: 1.0.0
+description: "Panels de gestion : outils, clés API, modèle, Docker, bundles, panneaux."
+panels:
+  - gestion-outils
+  - gestion-bundles
+  - gestion-cles-api
+  - gestion-catalogue-modeles
+  - docker-ressources
+  - gestion-panneaux

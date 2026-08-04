@@ -1,0 +1,12 @@
+name: installer
+label: Installateur
+version: 1.0.0
+description: "Panels pour installer, configurer et vérifier l'environnement ModelWeaver."
+# Un bundle est un GROUPEMENT de panels (pas de layout). Les panels peuvent
+# appartenir à plusieurs bundles. Chargés à la demande par le gestionnaire.
+panels:
+  - installator-dashboard
+  - installator-deps
+  - installator-file-queue
+  - installator-outils-installes
+  - gestion-panneaux

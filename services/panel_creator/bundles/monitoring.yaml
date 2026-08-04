@@ -1,0 +1,9 @@
+name: monitoring
+label: Monitoring
+version: 1.0.0
+description: "Panels de surveillance : projets, processus, LLM distant, ressources."
+panels:
+  - monitoring/projets
+  - monitoring/processus
+  - monitoring/llm-distant
+  - gestion-panneaux

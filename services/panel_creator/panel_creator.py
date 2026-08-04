@@ -28,12 +28,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from services._common import mw_home
+from typing import Optional
 
 # Dossiers
 PANELS_SRC = REPO_ROOT / "interfaces" / "main" / "GUI" / "official" / "gui" / "src" / "panels"
 DIST_DIR = mw_home() / "panels-dist"       # JS compilés servis par le daemon
 REGISTRY = mw_home() / "panels" / "index.json"  # registre des panels externes
 GUI_NODE_MODULES = REPO_ROOT / "interfaces" / "main" / "GUI" / "official" / "gui" / "node_modules"
+BUNDLES_DIR = Path(__file__).resolve().parent / "bundles"  # bundles de panels YAML
 
 # Dépendances partagées (fournies par la GUI hôte, pas bundlées)
 SHARED_DEPS = {"react", "react-dom"}
@@ -210,6 +212,85 @@ def add_panel(tsx_path: str) -> dict:
 def list_panels() -> list:
     """Liste les panels externes enregistrés (pour le daemon / GUI)."""
     return _load_registry()
+
+
+# ── Bundles de panels ────────────────────────────────────────────────
+
+
+def list_bundles() -> list:
+    """Liste les bundles de panels (groupements, pas de layout)."""
+    import yaml
+    bundles = []
+    for f in sorted(BUNDLES_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            bundles.append({
+                "name": data.get("name", f.stem),
+                "label": data.get("label", f.stem),
+                "version": data.get("version", "1.0.0"),
+                "description": data.get("description", ""),
+                "panels": data.get("panels", []),
+            })
+        except Exception as e:
+            bundles.append({"name": f.stem, "error": str(e), "panels": []})
+    return bundles
+
+
+def get_bundle(name: str) -> dict:
+    """Retourne un bundle par nom (ou None)."""
+    for b in list_bundles():
+        if b["name"] == name or b["label"] == name:
+            return b
+    return None
+
+
+def build_bundle(name: str, force: bool = False) -> dict:
+    """Compile les panels EXTERNES d'un bundle (les essentiels restent au
+    monolithe). Mise à jour du registre. Retourne un résumé par panel."""
+    bundle = get_bundle(name)
+    if not bundle:
+        return {"ok": False, "error": f"bundle inconnu: {name}"}
+    results = {"compiled": [], "skipped": [], "errors": []}
+    for pid in bundle["panels"]:
+        tsx = _find_panel_tsx(pid)
+        if tsx is None:
+            results["errors"].append({"id": pid, "error": "fichier .panel.tsx introuvable"})
+            continue
+        src = _extract_panel_source(tsx)
+        contract = validate_contract(src)
+        if contract["essential"]:
+            results["skipped"].append({"id": pid, "note": "essentiel (monolithe)"})
+            continue
+        if not contract["ok"]:
+            results["errors"].append({"id": pid, "error": contract["errors"]})
+            continue
+        out = DIST_DIR / f"{pid}.js"
+        if out.exists() and not force:
+            results["skipped"].append({"id": pid, "note": "déjà compilé"})
+            continue
+        res = compile_panel(tsx, out, external_deps=contract["shared_deps"])
+        if res["ok"]:
+            results["compiled"].append({"id": pid, "file": f"panels/{pid}.js",
+                                        "label": contract["label"], "version": contract["version"]})
+        else:
+            results["errors"].append({"id": pid, "error": res["error"]})
+    # Maj registre
+    if results["compiled"]:
+        registry = _load_registry()
+        registry = [r for r in registry if r.get("id") not in {c["id"] for c in results["compiled"]}]
+        registry.extend(results["compiled"])
+        _save_registry(registry)
+    return {"ok": not results["errors"], "bundle": name, **results}
+
+
+def _find_panel_tsx(pid: str) -> Optional[Path]:
+    """Retrouve le .panel.tsx par son id (cherche dans tout l'arbre panels)."""
+    for tsx in PANELS_SRC.rglob("*.panel.tsx"):
+        src = _extract_panel_source(tsx)
+        id_m = re.search(r'id\s*:\s*["\']([^"\']+)["\']', src)
+        if id_m and id_m.group(1) == pid:
+            return tsx
+    return None
 
 
 def status() -> dict:

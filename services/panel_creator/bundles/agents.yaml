@@ -1,0 +1,11 @@
+name: agents
+label: Agents & Équipes
+version: 1.0.0
+description: "Panels pour superviser les agents, l'équipe et le swarm."
+panels:
+  - agents-liste
+  - agents-monitoring
+  - agents-topologie
+  - agents-lanceur
+  - agents-composition-equipe
+  - gestion-panneaux
