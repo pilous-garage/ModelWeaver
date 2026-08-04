@@ -2,7 +2,7 @@ import React from 'react';
 import { InstallQueuePanel } from '../../panels/InstallQueuePanel.tsx';
 import type { PanelDef } from '../../types.ts';
 export const Panel: PanelDef = {
-  id: "installator-file-queue", label: "File d'installation", icon: "queue", version: "1.0.0",
+  id: "installator-file-queue", essential: true, label: "File d'installation", icon: "queue", version: "1.0.0",
   description: "File d'attente des installations",
   daemonRoutes: [
     { route: "jobs/list", methods: ["GET"], desc: "Liste des jobs" },

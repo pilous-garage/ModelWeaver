@@ -3,7 +3,7 @@ import { AgentSandboxIDE } from '../../components/AgentSandboxIDE.tsx';
 import type { PanelDef } from '../../types.ts';
 
 export const Panel: PanelDef = {
-  id: "sandbox-agent-ide",
+  id: "sandbox-agent-ide", essential: true,
   label: "Agent IDE",
   icon: "terminal",
   version: "1.0.0",

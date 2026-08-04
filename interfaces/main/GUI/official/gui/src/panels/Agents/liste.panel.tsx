@@ -2,7 +2,7 @@ import React from 'react';
 import { AgentsPanel } from '../../panels/AgentsPanel.tsx';
 import type { PanelDef } from '../../types.ts';
 export const Panel: PanelDef = {
-  id: "agents-liste", label: "Agents", icon: "smart_toy", version: "1.0.0",
+  id: "agents-liste", essential: true, label: "Agents", icon: "smart_toy", version: "1.0.0",
   description: "Liste et contrôle des agents actifs",
   daemonRoutes: [
     { route: "agent/list", methods: ["GET"], desc: "Liste des agents" },

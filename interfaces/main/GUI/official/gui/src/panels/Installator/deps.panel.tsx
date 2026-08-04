@@ -2,7 +2,7 @@ import React from 'react';
 import { DependenciesPanel } from '../../panels/DependenciesPanel.tsx';
 import type { PanelDef } from '../../types.ts';
 export const Panel: PanelDef = {
-  id: "installator-deps", label: "Dépendances", icon: "checklist", version: "1.0.0",
+  id: "installator-deps", essential: true, label: "Dépendances", icon: "checklist", version: "1.0.0",
   description: "Vérification et installation des dépendances système",
   daemonRoutes: [
     { route: "deps/check", methods: ["GET"], desc: "État des dépendances" },

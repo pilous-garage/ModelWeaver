@@ -3,10 +3,13 @@
 
 import type { PanelDef } from '../types.ts';
 
-// Découverte automatique des .panel.tsx
+// Architecture hybride :
+//  - panels ESSENTIELS (essential: true) → chargés ici (monolithe, bundle GUI)
+//  - panels EXTERNES (essential faux/absent) → compilés par panel-creator,
+//    chargés paresseusement via panels/loader.ts (import() à la demande)
 const registry: Record<string, PanelDef> = {};
 
-// Import dynamique des modules découverts
+// Import dynamique des modules découverts (eager = inclus dans le bundle)
 const panelContext = import.meta.glob('./**/*.panel.tsx', { eager: true });
 
 for (const [path, mod] of Object.entries(panelContext)) {
@@ -19,7 +22,11 @@ for (const [path, mod] of Object.entries(panelContext)) {
     console.error(`[panels] ERREUR: id="${panel.id}" en conflit (${path})`);
     continue;
   }
-  registry[panel.id] = panel;
+  // Ne garder au monolithe que les panels essentiels ; les non-essentiels
+  // restent DISPONIBLES ici (au cas où) mais sont surtout chargés à la demande.
+  if (panel.essential !== false) {
+    registry[panel.id] = panel;
+  }
 }
 
 export const PANEL_REGISTRY: Record<string, PanelDef> = registry;

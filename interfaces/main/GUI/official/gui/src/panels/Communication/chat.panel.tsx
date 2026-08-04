@@ -2,7 +2,7 @@ import React from 'react';
 import { ChatPanel } from '../../panels/ChatPanel.tsx';
 import type { PanelDef } from '../../types.ts';
 export const Panel: PanelDef = {
-  id: "communication-chat", label: "Chat", icon: "chat", version: "1.0.0",
+  id: "communication-chat", essential: true, label: "Chat", icon: "chat", version: "1.0.0",
   description: "Session de chat avec un LLM",
   daemonRoutes: [
     { route: "chat/session/list", methods: ["GET"], desc: "Liste des sessions" },

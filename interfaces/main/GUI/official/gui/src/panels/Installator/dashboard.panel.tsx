@@ -6,6 +6,7 @@ export const Panel: PanelDef = {
   id: "installator-dashboard",
   label: "Dashboard",
   icon: "dashboard",
+  essential: true,
   version: "1.0.0",
   description: "Panneau principal de l'installateur",
   daemonRoutes: [
