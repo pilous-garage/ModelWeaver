@@ -264,6 +264,26 @@ class FSMInterpreter:
             result.status = "paused"
             result.end_reason = str(exc) or "Pause active"
 
+    def _build_pause_check(self, variables: Dict[str, Any]) -> Any:
+        """Retourne un callable sans argument utilisé par le bridge pour
+        interrompre/reprendre les streams SSE selon le flag de pause partagé.
+
+        Le callable lit les identifiants depuis les variables d'exécution :
+        project_id, team_name, agent_id.
+        """
+        project_id = variables.get("project_id") or getattr(self, "_pause_project_id", None)
+        team_name = variables.get("team_name") or getattr(self, "_pause_team_name", None)
+        agent_id = variables.get("agent_id") or getattr(self, "_pause_agent_id", None)
+
+        def _check() -> bool:
+            return bool(is_paused(
+                project_id=str(project_id) if project_id else None,
+                team_name=str(team_name) if team_name else None,
+                agent_id=str(agent_id) if agent_id else None,
+            ))
+
+        return _check
+
     def _find_entry_point(self, steps: List[Dict]) -> Optional[str]:
         referenced = set()
         for s in steps:
