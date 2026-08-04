@@ -23,7 +23,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from services._common import mw_home
 

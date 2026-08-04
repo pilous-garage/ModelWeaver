@@ -89,6 +89,10 @@ class AgentAbort(Exception):
     """Levée par un signal_check (kill) pour interrompre le FSM."""
 
 
+class PauseSignalError(Exception):
+    """Levée par un signal_check (pause) pour mettre le FSM en attente."""
+
+
 class FSMResult:
     """Résultat d'exécution du FSM."""
 
@@ -249,12 +253,16 @@ class FSMInterpreter:
 
     @staticmethod
     def _check_signals(signal_check, result: "FSMResult") -> None:
-        """Appelle le contrôleur de signaux ; traite AgentAbort (kill)."""
+        """Appelle le contrôleur de signaux ; traite AgentAbort (kill) et PauseSignalError (pause)."""
         try:
             signal_check(result)
         except AgentAbort:
             result.status = "aborted"
             result.end_reason = "Interrompu par signal kill"
+        except PauseSignalError as exc:
+            result._paused = True
+            result.status = "paused"
+            result.end_reason = str(exc) or "Pause active"
 
     def _find_entry_point(self, steps: List[Dict]) -> Optional[str]:
         referenced = set()
