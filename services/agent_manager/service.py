@@ -1007,13 +1007,21 @@ class AgentManager:
                         from modules.sql.workspace import WorkspaceDB
                         _wdb = WorkspaceDB()
                         _team_name = name.split("/")[0] if name.startswith("team:") else ""
+                        # 1) match EXACT du director = team_name (le workspace
+                        # du manifest de la team) — sinon un workspace d'issue
+                        # qui porte le même director est pris à la place.
                         _ws = _wdb.conn.execute(
                             "SELECT workspace_id FROM workspaces "
                             "WHERE director = ?", (_team_name,)).fetchone()
+                        # 2) sinon le plus ANCIEN workspace lié (le repo central
+                        # a été créé en premier) — évite de prendre un workspace
+                        # d'issue créé par un agent de la team.
                         if not _ws:
                             _ws = _wdb.conn.execute(
                                 "SELECT workspace_id FROM workspaces "
-                                "WHERE director LIKE ?", (_team_name + "%",)).fetchone()
+                                "WHERE director LIKE ? "
+                                "ORDER BY created_at ASC LIMIT 1",
+                                (_team_name + "%",)).fetchone()
                         vars_j["project_id"] = _ws["workspace_id"] if _ws else workspace_id
                         _wdb.close()
                     except Exception:

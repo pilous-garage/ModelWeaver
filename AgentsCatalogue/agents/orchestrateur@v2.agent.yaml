@@ -87,7 +87,6 @@ entrypoints:
         project_id: "{{project_id}}"
         branch: "auto_code_{{team_id}}"
         agent_id: "{{agent_id}}"
-      on_error: push_auto
       next: end
     - id: fail
       type: end
