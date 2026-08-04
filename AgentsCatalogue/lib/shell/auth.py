@@ -1,13 +1,29 @@
-"""Auth — VFS bounds, command whitelist, lib_système translator, and pkill authorization."""
+"""Auth — VFS bounds, command whitelist, lib_système translator, and pkill authorization.
+
+This module has been refactored to support **dynamic, role-based permissions**
+via :class:`~permission_engine.PermissionEngine`.  The legacy fixed whitelist
+API (``allowed_commands`` set) is still fully supported for backward
+compatibility — when a caller passes ``allowed_commands`` directly, it is
+wrapped into a single-role permission config.
+"""
 
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Pattern, Set, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Set, Tuple, Union
+
+from .permission_config import (
+    DEFAULT_COMMANDS,
+    DEFAULT_ROLE,
+    DEFAULT_ROLE_HIERARCHY,
+    PermissionConfig,
+    PermissionConfigLoader,
+)
+from .permission_engine import PermissionEngine
 
 
-# ── VFS bounds ──────────────────────────────────────────────
+# ── VFS bounds ──────────────────────────────────────────────────────────
 
 class VFSPathError(ValueError):
     """Tentative d'accès en dehors du VFS autorisé."""
@@ -17,12 +33,44 @@ class AuthorizationError(ValueError):
     """Tentative d'opération non autorisée (pskill, etc.)."""
 
 
+# ── ShellAuth ───────────────────────────────────────────────────────────
+
 class ShellAuth:
-    """Contrôle d'accès VFS + whitelist commande + traduction système + autorisation pkill."""
+    """Contrôle d'accès VFS + whitelist commande + traduction système + autorisation pkill.
+
+    Parameters
+    ----------
+    home_root :
+        Racine absolue du VFS de l'agent.
+    allowed_roots :
+        Racines VFS supplémentaires autorisées (au-delà de home_root).
+    allowed_commands :
+        *Legacy* — whitelist fixe de commandes.  Quand fourni, crée un
+        :class:`PermissionEngine` en mode legacy (tous les rôles partagent
+        ce même ensemble).  Ignoré si *permission_engine* ou *permission_config*
+        est fourni.
+    permission_engine :
+        Un :class:`PermissionEngine` pré-configuré.  Prise en priorité sur
+        *permission_config* et *allowed_commands*.
+    permission_config :
+        Chemin vers un fichier de config (JSON/YAML) ou une instance de
+        :class:`PermissionConfig`.  Utilisé pour créer un
+        :class:`PermissionEngine` si *permission_engine* n'est pas fourni.
+    cache_ttl :
+        TTL (secondes) du cache du moteur de permissions.
+    agent_id :
+        Identifiant de l'agent utilisant ce shell.
+    team_id :
+        Identifiant de la team de l'agent.
+    role :
+        Rôle de l'agent dans la team : ``member``, ``leader``, ``owner``
+        (pour pkill) **ou** ``admin``, ``dev``, ``user`` (pour les
+        permissions de commandes).  Par défaut ``"member"``.
+    """
 
     # Répertoires VFS autorisés (absolus)
     allowed_roots: List[Path]
-    # Whitelist de commandes autorisées en fallback (système)
+    # Whitelist de commandes autorisées en fallback (système) — legacy
     allowed_commands: Set[str]
     # Identité de l'agent utilisant ce shell
     agent_id: Optional[str]
@@ -39,6 +87,9 @@ class ShellAuth:
         agent_id: Optional[str] = None,
         team_id: Optional[str] = None,
         role: str = "member",
+        permission_engine: Optional[PermissionEngine] = None,
+        permission_config: Optional[Union[str, PermissionConfig]] = None,
+        cache_ttl: float = 60.0,
     ):
         self.home_root = home_root.resolve()
         self.allowed_roots = (
@@ -48,25 +99,101 @@ class ShellAuth:
         root_set.add(self.home_root)
         self.allowed_roots = sorted(root_set)
 
-        self.allowed_commands = allowed_commands or self._default_command_whitelist()
         self.agent_id = agent_id
         self.team_id = team_id
         self.role = role
 
+        # ── Permission engine setup ──────────────────────────────
+        if permission_engine is not None:
+            self._permission_engine: PermissionEngine = permission_engine
+        elif permission_config is not None:
+            self._permission_engine = PermissionEngine(
+                config=permission_config, cache_ttl=cache_ttl
+            )
+        elif allowed_commands is not None:
+            # Legacy mode: wrap the set into a PermissionEngine
+            self._permission_engine = PermissionEngine(
+                allowed_commands=allowed_commands, cache_ttl=cache_ttl
+            )
+        else:
+            # Default: load from the shipped permissions.yaml, fallback to
+            # DEFAULT_COMMANDS if the file is missing.
+            default_config_path = Path(__file__).parent / "permissions.yaml"
+            if default_config_path.exists():
+                self._permission_engine = PermissionEngine(
+                    config=str(default_config_path), cache_ttl=cache_ttl
+                )
+            else:
+                self._permission_engine = PermissionEngine(
+                    allowed_commands=set(DEFAULT_COMMANDS), cache_ttl=cache_ttl
+                )
+
+        # ── Backward-compatible allowed_commands property ──────────
+        # Expose the effective command set as a set for legacy callers
+        # that read ``auth.allowed_commands`` directly.
+        self.allowed_commands = self._permission_engine.get_allowed_commands(
+            self._resolve_permission_role()
+        )
+
+    # ── Role resolution ────────────────────────────────────────────────
+
+    def _resolve_permission_role(self) -> str:
+        """Map the team role to a permission role.
+
+        Team roles (``member``, ``leader``, ``owner``) are mapped to
+        permission roles (``user``, ``dev``, ``admin``) based on
+        privilege level.  If the role already matches a permission role,
+        it is used directly.
+        """
+        # Direct permission-role match
+        if self.role in DEFAULT_ROLE_HIERARCHY:
+            return self.role
+
+        # Map team roles to permission roles
+        role_map = {
+            "member": "user",
+            "leader": "dev",
+            "owner": "admin",
+        }
+        return role_map.get(self.role, DEFAULT_ROLE)
+
+    # ── Permission engine access ───────────────────────────────────────
+
+    @property
+    def permission_engine(self) -> PermissionEngine:
+        """The :class:`PermissionEngine` used by this auth instance."""
+        return self._permission_engine
+
+    def get_permission_role(self) -> str:
+        """Return the permission role derived from the team role."""
+        return self._resolve_permission_role()
+
+    def is_allowed(self, command: str) -> bool:
+        """Check whether the current agent's role can execute *command*.
+
+        This is the primary permission-checking method.  It delegates
+        to :meth:`PermissionEngine.is_allowed` with the resolved
+        permission role.
+        """
+        return self._permission_engine.is_allowed(
+            self._resolve_permission_role(), command
+        )
+
+    # ── Legacy whitelist (backward-compatible) ───────────────────────
+
     @staticmethod
     def _default_command_whitelist() -> Set[str]:
-        return {
-            "echo", "cat", "head", "tail", "grep", "find", "sed", "awk",
-            "sort", "uniq", "wc", "diff", "patch", "mkdir", "rmdir", "rm",
-            "cp", "mv", "touch", "ln", "chmod", "chown", "ps", "kill",
-            "pskill", "top", "env", "which", "uname", "date", "hostname",
-            "whoami", "id", "clear", "sleep", "type", "true", "false",
-            "exit", "help", "alias", "source", "export", "unset",
-            "cut", "tr", "paste", "join", "split", "xargs",
-            "git", "python3", "python", "pytest",
-        }
+        return set(DEFAULT_COMMANDS)
 
-    # ── autorisation pkill ──────────────────────
+    def reload_permissions(self) -> None:
+        """Force a reload of the permission configuration and clear cache."""
+        self._permission_engine.reload()
+        # Refresh the backward-compatible view
+        self.allowed_commands = self._permission_engine.get_allowed_commands(
+            self._resolve_permission_role()
+        )
+
+    # ── pkill authorization ─────────────────────────────────────────────
 
     def can_kill_process(
         self,
@@ -108,7 +235,7 @@ class ShellAuth:
                 f"(agent={target_agent_id}, team={target_team_id})"
             )
 
-    # ── demande d'autorisation ─────────────────────
+    # ── demande d'autorisation ─────────────────────────────────────────
 
     def submit_authorization_request(
         self,
@@ -139,17 +266,7 @@ class ShellAuth:
         )
         return request_handler.submit(req)
 
-    @staticmethod
-    def _default_command_whitelist() -> Set[str]:
-        return {
-            "echo", "cat", "head", "tail", "grep", "find", "sed", "awk",
-            "sort", "uniq", "wc", "diff", "patch", "mkdir", "rm", "cp", "mv",
-            "touch", "ln", "chmod", "chown", "ps", "kill", "top", "env",
-            "which", "uname", "date", "hostname", "whoami", "id",
-            "git", "python3", "python", "pytest",
-        }
-
-    # ── vérification VFS ──────────────────────────────
+    # ── VFS verification ────────────────────────────────────────────────
 
     def check_path(self, target: Path) -> Path:
         """Valide que target est dans un répertoire VFS autorisé.
@@ -173,14 +290,30 @@ class ShellAuth:
         except ValueError:
             return False
 
-    # ── whitelist commande ─────────────────────────────
+    # ── command whitelist (backward-compatible API) ──────────────────
 
     def is_command_allowed(self, cmd: str) -> bool:
+        """Check whether *cmd* is allowed for the current agent's role.
+
+        .. deprecated::
+            Prefer :meth:`is_allowed` which delegates to the
+            :class:`PermissionEngine`.  This method is kept for
+            backward compatibility with existing callers (e.g. the
+            executor's ``_run_fallback``).
+        """
         base = cmd.split(" ")[0] if " " in cmd else cmd
         base = base.split("|")[0].strip()
-        return base in self.allowed_commands
+        return self._permission_engine.is_allowed(
+            self._resolve_permission_role(), base
+        )
 
-    # ── traduction système (lib_système) ──────────────
+    def get_allowed_commands(self) -> Set[str]:
+        """Return the full set of commands allowed for the current role."""
+        return self._permission_engine.get_allowed_commands(
+            self._resolve_permission_role()
+        )
+
+    # ── système translation (lib_système) ──────────────────────────────
 
     def translate(self, cmd: str) -> Tuple[str, List[str]]:
         """Traduit une commande shell en (exécutable, args) multi-plateforme.
@@ -231,7 +364,7 @@ class ShellAuth:
             }
         return {}
 
-    # ── lib_système : chargement dynamique ──────────────
+    # ── lib_système : chargement dynamique ────────────────────────────
 
     def load_system_lib(self, cmd: str) -> Optional[str]:
         """Tente de charger la lib_système pour la commande.
@@ -248,7 +381,7 @@ class ShellAuth:
             return str(candidate)
         return None
 
-    # ── utilitaires internes ──────────────────────────
+    # ── utilitaires internes ───────────────────────────────────────────
 
     def _tokenize(self, cmd: str) -> List[str]:
         """Tokenisation basique (gère guillemets)."""
@@ -275,3 +408,16 @@ class ShellAuth:
         if current:
             tokens.append(current)
         return tokens
+
+
+__all__ = [
+    "ShellAuth",
+    "VFSPathError",
+    "AuthorizationError",
+    "PermissionEngine",
+    "PermissionConfig",
+    "PermissionConfigLoader",
+    "DEFAULT_ROLE_HIERARCHY",
+    "DEFAULT_ROLE",
+    "DEFAULT_COMMANDS",
+]
