@@ -10,6 +10,10 @@ Le flag effectif pour un agent est la fusion OR de :
 
 Persistance : SQLite WAL partagé dans le home ModelWeaver.
 Threadsafe : un seul writer par opération, lecture sans lock bloquant.
+
+Mécanisme de notification :
+  Un `threading.Condition` global est utilisé pour réveiller les agents
+  en attente dès qu'un flag de pause change (pause ou resume).
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from services._common import mw_home
 
 _DB_PATH = mw_home() / "pause_flags.db"
 _WRITE_LOCK = threading.Lock()
+_pause_cond = threading.Condition(_WRITE_LOCK)
 
 
 def _connect() -> sqlite3.Connection:
@@ -56,7 +61,7 @@ def set_paused(level: str, ref: str, paused: bool) -> None:
     ref = str(ref).strip()
     if level not in {"project", "team", "agent"}:
         raise ValueError(f"Niveau de pause invalide: {level}")
-    with _WRITE_LOCK:
+    with _pause_cond:
         conn = _connect()
         try:
             conn.execute(
@@ -75,11 +80,7 @@ def set_paused(level: str, ref: str, paused: bool) -> None:
                 conn.close()
             except Exception:
                 pass
-    try:
-        from AgentFrameWork.pause_notifier import PauseNotifier
-        PauseNotifier.get_instance().notify_all()
-    except Exception:
-        pass
+        _pause_cond.notify_all()
 
 
 def get_paused(level: str, ref: str) -> bool:
@@ -119,6 +120,29 @@ def is_paused(project_id: Optional[str] = None,
     return any(checks)
 
 
+def wait_for_resume(project_id: Optional[str] = None,
+                    team_name: Optional[str] = None,
+                    agent_id: Optional[str | int] = None,
+                    poll_interval: float = 0.25,
+                    timeout: Optional[float] = None) -> bool:
+    """Bloque tant que le flag de pause est actif, puis se réveille à la
+    première notification de changement.
+
+    Retourne True si le flag a été désactivé, False si timeout atteint.
+    """
+    deadline = (time.time() + timeout) if timeout else None
+    with _pause_cond:
+        while is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                _pause_cond.wait(timeout=min(poll_interval, remaining))
+            else:
+                _pause_cond.wait(timeout=poll_interval)
+        return True
+
+
 def wait_while_paused(project_id: Optional[str] = None,
                       team_name: Optional[str] = None,
                       agent_id: Optional[str | int] = None,
@@ -128,12 +152,13 @@ def wait_while_paused(project_id: Optional[str] = None,
     Utilisé par le FSM et le bridge pour mettre en attente les streams.
     """
     while is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
-        time.sleep(poll_interval)
+        with _pause_cond:
+            _pause_cond.wait(timeout=poll_interval)
 
 
 def clear_all() -> None:
     """Réinitialise tous les flags (principalement pour tests)."""
-    with _WRITE_LOCK:
+    with _pause_cond:
         conn = _connect()
         try:
             conn.execute("DELETE FROM pause_flags")
@@ -143,3 +168,4 @@ def clear_all() -> None:
                 conn.close()
             except Exception:
                 pass
+        _pause_cond.notify_all()
