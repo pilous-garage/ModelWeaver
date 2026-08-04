@@ -1,0 +1,4 @@
+1. Revue du code : vérifier que la route /v1/health utilise bien les modules de domaine refactorés et non db.py directement.
+2. Vérifier le format de réponse JSON.
+3. Valider les cas d’erreur (base indisponible → status degraded).
+4. Commit sur la branche auto_code et push.
