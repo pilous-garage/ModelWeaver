@@ -15,6 +15,12 @@ disque :
 
 Fallback headless (serveur sans D-Bus) : même structure mais fichier chiffré
 Fernet dans ~/.modelweaver/, clé dérivée du machine-id.
+
+Sécurité — TODO #0.11 :
+  Le fichier `~/.modelweaver/api.token` est un relicat historique stockant un
+  jeton en clair. Il DOIT être supprimé à la version 0.11. Toute migration
+  depuis ce fichier doit utiliser le keyring OS ou le fallback chiffré ci-dessus.
+  Ne jamais réintroduire de stockage en clair sur disque.
 """
 
 import os
