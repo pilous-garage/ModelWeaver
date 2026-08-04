@@ -1,0 +1,1398 @@
+#!/usr/bin/env python3
+"""ModelWeaver — Data Access Layer (repositories locaux).
+
+Repositories pour les bases modelweaver.db, agents.db et runtime.db.
+Les modules métier n'écrivent jamais de SQL directement.
+"""
+
+import json
+import sqlite3
+import uuid
+import os
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+from modules.sql.migrations import MigrationManager
+from services._common import mw_home
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
+def _ref(prefix: str = "key") -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+def _project_root() -> Path:
+    return Path.home()
+
+
+def _default_local_db() -> Path:
+    return mw_home() / "modelweaver.db"
+
+
+def _default_agents_db() -> Path:
+    return mw_home() / "agents.db"
+
+
+def _default_runtime_db() -> Path:
+    return mw_home() / "runtime.db"
+
+
+# ──────────────────────────────────────────────
+#  Utility
+# ──────────────────────────────────────────────
+
+def _row_to_dict(row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _rows_to_list(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+#  Refresh paresseux de la GUI : signal par DB, pas par table
+# ──────────────────────────────────────────────
+
+def read_db_version(conn) -> int:
+    """PRAGMA data_version : entier incrémenté à chaque écriture sur le fichier.
+
+    La GUI poll ce compteur par DB à 20 Hz ; s'il change, elle rafraîchit les
+    panneaux du domaine correspondant. Pas besoin de triggers par table.
+    """
+    try:
+        return conn.execute("PRAGMA data_version").fetchone()[0]
+    except Exception:
+        return 0
+
+
+def read_meta(conn, key: str, default: int = 0) -> int:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return int(row[0]) if row else default
+    except Exception:
+        return default
+
+
+def bump_meta(conn, key: str, commit: bool = True) -> None:
+    """Incrémente une clé de méta (ex: 'dependencies') pour signaler un changement
+    non stocké en table (dépendances système calculées live)."""
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?,1) "
+        "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+        (key,),
+    )
+    if commit:
+        conn.commit()
+
+
+# ──────────────────────────────────────────────
+#  Helpers classes_outils (taxonomie métier)
+# ──────────────────────────────────────────────
+
+# Mapping par_ref → classe métier (utilisé pour backfill automatique
+# quand un outil arrive sans classe_outil_id renseigné, ex: legacy seed).
+_DEFAULT_CLASS_MAP = {
+    "opencode": "agent",
+    "litellm": "router",
+    "keyring": "context",
+    "ollama": "engine",
+    # binaires système détectés
+    "python3": "language",
+    "git": "dev-tool",
+    "curl": "dev-tool",
+    "open-webui": "chat-llm",
+    "gitingest": "context",
+    "requests": "dev-tool",
+    "psutil": "system",
+    "cryptography": "dev-tool",
+}
+
+
+def _ensure_classes_outils_table(conn) -> None:
+    """Crée classes_outils + seed si la table n'existe pas encore.
+
+    Idempotent : appelé par _ensure_schema() du catalogue et du local.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='classes_outils'"
+    ).fetchone()
+    if exists:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS classes_outils (
+            classe_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            ref         TEXT UNIQUE NOT NULL,
+            nom         TEXT NOT NULL,
+            description TEXT,
+            sort_order  INTEGER DEFAULT 0,
+            created_at  INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+    """)
+    conn.executemany(
+        "INSERT OR IGNORE INTO classes_outils (ref, nom, description, sort_order) VALUES (?,?,?,?)",
+        [
+            ("language", "Languages",       "Interpréteurs et compilateurs",            10),
+            ("dev-tool", "Dev Tools",       "Outils de développement",                 20),
+            ("ide",      "IDEs",            "Environnements de développement intégrés", 30),
+            ("chat-llm", "Chat LLM",        "Interfaces de chat avec les LLM",         40),
+            ("agent",    "Agents",          "Orchestrateurs IA autonomes",             50),
+            ("engine",   "LLM Engines",     "Moteurs d'exécution locale de LLM",       60),
+            ("router",   "Routers",         "Passerelles et proxy LLM",               70),
+            ("context",  "Context Tools",   "Gestion du contexte et secrets",          80),
+            ("system",   "System Tools",    "Utilitaires système",                     90),
+            ("other",    "Other",           "Autres outils",                           999),
+        ],
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_classes_outils_ref ON classes_outils(ref)"
+    )
+
+
+def _add_column_if_missing(conn, table: str, column: str, decl: str) -> None:
+    """ALTER TABLE idempotent : ajoute `column` à `table` si elle n'existe pas.
+
+    `decl` est la définition SQL de la colonne (ex: 'INTEGER REFERENCES ...').
+    """
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def resolve_classe_id(conn, classe_ref: Optional[str]) -> Optional[int]:
+    """Traduit une ref de classe (ex: 'agent') en classe_id.
+
+    Retourne None si classe_ref est None/empty ou si la classe n'existe pas.
+    Crée la table classes_outils si absente (résilience).
+    """
+    if not classe_ref:
+        return None
+    _ensure_classes_outils_table(conn)
+    row = conn.execute(
+        "SELECT classe_id FROM classes_outils WHERE ref=?", (classe_ref,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _default_class_for_ref(ref: str) -> str:
+    """Retourne la classe métier par défaut pour un ref, 'other' sinon."""
+    return _DEFAULT_CLASS_MAP.get(ref, "other")
+
+
+# ──────────────────────────────────────────────
+#  Repositories
+# ──────────────────────────────────────────────
+
+class ProviderRepository:
+    """Fournisseurs API + liens provider_models."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self, provider_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        if provider_type:
+            cur = self.conn.execute(
+                "SELECT * FROM providers WHERE provider_type = ? ORDER BY name",
+                (provider_type,)
+            )
+        else:
+            cur = self.conn.execute("SELECT * FROM providers ORDER BY name")
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM providers WHERE ref = ?", (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def get_by_id(self, pid: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM providers WHERE id = ?", (pid,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        ref = data.get("ref")
+        existing = None
+        if ref:
+            cur = self.conn.execute("SELECT id FROM providers WHERE ref = ?", (ref,))
+            existing = cur.fetchone()
+
+        if existing:
+            self.conn.execute("""
+                UPDATE providers SET name=?, provider_type=?, api_type=?,
+                    website=?, limits_json=?, rate_limits_json=?,
+                    next_reset_at=?, is_free_tier_provider=?,
+                    updated_at=strftime('%s','now')
+                WHERE id=?
+            """, (
+                data.get("name"), data.get("provider_type"),
+                data.get("api_type"), data.get("website"),
+                data.get("limits_json"), data.get("rate_limits_json"),
+                data.get("next_reset_at"), data.get("is_free_tier_provider", 0),
+                existing["id"]
+            ))
+            return existing["id"]
+
+        cur = self.conn.execute("""
+            INSERT INTO providers (ref, name, provider_type, api_type, website,
+                limits_json, rate_limits_json, next_reset_at, is_free_tier_provider, catalogue_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ref or _ref("prov"), data.get("name"), data.get("provider_type", "cloud"),
+            data.get("api_type"), data.get("website"),
+            data.get("limits_json"), data.get("rate_limits_json"),
+            data.get("next_reset_at"), data.get("is_free_tier_provider", 0),
+            data.get("catalogue_ref")
+        ))
+        return cur.lastrowid
+
+    def delete(self, ref: str) -> bool:
+        cur = self.conn.execute("DELETE FROM providers WHERE ref = ?", (ref,))
+        return cur.rowcount > 0
+
+    def get_provider_models(self, provider_ref: str) -> List[Dict[str, Any]]:
+        cur = self.conn.execute("""
+            SELECT pm.*, m.ref as model_ref, m.name as model_name, m.developer
+            FROM provider_models pm
+            JOIN providers p ON p.id = pm.provider_id
+            JOIN models m ON m.id = pm.model_id
+            WHERE p.ref = ?
+            ORDER BY m.name
+        """, (provider_ref,))
+        return _rows_to_list(cur.fetchall())
+
+    def get_full_details(self, model_ref: Optional[str] = None,
+                         provider_ref: Optional[str] = None) -> List[Dict[str, Any]]:
+        query = """
+            SELECT p.ref as provider_ref, p.name as provider_name, p.provider_type,
+                   p.api_type, p.limits_json as provider_limits,
+                   m.ref as model_ref, m.name as model_name, m.developer,
+                   m.architecture, m.parameter_count, m.modality, m.target_use,
+                   pm.provider_model_name, pm.context_window_tokens,
+                   pm.cost_per_input_token, pm.cost_per_output_token, pm.cost_billing,
+                   pm.pricing_rules_json, pm.limits_json, pm.rate_limits_json,
+                   pm.status as model_status, pm.next_reset_at
+            FROM provider_models pm
+            JOIN providers p ON p.id = pm.provider_id
+            JOIN models m ON m.id = pm.model_id
+            WHERE 1=1
+        """
+        params = []
+        if model_ref:
+            query += " AND m.ref = ?"
+            params.append(model_ref)
+        if provider_ref:
+            query += " AND p.ref = ?"
+            params.append(provider_ref)
+        query += " ORDER BY p.name, m.name"
+
+        cur = self.conn.execute(query, params)
+        return _rows_to_list(cur.fetchall())
+
+
+class ModelRepository:
+    """Modèles purs (indépendants des fournisseurs)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self, developer: Optional[str] = None,
+                 modality: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses = []
+        params = []
+        if developer:
+            clauses.append("developer = ?")
+            params.append(developer)
+        if modality:
+            clauses.append("modality = ?")
+            params.append(modality)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        cur = self.conn.execute(f"SELECT * FROM models{where} ORDER BY name", params)
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM models WHERE ref = ?", (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def get_by_id(self, mid: int) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM models WHERE id = ?", (mid,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        ref = data.get("ref")
+        existing = None
+        if ref:
+            cur = self.conn.execute("SELECT id FROM models WHERE ref = ?", (ref,))
+            existing = cur.fetchone()
+
+        if existing:
+            self.conn.execute("""
+                UPDATE models SET name=?, developer=?, release_year=?, architecture=?,
+                    parameter_count=?, modality=?, target_use=?, license=?,
+                    is_open_weights=?, parent_model_id=?, metadata_json=?,
+                    updated_at=strftime('%s','now')
+                WHERE id=?
+            """, (
+                data.get("name"), data.get("developer"), data.get("release_year"),
+                data.get("architecture"), data.get("parameter_count"),
+                data.get("modality"), data.get("target_use"), data.get("license"),
+                data.get("is_open_weights", 0), data.get("parent_model_id"),
+                data.get("metadata_json"), existing["id"]
+            ))
+            return existing["id"]
+
+        cur = self.conn.execute("""
+            INSERT INTO models (ref, name, developer, release_year, architecture,
+                parameter_count, modality, target_use, license, is_open_weights,
+                parent_model_id, catalogue_ref, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ref or _ref("model"), data.get("name"), data.get("developer"),
+            data.get("release_year"), data.get("architecture"),
+            data.get("parameter_count"), data.get("modality"),
+            data.get("target_use"), data.get("license"),
+            data.get("is_open_weights", 0), data.get("parent_model_id"),
+            data.get("catalogue_ref"), data.get("metadata_json")
+        ))
+        return cur.lastrowid
+
+    def search(self, query: str, modality: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Recherche textuelle sur les noms, refs et développeurs."""
+        clauses = ["(name LIKE ? OR ref LIKE ? OR developer LIKE ?)"]
+        params = [f"%{query}%", f"%{query}%", f"%{query}%"]
+        if modality:
+            clauses.append("modality = ?")
+            params.append(modality)
+        where = " WHERE " + " AND ".join(clauses)
+        cur = self.conn.execute(f"SELECT * FROM models{where} ORDER BY name LIMIT 50", params)
+        return _rows_to_list(cur.fetchall())
+
+    def link_provider(self, provider_id: int, model_id: int,
+                      provider_model_name: str, extra: Optional[Dict] = None) -> int:
+        """Crée ou met à jour un lien provider→modèle."""
+        cur = self.conn.execute(
+            "SELECT id FROM provider_models WHERE provider_id = ? AND model_id = ?",
+            (provider_id, model_id)
+        )
+        existing = cur.fetchone()
+        if existing:
+            self.conn.execute("""
+                UPDATE provider_models SET provider_model_name=?, context_window_tokens=?,
+                    max_output_tokens=?, cost_per_input_token=?, cost_per_output_token=?,
+                    cost_billing=?, pricing_rules_json=?, limits_json=?,
+                    rate_limits_json=?, metadata_json=?, available=?, updated_at=strftime('%s','now')
+                WHERE id=?
+            """, (
+                provider_model_name,
+                (extra or {}).get("context_window_tokens"),
+                (extra or {}).get("max_output_tokens"),
+                (extra or {}).get("cost_per_input_token"),
+                (extra or {}).get("cost_per_output_token"),
+                (extra or {}).get("cost_billing"),
+                (extra or {}).get("pricing_rules_json"),
+                (extra or {}).get("limits_json"),
+                (extra or {}).get("rate_limits_json"),
+                (extra or {}).get("metadata_json"),
+                (extra or {}).get("available", 1),
+                existing["id"]
+            ))
+            return existing["id"]
+
+        cur = self.conn.execute("""
+            INSERT INTO provider_models (provider_id, model_id, provider_model_name,
+                context_window_tokens, max_output_tokens, cost_per_input_token,
+                cost_per_output_token, cost_billing, pricing_rules_json,
+                limits_json, rate_limits_json, metadata_json, available)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            provider_id, model_id, provider_model_name,
+            (extra or {}).get("context_window_tokens"),
+            (extra or {}).get("max_output_tokens"),
+            (extra or {}).get("cost_per_input_token"),
+            (extra or {}).get("cost_per_output_token"),
+            (extra or {}).get("cost_billing"),
+            (extra or {}).get("pricing_rules_json"),
+            (extra or {}).get("limits_json"),
+            (extra or {}).get("rate_limits_json"),
+            (extra or {}).get("metadata_json"),
+            (extra or {}).get("available", 1)
+        ))
+        return cur.lastrowid
+
+
+class KeyRepository:
+    """Clés API."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self, identity: Optional[str] = None,
+                 tag: Optional[str] = None,
+                 health_status: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses = []
+        params = []
+        if identity:
+            clauses.append("identity = ?")
+            params.append(identity)
+        if tag:
+            clauses.append("tag = ?")
+            params.append(tag)
+        if health_status:
+            clauses.append("health_status = ?")
+            params.append(health_status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        cur = self.conn.execute(f"""
+            SELECT ak.*, p.ref as provider_ref, p.name as provider_name
+            FROM api_keys ak
+            JOIN providers p ON p.id = ak.provider_id
+            {where}
+            ORDER BY ak.identity, p.name
+        """, params)
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("""
+            SELECT ak.*, p.ref as provider_ref, p.name as provider_name
+            FROM api_keys ak
+            JOIN providers p ON p.id = ak.provider_id
+            WHERE ak.ref = ?
+        """, (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def get_for_provider(self, provider_ref: str, identity: str = "default") -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("""
+            SELECT ak.* FROM api_keys ak
+            JOIN providers p ON p.id = ak.provider_id
+            WHERE p.ref = ? AND ak.identity = ?
+            AND ak.locked = 0
+            AND ak.health_status IN ('unknown', 'ok', 'degraded')
+            ORDER BY ak.health_status = 'ok' DESC, ak.health_status = 'unknown' DESC
+            LIMIT 1
+        """, (provider_ref, identity))
+        return _row_to_dict(cur.fetchone())
+
+    def get_any_for_provider(self, provider_ref: str, identity: str = "default") -> Optional[Dict[str, Any]]:
+        """Comme get_for_provider mais ignore le verrou (détecte l'existence)."""
+        cur = self.conn.execute("""
+            SELECT ak.* FROM api_keys ak
+            JOIN providers p ON p.id = ak.provider_id
+            WHERE p.ref = ? AND ak.identity = ?
+            ORDER BY ak.health_status = 'ok' DESC, ak.health_status = 'unknown' DESC
+            LIMIT 1
+        """, (provider_ref, identity))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> str:
+        ref = data.get("ref") or _ref()
+        cur = self.conn.execute("""
+            INSERT INTO api_keys (ref, identity, provider_id, key_value, key_display, tag, grade,
+                health_status, expiration_date, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ref, data.get("identity", "default"),
+            data["provider_id"], data["key_value"],
+            data.get("key_display"),
+            data.get("tag", "paid"), data.get("grade"),
+            data.get("health_status", "unknown"),
+            data.get("expiration_date"), data.get("metadata_json")
+        ))
+        return ref
+
+    def update_health(self, ref: str, status: str, error: Optional[str] = None) -> None:
+        self.conn.execute("""
+            UPDATE api_keys SET health_status=?, last_error=?,
+                last_tested_at=strftime('%s','now'),
+                error_count = CASE WHEN ? IS NOT NULL THEN error_count + 1 ELSE error_count END,
+                updated_at=strftime('%s','now')
+            WHERE ref=?
+        """, (status, error, error, ref))
+
+    def update(self, ref: str, tag: Optional[str] = None,
+               grade: Optional[str] = None,
+               metadata_json: Optional[str] = None) -> None:
+        fields, params = [], []
+        if tag is not None:
+            fields.append("tag = ?"); params.append(tag)
+        if grade is not None:
+            fields.append("grade = ?"); params.append(grade)
+        if metadata_json is not None:
+            fields.append("metadata_json = ?"); params.append(metadata_json)
+        if not fields:
+            return
+        fields.append("updated_at = strftime('%s','now')")
+        params.append(ref)
+        self.conn.execute(
+            f"UPDATE api_keys SET {', '.join(fields)} WHERE ref = ?", params)
+
+    def delete(self, ref: str) -> bool:
+        cur = self.conn.execute("DELETE FROM api_keys WHERE ref = ?", (ref,))
+        return cur.rowcount > 0
+
+    def set_lock(self, ref: str, locked: bool) -> bool:
+        cur = self.conn.execute(
+            "UPDATE api_keys SET locked = ?, updated_at = strftime('%s','now') WHERE ref = ?",
+            (1 if locked else 0, ref))
+        return cur.rowcount > 0
+
+
+class LocalLLMRepository:
+    """LLM téléchargés localement."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        if status:
+            cur = self.conn.execute(
+                "SELECT * FROM local_llms WHERE status = ? ORDER BY name", (status,)
+            )
+        else:
+            cur = self.conn.execute("SELECT * FROM local_llms ORDER BY name")
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM local_llms WHERE ref = ?", (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        ref = data.get("ref")
+        existing = None
+        if ref:
+            cur = self.conn.execute("SELECT id FROM local_llms WHERE ref = ?", (ref,))
+            existing = cur.fetchone()
+        if existing:
+            self.conn.execute("""
+                UPDATE local_llms SET name=?, ram_required_mb=?, chipset=?,
+                    launch_command=?, api_base_url=?, context_window_tokens=?,
+                    capabilities_json=?, status=?, parameters_json=?,
+                    updated_at=strftime('%s','now')
+                WHERE id=?
+            """, (
+                data.get("name"), data.get("ram_required_mb"),
+                data.get("chipset"), data.get("launch_command"), data.get("api_base_url"),
+                data.get("context_window_tokens"), data.get("capabilities_json"),
+                data.get("status"), data.get("parameters_json"), existing["id"]
+            ))
+            return existing["id"]
+        cur = self.conn.execute("""
+            INSERT INTO local_llms (ref, name, model_id, ram_required_mb, chipset,
+                launch_command, api_base_url, context_window_tokens,
+                capabilities_json, status, parameters_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ref or _ref("llm"), data.get("name"), data.get("model_id"),
+            data.get("ram_required_mb"), data.get("chipset"),
+            data.get("launch_command"), data.get("api_base_url"),
+            data.get("context_window_tokens"), data.get("capabilities_json"),
+            data.get("status", "not_downloaded"), data.get("parameters_json")
+        ))
+        return cur.lastrowid
+
+
+class LocalToolRepository:
+    """Gestion des outils locaux (local_outils / local_versions / local_installs).
+
+    Calquée sur la même structure que le catalogue (outils/versions/recettes)
+    pour permettre plusieurs versions d'un même outil installées par des managers
+    différents (ex: litellm pip + conda).
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        """Liste tous les outils installés localement."""
+        cur = self.conn.execute("""
+            SELECT lo.outil_ref, lo.nom, lo.tool_type, c.ref AS classe_ref, c.nom AS classe_nom,
+                   lv.nom_version,
+                   li.os, li.arch, li.manager, li.package,
+                   li.version_installee, li.install_path, li.status
+            FROM local_outils lo
+            LEFT JOIN classes_outils c ON c.classe_id = lo.classe_outil_id
+            JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
+            JOIN local_installs li ON li.local_version_id = lv.local_version_id
+            ORDER BY lo.nom
+        """)
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, outil_ref: str) -> Optional[Dict[str, Any]]:
+        """Dernière installation d'un outil."""
+        cur = self.conn.execute("""
+            SELECT lo.*, c.ref AS classe_ref, c.nom AS classe_nom, lv.nom_version, li.*
+            FROM local_outils lo
+            LEFT JOIN classes_outils c ON c.classe_id = lo.classe_outil_id
+            JOIN local_versions lv ON lv.local_outil_id = lo.local_outil_id
+            JOIN local_installs li ON li.local_version_id = lv.local_version_id
+            WHERE lo.outil_ref = ?
+            ORDER BY li.ts DESC LIMIT 1
+        """, (outil_ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any], classe_ref: Optional[str] = None) -> int:
+        """Enregistre une installation locale.
+
+        Crée local_outils et local_versions si inexistants.
+        L'upsert de local_installs utilise la clé (version, manager, os, arch).
+
+        classe_ref : ref de la classe métier (ex: 'agent'). Si absent, on
+        déduit depuis le ref de l'outil via le mapping par défaut.
+        """
+        ref = data.get("outil_ref") or data.get("ref")
+        if not ref:
+            raise ValueError("outil_ref requis")
+        _ensure_classes_outils_table(self.conn)
+        if classe_ref is None:
+            classe_ref = data.get("classe") or _default_class_for_ref(ref)
+        classe_id = resolve_classe_id(self.conn, classe_ref)
+        # local_outils
+        self.conn.execute("""
+            INSERT INTO local_outils (outil_ref, nom, tool_type, classe_outil_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(outil_ref) DO UPDATE SET
+                nom=excluded.nom,
+                tool_type=COALESCE(excluded.tool_type, local_outils.tool_type),
+                classe_outil_id=COALESCE(excluded.classe_outil_id, local_outils.classe_outil_id)
+        """, (ref, data.get("nom", ref), data.get("tool_type"), classe_id))
+        lid = self.conn.execute(
+            "SELECT local_outil_id FROM local_outils WHERE outil_ref=?", (ref,)
+        ).fetchone()[0]
+        # local_versions
+        ver = data.get("nom_version") or data.get("version") or "latest"
+        self.conn.execute("""
+            INSERT INTO local_versions (local_outil_id, nom_version)
+            VALUES (?, ?)
+            ON CONFLICT(local_outil_id, nom_version) DO NOTHING
+        """, (lid, ver))
+        vid = self.conn.execute(
+            "SELECT local_version_id FROM local_versions WHERE local_outil_id=? AND nom_version=?",
+            (lid, ver)).fetchone()[0]
+        # local_installs
+        cur = self.conn.execute(
+            "SELECT install_id FROM local_installs WHERE local_version_id=? AND manager=? AND os=? AND arch=?",
+            (vid, data.get("manager"), data.get("os", self._os_key()), data.get("arch", self._arch_key())))
+        existing = cur.fetchone()
+        if existing:
+            self.conn.execute("""
+                UPDATE local_installs
+                SET version_installee=?, install_path=?, package=?, status=?,
+                    ts=strftime('%s','now')
+                WHERE install_id=?
+            """, (data.get("version_installee") or data.get("version"),
+                  data.get("install_path"), data.get("package"),
+                  data.get("status", "installed"), existing["install_id"]))
+            return existing["install_id"]
+        cur = self.conn.execute("""
+            INSERT INTO local_installs
+                (local_version_id, os, arch, manager, package, version_installee, install_path, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (vid,
+              data.get("os", self._os_key()), data.get("arch", self._arch_key()),
+              data.get("manager"), data.get("package"),
+              data.get("version_installee") or data.get("version"),
+              data.get("install_path"), data.get("status", "installed")))
+        return cur.lastrowid
+
+    def remove(self, ref: str) -> bool:
+        """Supprime toutes les installations locales d'un outil."""
+        cur = self.conn.execute("""
+            DELETE FROM local_installs WHERE local_version_id IN (
+                SELECT local_version_id FROM local_versions
+                WHERE local_outil_id=(SELECT local_outil_id FROM local_outils WHERE outil_ref=?))
+        """, (ref,))
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _os_key() -> str:
+        import platform; return platform.system().lower()
+
+    @staticmethod
+    def _arch_key() -> str:
+        import platform
+        m = platform.machine().lower()
+        m = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(m, m)
+        return m
+
+
+class CommandRepository:
+    """Commandes utiles aux IA."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def list_all(self, command_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        if command_type:
+            cur = self.conn.execute(
+                "SELECT * FROM commands WHERE command_type = ? ORDER BY name",
+                (command_type,)
+            )
+        else:
+            cur = self.conn.execute("SELECT * FROM commands ORDER BY name")
+        return _rows_to_list(cur.fetchall())
+
+    def get(self, ref: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM commands WHERE ref = ?", (ref,))
+        return _row_to_dict(cur.fetchone())
+
+    def save(self, data: Dict[str, Any]) -> int:
+        cur = self.conn.execute("""
+            INSERT INTO commands (ref, name, description, command_type, catalogue_ref)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            data.get("ref") or _ref("cmd"), data.get("name"),
+            data.get("description"), data.get("command_type"),
+            data.get("catalogue_ref")
+        ))
+        return cur.lastrowid
+
+
+# ──────────────────────────────────────────────
+#  Tool Classes Repository
+# ──────────────────────────────────────────────
+
+class SystemStateRepository:
+    """État actuel du système (OS, Archi, Managers)."""
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def save(self, state: Dict[str, Any]) -> None:
+        self.conn.execute("""
+            INSERT INTO system_state (id, os, architecture, os_version, detected_managers, updated_at)
+            VALUES (1, ?, ?, ?, ?, strftime('%s','now'))
+            ON CONFLICT(id) DO UPDATE SET
+                os=excluded.os, architecture=excluded.architecture,
+                os_version=excluded.os_version, detected_managers=excluded.detected_managers,
+                updated_at=excluded.updated_at
+        """, (
+            state.get("os"), state.get("architecture"), state.get("os_version"),
+            ",".join(state.get("detected_managers", []))
+        ))
+
+    def get(self) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("SELECT * FROM system_state WHERE id = 1")
+        return _row_to_dict(cur.fetchone())
+
+
+# ──────────────────────────────────────────────
+#  Main DB class
+# ──────────────────────────────────────────────
+
+
+class AgentDBMixin:
+    """Agent OS repositories (importés séparément pour éviter les dépendances circulaires)."""
+
+    def _init_agent_repos(self):
+        from modules.sql.agent_repository import (
+            AgentRepository, AgentMessageRepository,
+            ModelProviderRepository, SessionRepository, WakeupCallRepository,
+        )
+        self.model_providers = ModelProviderRepository(self.conn)
+        self.agents = AgentRepository(self.conn)
+        self.sessions = SessionRepository(self.conn)
+        self.agent_messages = AgentMessageRepository(self.conn)
+        self.wakeup_calls = WakeupCallRepository(self.conn)
+
+
+class OrchestrationDBMixin:
+    """Orchestration repositories (queue, chatroom, todo, watchers)."""
+
+    def _init_orchestration_repos(self):
+        from modules.sql.orchestration_repository import (
+            AgentQueueRepository, ChatroomRepository,
+            SharedTaskRepository, WatcherRepository, ConnectionRepository,
+        )
+        self.queue = AgentQueueRepository(self.conn)
+        self.chatroom = ChatroomRepository(self.conn)
+        self.shared_tasks = SharedTaskRepository(self.conn)
+        self.watchers = WatcherRepository(self.conn)
+        self.connections = ConnectionRepository(self.conn)
+
+
+class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
+    """Point d'entrée unique pour la base locale.
+
+    Crée automatiquement les tables si elles n'existent pas.
+
+    Usage:
+        db = ModelWeaverDB()
+        for prov in db.providers.list_all():
+            print(prov["name"])
+        db.close()
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path) if db_path else _default_local_db()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self._ensure_schema()
+
+        self.remote_catalogue = None
+
+        # Appliquer les migrations SQL
+        migrations_dir = Path(__file__).resolve().parent / "migrations"
+        if migrations_dir.exists():
+            manager = MigrationManager(self.db_path)
+            manager.apply_migrations(migrations_dir)
+
+        self.providers = ProviderRepository(self.conn)
+        self.models = ModelRepository(self.conn)
+        self.keys = KeyRepository(self.conn)
+        self.local_tools = LocalToolRepository(self.conn)
+        self.system_state = SystemStateRepository(self.conn)
+        self.llms = LocalLLMRepository(self.conn)
+        self.commands = CommandRepository(self.conn)
+        self._init_agent_repos()
+        self._init_orchestration_repos()
+        from modules.sql.agent_repository import ScheduledJobRepository
+        self.scheduled_jobs = ScheduledJobRepository(self.conn)
+
+    def _ensure_schema(self):
+        """Crée les tables si elles n'existent pas encore.
+
+        Applique tout le schema à chaque connexion (sûr grâce à IF NOT EXISTS).
+        """
+        schema = Path(__file__).resolve().parent / "modelweaver_schema.sql"
+        if schema.exists():
+            self.conn.executescript(schema.read_text())
+
+        # Migration: ajouter key_display à api_keys
+        try:
+            self.conn.execute("ALTER TABLE api_keys ADD COLUMN key_display TEXT")
+        except Exception:
+            self.conn.rollback()        # Migration: ajouter locked à api_keys
+        try:
+            self.conn.execute("ALTER TABLE api_keys ADD COLUMN locked INTEGER DEFAULT 0")
+        except Exception:
+            self.conn.rollback()
+
+        # Table d'état système
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS system_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                os TEXT,
+                architecture TEXT,
+                os_version TEXT,
+                detected_managers TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # tool_usage : état d'install local par machine (télémétrie opt-in, phase 2/3).
+        # Stocké dans l'inventory (modelweaver.db) car purement local.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS tool_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                install_id TEXT,
+                outil_ref TEXT,
+                version_ref TEXT,
+                recette_id INTEGER,
+                etat TEXT CHECK(etat IN ('installed','uninstalled','upgraded')),
+                ts INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+
+        # ── Migration classes_outils (taxonomie métier) ──
+        # Le schéma modelweaver_schema.sql crée déjà classes_outils (+seed)
+        # et local_outils(classe_outil_id) pour les DB neuves. Pour les DB
+        # locales legacy (local_outils sans classe_outil_id), on ajoute la
+        # colonne et on backfill via le mapping par défaut.
+        try:
+            _ensure_classes_outils_table(self.conn)
+            _add_column_if_missing(
+                self.conn, "local_outils", "classe_outil_id",
+                "INTEGER REFERENCES classes_outils(classe_id) ON DELETE SET NULL",
+            )
+            try:
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_local_outils_classe "
+                    "ON local_outils(classe_outil_id)"
+                )
+            except Exception:
+                pass
+            # Backfill : tout outil local sans classe reçoit la classe par défaut
+            # déduite de son ref (fallback 'other').
+            for row in self.conn.execute(
+                "SELECT local_outil_id, outil_ref FROM local_outils WHERE classe_outil_id IS NULL"
+            ).fetchall():
+                cid = resolve_classe_id(self.conn, _default_class_for_ref(row["outil_ref"]))
+                if cid is not None:
+                    self.conn.execute(
+                        "UPDATE local_outils SET classe_outil_id=? WHERE local_outil_id=?",
+                        (cid, row["local_outil_id"]))
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration classes_outils (local) ignorée: {e}")
+        # Commit final : ferme la transaction implicite du DDL ci-dessus
+        # (sinon le lock d'écriture WAL reste tenu par le process toute sa vie).
+        try:
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+
+    def scan_installed_tools(self) -> int:
+        """Détecte les outils installés et met à jour local_outils/versions/installs."""
+        import re, shutil, subprocess, sys, platform
+        count = 0
+        local_os = platform.system().lower()
+        local_arch = platform.machine().lower()
+        local_arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(local_arch, local_arch)
+
+        binaries = {
+            "ollama": ("ollama", "--version"),
+            "opencode": ("opencode", "--version"),
+            "python3": ("python3", "--version"),
+            "git": ("git", "--version"),
+            "curl": ("curl", "--version"),
+        }
+        for ref, (cmd, ver_flag) in binaries.items():
+            path = shutil.which(cmd)
+            if not path:
+                continue
+            version = None
+            try:
+                r = subprocess.run([cmd, ver_flag], capture_output=True, text=True, timeout=5)
+                m = re.search(r"(\d+\.\d+(?:\.\d+)?)", r.stdout or "")
+                version = m.group(1) if m else None
+            except Exception:
+                pass
+            self.local_tools.save({
+                "outil_ref": ref, "nom": ref, "tool_type": "binary",
+                "nom_version": version or "unknown", "manager": "binary",
+                "os": local_os, "arch": local_arch,
+                "version_installee": version or "unknown",
+                "install_path": path, "status": "installed",
+            })
+            count += 1
+
+        pip_tools = {
+            "litellm": "litellm", "open-webui": "open_webui", "gitingest": "gitingest",
+            "keyring": "keyring", "requests": "requests", "psutil": "psutil",
+            "cryptography": "cryptography",
+        }
+        try:
+            r = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                import json
+                pip_packages = json.loads(r.stdout)
+                pip_map = {p["name"].lower().replace("-", "_"): p["version"]
+                           for p in pip_packages}
+                for ref, pkg_name in pip_tools.items():
+                    version = pip_map.get(pkg_name.lower())
+                    if not version:
+                        continue
+                    self.local_tools.save({
+                        "outil_ref": ref, "nom": ref, "tool_type": "python-module",
+                        "nom_version": version, "manager": "pip",
+                        "os": local_os, "arch": local_arch,
+                        "version_installee": version,
+                        "install_path": sys.executable, "status": "installed",
+                    })
+                    count += 1
+        except Exception:
+            pass
+        self.commit()
+        return count
+
+    @contextmanager
+    def transaction(self):
+        """Gestionnaire de contexte pour les transactions."""
+        try:
+            yield
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+
+# ──────────────────────────────────────────────
+#  RuntimeDB : écritures haute fréquence
+# ──────────────────────────────────────────────
+
+class RuntimeDB:
+    """DB isolée pour les données runtime : processus, services, jobs d'install.
+
+    Le GUI (Rust) y écrit directement en haute fréquence (mirror processus/
+    services) ; le daemon et l'installer_worker écrivent aussi install_jobs.
+    Isolée de l'inventaire/catalogue pour éviter la contention SQLite.
+    Séparation physique : la GUI ne poll PAS table par table, elle compare
+    `PRAGMA data_version` de cette DB (voir `read_db_version`).
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path or _default_runtime_db())
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self._ensure_schema()
+
+    def _ensure_schema(self):
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS processes (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                pid INTEGER,
+                parent_id INTEGER,
+                status TEXT,
+                command TEXT,
+                log_path TEXT,
+                cpu REAL,
+                rss_kb INTEGER,
+                started_at INTEGER,
+                ended_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                name TEXT PRIMARY KEY,
+                mode TEXT,
+                command TEXT,
+                args TEXT,
+                status TEXT,
+                pid INTEGER,
+                parent TEXT,
+                restart INTEGER,
+                restarts INTEGER DEFAULT 0,
+                last_exit INTEGER,
+                started_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS install_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref TEXT NOT NULL,
+                name TEXT,
+                job_type TEXT,
+                status TEXT,
+                log TEXT,
+                pid INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        # meta : clés de signal hors-table (ex: 'dependencies' pour le refresh GUI)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        # ── Migration : tables usage & mesure locales (V0.7.0.4+) ──
+        # modelweaver.db privé, jamais poussé au distant.
+        try:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS real_call_models (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_ref  TEXT,
+                    endpoint_id   INTEGER,
+                    key_ref       TEXT,
+                    model_ref     TEXT,
+                    agent_id      TEXT,
+                    sent_at       INTEGER NOT NULL,
+                    received_at   INTEGER,
+                    tokens_in     INTEGER DEFAULT 0,
+                    tokens_out    INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost          REAL DEFAULT 0,
+                    status        TEXT CHECK(status IN ('ok','rate_limited','error','quota_exhausted')),
+                    error_code    TEXT,
+                    error_detail  TEXT,
+                    window_key    TEXT,
+                    created_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_rcm_model ON real_call_models(model_ref);
+                CREATE INDEX IF NOT EXISTS idx_rcm_sent ON real_call_models(sent_at);
+                CREATE INDEX IF NOT EXISTS idx_rcm_status ON real_call_models(status);
+
+                CREATE TABLE IF NOT EXISTS really_used_budget (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    budget_tag_code TEXT NOT NULL,
+                    target_type   TEXT NOT NULL,
+                    target_ref    TEXT NOT NULL,
+                    window        TEXT,
+                    measured_limit REAL,
+                    sample_count  INTEGER DEFAULT 0,
+                    first_exhausted_at INTEGER,
+                    confidence    REAL DEFAULT 0,
+                    method        TEXT,
+                    measured_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(budget_tag_code, target_type, target_ref, window)
+                );
+
+                CREATE TABLE IF NOT EXISTS endpoint_model_usage (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    endpoint_id   INTEGER,
+                    model_ref     TEXT,
+                    agent_id      TEXT,
+                    requests      INTEGER DEFAULT 0,
+                    tokens_in     INTEGER DEFAULT 0,
+                    tokens_out    INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost          REAL DEFAULT 0,
+                    last_call_at  INTEGER,
+                    last_call_working INTEGER DEFAULT 1,
+                    error_count   INTEGER DEFAULT 0,
+                    created_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_emu_endpoint ON endpoint_model_usage(endpoint_id);
+                CREATE INDEX IF NOT EXISTS idx_emu_model ON endpoint_model_usage(model_ref);
+
+                CREATE TABLE IF NOT EXISTS budget_consumption (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    budget_id     INTEGER NOT NULL,
+                    used          REAL DEFAULT 0,
+                    updated_at    INTEGER DEFAULT (strftime('%s','now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS local_model_efficacy (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_ref     TEXT NOT NULL,
+                    use_case      TEXT NOT NULL,
+                    score_quality   REAL DEFAULT 0,
+                    score_speed     REAL DEFAULT 0,
+                    score_cost      REAL DEFAULT 0,
+                    score_reliability REAL DEFAULT 0,
+                    samples       INTEGER DEFAULT 0,
+                    criteria_meta TEXT,
+                    last_evaluated_at INTEGER,
+                    UNIQUE(model_ref, use_case)
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_actif (
+                    agent_id        TEXT PRIMARY KEY,
+                    status          TEXT,
+                    current_step    TEXT,
+                    last_heartbeat  INTEGER,
+                    calls_count     INTEGER DEFAULT 0,
+                    tokens_total    INTEGER DEFAULT 0,
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
+
+                -- Historique 3 niveaux (moniteur LLM) :
+                --   1m : détails agrégés par minute, conservés 24h
+                --   1h : agrégats horaires, conservés 30j
+                CREATE TABLE IF NOT EXISTS usage_history_1m (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1m_bucket ON usage_history_1m(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_1h (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1h_bucket ON usage_history_1h(bucket);
+            """)
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration tables usage ignorée: {e}")
+
+        # Migration V0.8.6 : tokens de raisonnement (thinking) dans l'usage
+        try:
+            _add_column_if_missing(self.conn, "real_call_models",
+                                   "tokens_thinking", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "endpoint_model_usage",
+                                   "tokens_thinking", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "real_call_models",
+                                   "rolled_at", "INTEGER")
+        except Exception:
+            self.conn.rollback()
+
+        self.conn.commit()
+
+    def data_version(self) -> int:
+        return read_db_version(self.conn)
+
+    def bump_meta(self, key: str, commit: bool = True):
+        bump_meta(self.conn, key, commit=commit)
+
+    def read_meta(self, key: str, default: int = 0) -> int:
+        return read_meta(self.conn, key, default=default)
+
+    def close(self):
+        self.conn.close()
+
+
+# ──────────────────────────────────────────────
+#  AgentsDB — Base dédiée aux agents
+# ──────────────────────────────────────────────
+
+class WaitForRepository:
+    """Agents endormis en attente d'une condition (wait_for).
+
+    Chaque ligne = un agent qui attend une condition (JSON) : type de travail
+    dispo (issue_open, task_for_role...). Le waker liste les 'waiting' dont la
+    condition est remplie et les réveille — FIFO (les plus anciens d'abord) et
+    un à la fois par condition (évite de réveiller tous les agents d'un coup).
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def register(self, agent_id: int, condition: dict,
+                 expires_at: Optional[str] = None) -> int:
+        """Enregistre un agent en attente d'une condition (status waiting)."""
+        cur = self.conn.execute(
+            "INSERT INTO wait_for (agent_id, condition, status, expires_at) "
+            "VALUES (?, ?, 'waiting', ?)",
+            (agent_id, json.dumps(condition), expires_at))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def waiting(self) -> List[Dict[str, Any]]:
+        """Agents en attente, triés FIFO (les plus anciens d'abord)."""
+        cur = self.conn.execute(
+            "SELECT * FROM wait_for WHERE status = 'waiting' "
+            "ORDER BY created_at ASC, id ASC")
+        return _rows_to_list(cur.fetchall())
+
+    def ready(self, agent_id: int, condition: dict) -> bool:
+        """Vrai si l'agent attend et que sa condition est remplie (à surcharger
+        par le waker via un prédicat). Ici : simple existence d'attente."""
+        return True
+
+    def mark_ready(self, wait_id: int) -> None:
+        self.conn.execute(
+            "UPDATE wait_for SET status = 'ready', ready_at = datetime('now') "
+            "WHERE id = ?", (wait_id,))
+        self.conn.commit()
+
+    def mark_done(self, agent_id: int) -> None:
+        self.conn.execute(
+            "UPDATE wait_for SET status = 'done' WHERE agent_id = ? "
+            "AND status IN ('waiting','ready')", (agent_id,))
+        self.conn.commit()
+
+    def remove_expired(self) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM wait_for WHERE status != 'done' "
+            "AND expires_at IS NOT NULL AND expires_at < datetime('now')")
+        self.conn.commit()
+        return cur.rowcount
+
+
+class AgentsDB:
+    """Point d'entrée pour la base agents (domaine distinct).
+
+    Banque séparée de modelweaver.db — contient l'identité, le runtime,
+    les métriques et les signaux des agents.
+
+    Usage:
+        db = AgentsDB()
+        db.conn.execute("SELECT * FROM agents")
+        db.close()
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path) if db_path else _default_agents_db()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Autocommit : les agents tournent en threads dans agent-manager et
+        # partagent cette connexion. Sans autocommit, une transaction implicite
+        # laissée par un thread bloque/imbrique les écritures des autres
+        # ("cannot start a transaction within a transaction", "database is
+        # locked"). Chaque execute est immédiat.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
+                                    isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        self._ensure_schema()
+        self.wait_for = WaitForRepository(self.conn)
+
+    def _ensure_schema(self):
+        schema = Path(__file__).resolve().parent / "agents_schema.sql"
+        if schema.exists():
+            self.conn.executescript(schema.read_text())
+        # Migration V0.6.8 : storage_json (espace disque proprio par agent)
+        _add_column_if_missing(self.conn, "agents", "storage_json", "TEXT")
+        # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
+        _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
+        # Migration V0.8.9 : wait_for — agents endormis en attente d'une
+        # condition (tâche/issue dispo). Le waker les réveille quand la
+        # condition est remplie (un à la fois).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS wait_for (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id    INTEGER NOT NULL,
+                condition   TEXT NOT NULL,   -- JSON {type, workspace_id, role}
+                status      TEXT DEFAULT 'waiting',  -- waiting / ready / done
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                ready_at    TEXT,
+                expires_at  TEXT
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wait_for_status "
+            "ON wait_for(status, agent_id)")
+
+    def read_meta(self, key: str, default: int = 0) -> int:
+        return read_meta(self.conn, key, default=default)
+
+    def bump_meta(self, key: str) -> None:
+        bump_meta(self.conn, key, commit=False)
+
+    def close(self):
+        self.conn.close()
+
+
+# ──────────────────────────────────────────────
+#  Quick test
+# ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    db = ModelWeaverDB()
+    print(f"🔌 Connecté à {db.db_path}")
+
+    print(f"\n  Providers : {len(db.providers.list_all())}")
+    print(f"  Modèles   : {len(db.models.list_all())}")
+    print(f"  Clés      : {len(db.keys.list_all())}")
+    print(f"  LLMs locaux: {len(db.llms.list_all())}")
+    print(f"  Commandes : {len(db.commands.list_all())}")
+
+    g = db.providers.get("groq")
+    print(f"\n  groq → {g}")
+
+    print("\n  Recherche 'gemini':")
+    for m in db.models.search("gemini", modality="text"):
+        print(f"    → {m['ref']} ({m['developer']})")
+
+    db.close()
+
+    cat = CatalogueDB()
+    print(f"\n🔌 Catalogue: {cat.db_path}")
+    cat.close()
