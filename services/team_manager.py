@@ -499,6 +499,7 @@ class Team:
 
     TEAM_ROUTES = [
         "status", "health", "start", "stop", "restart",
+        "pause", "resume",
         "delegate", "chat", "routes",
     ]
 
@@ -510,6 +511,8 @@ class Team:
             "start": self._start_handler,
             "stop": self._stop_handler,
             "restart": self._restart_handler,
+            "pause": self._pause_handler,
+            "resume": self._resume_handler,
             "delegate": self._delegate_handler,
             "chat": self._chat_handler,
             "routes": self._routes_handler,
