@@ -162,8 +162,31 @@ def git_commit(inputs: dict, home: str) -> dict:
     if err:
         return err
     msg = inputs.get("message", "update")
-    _git_run(root, ["add", "-A"])
+    _git_add_safe(root)
     return _git_run(root, ["commit", "-q", "-m", msg])
+
+
+def _git_add_safe(root: Path) -> None:
+    """git add -A protégé contre les suppressions accidentelles de masse.
+
+    Un agent qui committe ne doit pas supprimer des dizaines de fichiers
+    existants par accident (working tree incomplet, clone partiel, tool
+    destructeur). On stagie tout, puis on restaure depuis HEAD les fichiers
+    supprimés au-delà d'un petit seuil.
+    """
+    _git_run(root, ["add", "-A"])
+    st = _git_run(root, ["diff", "--cached", "--name-status"])
+    deleted = []
+    for line in (st.get("stdout") or "").splitlines():
+        if line.startswith("D"):
+            parts = line.split("\t")
+            deleted.append(parts[-1].strip() if parts else "")
+    deleted = [d for d in deleted if d]
+    if not deleted or len(deleted) <= 2:
+        return
+    for f in deleted:
+        _git_run(root, ["checkout", "-q", "HEAD", "--", f])
+        _git_run(root, ["reset", "-q", "HEAD", "--", f])
 
 
 def git_diff(inputs: dict, home: str) -> dict:

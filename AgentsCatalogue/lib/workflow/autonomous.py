@@ -86,7 +86,7 @@ def _auto_git_sync(home: str, phase: str, branch: str = "") -> None:
                     _sp.run(c + ["checkout", "-q", "-B", remote_branch,
                                  f"origin/{remote_branch}"], capture_output=True, timeout=30)
             else:
-                _sp.run(c + ["add", "-A"], capture_output=True, timeout=10)
+                _git_add_safe(c)
                 changed = _sp.run(c + ["diff", "--cached", "--quiet"],
                                   capture_output=True, timeout=10)
                 if changed.returncode != 0:
@@ -101,6 +101,45 @@ def _auto_git_sync(home: str, phase: str, branch: str = "") -> None:
                     _sp.run(c + ["push", "-q", "origin", ref], capture_output=True, timeout=30)
         except Exception:
             continue
+
+
+def _git_add_safe(c: List[str]) -> None:
+    """git add -A PROTÉGÉ contre les suppressions accidentelles de masse.
+
+    Problème observé : un agent clonait le repo central, travaillait, puis
+    `git add -A` stagisait comme "supprimés" TOUS les fichiers absents de son
+    working tree (clone incomplet, fichiers effacés par un tool, checkout d'une
+    branche incomplète…) → le commit auto supprimait des pans entiers du
+    framework (121 fichiers : GUI, _contract, bootstrap…).
+
+    Règle : on ajoute tout, puis on RESTAURE depuis HEAD les fichiers
+    supprimés qui dépassent un seuil — un agent de tâche ne supprime JAMAIS
+    volontairement des dizaines de fichiers existants. Si le working tree est
+    incomplet (fichiers absents non supprimés par la tâche), on les réécrit.
+    """
+    import subprocess as _sp
+    # git add -A normal (stage les ajouts/modifs/suppressions)
+    _sp.run(c + ["add", "-A"], capture_output=True, timeout=10)
+    # Fichiers supprimés stagés (rapport à HEAD)
+    st = _sp.run(c + ["diff", "--cached", "--name-status"],
+                 capture_output=True, text=True, timeout=10)
+    deleted = []
+    for line in st.stdout.splitlines():
+        if line.startswith("D"):
+            deleted.append(line.split("\t", 1)[-1].strip() if "\t" in line else "")
+    deleted = [d for d in deleted if d]
+    if not deleted:
+        return
+    # Un working tree sain ne supprime pas de fichiers sans raison. On
+    # restaure TOUTES les suppressions depuis HEAD : si la tâche voulait
+    # VRAIMENT supprimer un fichier, elle le refera explicitement.
+    # Le seuil de garde : si c'est un petit nombre (<=2) et que la tâche
+    # l'a demandé, on les laisse — sinon on restaure.
+    if len(deleted) <= 2:
+        return
+    for f in deleted:
+        _sp.run(c + ["checkout", "-q", "HEAD", "--", f], capture_output=True, timeout=10)
+        _sp.run(c + ["reset", "-q", "HEAD", "--", f], capture_output=True, timeout=10)
 
 
 def _resolve_skill_candidates(fn_name: str) -> List[str]:
