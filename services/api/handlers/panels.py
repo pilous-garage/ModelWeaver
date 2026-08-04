@@ -68,6 +68,48 @@ def op_panels_build(params):
         return {"status": "error", "error": str(e)}
 
 
+# ── Bundles de panels ────────────────────────────────────────────────
+
+
+def op_panels_bundles_list(params):
+    """Liste les bundles de panels (groupements)."""
+    try:
+        from services.panel_creator.panel_creator import list_bundles
+        bundles = list_bundles()
+        return {"status": "ok", "bundles": bundles, "count": len(bundles)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_panels_bundles_get(params):
+    """Retourne un bundle (avec la liste de ses panels)."""
+    name = params.get("name", "")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.panel_creator.panel_creator import get_bundle
+        b = get_bundle(name)
+        if not b:
+            return {"status": "error", "error": f"bundle inconnu: {name}"}
+        return {"status": "ok", "bundle": b}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_panels_bundles_build(params):
+    """Compile les panels EXTERNES d'un bundle."""
+    name = params.get("name", "")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.panel_creator.panel_creator import build_bundle
+        force = bool(params.get("force", False))
+        res = build_bundle(name, force=force)
+        return {"status": "ok", **res}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # ── Fenêtres (templates de base) ─────────────────────────────────────
 
 WINDOW_TEMPLATES = {
@@ -162,6 +204,9 @@ register("panels/index",     op_panels_index)
 register("panels/status",    op_panels_status)
 register("panels/file",      op_panels_file)
 register("panels/build",     op_panels_build)
+register("panels/bundles/list", op_panels_bundles_list)
+register("panels/bundles/get",  op_panels_bundles_get)
+register("panels/bundles/build", op_panels_bundles_build)
 register("windows/templates", op_windows_templates)
 register("windows/list",     op_windows_list)
 register("windows/create",   op_windows_create)
