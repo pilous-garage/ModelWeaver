@@ -207,6 +207,41 @@ def _fsm_activity(agent_id: int) -> Dict[str, Any]:
     return out
 
 
+def detect_unlinked_issue_workspace(st: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """P9 — issue analyzed/analysing sans analysis_workspace_id, avec un
+    workspace identifiable par son contenu (mapping manuel).
+
+    Permet au marquage 'done' de fonctionner : une issue sans lien ne passera
+    jamais 'done' même quand ses tasks sont terminées. Ne concerne QUE les
+    issues non human-choice (les autres attendent une décision humaine).
+    """
+    # Mapping issue_id → workspace, basé sur le contenu des tasks observé.
+    # Nouvelles issues → le workflow de l'analyste crée workspace-issue-<id>
+    # et le lien est fait via issue_link_workspace (pas besoin ici).
+    MAP = {
+        2: "audit-io-2024",
+        9: "sec_keyring_001",
+        12: "llm_cb_001",
+        17: "direct-bridge-tests",
+        27: "debug-removal-recipe-parser",
+    }
+    out = []
+    for i in st["issues"]:
+        if i.get("analysis_workspace_id"):
+            continue
+        if i["status"] not in ("analyzed", "analysing"):
+            continue
+        if "human-choice" in (i.get("title") or ""):
+            continue
+        ws = MAP.get(i["issue_id"])
+        if not ws:
+            continue
+        out.append({"type": "P9_unlinked_issue",
+                    "details": f"issue {i['issue_id']} → workspace {ws}",
+                    "refs": {"issue": i, "workspace": ws}})
+    return out
+
+
 def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
     """P8 — agent actif mais qui semble bloqué (FSM).
 
@@ -214,8 +249,6 @@ def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
       - silence FSM : aucune nouvelle ligne depuis P8_MAX_LOG_SILENCE_S
       - LLM très lent : latence llm/call→llm/ok > P8_MAX_LLM_LATENCY_S
       - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool ok
-    Correction : kill l'agent + remet sa task running en pending (le watcher
-    fait la purge ; on signale le problème).
     """
     out = []
     for r in st["runtime"]:
@@ -421,6 +454,15 @@ def _apply(st: Dict[str, Any], problem: Dict[str, Any],
             db.conn.commit()
             return f"agent {aid} arrêté (stall FSM), runtime purgé"
 
+        if ptype == "P9_unlinked_issue":
+            iid = problem["refs"]["issue"]["issue_id"]
+            ws = problem["refs"]["workspace"]
+            wdb.conn.execute(
+                "UPDATE issues SET analysis_workspace_id = ? WHERE issue_id = ?",
+                (ws, iid))
+            wdb.conn.commit()
+            return f"issue {iid} liée au workspace {ws}"
+
         return "aucune action (type inconnu)"
     except Exception as e:
         return f"échec: {e}"
@@ -445,7 +487,7 @@ def watcher_cycle() -> List[Dict[str, Any]]:
     for det in (detect_stale_runtime, detect_orphan_running_tasks,
                 detect_idle_with_pending, detect_wait_for_spam,
                 detect_stuck_analysing_issues, detect_multi_role_tasks,
-                detect_stalled_agent):
+                detect_stalled_agent, detect_unlinked_issue_workspace):
         try:
             problems.extend(det(st))
         except Exception:
