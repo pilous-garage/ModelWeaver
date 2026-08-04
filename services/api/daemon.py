@@ -583,28 +583,42 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         """Sert un panel compilé (module ES) pour import() dynamique.
 
         Chemins : ~/.modelweaver/panels-dist/<id>.js. Content-Type JS + CORS.
+        Cas spéciaux :
+          - panels/file/_shared/react : module qui ré-exporte window.React
+            (React PARTAGÉ — les panels externes l'importent via alias).
         """
         try:
             from services._common import mw_home
+            if pid == "_shared/react":
+                body = b'const React = window.React; export default React; export const { useEffect, useState, useCallback, useMemo, useRef } = React;\n'
+                self._send_js(body)
+                return
+            if pid == "_shared/react-dom":
+                body = b'const ReactDOM = window.ReactDOM; export default ReactDOM;\n'
+                self._send_js(body)
+                return
             f = mw_home() / "panels-dist" / f"{pid}.js"
             if not f.exists():
                 self._send(404, {"error": "panel not found", "id": pid})
                 return
-            body = f.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/javascript")
-            self.send_header("Content-Length", str(len(body)))
-            origin = self.headers.get("Origin")
-            if origin:
-                self.send_header("Access-Control-Allow-Origin", origin)
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-                self.send_header("Access-Control-Allow-Credentials", "true")
-                self.send_header("Vary", "Origin")
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_js(f.read_bytes())
         except Exception as e:
             self._send(500, {"error": str(e)})
+
+    def _send_js(self, body: bytes):
+        """Envoie du JS (module ES) avec Content-Type + CORS."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript")
+        self.send_header("Content-Length", str(len(body)))
+        origin = self.headers.get("Origin")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
         if self.path == "/health":

@@ -107,10 +107,16 @@ def compile_panel(tsx: Path, output: Path, external_deps=None) -> dict:
         return {"ok": False, "error": "esbuild indisponible (npm i dans la GUI)"}
     # esbuild est une dépendance du GUI — on lance npx depuis le dossier GUI
     # pour résoudre correctement react/react-dom et les modules locaux.
+    # React est PARTAGÉ : les imports "react"/"react-dom" sont aliasés vers
+    # des modules servis par le daemon qui ré-exportent window.React.
+    daemon_url = "http://127.0.0.1:8770/v1/panels/file"
     args = ["npx", "esbuild", str(tsx),
             "--bundle", "--format=esm", "--jsx=automatic",
             "--platform=browser", f"--outfile={output}",
-            "--log-level=warning"]
+            "--log-level=warning",
+            f"--alias:react={daemon_url}/_shared/react",
+            f"--alias:react-dom={daemon_url}/_shared/react-dom",
+            "--alias:react/jsx-runtime=" + daemon_url + "/_shared/react"]
     for dep in (external_deps or []):
         args.append(f"--external:{dep}")
     try:
