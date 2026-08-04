@@ -1,8 +1,11 @@
 from pathlib import Path
+import logging
 from typing import List, Dict, Any, Optional
 
 from modules.sql.db import ModelWeaverDB, CatalogueDB
 from .fetcher import Fetcher
+
+logger = logging.getLogger("modelweaver.catalogue")
 
 
 class Catalogue:
@@ -49,7 +52,7 @@ class Catalogue:
 
     def sync_with_remote(self) -> None:
         """Synchronise avec models.dev + NVIDIA → écrit dans la BDD."""
-        print("🔄 Synchronisation du catalogue...")
+        logger.info("Synchronisation du catalogue démarrée")
 
         api_data = self.fetcher.fetch_models_dev()
         if api_data:
@@ -75,7 +78,7 @@ class Catalogue:
                         "metadata_json": str({"is_chat_model": True}),
                     })
                     synced += 1
-            print(f"✅ Synchronisé depuis models.dev : {synced} modèles")
+            logger.info("Synchronisé depuis models.dev : %d modèles", synced)
             self.db.commit()
 
         nvidia_models = self.fetcher.fetch_nvidia_models()
@@ -92,7 +95,7 @@ class Catalogue:
                 self.db.models.link_provider(nid, mid, name, {
                     "context_window_tokens": nm.get("context_window"),
                 })
-            print(f"✅ Ajoutés depuis NVIDIA : {len(nvidia_models)} modèles")
+            logger.info("Ajoutés depuis NVIDIA : %d modèles", len(nvidia_models))
             self.db.commit()
 
 

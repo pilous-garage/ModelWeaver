@@ -1,5 +1,8 @@
 import requests
+import logging
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger("modelweaver.catalogue.discovery")
 
 class Fetcher:
     def __init__(self, models_dev_url: str = "https://models.dev/api.json", nvidia_url: str = "https://integrate.api.nvidia.com/v1/models"):
@@ -13,7 +16,11 @@ class Fetcher:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"Error fetching from models.dev: {e}")
+            logger.error("models.dev discovery failed", extra={
+                "source": "models.dev",
+                "error_type": type(e).__name__,
+                "error": str(e),
+            })
             return {}
 
     def fetch_nvidia_models(self) -> List[Dict[str, Any]]:
@@ -24,7 +31,11 @@ class Fetcher:
             data = response.json()
             return data.get("data", [])
         except Exception as e:
-            print(f"Error fetching from NVIDIA: {e}")
+            logger.error("NVIDIA discovery failed", extra={
+                "source": "nvidia",
+                "error_type": type(e).__name__,
+                "error": str(e),
+            })
             return []
 
     def is_chat_model(self, model_id: str) -> bool:
