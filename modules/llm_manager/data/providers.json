@@ -66,7 +66,7 @@
   {
     "ref": "ollama",
     "name": "Ollama (Local)",
-    "provider_type": "ollama",
+    "provider_type": "local_ollama",
     "api_type": "openai",
     "website": "https://ollama.ai",
     "is_free_tier_provider": 1
