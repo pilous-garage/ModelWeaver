@@ -326,6 +326,13 @@ def model_sync_run_once(_params=None):
     return {"status": "ok", "summary": summary}
 
 
+def watcher_run_once(_params=None):
+    """Lance un cycle manuel du surveillant du swarm (problem → solution)."""
+    from services.watcher.watcher import watcher_cycle
+    actions = watcher_cycle()
+    return {"status": "ok", "actions": actions}
+
+
 def update_tools_table():
     count = _get_mw().scan_installed_tools()
     return {"status": "ok", "updated": count}
@@ -530,6 +537,7 @@ register("catalogue/tools/list",     _wrap(get_catalogue_tools))
 register("catalogue/seed",           _wrap(seed_catalogue))
 register("catalogue/sync",           lambda p: _quiet(sync_catalogue_remote, p.get("url")))
 register("catalogue/models/sync",    lambda p: _quiet(model_sync_run_once))
+register("watcher/run",              lambda p: _quiet(watcher_run_once))
 register("catalogue/tools_table/update", _wrap(update_tools_table))
 register("catalogue/fetch/remote",   lambda p: _quiet(fetch_remote_to_local))
 register("tools/installed/list",     _wrap(get_installed_tools))

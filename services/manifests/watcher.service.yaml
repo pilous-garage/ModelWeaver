@@ -1,0 +1,22 @@
+name: watcher
+version: 0.1.0
+description: Surveillant du swarm — détecte et corrige les problèmes simples (tasks orphelines, agents idle, spam wait_for, issues bloquées, roles multi) sans LLM
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/watcher/watcher.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 30
+
+entrypoints:
+  watcher-run:
+    type: daemon-api
+    method: POST
+    path: watcher/run
+    description: Déclenche un cycle manuel de surveillance
