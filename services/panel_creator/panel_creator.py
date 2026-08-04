@@ -95,8 +95,11 @@ def validate_contract(source: str) -> dict:
 
 
 def _esbuild_available() -> bool:
+    # esbuild local (node_modules de la GUI) OU global (npm install -g esbuild,
+    # utilisé dans l'image Docker).
     return (GUI_NODE_MODULES / "esbuild" / "bin" / "esbuild").exists() or \
-        shutil.which("npx") is not None
+        shutil.which("npx") is not None or \
+        shutil.which("esbuild") is not None
 
 
 def compile_panel(tsx: Path, output: Path, external_deps=None) -> dict:
@@ -112,7 +115,10 @@ def compile_panel(tsx: Path, output: Path, external_deps=None) -> dict:
     # React est PARTAGÉ : les imports "react"/"react-dom" sont aliasés vers
     # des modules servis par le daemon qui ré-exportent window.React.
     daemon_url = "http://127.0.0.1:8770/v1/panels/file"
-    args = ["npx", "esbuild", str(tsx),
+    esbuild_cmd = "esbuild"
+    if shutil.which("esbuild") is None:
+        esbuild_cmd = "npx esbuild"
+    args = [esbuild_cmd, str(tsx),
             "--bundle", "--format=esm", "--jsx=automatic",
             "--platform=browser", f"--outfile={output}",
             "--log-level=warning",
@@ -122,9 +128,11 @@ def compile_panel(tsx: Path, output: Path, external_deps=None) -> dict:
     for dep in (external_deps or []):
         args.append(f"--external:{dep}")
     try:
+        # cwd : le dossier du panel (toujours existant) — permet de résoudre
+        # react si node_modules local est présent, sinon esbuild global.
+        cwd = str(tsx.parent) if tsx.parent.exists() else str(REPO_ROOT)
         r = subprocess.run(args, capture_output=True, text=True, timeout=120,
-                           cwd=str(GUI_NODE_MODULES.parent),
-                           env={**os.environ})
+                           cwd=cwd, env={**os.environ})
         if r.returncode != 0:
             return {"ok": False, "error": (r.stderr or r.stdout)[-500:]}
         return {"ok": True, "out": str(output), "size": output.stat().st_size}
