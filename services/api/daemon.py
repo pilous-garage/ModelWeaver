@@ -620,6 +620,9 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             return
         route = self.path[len(prefix):].strip("/")
         parts = [p for p in route.split("/") if p]
+        # Query string params
+        query = parse_qs(urlparse(self.path).query)
+        params = {k: v[0] for k, v in query.items() if v}
         # Rate limiting
         client_ip = self.client_address[0]
         try:
@@ -629,13 +632,13 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             self._send(429, {"error": "rate_limited", "detail": str(e)})
             return
         # Route dynamique team/{team_name}/{action} ?
-        dyn = _team_dynamic_route("GET", parts, {})
+        dyn = _team_dynamic_route("GET", parts, params)
         if dyn is not None:
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
                                      "route": route, "result": dyn["payload"]})
             return
         # Route dynamique agents/{id}/routes ?
-        dyn = _agent_dynamic_route("GET", parts, {})
+        dyn = _agent_dynamic_route("GET", parts, params)
         if dyn is not None:
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
                                      "route": route, "result": dyn["payload"]})
@@ -647,7 +650,7 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         # Routes statiques enregistrées (system/info, etc.)
         handler = ROUTES.get(route)
         if handler:
-            result = handler({})
+            result = handler(params)
             self._send(200, {"ok": True, "route": route, "result": result})
             return
         self._send(404, {"error": "not_found", "path": self.path})
@@ -682,13 +685,16 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         route = self.path[len(prefix):].strip("/")
+        parts = [p for p in route.split("/") if p]
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw = self.rfile.read(length) if length else b""
-            params = json.loads(raw) if raw else {}
+            body = json.loads(raw) if raw else {}
         except Exception as e:
             self._send(400, {"error": "bad_request", "detail": str(e)})
             return
+        query = parse_qs(urlparse(self.path).query)
+        params = {**body, **{k: v[0] for k, v in query.items() if v}}
         # Rate limiting
         client_ip = self.client_address[0]
         try:
@@ -709,7 +715,6 @@ class MWAPIHandler(BaseHTTPRequestHandler):
                                      "route": route, "result": dyn["payload"]})
             return
         # Route dynamique agents/{id}/{op} ?
-        parts = [p for p in route.split("/") if p]
         dyn = _agent_dynamic_route("POST", parts, params)
         if dyn is not None:
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
