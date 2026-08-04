@@ -32,6 +32,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 # Ancrage du dépôt sur sys.path (modules/, services/, sql/ à la racine) AVANT
 # tout import de services.* — indispensable quand le daemon est lancé directement
