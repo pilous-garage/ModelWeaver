@@ -963,7 +963,7 @@ class AgentManager:
                 return 0
             cur = wdb.conn.execute(
                 "UPDATE issues SET status = 'done', updated_at = datetime('now') "
-                "WHERE status = 'analyzed' "
+                "WHERE status IN ('analyzed','analysing') "
                 "AND analysis_workspace_id IN (%s)"
                 % ",".join("?" for _ in done_ws),
                 tuple(done_ws))
