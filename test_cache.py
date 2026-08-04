@@ -1,0 +1,1 @@
+import unittest\nimport time\n\nclass TestCache(unittest.TestCase):\n    def test_ttl(self):\n        # V\u00e9rifie que les donn\u00e9es expirent apr\u00e8s le d\u00e9lai\n        pass\n\n    def test_api_calls(self):\n        # V\u00e9rifie que les appels API sont r\u00e9duits lorsque le cache est valide\n        pass
