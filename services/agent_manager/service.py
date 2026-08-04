@@ -845,8 +845,7 @@ class AgentManager:
         rows = self.db.conn.execute("""
             SELECT a.agent_id FROM agents a
             JOIN agent_runtime r ON r.agent_id = a.agent_id
-            WHERE a.status IN ('RUNNING', 'IDLE')
-              AND r.heartbeat_at < datetime('now', ?)
+            WHERE r.heartbeat_at < datetime('now', ?)
         """, (f"-{max_age_seconds} seconds",)).fetchall()
         return [r["agent_id"] for r in rows]
 
