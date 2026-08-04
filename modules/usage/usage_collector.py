@@ -5,7 +5,7 @@ Boucle :
   1. rename atomique real_call.log -> real_call.log.flush (evite la perte
      pendant le traitement : les nouveaux appels continuent dans .log).
   2. pour chaque ligne : INSERT real_call_models + upsert endpoint_model_usage
-     + degrade key_endpoint_models.available si echec.
+     + degrade provider_models_mapping.available si echec.
   3. calcul du cout USD via provider_models.cost_per_*.
   4. en cas de lock SQLite -> rename en .retry, retry au cycle suivant.
   5. rotation d'archive si > MAX_ARCHIVE_BYTES.
@@ -88,7 +88,7 @@ def _degrade_available(cat, endpoint_id: Optional[int], model_ref: str) -> None:
         return
     try:
         cat.conn.execute("""
-            UPDATE key_endpoint_models SET available = 0
+            UPDATE provider_models_mapping SET available = 0
             WHERE endpoint_id = ? AND model_id = (
                 SELECT id FROM catalogue_models WHERE ref = ?
             )

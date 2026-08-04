@@ -1100,7 +1100,10 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_local_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # Autocommit (voir CatalogueDB) : évite les locks d'écriture persistants
+        # entre les services partageant modelweaver.db.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
+                                    isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
@@ -1306,7 +1309,12 @@ class CatalogueDB:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_catalogue_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # Autocommit : plusieurs services (daemon, agent-manager, llm-manager,
+        # watcher) partagent catalogue.db. Sans autocommit, un write non
+        # commité laisse une transaction implicite → lock d'écriture tenu →
+        # "database is locked" au démarrage des autres services.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
+                                    isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
@@ -1581,9 +1589,19 @@ class CatalogueDB:
             print(f"⚠️  Migration model_call_log ignorée: {e}")
 
         # ── Migration : nouvelles tables d'acces modeles (V0.7.0.4+) ──
+        # V0.9 : renommée key_endpoint_models → provider_models_mapping
+        # (human-choice #28). Migration de données si l'ancienne table existe.
         try:
+            has_old = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='key_endpoint_models'").fetchone()
+            if has_old:
+                self.conn.execute("""
+                    ALTER TABLE key_endpoint_models
+                    RENAME TO provider_models_mapping
+                """)
             self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS key_endpoint_models (
+                CREATE TABLE IF NOT EXISTS provider_models_mapping (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     provider_id INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
                     endpoint_id INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
@@ -1597,6 +1615,7 @@ class CatalogueDB:
                     created_at INTEGER DEFAULT (strftime('%s','now')),
                     UNIQUE(endpoint_id, key_ref, model_id)
                 )
+            )
             """)
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS model_efficacy (

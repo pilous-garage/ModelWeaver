@@ -310,10 +310,10 @@ def _upsert_model(cat, ref: str, caps: Dict[str, Any], source: str = "unknown"):
 
 
 def _upsert_kem(cat, provider_ref: str, model_ref: str, provider_model_name: str):
-    """Insère ou met à jour key_endpoint_models."""
+    """Insère ou met à jour provider_models_mapping."""
     try:
         cat.conn.execute("""
-            INSERT OR IGNORE INTO key_endpoint_models
+            INSERT OR IGNORE INTO provider_models_mapping
                 (provider_id, model_id, provider_model_name, declared, available, last_checked_at)
             VALUES (
                 (SELECT id FROM catalogue_providers WHERE ref = ?),

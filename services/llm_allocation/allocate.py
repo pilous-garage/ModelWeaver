@@ -4,7 +4,7 @@ Fonction principale :
     allocate_llm(params: dict) -> dict
 
 Pipeline :
-    1. Lister les modèles candidats (key_endpoint_models available+declared)
+    1. Lister les modèles candidats (provider_models_mapping available+declared)
     2. Filtrer par budget (check_budget pour chaque paire provider/model)
     3. Appliquer la stratégie (random, best-fallback, etc.)
     4. Retourner le résultat
@@ -57,7 +57,7 @@ def _query_candidates() -> List[Dict[str, Any]]:
                 COALESCE(cl_stats.success_count, 0) AS runtime_success_count,
                 COALESCE(cl_stats.total_calls, 0) AS runtime_calls,
                 COALESCE(cl_stats.avg_latency_ms, 0.0) AS runtime_latency_ms
-            FROM key_endpoint_models kem
+            FROM provider_models_mapping kem
             JOIN catalogue_providers cp ON cp.id = kem.provider_id
             JOIN catalogue_models cm ON cm.id = kem.model_id
             JOIN provider_models pm ON pm.provider_id = kem.provider_id AND pm.model_id = kem.model_id
@@ -103,7 +103,7 @@ def _query_candidates() -> List[Dict[str, Any]]:
             WHERE kem.available = 1 AND kem.declared = 1
               AND pm.status = 'active'
             -- Dédupliquer : un même (provider, model) peut exister via
-            -- plusieurs key_endpoint_models (endpoints/clés). On garde UNE
+            -- plusieurs provider_models_mapping (endpoints/clés). On garde UNE
             -- ligne par modèle — sinon un doublon à 0/0 ressort en tête avec
             -- score plein pendant que son jumeau pénalisé est ignoré.
             GROUP BY cp.ref, cm.ref, kem.provider_model_name,

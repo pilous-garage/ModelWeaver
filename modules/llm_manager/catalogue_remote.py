@@ -225,7 +225,7 @@ def _upsert_provider_model(cat, provider_ref: str, model_id: str, mdata: dict) -
     ))
 
     cat.conn.execute("""
-        INSERT OR IGNORE INTO key_endpoint_models
+        INSERT OR IGNORE INTO provider_models_mapping
             (provider_id, model_id, provider_model_name, declared, available, last_checked_at)
         VALUES (
             (SELECT id FROM catalogue_providers WHERE ref = ?),

@@ -91,7 +91,7 @@ def _load_provider_endpoints(cat) -> Dict[str, dict]:
                 kem.key_ref
             FROM catalogue_providers p
             LEFT JOIN provider_endpoints pe ON pe.provider_id = p.id AND pe.is_default = 1
-            LEFT JOIN key_endpoint_models kem ON kem.provider_id = p.id
+            LEFT JOIN provider_models_mapping kem ON kem.provider_id = p.id
             WHERE kem.key_ref IS NOT NULL
                OR p.provider_type = 'local'
         """).fetchall()
@@ -116,7 +116,7 @@ def _load_provider_endpoints(cat) -> Dict[str, dict]:
             info["api_key"] = keys[0]
 
     # Providers ayant une clé API (modelweaver.db/api_keys) mais aucune ligne
-    # key_endpoint_models : on ajoute leur endpoint par défaut pour qu'ils
+    # provider_models_mapping : on ajoute leur endpoint par défaut pour qu'ils
     # soient découvrables/listables (sinon jamais interrogés).
     try:
         from modules.sql.db import ModelWeaverDB
@@ -1038,7 +1038,7 @@ class DirectBridge(BaseBridge):
                 rows = self.cat.conn.execute("""
                     SELECT m.ref, m.name, kem.available
                     FROM catalogue_models m
-                    JOIN key_endpoint_models kem ON kem.model_id = m.id
+                    JOIN provider_models_mapping kem ON kem.model_id = m.id
                     JOIN catalogue_providers p ON p.id = kem.provider_id
                     WHERE p.ref = ?
                 """, (provider_ref,)).fetchall()

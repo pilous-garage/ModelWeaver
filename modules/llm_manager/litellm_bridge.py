@@ -234,12 +234,12 @@ class LiteLLMBridgeDefunct(BaseBridge):
         return os.environ.get(f"{provider_ref.upper()}_API_KEY"), self._resolve_api_base(provider_ref)
 
     def _mark_model_unavailable(self, provider_ref: str, model_ref: str, error: str) -> None:
-        """Marque un modèle comme indisponible dans key_endpoint_models."""
+        """Marque un modèle comme indisponible dans provider_models_mapping."""
         if not self.cat:
             return
         try:
             self.cat.conn.execute("""
-                UPDATE key_endpoint_models
+                UPDATE provider_models_mapping
                 SET available = 0, last_error = ?, last_checked_at = strftime('%s','now')
                 WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
                   AND model_id = (SELECT id FROM catalogue_models WHERE ref = ?)
@@ -298,7 +298,7 @@ class LiteLLMBridgeDefunct(BaseBridge):
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT kem.provider_model_name, p.api_type
-                FROM key_endpoint_models kem
+                FROM provider_models_mapping kem
                 JOIN catalogue_providers p ON p.id = kem.provider_id
                 JOIN catalogue_models m ON m.id = kem.model_id
                 WHERE p.ref = ? AND m.ref = ?
@@ -627,7 +627,7 @@ class LiteLLMBridgeDefunct(BaseBridge):
                        mc.supports_chat, mc.supports_function_calling,
                        mc.supports_vision, mc.supports_embedding,
                        mc.supports_streaming, mc.source as cap_source
-                FROM key_endpoint_models kem
+                FROM provider_models_mapping kem
                 JOIN catalogue_models m ON m.id = kem.model_id
                 JOIN catalogue_providers p ON p.id = kem.provider_id
                 LEFT JOIN model_capabilities mc ON mc.model_ref = m.ref
@@ -663,7 +663,7 @@ class LiteLLMBridgeDefunct(BaseBridge):
     # disque append-only (modules/usage/usage_log). Le rassembleur
     # (usage_collector.py) consolide ce journal dans real_call_models /
     # endpoint_model_usage / agent_actif de façon asynchrone, et degrade
-    # key_endpoint_models.available sur echec.
+    # provider_models_mapping.available sur echec.
     @staticmethod
     def _extract_thinking(response) -> int:
         """Tokens de raisonnement (tokens_thinking) depuis la réponse litellm.

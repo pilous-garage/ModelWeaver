@@ -3,9 +3,9 @@
 Processe séparé (lancé par le daemon via start_new_session, ou manuellement).
 Boucle (défaut : 1x/h) :
 
-  1. Pour chaque clé API liée à un endpoint (key_endpoint_models) : interroge
+  1. Pour chaque clé API liée à un endpoint (provider_models_mapping) : interroge
      l'API du provider via DirectBridge.list_available_models.
-  2. Met à jour key_endpoint_models :
+  2. Met à jour provider_models_mapping :
        - modèle présent   -> declared=1, available=1, last_checked_at
        - modèle disparu   -> declared=0, available=0, last_error,
                              defunct=1 (colonne model_probe_state.defunct)
@@ -73,13 +73,13 @@ def _key_groups(cat, mw=None):
 
     Source : les clés du KeyManager (modelweaver.db/api_keys) croisées avec les
     endpoints du catalogue (provider_endpoints). Couvre aussi les providers qui
-    n'ont encore AUCUNE ligne key_endpoint_models (jamais syncés) — sinon ils
+    n'ont encore AUCUNE ligne provider_models_mapping (jamais syncés) — sinon ils
     ne seraient jamais interrogés.
     """
     groups = {}
     rows = cat.conn.execute("""
         SELECT DISTINCT p.ref AS provider_ref, kem.endpoint_id, kem.key_ref
-        FROM key_endpoint_models kem
+        FROM provider_models_mapping kem
         JOIN catalogue_providers p ON p.id = kem.provider_id
         WHERE kem.key_ref IS NOT NULL AND kem.endpoint_id IS NOT NULL
     """).fetchall()
@@ -236,7 +236,7 @@ def sync_once() -> dict:
             # Modèles déjà déclarés pour (endpoint, key)
             declared = cat.conn.execute("""
                 SELECT m.id AS model_id, m.ref AS model_ref
-                FROM key_endpoint_models kem
+                FROM provider_models_mapping kem
                 JOIN catalogue_models m ON m.id = kem.model_id
                 WHERE kem.endpoint_id = ? AND kem.key_ref = ?
             """, (endpoint_id, key_ref)).fetchall()
@@ -283,7 +283,7 @@ def sync_once() -> dict:
 
                 if present:
                     cat.conn.execute("""
-                        UPDATE key_endpoint_models
+                        UPDATE provider_models_mapping
                         SET declared = 1, available = 1, last_checked_at = ?,
                             last_error = NULL
                         WHERE endpoint_id = ? AND key_ref = ? AND model_id = ?
@@ -294,7 +294,7 @@ def sync_once() -> dict:
                 else:
                     # Modèle DISPARU de l'API : on le renseigne.
                     cat.conn.execute("""
-                        UPDATE key_endpoint_models
+                        UPDATE provider_models_mapping
                         SET declared = 0, available = 0, last_checked_at = ?,
                             last_error = 'disparu du listing API'
                         WHERE endpoint_id = ? AND key_ref = ? AND model_id = ?
@@ -350,7 +350,7 @@ def _insert_new_model(cat, provider_ref: str, endpoint_id: int,
                 ?, 'active')
         """, (provider_ref, ref, ref))
         cat.conn.execute("""
-            INSERT OR IGNORE INTO key_endpoint_models
+            INSERT OR IGNORE INTO provider_models_mapping
                 (provider_id, endpoint_id, key_ref, model_id,
                  provider_model_name, declared, available, last_checked_at)
             VALUES (
