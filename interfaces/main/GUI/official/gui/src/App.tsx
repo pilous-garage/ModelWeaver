@@ -106,6 +106,15 @@ export default function App() {
     console.log('[App] startup, hasTauri:', !!(window as any).__TAURI_INTERNALS__);
     console.log('[App] __MW_WINDOW_LABEL:', (window as any).__MW_WINDOW_LABEL);
 
+    // Charger les panels EXTERNES (compilés isolément par panel-creator).
+    // React est partagé via window.React (exposé dans main.tsx).
+    import('./panels/loader.ts').then((m) => {
+      m.loadExternalPanels().then((status) => {
+        const loaded = status.filter((s) => s.loaded).length;
+        console.log(`[panels] ${loaded}/${status.length} panels externes chargés`);
+      }).catch((e) => console.warn('[panels] échec chargement:', e));
+    });
+
     const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
     if (injected) { console.log('[App] label from Rust inject:', injected); setWindowLabel(injected); return; }
 

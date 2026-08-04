@@ -36,6 +36,9 @@ export interface PanelDef {
   daemonRoutes: DaemonRouteDeclaration[];
   menu?: PanelMenuItemDef[];
   defaultSize?: { width?: number; height?: number };
+  /** true = panel compilé dans le monolithe (bundle GUI) ; false/absent =
+   * panel EXTERNE compilé par panel-creator et chargé à runtime. */
+  essential?: boolean;
 
   declaration(): string;
   onActivate?(ctx: PanelContext): void;
