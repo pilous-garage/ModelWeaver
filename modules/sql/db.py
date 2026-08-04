@@ -14,14 +14,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from modules.sql.migrations import (
-    ModelWeaverMigrations,
-    CatalogueMigrations,
-    RuntimeMigrations,
-    AgentsMigrations,
+    ensure_modelweaver_schema,
+    ensure_catalogue_schema,
+    ensure_runtime_schema,
+    ensure_agents_schema,
     _ensure_classes_outils_table,
     _add_column_if_missing,
     resolve_classe_id,
     _default_class_for_ref,
+    MigrationManager,
 )
 from services._common import mw_home
 
