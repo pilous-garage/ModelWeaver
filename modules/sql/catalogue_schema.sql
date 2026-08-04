@@ -411,13 +411,13 @@ CREATE TABLE IF NOT EXISTS outils_popularite (
 );
 
 -- ============================================================
--- 9. KEY_ENDPOINT_MODELS — Declaration joignable (key x endpoint x model)
+-- 9. PROVIDER_MODELS_MAPPING — Declaration joignable (key x endpoint x model)
 --    Derivee du produit (endpoints du provider) x (keys du provider).
 --    `declared` : present dans la liste-modele de l'API au dernier refresh.
 --    `available` : joignable reellement (ping optionnel / degradation runtime).
 --    On ne SUPPRIME pas : une ligne non re-declaree reste declared=0.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS key_endpoint_models (
+CREATE TABLE IF NOT EXISTS provider_models_mapping (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id   INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
     endpoint_id   INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
@@ -574,11 +574,11 @@ CREATE INDEX IF NOT EXISTS idx_cat_models_developer ON catalogue_models(develope
 CREATE INDEX IF NOT EXISTS idx_cat_commands_ref ON catalogue_commands(ref);
 CREATE INDEX IF NOT EXISTS idx_cat_provider_models_provider ON provider_models(provider_id);
 CREATE INDEX IF NOT EXISTS idx_cat_provider_models_model ON provider_models(model_id);
-CREATE INDEX IF NOT EXISTS idx_kem_provider ON key_endpoint_models(provider_id);
-CREATE INDEX IF NOT EXISTS idx_kem_endpoint ON key_endpoint_models(endpoint_id);
-CREATE INDEX IF NOT EXISTS idx_kem_key ON key_endpoint_models(key_ref);
-CREATE INDEX IF NOT EXISTS idx_kem_declared ON key_endpoint_models(declared);
-CREATE INDEX IF NOT EXISTS idx_kem_available ON key_endpoint_models(available);
+CREATE INDEX IF NOT EXISTS idx_pmm_provider ON provider_models_mapping(provider_id);
+CREATE INDEX IF NOT EXISTS idx_pmm_endpoint ON provider_models_mapping(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_pmm_key ON provider_models_mapping(key_ref);
+CREATE INDEX IF NOT EXISTS idx_pmm_declared ON provider_models_mapping(declared);
+CREATE INDEX IF NOT EXISTS idx_pmm_available ON provider_models_mapping(available);
 CREATE INDEX IF NOT EXISTS idx_me_model ON model_efficacy(model_id);
 CREATE INDEX IF NOT EXISTS idx_budgets_target ON budgets(target_type, target_ref);
 CREATE INDEX IF NOT EXISTS idx_outils_ref ON catalogue_outils(ref);
