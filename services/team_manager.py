@@ -28,6 +28,12 @@ def _get_agent_db():
     return AgentsDB()
 
 
+def _get_agent_manager():
+    """Retourne un AgentManager singleton (lazy import pour éviter les cycles)."""
+    from services.agent_manager.service import AgentManager
+    return AgentManager(db=_get_agent_db())
+
+
 def _ensure_agent_exists(spec, role: str, occupation: str,
                          team_name: str = "") -> int:
     """Crée l'agent dans agents.db s'il n'existe pas, retourne son agent_id.
@@ -596,6 +602,32 @@ class TeamManager:
         team = self._teams.get(team_name)
         if team:
             team.restart()
+
+    def pause(self, team_name: str, agent_name: Optional[str] = None) -> dict:
+        """Met en pause TOUS les agents de l'équipe spécifiée.
+
+        Les agents finissent leur step courant puis se mettent en attente
+        (pas de nouveau step). Le signal 'pause' est envoyé via le canal de
+        supervision (agent_signals) et consommé par la FSM au prochain
+        signal_check.
+        """
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        team.pause(agent_name=agent_name)
+        return {"status": "ok", "team": team_name, "action": "paused"}
+
+    def resume(self, team_name: str, agent_name: Optional[str] = None) -> dict:
+        """Reprend tous les agents en pause de l'équipe spécifiée.
+
+        Le signal 'resume' est envoyé via le canal de supervision et consommé
+        par la FSM au prochain signal_check.
+        """
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        team.resume(agent_name=agent_name)
+        return {"status": "ok", "team": team_name, "action": "resumed"}
 
     def delegate(self, team_name: str, request: str,
                  entrypoint: str = "main", target: Optional[str] = None,
