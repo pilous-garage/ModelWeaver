@@ -9,8 +9,13 @@ Comportement conservé : autocommit SQLite, locks, WAL, busy_timeout.
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def _ref(prefix: str = "key") -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
 # ──────────────────────────────────────────────
@@ -20,6 +25,26 @@ from typing import Any, Dict, List, Optional
 def _default_agents_db() -> Path:
     from services._common import mw_home
     return mw_home() / "agents.db"
+
+
+def _default_local_db() -> Path:
+    from services._common import mw_home
+    return mw_home() / "modelweaver.db"
+
+
+def _default_catalogue_db() -> Path:
+    from services._common import mw_home
+    return mw_home() / "catalogue.db"
+
+
+def _default_community_db() -> Path:
+    from services._common import mw_home
+    return mw_home() / "community.db"
+
+
+def _default_user_db() -> Path:
+    from services._common import mw_home
+    return mw_home() / "user.db"
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
