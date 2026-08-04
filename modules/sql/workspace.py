@@ -419,22 +419,19 @@ class WorkspaceDB:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_workspace_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        # Autocommit : les agents tournent en threads (agent-manager) et le
+        # watcher est un process séparé qui partagent cette DB. Sans autocommit,
+        # un write non commité laisse une transaction implicite ouverte → lock
+        # d'écriture tenu à vie → "database is locked" pour les autres
+        # écrivains. Chaque execute est immédiat.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
+                                    isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self._ensure_schema()
-        # Fermer la transaction implicite laissée par le DDL (sinon lock
-        # d'écriture tenu à vie par cette connexion → "database is locked"
-        # pour TOUT autre écrivain). Voir fix CatalogueDB/ModelWeaverDB.
-        try:
-            self.conn.commit()
-        except Exception:
-            try:
-                self.conn.rollback()
-            except Exception:
-                pass
+        # (autocommit : plus de transaction implicite à fermer après le DDL)
         self.workspaces = WorkspaceRepository(self.conn)
         self.config = WorkspaceConfigRepository(self.conn)
 
