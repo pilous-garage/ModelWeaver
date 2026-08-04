@@ -2320,7 +2320,15 @@ class WaitForRepository:
 
     def register(self, agent_id: int, condition: dict,
                  expires_at: Optional[str] = None) -> int:
-        """Enregistre un agent en attente d'une condition (status waiting)."""
+        """Enregistre un agent en attente d'une condition (status waiting).
+
+        UN SEUL wait_for actif par agent : les précédents (waiting/ready) sont
+        marqués 'done' avant d'insérer — sinon l'agent s'empile à chaque
+        re-endormissement (des centaines de lignes observées).
+        """
+        self.conn.execute(
+            "UPDATE wait_for SET status = 'done' WHERE agent_id = ? "
+            "AND status IN ('waiting','ready')", (agent_id,))
         cur = self.conn.execute(
             "INSERT INTO wait_for (agent_id, condition, status, expires_at) "
             "VALUES (?, ?, 'waiting', ?)",

@@ -1178,10 +1178,15 @@ class AgentManager:
                 return any((t == team or t == -1) and r == role
                            for w, t, r in pending_tasks)
             if ctype == "workspace_all_done":
-                # Toutes les tâches d'UN workspace done → le manager pousse.
-                # Le workspace de la condition (mw-swarm) ≠ celui des tasks
-                # (audit_io_declarations) ; on matche sur TOUS les workspaces.
-                return bool(all_done)
+                # Toutes les tâches du workspace de la CONDITION done → le
+                # manager pousse CE workspace. Si la condition n'a pas de
+                # workspace précis (mw-swarm), on accepte n'importe quel
+                # workspace all-done.
+                if ws and ws in all_done:
+                    return True
+                if not ws:
+                    return bool(all_done)
+                return False
             return False
 
         active = len(self.list_active())
@@ -1189,6 +1194,12 @@ class AgentManager:
         for w in waiting:
             if active + count >= MAX_THREAD_AGENTS:
                 break
+            # Agent supprimé (team recréée) → purger son wait_for.
+            if self.db.conn.execute(
+                "SELECT 1 FROM agents WHERE agent_id = ?", (w["agent_id"],)
+            ).fetchone() is None:
+                self.db.wait_for.mark_done(w["agent_id"])
+                continue
             try:
                 cond = _json.loads(w["condition"])
             except Exception:
