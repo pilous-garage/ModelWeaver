@@ -806,7 +806,7 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     _supervisor.start()
 
     # Démarre le synchroniseur de modèles (process séparé, 1 cycle/heure).
-    # Interroge les APIs des clés, met à jour key_endpoint_models et gère
+    # Interroge les APIs des clés, met à jour provider_models_mapping et gère
     # le backoff/defunct via model_probe_state. Best-effort au boot.
     _start_model_sync(log)
 
