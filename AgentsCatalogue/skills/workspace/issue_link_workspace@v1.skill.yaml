@@ -1,0 +1,24 @@
+name: workspace/issue_link_workspace@v1
+category: workspace
+description: Lie une issue à son workspace d'analyse (où vivent les tasks de
+  découpage). Permet de marquer l'issue 'done' quand toutes ses tasks sont
+  terminées.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  issue_id:
+    type: integer
+    required: true
+  analysis_workspace:
+    type: string
+    required: true
+    description: Workspace où l'analyste a créé les tasks de cette issue
+outputs:
+  ok:
+    type: boolean
+  analysis_workspace:
+    type: string
+implementation:
+  type: python
+  function: workspace.issue_link.link

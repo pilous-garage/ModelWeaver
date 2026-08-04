@@ -455,6 +455,10 @@ class WorkspaceDB:
             _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
             _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
+            # V0.8.9 : lien issue → workspace d'analyse (le workspace où les
+            # tasks de découpage vivent). Permet de marquer l'issue 'done'
+            # quand toutes ses tasks sont terminées.
+            _add_column_if_missing(self.conn, "issues", "analysis_workspace_id", "TEXT")
         except Exception:
             try:
                 self.conn.rollback()

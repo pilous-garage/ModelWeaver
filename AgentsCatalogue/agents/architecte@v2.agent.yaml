@@ -63,7 +63,9 @@ entrypoints:
         request: >-
           Analyse l'issue et découpe-la en tâches exécutables.
           ISSUE : {{issue.title}} — {{issue.description}}
-          Utilise l'outil workspace/task_create_v1 pour créer CHAQUE tâche
+          Crée d'abord le workspace workspace-issue-{{issue.issue_id}} via
+          workspace/create@v1, puis utilise workspace/task_create_v1 pour créer
+          CHAQUE tâche DANS CE WORKSPACE (workspace_id=workspace-issue-{{issue.issue_id}})
           avec les champs : title, description, difficulty (easy/medium/hard),
           role_required (coder_senior, tester, reviewer, merger).
           Crée au moins 2 tâches concrètes et indépendantes.
@@ -80,6 +82,14 @@ entrypoints:
         workspace_id: "{{workspace_id}}"
         issue_id: "{{issue.issue_id}}"
         status: "analyzed"
+      next: link_workspace
+    - id: link_workspace
+      type: call
+      fn: workspace/issue_link_workspace@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        issue_id: "{{issue.issue_id}}"
+        analysis_workspace: "workspace-issue-{{issue.issue_id}}"
       next: end
     - id: sleep
       type: call

@@ -920,6 +920,8 @@ class AgentManager:
         # cours n'ont plus personne pour les finir. On les remet 'pending'
         # pour qu'un agent les reprenne au prochain réveil.
         reclaimed = self._reclaim_stale_tasks()
+        # Issues dont le workspace d'analyse est 100% done → marquer 'done'.
+        issues_completed = self._complete_done_issues()
 
         # Réveiller les agents endormis qui ont des signaux en attente
         woken = self._wake_sleeping_agents()
@@ -936,7 +938,42 @@ class AgentManager:
             "woken_agents": woken,
             "woken_tasks": woken_tasks,
             "tasks_reclaimed": reclaimed,
+            "issues_completed": issues_completed,
         }
+
+    def _complete_done_issues(self) -> int:
+        """Marque 'done' les issues dont le workspace d'analyse est terminé.
+
+        L'analyste lie l'issue à son workspace de découpage
+        (issue.analysis_workspace_id). Quand toutes les tasks de ce workspace
+        sont 'done', l'issue est considérée terminée.
+        """
+        try:
+            from modules.sql.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            # workspaces 100% done
+            done_ws = {
+                w["workspace_id"]
+                for w in wdb.conn.execute(
+                    "SELECT workspace_id FROM tasks GROUP BY workspace_id "
+                    "HAVING COUNT(*) > 0 "
+                    "AND SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) = COUNT(*)"
+                ).fetchall()}
+            if not done_ws:
+                wdb.close()
+                return 0
+            cur = wdb.conn.execute(
+                "UPDATE issues SET status = 'done', updated_at = datetime('now') "
+                "WHERE status = 'analyzed' "
+                "AND analysis_workspace_id IN (%s)"
+                % ",".join("?" for _ in done_ws),
+                tuple(done_ws))
+            wdb.conn.commit()
+            n = cur.rowcount
+            wdb.close()
+            return n or 0
+        except Exception:
+            return 0
 
     def _reclaim_stale_tasks(self) -> int:
         """Remet les tasks 'running' à 'pending' si plus aucun agent n'est en

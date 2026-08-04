@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS issues (
     parent_id    INTEGER,
     -- Espace de travail : -1 = projet, sinon team_id de la team qui traite.
     team_id      INTEGER DEFAULT -1,
+    -- Workspace où vivent les tasks de découpage de cette issue (rempli par
+    -- l'analyste) — permet de marquer l'issue 'done' quand ses tasks sont finies.
+    analysis_workspace_id TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
