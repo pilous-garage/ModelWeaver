@@ -579,6 +579,33 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         expected = f"Bearer {self.server.token}"
         return secrets.compare_digest(auth, expected)
 
+    def _serve_panel_js(self, pid: str):
+        """Sert un panel compilé (module ES) pour import() dynamique.
+
+        Chemins : ~/.modelweaver/panels-dist/<id>.js. Content-Type JS + CORS.
+        """
+        try:
+            from services._common import mw_home
+            f = mw_home() / "panels-dist" / f"{pid}.js"
+            if not f.exists():
+                self._send(404, {"error": "panel not found", "id": pid})
+                return
+            body = f.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            origin = self.headers.get("Origin")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                self.send_header("Access-Control-Allow-Credentials", "true")
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self._send(500, {"error": str(e)})
+
     def do_GET(self):
         if self.path == "/health":
             self._send(200, {"ok": True, "version": MW_VERSION, "api": API_VERSION})
@@ -609,6 +636,10 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         # Catalogue des capacités (rôles/skills) ?
         if route == "capabilities":
             self._send(200, {"ok": True, "route": route, "result": router_capabilities()})
+            return
+        # Panels GUI : servir le JS compilé (modules ES) pour import() dynamique
+        if route.startswith("panels/file/"):
+            self._serve_panel_js(route[len("panels/file/"):])
             return
         # Routes statiques enregistrées (system/info, etc.)
         handler = ROUTES.get(route)
