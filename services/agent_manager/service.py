@@ -1085,28 +1085,38 @@ class AgentManager:
                     # référence, ex. mw-swarm), pas le workspace des tâches.
                     name = agent._data.get("name", "")
                     try:
-                        from modules.sql.workspace import WorkspaceDB
-                        _wdb = WorkspaceDB()
-                        _team_name = name.split("/")[0] if name.startswith("team:") else ""
-                        # 1) match EXACT du director = team_name (le workspace
-                        # du manifest de la team) — sinon un workspace d'issue
-                        # qui porte le même director est pris à la place.
-                        _ws = _wdb.conn.execute(
-                            "SELECT workspace_id FROM workspaces "
-                            "WHERE director = ?", (_team_name,)).fetchone()
-                        # 2) sinon le plus ANCIEN workspace lié (le repo central
-                        # a été créé en premier) — évite de prendre un workspace
-                        # d'issue créé par un agent de la team.
-                        if not _ws:
+                        # 0) Source de vérité : le manifest de la team
+                        # (workspace_id) — évite tout devinement fragile.
+                        from services.team_spec import TeamSpec
+                        _team_name = name.split("/")[0][len("team:"):] if name.startswith("team:") else ""
+                        _proj = ""
+                        if _team_name:
+                            try:
+                                _spec = TeamSpec.from_yaml(
+                                    f"services/manifests/teams/{_team_name}.team.yaml")
+                                _proj = _spec.workspace_id or ""
+                            except Exception:
+                                _proj = ""
+                        if _proj:
+                            vars_j["project_id"] = _proj
+                        else:
+                            # fallback : workspace lié à la team (director)
+                            from modules.sql.workspace import WorkspaceDB
+                            _wdb = WorkspaceDB()
+                            _tname = name.split("/")[0] if name.startswith("team:") else ""
                             _ws = _wdb.conn.execute(
                                 "SELECT workspace_id FROM workspaces "
-                                "WHERE director LIKE ? "
-                                "ORDER BY created_at ASC LIMIT 1",
-                                (_team_name + "%",)).fetchone()
-                        vars_j["project_id"] = _ws["workspace_id"] if _ws else workspace_id
-                        _wdb.close()
+                                "WHERE director = ?", (_tname,)).fetchone()
+                            if not _ws:
+                                _ws = _wdb.conn.execute(
+                                    "SELECT workspace_id FROM workspaces "
+                                    "WHERE director LIKE ? "
+                                    "ORDER BY created_at ASC LIMIT 1",
+                                    (_tname + "%",)).fetchone()
+                            vars_j["project_id"] = _ws["workspace_id"] if _ws else "mw-swarm"
+                            _wdb.close()
                     except Exception:
-                        vars_j["project_id"] = workspace_id
+                        vars_j["project_id"] = "mw-swarm"
                     vars_j["role_required"] = ROLE_TO_TASK.get(
                         agent._data.get("role_type"), "")
                     # team_id stable : le plus petit agent_id de la team (ou -1)
