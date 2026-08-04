@@ -25,6 +25,12 @@ from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
 from AgentFrameWork.stream_bus import stream_bus
+from AgentFrameWork.pause_flag_store import (
+    set_paused,
+    get_paused,
+    is_paused,
+    wait_while_paused,
+)
 
 # Intervalle de rafraîchissement du heartbeat pendant une exécution inline.
 # Les agents s'exécutent INLINE (bloquant) dans le daemon ; un seul `llm_call`
@@ -1653,6 +1659,47 @@ class AgentManager:
             n += 1
             name = f"{role}_{n}"
         return name
+
+    # ── Pause flag API (projet / team / agent) ────────────────
+
+    def pause(self, project_id: Optional[str] = None,
+              team_name: Optional[str] = None,
+              agent_id: Optional[int | str] = None) -> Dict[str, Any]:
+        """Active le flag de pause pour un niveau donné."""
+        if project_id:
+            set_paused("project", str(project_id), True)
+        if team_name:
+            set_paused("team", str(team_name), True)
+        if agent_id:
+            set_paused("agent", str(agent_id), True)
+        return {"status": "ok", "paused": True,
+                "project_id": project_id, "team_name": team_name,
+                "agent_id": str(agent_id) if agent_id else None}
+
+    def resume(self, project_id: Optional[str] = None,
+               team_name: Optional[str] = None,
+               agent_id: Optional[int | str] = None) -> Dict[str, Any]:
+        """Désactive le flag de pause pour un niveau donné."""
+        if project_id:
+            set_paused("project", str(project_id), False)
+        if team_name:
+            set_paused("team", str(team_name), False)
+        if agent_id:
+            set_paused("agent", str(agent_id), False)
+        return {"status": "ok", "paused": False,
+                "project_id": project_id, "team_name": team_name,
+                "agent_id": str(agent_id) if agent_id else None}
+
+    def pause_status(self, project_id: Optional[str] = None,
+                     team_name: Optional[str] = None,
+                     agent_id: Optional[int | str] = None) -> Dict[str, Any]:
+        """Retourne l'état du flag de pause par niveau."""
+        return {
+            "paused": is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id),
+            "project": get_paused("project", str(project_id)) if project_id else False,
+            "team": get_paused("team", str(team_name)) if team_name else False,
+            "agent": get_paused("agent", str(agent_id)) if agent_id else False,
+        }
 
 
 # ──────────────────────────────────────────────
