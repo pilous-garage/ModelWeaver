@@ -264,25 +264,38 @@ def detect_orphan_running_tasks(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def detect_idle_with_pending(st: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """P2 — agents en attente (wait_for task_for_role) dont le rôle a des
-    tasks pending dispo → ils devraient être réveillés."""
-    # agents en wait_for 'waiting' avec rôle
-    waiting_by_agent = {}
-    for w in st["wait_for"]:
-        cond = _safe_json(w.get("condition"))
-        if cond.get("type") == "task_for_role":
-            waiting_by_agent.setdefault(w["agent_id"], cond)
+    """P2 — agents de la team dont le rôle a des tasks pending dispo mais qui
+    ne sont pas actifs (pas hydratés). Ils devraient être réveillés.
+
+    Couvre AUSSI les agents sans wait_for (jamais réveillés — ex. les testers
+    bloqués par des reliquats runtime INIT), pas seulement ceux en attente."""
+    # rôle de task attendu par chaque rôle d'agent (même mapping que le waker)
+    ROLE_TO_TASK = {
+        "architecte": "analyst", "planificateur": "analyst",
+        "codeur": "coder_senior", "test_runner": "tester",
+        "relecteur": "reviewer", "orchestrateur": "merger",
+    }
     pending_roles = {t["role_required"] for t in st["tasks"]
                      if t["status"] == "pending" and t["role_required"]}
+    active_ids = {r["agent_id"] for r in st["runtime"]}
     out = []
-    for agent_id, cond in waiting_by_agent.items():
-        role = cond.get("role", "")
-        if role and role in pending_roles:
-            out.append({"type": "P2_idle_with_pending",
-                        "agent_id": agent_id,
-                        "details": f"agent {agent_id} attend role={role} mais "
-                                   f"des tasks pending existent",
-                        "refs": {"condition": cond}})
+    for a in st["agents"]:
+        aid = a.get("agent_id")
+        # agent déjà hydraté → pas besoin de le réveiller
+        if aid in active_ids:
+            continue
+        rt = a.get("role_type", "")
+        task_role = ROLE_TO_TASK.get(rt, "")
+        if not task_role or task_role not in pending_roles:
+            continue
+        # l'analyste (analyst) est géré par les issues ; merger par all_done.
+        if task_role in ("analyst", "merger"):
+            continue
+        out.append({"type": "P2_idle_with_pending",
+                    "agent_id": aid,
+                    "details": f"agent {aid} ({rt}) non actif mais tasks "
+                               f"{task_role} pending dispo",
+                    "refs": {"role": task_role}})
     return out
 
 
