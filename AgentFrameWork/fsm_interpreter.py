@@ -145,10 +145,17 @@ class FSMInterpreter:
         bridge=None,
         tool_executor: Optional[ToolExecutor] = None,
         max_iterations: int = 100,
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ):
         self.bridge = bridge or LLMManager(cat=None).get_bridge()
         self.tool_executor = tool_executor or ToolExecutor(home_root="/tmp")
         self.max_iterations = max_iterations
+        self._project_id = project_id
+        self._team_id = team_id
+        self._agent_id = agent_id
+        self._pause_store = get_pause_store()
 
     def run(
         self,
@@ -200,6 +207,14 @@ class FSMInterpreter:
                         break
                     # Reprendre sans avancer l'étape
                     continue
+
+            # ── Pause globale projet/team/agent avant chaque step ──
+            project_id = result.variables.get("project_id")
+            team_name = result.variables.get("team_name")
+            agent_id = result.variables.get("agent_id")
+            if is_paused(project_id=project_id, team_name=team_name, agent_id=agent_id):
+                wait_for_resume(project_id=project_id, team_name=team_name, agent_id=agent_id)
+                continue
 
             step = steps_by_id.get(current_id)
             if not step:
