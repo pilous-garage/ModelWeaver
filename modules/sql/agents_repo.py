@@ -10,6 +10,7 @@ Comportement conservé : autocommit SQLite, locks, WAL, busy_timeout.
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,10 +18,6 @@ from typing import Any, Dict, List, Optional
 def _ref(prefix: str = "key") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
-
-# ──────────────────────────────────────────────
-#  Helpers locaux (évitent dépendance circulaire)
-# ──────────────────────────────────────────────
 
 def _default_agents_db() -> Path:
     from services._common import mw_home
@@ -47,11 +44,9 @@ def _default_user_db() -> Path:
     return mw_home() / "user.db"
 
 
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
-    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-
+# ──────────────────────────────────────────────
+#  Utility
+# ──────────────────────────────────────────────
 
 def _row_to_dict(row: sqlite3.Row) -> Optional[Dict[str, Any]]:
     if row is None:
@@ -63,7 +58,23 @@ def _rows_to_list(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def read_meta(conn: sqlite3.Connection, key: str, default: int = 0) -> int:
+# ──────────────────────────────────────────────
+#  Refresh paresseux de la GUI : signal par DB, pas par table
+# ──────────────────────────────────────────────
+
+def read_db_version(conn) -> int:
+    """PRAGMA data_version : entier incrémenté à chaque écriture sur le fichier.
+
+    La GUI poll ce compteur par DB à 20 Hz ; s'il change, elle rafraîchit les
+    panneaux du domaine correspondant. Pas besoin de triggers par table.
+    """
+    try:
+        return conn.execute("PRAGMA data_version").fetchone()[0]
+    except Exception:
+        return 0
+
+
+def read_meta(conn, key: str, default: int = 0) -> int:
     try:
         row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return int(row[0]) if row else default
@@ -71,7 +82,9 @@ def read_meta(conn: sqlite3.Connection, key: str, default: int = 0) -> int:
         return default
 
 
-def bump_meta(conn: sqlite3.Connection, key: str, commit: bool = True) -> None:
+def bump_meta(conn, key: str, commit: bool = True) -> None:
+    """Incrémente une clé de méta (ex: 'dependencies') pour signaler un changement
+    non stocké en table (dépendances système calculées live)."""
     conn.execute(
         "INSERT INTO meta(key, value) VALUES(?,1) "
         "ON CONFLICT(key) DO UPDATE SET value = value + 1",
@@ -79,6 +92,16 @@ def bump_meta(conn: sqlite3.Connection, key: str, commit: bool = True) -> None:
     )
     if commit:
         conn.commit()
+
+
+# ──────────────────────────────────────────────
+#  Helpers migration (copiés de db.py pour éviter dépendance circulaire)
+# ──────────────────────────────────────────────
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 # ──────────────────────────────────────────────

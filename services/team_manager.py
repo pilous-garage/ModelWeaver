@@ -293,6 +293,53 @@ class Team:
         self.stop()
         self.start()
 
+    def pause(self, agent_name: Optional[str] = None):
+        """Met en pause un agent spécifique ou TOUS les agents de l'équipe.
+
+        Les agents finissent leur step courant puis se mettent en attente
+        (pas de nouveau step). Le signal 'pause' est envoyé via le canal de
+        supervision (agent_signals) et consommé par la FSM au prochain
+        signal_check.
+        """
+        mgr = AgentManager(db=_get_agent_db())
+        if agent_name:
+            self._send_lifecycle_signal(mgr, agent_name, "pause")
+            return
+        # Pause tous les agents de l'équipe (membres + leader)
+        all_ids = list(self.member_agent_ids.values())
+        if self.team_leader_agent_id:
+            all_ids.append(self.team_leader_agent_id)
+        for aid in all_ids:
+            mgr.send_signal(aid, "pause")
+        self.status = "paused"
+
+    def resume(self, agent_name: Optional[str] = None):
+        """Reprend un agent spécifique ou TOUS les agents en pause de l'équipe.
+
+        Le signal 'resume' est envoyé via le canal de supervision et consommé
+        par la FSM au prochain signal_check.
+        """
+        mgr = AgentManager(db=_get_agent_db())
+        if agent_name:
+            self._send_lifecycle_signal(mgr, agent_name, "resume")
+            return
+        # Resume tous les agents de l'équipe (membres + leader)
+        all_ids = list(self.member_agent_ids.values())
+        if self.team_leader_agent_id:
+            all_ids.append(self.team_leader_agent_id)
+        for aid in all_ids:
+            mgr.send_signal(aid, "resume")
+        self.status = "running"
+
+    def _send_lifecycle_signal(self, mgr, agent_name: str, signal_type: str):
+        """Envoie un signal de lifecycle à un agent de l'équipe par son nom."""
+        db = _get_agent_db()
+        scoped = f"{self.team_name}/{agent_name}" if self.team_name else agent_name
+        row = db.conn.execute(
+            "SELECT agent_id FROM agents WHERE name = ?", (scoped,)).fetchone()
+        if row:
+            mgr.send_signal(row["agent_id"], signal_type)
+
     def _set_agent_status(self, agent_name: str, status: str):
         db = _get_agent_db()
         scoped = f"{self.team_name}/{agent_name}" if self.team_name else agent_name
@@ -406,6 +453,26 @@ class Team:
     def _restart_handler(self, _params: dict) -> dict:
         self.restart()
         return {"name": self.team_name, "status": "restarted"}
+
+    def _pause_handler(self, params: dict) -> dict:
+        """Met en pause TOUS les agents de l'équipe.
+
+        Les agents finissent leur step courant puis se mettent en attente
+        (pas de nouveau step). Le signal 'pause' est envoyé via le canal de
+        supervision (agent_signals) et consommé par la FSM au prochain
+        signal_check.
+        """
+        self.pause(agent_name=params.get("agent_name"))
+        return {"name": self.team_name, "status": "paused"}
+
+    def _resume_handler(self, params: dict) -> dict:
+        """Reprend tous les agents en pause de l'équipe.
+
+        Le signal 'resume' est envoyé via le canal de supervision et consommé
+        par la FSM au prochain signal_check.
+        """
+        self.resume(agent_name=params.get("agent_name"))
+        return {"name": self.team_name, "status": "running"}
 
     def _delegate_handler(self, params: dict) -> dict:
         return self.delegate(
