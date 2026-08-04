@@ -36,11 +36,15 @@ def _signal_match(signal_key: str, pattern_list: List[str]) -> bool:
     return False
 
 
-def _auto_git_sync(home: str, phase: str) -> None:
+def _auto_git_sync(home: str, phase: str, branch: str = "") -> None:
     """Discipline git automatique sur le clone workspace/{projet} du membre.
 
     phase="pre"  : fetch + pull avant de commencer (voir le travail des autres).
     phase="post" : add + commit + push après l'action (publier son travail).
+
+    `branch` = la branche de travail du swarm (ex. auto_code_<team_id>). Si
+    fournie, on l'utilise (elle est créée si absente) au lieu de la branche
+    par défaut du clone (master) — sinon le travail part sur master.
 
     Infrastructurelle : ne dépend pas du LLM. Ne casse pas si pas de clone.
     """
@@ -57,17 +61,30 @@ def _auto_git_sync(home: str, phase: str) -> None:
             _sp.run(c + ["config", "user.email", "agent-auto@modelweaver.local"], capture_output=True, timeout=10)
             if phase == "pre":
                 _sp.run(c + ["fetch", "-q", "origin"], capture_output=True, timeout=30)
-                # Branche distante courante (origin/HEAD), défaut master
-                try:
-                    head = _sp.run(c + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                                   capture_output=True, text=True, timeout=10)
-                    remote_branch = head.stdout.strip().split("/", 1)[-1] or "master"
-                except Exception:
-                    remote_branch = "master"
-                # checkout -B : resynchronise la branche locale sur la distante
-                # (le pre-pull se fait AVANT l'action, rien à perdre localement)
-                _sp.run(c + ["checkout", "-q", "-B", remote_branch,
-                             f"origin/{remote_branch}"], capture_output=True, timeout=30)
+                if branch:
+                    # Branche de travail du swarm : on la crée/suivit depuis la
+                    # distante si elle existe, sinon depuis la branche par défaut.
+                    _sp.run(c + ["checkout", "-q", "-B", branch,
+                                 f"origin/{branch}"], capture_output=True, timeout=30)
+                    # Si la branche distante n'existe pas encore, checkout -B a
+                    # échoué → on la crée depuis HEAD (la branche par défaut).
+                    cur = _sp.run(c + ["branch", "--show-current"],
+                                  capture_output=True, text=True, timeout=10)
+                    if cur.stdout.strip() != branch:
+                        _sp.run(c + ["checkout", "-q", "-B", branch],
+                                capture_output=True, timeout=30)
+                else:
+                    # Branche distante courante (origin/HEAD), défaut master
+                    try:
+                        head = _sp.run(c + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                                       capture_output=True, text=True, timeout=10)
+                        remote_branch = head.stdout.strip().split("/", 1)[-1] or "master"
+                    except Exception:
+                        remote_branch = "master"
+                    # checkout -B : resynchronise la branche locale sur la distante
+                    # (le pre-pull se fait AVANT l'action, rien à perdre localement)
+                    _sp.run(c + ["checkout", "-q", "-B", remote_branch,
+                                 f"origin/{remote_branch}"], capture_output=True, timeout=30)
             else:
                 _sp.run(c + ["add", "-A"], capture_output=True, timeout=10)
                 changed = _sp.run(c + ["diff", "--cached", "--quiet"],
@@ -80,7 +97,8 @@ def _auto_git_sync(home: str, phase: str) -> None:
                     # membre boucle (98 tours observé sur coder-b).
                     _sp.run(c + ["fetch", "-q", "origin"], capture_output=True, timeout=30)
                     _sp.run(c + ["pull", "-q", "--rebase", "origin"], capture_output=True, timeout=30)
-                    _sp.run(c + ["push", "-q", "origin", "HEAD"], capture_output=True, timeout=30)
+                    ref = f"HEAD:{branch}" if branch else "HEAD"
+                    _sp.run(c + ["push", "-q", "origin", ref], capture_output=True, timeout=30)
         except Exception:
             continue
 
@@ -570,13 +588,14 @@ def exec(inputs: dict, home: str) -> dict:
     global_timeout = inputs.get("global_timeout")
     provider_ref = inputs.get("provider_ref", "")
     model_ref = inputs.get("model_ref", "")
+    branch = inputs.get("branch", "") or inputs.get("branch_name", "")
 
     tools = resolve_bundles(bundle_names)
     if not tools:
         return {"signal": "error", "stdout": "", "stderr": f"aucun outil trouvé dans bundles {bundle_names}", "exit_code": 1}
 
     # Discipline git : pull avant d'agir (voir le travail des autres membres)
-    _auto_git_sync(home, "pre")
+    _auto_git_sync(home, "pre", branch)
 
     signals = _chat_with_tools(request, context, tools, max_loops, grouping,
                                break_on_signals, break_on_counts,
@@ -584,7 +603,7 @@ def exec(inputs: dict, home: str) -> dict:
                                provider_ref, model_ref, home)
 
     # Discipline git : commit + push après l'action (publier son travail)
-    _auto_git_sync(home, "post")
+    _auto_git_sync(home, "post", branch)
 
     # Auto-commit/push si des fichiers ont été modifiés dans le workdir
     workdir = _Path(home) / "work"

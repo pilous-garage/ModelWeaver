@@ -50,6 +50,7 @@ entrypoints:
         bundles: ["test"]
         max_loops: 30
         max_iter: 10
+        branch: "{{branch_name}}"
       capture:
         stdout: result
       on_error: fail

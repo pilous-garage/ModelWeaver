@@ -97,6 +97,7 @@ def exec(inputs: dict, home: str) -> dict:
     global_timeout = inputs.get("global_timeout")
     provider_ref = inputs.get("provider_ref", "")
     model_ref = inputs.get("model_ref", "")
+    branch = inputs.get("branch", "") or inputs.get("branch_name", "")
 
     # Logger FSM attaché (même fichier que le run parent)
     _fsm_log = None
@@ -123,7 +124,7 @@ def exec(inputs: dict, home: str) -> dict:
 
     # Discipline git : pull avant d'agir (voir le travail des autres)
     from .autonomous import _auto_git_sync
-    _auto_git_sync(home, "pre")
+    _auto_git_sync(home, "pre", branch)
 
     tools = []
     try:
@@ -199,7 +200,7 @@ def exec(inputs: dict, home: str) -> dict:
             break
 
     # Discipline git : commit + push après l'action (publier son travail)
-    _auto_git_sync(home, "post")
+    _auto_git_sync(home, "post", branch)
 
     return last_result
 
