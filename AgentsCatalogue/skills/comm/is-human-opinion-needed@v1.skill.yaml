@@ -1,0 +1,77 @@
+name: comm/is-human-opinion-needed@v1
+category: comm
+description: >
+  Évalue si une intervention humaine (human-in-the-loop) est nécessaire
+  pour une décision donnée, en fonction de critères tels que l'impact,
+  l'ambiguïté, le risque, la complexité et la conformité réglementaire.
+  Retourne un booléen et les raisons de la décision.
+inputs:
+  subject:
+    type: string
+    required: true
+    description: Sujet ou objet de la décision à évaluer
+  impact:
+    type: string
+    required: false
+    default: "low"
+    description: >
+      Niveau d'impact de la décision : "low", "medium", "high", "critical".
+      Un impact élevé ou critique augmente fortement la nécessité d'une
+      intervention humaine.
+  ambiguity:
+    type: string
+    required: false
+    default: "low"
+    description: >
+      Niveau d'ambiguïté : "low", "medium", "high".
+      Une ambiguïté élevée rend le jugement humain indispensable.
+  risk:
+    type: string
+    required: false
+    default: "low"
+    description: >
+      Niveau de risque en cas de mauvaise décision : "low", "medium", "high", "critical".
+  complexity:
+    type: string
+    required: false
+    default: "low"
+    description: >
+      Niveau de complexité technique ou organisationnelle : "low", "medium", "high".
+  regulatory:
+    type: boolean
+    required: false
+    default: false
+    description: >
+      La décision implique-t-elle une conformité réglementaire ou légale ?
+  cost_impact:
+    type: string
+    required: false
+    default: "low"
+    description: >
+      Impact financier estimé : "low", "medium", "high", "critical".
+  stakeholder_count:
+    type: integer
+    required: false
+    default: 1
+    description: >
+      Nombre de parties prenantes affectées par la décision.
+outputs:
+  needed:
+    type: boolean
+    description: >
+      true si une intervention humaine est recommandée, false sinon.
+  confidence:
+    type: float
+    description: >
+      Score de confiance de l'évaluation (0.0 - 1.0). Plus le score est
+      élevé, plus la recommandation est fiable.
+  reasons:
+    type: list[string]
+    description: Liste des critères qui justifient la décision.
+  suggested_action:
+    type: string
+    description: >
+      Action suggérée : "ask_human", "auto_proceed", "escalate", "defer".
+implementation:
+  type: python
+  function: agent.ops.is_human_opinion_needed

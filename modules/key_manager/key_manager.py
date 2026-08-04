@@ -32,6 +32,7 @@ _MW_DIR = mw_home()
 _KEYRING_SERVICE = "modelweaver"
 _KEYRING_TABLE_KEY = "keys_table"
 _FALLBACK_KEY = _MW_DIR / ".keyring_fallback.key"
+_FALLBACK_KEY_ENC = _MW_DIR / ".keyring_fallback.key.enc"
 _FALLBACK_STORE = _MW_DIR / ".keyring_fallback.json"
 
 
@@ -81,7 +82,30 @@ class _KeyStore:
 
     def _init_fallback(self):
         _MW_DIR.mkdir(parents=True, exist_ok=True)
-        if _FALLBACK_KEY.exists():
+
+        if _FALLBACK_KEY_ENC.exists():
+            from getpass import getpass
+            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+            try:
+                payload = json.loads(_FALLBACK_KEY_ENC.read_text())
+            except Exception:
+                payload = {}
+
+            salt = base64.urlsafe_b64decode(payload.get("salt", ""))
+            nonce = base64.urlsafe_b64decode(payload.get("nonce", ""))
+            ct = base64.urlsafe_b64decode(payload.get("ct", ""))
+
+            password = getpass("Mot de passe du keyring fallback : ").encode("utf-8")
+            try:
+                kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                                 salt=salt or os.urandom(16), iterations=200_000)
+                key = AESGCM(kdf.derive(password)).decrypt(nonce, ct, None)
+            except Exception:
+                raise RuntimeError("Mot de passe invalide ou fichier corrompu.")
+        elif _FALLBACK_KEY.exists():
             key = _FALLBACK_KEY.read_bytes()
         else:
             from cryptography.hazmat.primitives import hashes
@@ -92,6 +116,7 @@ class _KeyStore:
             key = base64.urlsafe_b64encode(kdf.derive(_machine_secret()))
             _FALLBACK_KEY.write_bytes(key)
             os.chmod(_FALLBACK_KEY, 0o600)
+
         self._fernet = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet(key)
         if _FALLBACK_STORE.exists():
             try:

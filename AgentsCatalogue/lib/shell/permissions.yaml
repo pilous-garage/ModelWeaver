@@ -1,0 +1,94 @@
+# ──────────────────────────────────────────────────────────────────────
+# Default permission configuration for the ModelWeaver shell.
+#
+# This file defines which commands are allowed for each role.
+# Roles are hierarchical: admin > dev > user.
+# A higher role inherits ALL commands of lower roles plus its own extras.
+# ──────────────────────────────────────────────────────────────────────
+
+roles:
+  hierarchy: [admin, dev, user]
+  default: user
+
+# Commands available to every role (safety-net / always allowed)
+defaults:
+  - echo
+  - cat
+  - head
+  - tail
+  - grep
+  - find
+  - sed
+  - awk
+  - sort
+  - uniq
+  - wc
+  - diff
+  - patch
+  - mkdir
+  - rmdir
+  - cp
+  - mv
+  - touch
+  - ln
+  - chmod
+  - chown
+  - ps
+  - kill
+  - pskill
+  - top
+  - env
+  - which
+  - uname
+  - date
+  - hostname
+  - whoami
+  - id
+  - clear
+  - sleep
+  - type
+  - true
+  - false
+  - exit
+  - help
+  - alias
+  - source
+  - export
+  - unset
+  - cut
+  - tr
+  - paste
+  - join
+  - split
+  - xargs
+  - git
+  - python3
+  - python
+  - pytest
+
+# Per-role additional commands (added on top of defaults + inherited)
+permissions:
+  # user — least privileged
+  user: []
+
+  # dev — inherits user commands, plus development tools
+  dev:
+    - pip
+    - pip3
+    - npm
+    - node
+    - make
+    - gcc
+    - g++
+
+  # admin — inherits dev + user commands, plus system administration
+  admin:
+    - rm
+    - fdisk
+    - mount
+    - umount
+    - systemctl
+    - crontab
+    - ssh
+    - scp
+    - rsync

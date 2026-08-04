@@ -26,7 +26,10 @@ Usage:
     discover_litellm_aliases(CatalogueDB(), dry_run=False)
 """
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("modelweaver.catalogue.discovery")
 
 LITELLM_TARGET = "litellm"
 LITELLM_SOURCE = "github-litellm-list"
@@ -158,6 +161,11 @@ def discover_nvidia_official_aliases(cat, dry_run: bool = False,
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
+        logger.error("NVIDIA official alias discovery failed", extra={
+            "source": "nvidia-official",
+            "error_type": type(e).__name__,
+            "error": str(e),
+        })
         stats["error"] = str(e)[:120]
         return stats
 

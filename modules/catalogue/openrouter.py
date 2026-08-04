@@ -14,9 +14,12 @@ Utilisation :
 """
 
 import json
+import logging
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger("modelweaver.catalogue.discovery")
 
 from modules.sql.db import CatalogueDB
 
@@ -76,15 +79,28 @@ def fetch_openrouter_models(force: bool = False,
     if not force and CACHE_FILE.exists():
         try:
             return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("OpenRouter cache read failed", extra={
+                "source": "openrouter",
+                "error_type": type(e).__name__,
+                "error": str(e),
+            })
             pass
     import os
     key = api_key or os.environ.get("OPENROUTER_API_KEY")
     req = urllib.request.Request(
         OPENROUTER_MODELS_URL,
         headers={"Authorization": f"Bearer {key}"} if key else {})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = json.loads(resp.read().decode())
+    except Exception as e:
+        logger.error("OpenRouter model discovery failed", extra={
+            "source": "openrouter",
+            "error_type": type(e).__name__,
+            "error": str(e),
+        })
+        return {}
     models = {}
     for m in raw.get("data", []):
         mid = m.get("id", "")

@@ -1,14 +1,25 @@
 """Shell interne pour agents LLM.
 
-Interface publique : get_shell(), list_shells()."""
+Interface publique : get_shell(), list_shells().
+"""
 
 import json
 import os
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
-from .auth import ShellAuth, AuthorizationError, VFSPathError
+from .auth import (
+    ShellAuth,
+    AuthorizationError,
+    VFSPathError,
+    PermissionEngine,
+    PermissionConfig,
+    PermissionConfigLoader,
+    DEFAULT_ROLE_HIERARCHY,
+    DEFAULT_ROLE,
+    DEFAULT_COMMANDS,
+)
 from .auth_request import AuthorizationRequest, request_handler
 from .executor import ExecuteError
 from .log import ShellLog
@@ -20,6 +31,8 @@ def get_shell(
     home_root: Optional[Path] = None,
     allowed_roots: Optional[list] = None,
     allowed_commands: Optional[set] = None,
+    permission_config: Optional[Union[str, PermissionConfig]] = None,
+    cache_ttl: float = 60.0,
     load_session: Optional[str] = None,
 ) -> Shell:
     """Crée et ouvre un shell pour un agent.
@@ -29,7 +42,12 @@ def get_shell(
         home_root: racine du VFS agent (défaut: ~/.modelweaver)
         allowed_roots: racines VFS autorisées (défaut: [home_root])
         allowed_commands: whitelist de commandes système autorisées en fallback
-        load_session: shell_id d'une session persistée à recharger"""
+            (legacy).  Ignoré si *permission_config* est fourni.
+        permission_config: chemin vers un fichier de config (JSON/YAML) ou
+            une instance de PermissionConfig définissant les commandes
+            autorisées par rôle.
+        cache_ttl: TTL (secondes) du cache du moteur de permissions.
+        load_session: shell_id d'une session persistante à recharger"""
     if home_root is None:
         home_root = Path.home() / ".modelweaver"
 
@@ -45,6 +63,8 @@ def get_shell(
         home_root=home_root,
         allowed_roots=allowed_roots,
         allowed_commands=allowed_commands,
+        permission_config=permission_config,
+        cache_ttl=cache_ttl,
     )
     shell = Shell(shell_id=shell_id, workdir=workdir, auth=auth)
     shell.open()
@@ -95,4 +115,10 @@ __all__ = [
     "AuthorizationRequest",
     "request_handler",
     "VFSPathError",
+    "PermissionEngine",
+    "PermissionConfig",
+    "PermissionConfigLoader",
+    "DEFAULT_ROLE_HIERARCHY",
+    "DEFAULT_ROLE",
+    "DEFAULT_COMMANDS",
 ]

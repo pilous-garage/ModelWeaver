@@ -34,6 +34,7 @@ DEFAULTS: Dict[str, Any] = {
     "usage.fsync_per_line": True,                      # fsync par ligne (survit crash)
     "usage.collector_poll_seconds": 5.0,               # intervalle rassembleur
     "usage.agent_actif_max_rows": 1000,                # borne taille table agent_actif
+ "http.request_timeout_seconds": 30, # timeout par défaut des requêtes HTTP (probes, sync)
     # Général
     "general.heartbeat_timeout_seconds": 3600,         # (réservé, futur sweep)
 }

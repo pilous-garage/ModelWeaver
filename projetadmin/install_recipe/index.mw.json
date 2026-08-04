@@ -23,11 +23,11 @@
     "class": "router",
     "description": "Multi-provider LLM router (LiteLLM)"
   },
-  "modelweaver": {
-    "file": "modelweaver.mw.yaml",
+  "litellm-proxy": {
+    "file": "litellm-proxy.mw.yaml",
     "latest": "0.5",
     "class": "system",
-    "description": "ModelWeaver orchestrator"
+    "description": "LiteLLM Proxy orchestrator"
   },
   "ollama": {
     "file": "ollama.mw.yaml",

@@ -19,9 +19,12 @@ Utilisation :
 """
 
 import json
+import logging
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger("modelweaver.catalogue.discovery")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CACHE_DIR = REPO_ROOT / ".modelweaver" / "cache" / "pricing"
@@ -96,13 +99,26 @@ def fetch_litellm_pricing(force: bool = False) -> Dict[str, Any]:
     if not force and cache.exists():
         try:
             return json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("litellm pricing cache read failed", extra={
+                "source": "litellm_github",
+                "error_type": type(e).__name__,
+                "error": str(e),
+            })
             pass
     req = urllib.request.Request(
         LITELLM_PRICING_URL, headers={"User-Agent": "modelweaver-sync/1.0"}
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        logger.error("litellm pricing fetch failed", extra={
+            "source": "litellm_github",
+            "error_type": type(e).__name__,
+            "error": str(e),
+        })
+        return {}
     try:
         cache.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
@@ -265,5 +281,10 @@ def sync_all(cat, force: bool = False, dry_run: bool = False,
                                   only_free_tier=only_free_tier, target=name)
             report[name] = stats
         except Exception as e:
+            logger.error("pricing sync failed for source", extra={
+                "source": name,
+                "error_type": type(e).__name__,
+                "error": str(e),
+            })
             report[name] = {"error": str(e)}
     return report

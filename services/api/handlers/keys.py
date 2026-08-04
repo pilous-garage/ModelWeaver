@@ -26,18 +26,27 @@ def op_keys_set(params):
 
 def op_keys_get(params):
     km = _get_km()
+    provider_ref = params.get("provider_ref", "")
+    identity = params.get("identity", "default")
     try:
         key = km.get_key(
-            provider_ref=params["provider_ref"],
-            identity=params.get("identity", "default"),
+            provider_ref=provider_ref,
+            identity=identity,
         )
     except Exception as e:
         from modules.key_manager.key_manager_module import KeyLockedError
         if isinstance(e, KeyLockedError):
+            from services.audit import audit
+            audit("keys.get", provider_ref=provider_ref, identity=identity, ok=False, error="locked")
             return {"status": "locked"}
+        from services.audit import audit
+        audit("keys.get", provider_ref=provider_ref, identity=identity, ok=False, error=str(e))
         raise
+    from services.audit import audit
     if not key:
+        audit("keys.get", provider_ref=provider_ref, identity=identity, ok=False, error="not_found")
         return {"status": "not_found"}
+    audit("keys.get", provider_ref=provider_ref, identity=identity, ok=True)
     return {"status": "ok", "key": key}
 
 
