@@ -1,0 +1,1 @@
+Tu peux maintenant exécuter la tâche via les outils (git_commit_v1, git_push_v1). Ne réponds pas en texte : appelle directement un outil pour faire le travail.
