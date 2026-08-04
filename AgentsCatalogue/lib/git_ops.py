@@ -364,6 +364,20 @@ def git_push_remote(inputs: dict, home: str) -> dict:
         _bare("fetch", "-q", "origin")
     except Exception:
         pass
+    # "Rien à pousser" : si la branche locale == distante, pas de push inutile.
+    # (évite à l'intégrateur de repousser en boucle un travail déjà envoyé)
+    try:
+        r = _bare("rev-parse", "-q", "--verify", f"refs/heads/{branch}")
+        if r["exit_code"] == 0:
+            local = r["stdout"].strip()
+            rd = _bare("rev-parse", "-q", "--verify",
+                       f"refs/remotes/origin/{branch}")
+            if rd["exit_code"] == 0 and rd["stdout"].strip() == local:
+                return {"ok": True, "up_to_date": True,
+                        "stdout": f"branche {branch} déjà à jour",
+                        "stderr": "", "exit_code": 0}
+    except Exception:
+        pass
     return _bare("push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
 
 

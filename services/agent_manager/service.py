@@ -975,6 +975,35 @@ class AgentManager:
         except Exception:
             return 0
 
+    def _has_unpushed(self, team_id: int) -> bool:
+        """Vrai si la branche auto_code_<team_id> du repo central a des commits
+        non encore poussés vers github (origin).
+
+        Utilisé par le waker : si tout est déjà poussé, réveiller l'intégrateur
+        ne sert à rien (il boucle : push vide → re-register → réveil).
+        """
+        try:
+            from services._common import mw_home
+            bare = mw_home() / "repos" / "mw-swarm.git"
+            if not bare.exists():
+                return False
+            branch = f"auto_code_{team_id}"
+            import subprocess as sp
+            def _rev(ref):
+                r = sp.run(["git", "--git-dir", str(bare), "rev-parse", "-q",
+                            "--verify", ref], capture_output=True, text=True,
+                           timeout=15)
+                return r.stdout.strip() if r.returncode == 0 else ""
+            local = _rev(f"refs/heads/{branch}")
+            remote = _rev(f"refs/remotes/origin/{branch}")
+            if not local:
+                return False
+            if not remote:
+                return True  # branche locale sans distante → à pousser
+            return local != remote
+        except Exception:
+            return False
+
     def _reclaim_stale_tasks(self) -> int:
         """Remet les tasks 'running' à 'pending' si plus aucun agent n'est en
         cours d'exécution légitime.
@@ -1178,10 +1207,12 @@ class AgentManager:
                 return any((t == team or t == -1) and r == role
                            for w, t, r in pending_tasks)
             if ctype == "workspace_all_done":
-                # Toutes les tâches du workspace de la CONDITION done → le
-                # manager pousse CE workspace. Si la condition n'a pas de
-                # workspace précis (mw-swarm), on accepte n'importe quel
-                # workspace all-done.
+                # Le manager pousse quand du travail est fini. Mais s'il n'y a
+                # RIEN de nouveau à pousser (branche auto_code déjà à jour sur
+                # github), ne pas le réveiller — sinon il boucle : réveil →
+                # push (rien) → re-register → réveil…
+                if not self._has_unpushed(team):
+                    return False
                 if ws and ws in all_done:
                     return True
                 if not ws:
