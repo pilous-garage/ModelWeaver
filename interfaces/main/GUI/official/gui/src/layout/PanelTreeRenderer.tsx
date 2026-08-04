@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { PANEL_REGISTRY } from '../panels/index.ts';
 import type { PanelTreeNode } from './useLayout.ts';
+import { logGui } from '../gui_log.ts';
 
 interface Props {
   tree: PanelTreeNode;
@@ -16,6 +17,7 @@ function LazyPanel({ id, ctx }: { id: string; ctx: any }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+    logGui('panel:lazy-request', { id });
     import('../panels/loader.ts').then((m) =>
       m.ensurePanelLoaded(id).then((d) => {
         if (cancelled) return;

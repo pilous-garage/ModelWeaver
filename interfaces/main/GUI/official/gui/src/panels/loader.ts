@@ -14,6 +14,7 @@
 import type { PanelDef } from '../types.ts';
 import { daemonPost } from '../bridge.ts';
 import { PANEL_REGISTRY } from './index.ts';
+import { logGui } from '../gui_log.ts';
 
 const _baseUrl = () => `http://127.0.0.1:8770`;
 
@@ -89,9 +90,11 @@ async function loadExternalPanel(spec: { id: string; file?: string }): Promise<P
     panel.essential = false;  // externe
     PANEL_REGISTRY[panel.id] = panel;
     _status[id] = { id, label: panel.label, version: panel.version, loaded: true };
+    logGui('panel:loaded', { id, label: panel.label, version: panel.version });
     return panel;
   } catch (e: any) {
     _status[id] = { id, loaded: false, error: String(e?.message || e) };
+    logGui('panel:load-error', { id, error: String(e?.message || e) });
     console.warn(`[panels.loader] échec chargement '${id}':`, e);
     return null;
   }

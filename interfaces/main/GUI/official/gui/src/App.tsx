@@ -103,8 +103,14 @@ export default function App() {
   const [windowLabel, setWindowLabel] = useState<string>('installator');
 
   useEffect(() => {
+    const fullLog = import('./gui_log.ts');
     console.log('[App] startup, hasTauri:', !!(window as any).__TAURI_INTERNALS__);
     console.log('[App] __MW_WINDOW_LABEL:', (window as any).__MW_WINDOW_LABEL);
+    fullLog.then((g) => {
+      g.logGui('app:startup', { hasTauri: !!(window as any).__TAURI_INTERNALS__,
+                                 mwLabel: (window as any).__MW_WINDOW_LABEL || null,
+                                 url: window.location.search });
+    });
 
     // Charger l'INDEX des panels externes (compilés par panel-creator).
     // Les panels eux-mêmes sont chargés PA RESSEUSEMENT (à la demande, quand
@@ -112,20 +118,26 @@ export default function App() {
     import('./panels/loader.ts').then((m) => {
       m.loadExternalPanelIndex().then((status) => {
         console.log(`[panels] ${status.length} panels externes indexés (paresseux)`);
-      }).catch((e) => console.warn('[panels] échec index:', e));
+        fullLog.then((g) => g.logGui('panels:index', { count: status.length }));
+      }).catch((e) => { console.warn('[panels] échec index:', e); fullLog.then((g) => g.logGui('panels:index-error', String(e))); });
     });
 
     const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
-    if (injected) { console.log('[App] label from Rust inject:', injected); setWindowLabel(injected); return; }
+    if (injected) { console.log('[App] label from Rust inject:', injected); fullLog.then((g) => g.logGui('app:window-label', { source: 'inject', label: injected })); setWindowLabel(injected); return; }
 
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const wl = params.get('window');
-      if (wl) { console.log('[App] label from URL param:', wl); setWindowLabel(wl); return; }
+      if (wl) { console.log('[App] label from URL param:', wl); fullLog.then((g) => g.logGui('app:window-label', { source: 'url', label: wl })); setWindowLabel(wl); return; }
     }
-    getWindowLabel().then((l) => { console.log('[App] label from getWindowLabel:', l); setWindowLabel(l); });
+    getWindowLabel().then((l) => { console.log('[App] label from getWindowLabel:', l); fullLog.then((g) => g.logGui('app:window-label', { source: 'tauri', label: l })); setWindowLabel(l); });
   }, []);
 
   const layoutId = WINDOW_TO_LAYOUT[windowLabel] || 'default';
+  // Trace le layout/fenêtre affiché (full-log).
+  useEffect(() => {
+    import('./gui_log.ts').then((g) => g.logGui('app:layout', { window: windowLabel, layout: layoutId }));
+  }, [windowLabel, layoutId]);
+
   return <LayoutWindow app={app} layoutId={layoutId} />;
 }
