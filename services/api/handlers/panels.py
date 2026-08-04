@@ -57,6 +57,17 @@ def op_panels_file(params):
             "content_type": "application/javascript"}
 
 
+def op_panels_build(params):
+    """Recompile les panneaux non-essentiels (panel-creator)."""
+    try:
+        from services.panel_creator.panel_creator import build_all
+        force = bool(params.get("force", False))
+        res = build_all(force=force)
+        return {"status": "ok", **res}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # ── Fenêtres (templates de base) ─────────────────────────────────────
 
 WINDOW_TEMPLATES = {
@@ -150,6 +161,7 @@ def op_windows_close(params):
 register("panels/index",     op_panels_index)
 register("panels/status",    op_panels_status)
 register("panels/file",      op_panels_file)
+register("panels/build",     op_panels_build)
 register("windows/templates", op_windows_templates)
 register("windows/list",     op_windows_list)
 register("windows/create",   op_windows_create)

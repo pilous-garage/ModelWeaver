@@ -1,0 +1,22 @@
+name: panel-creator
+version: 0.1.0
+description: Compile les panneaux GUI isolément (esbuild) et les ajoute au runtime (panels-dist + registre). Vérifie le contrat et les dépendances.
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - services/panel_creator/panel_creator.py
+  mode: once
+
+supervisor:
+  restart: true
+  max_restarts: 5
+  interval: 60
+
+entrypoints:
+  panels-build:
+    type: daemon-api
+    method: POST
+    path: panels/build
+    description: Recompile les panneaux non-essentiels (panel-creator)
