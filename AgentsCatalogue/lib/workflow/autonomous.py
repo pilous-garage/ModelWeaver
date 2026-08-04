@@ -335,10 +335,23 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 _fsm_log.log("debug", "llm/ok",
                              f"provider={p_ref} model={m_ref} "
                              f"tools={len(getattr(response, 'tool_calls', None) or [])}")
+            # Journal de conversation complet (réponses + tool calls) pour
+            # l'analyse en profondeur (boucles, qualité). Rotation 10 Mo.
+            try:
+                from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
+                log_llm_exchange(skill_home, p_ref, m_ref, _round, response, ok=True)
+            except Exception:
+                pass
         except Exception as e:
             _llm_fail_rounds += 1
             _consec_llm_fails += 1
             err_str = str(e)[:200]
+            # Journal de conversation : tracer l'erreur aussi.
+            try:
+                from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
+                log_llm_exchange(skill_home, p_ref, m_ref, _round, ok=False, error=err_str)
+            except Exception:
+                pass
             if _fsm_log is not None:
                 _fsm_log.log("warn", "llm/error",
                              f"provider={p_ref} model={m_ref} err={err_str[:100]}")
