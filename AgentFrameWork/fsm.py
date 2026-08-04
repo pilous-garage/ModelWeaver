@@ -4,6 +4,13 @@ import threading
 from enum import Enum, auto
 from typing import Any, Dict, Optional
 
+try:
+    from AgentFrameWork.pause_flag_store import is_paused, set_paused, wait_while_paused
+except Exception:  # pragma: no cover - dépendance optionnelle selon l'environnement
+    is_paused = lambda **kwargs: False  # type: ignore[assignment]
+    set_paused = lambda *args, **kwargs: None  # type: ignore[assignment]
+    wait_while_paused = lambda **kwargs: None  # type: ignore[assignment]
+
 
 class PauseScope(Enum):
     AGENT = auto()
@@ -21,10 +28,13 @@ class PauseManager:
             PauseScope.PROJECT: False,
             PauseScope.TEAM: False,
         }
+        self._resume_event = threading.Event()
 
     def set_paused(self, scope: PauseScope, paused: bool) -> None:
         with self._lock:
             self._paused[scope] = paused
+            if not paused:
+                self._resume_event.set()
 
     def is_paused(self, scope: PauseScope) -> bool:
         with self._lock:
@@ -42,6 +52,10 @@ class PauseManager:
                 "team_paused": self._paused[PauseScope.TEAM],
                 "global_paused": any(self._paused.values()),
             }
+
+    def wait_until_resume(self, timeout: Optional[float] = None) -> bool:
+        self._resume_event.clear()
+        return self._resume_event.wait(timeout)
 
 
 class StreamBus:
@@ -121,3 +135,65 @@ class FSM:
         if self.paused:
             return {"status": "paused", "step": step.get("id")}
         return {"status": "ok", "step": step.get("id")}
+
+    def wait_if_paused(
+        self,
+        project_id: Optional[str] = None,
+        team_name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        poll_interval: float = 0.25,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Bloque l'agent tant qu'un flag de pause global est actif.
+
+        - Avant chaque step, le FSM appelle cette méthode.
+        - Si paused, l'agent attend un événement de resume.
+        - Le comportement demandé est respecté :
+            * pause : l'agent finit son step courant puis se met en attente ;
+            * resume : reprend au step suivant.
+        """
+        while is_paused(
+            project_id=project_id,
+            team_name=team_name,
+            agent_id=agent_id,
+        ):
+            notified = self._pause_manager.wait_until_resume(timeout=poll_interval)
+            if notified:
+                break
+            time.sleep(poll_interval)
+
+    def pause_global(
+        self,
+        project_id: Optional[str] = None,
+        team_name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Active la pause au niveau projet/team/agent dans le store partagé.
+
+        Cela notifie également les agents en attente via l'event de resume.
+        """
+        set_paused("project", project_id or "default", True)
+        set_paused("team", team_name or "default", True)
+        set_paused("agent", agent_id or "default", True)
+        self._pause_manager.set_paused(PauseScope.PROJECT, True)
+        self._pause_manager.set_paused(PauseScope.TEAM, True)
+        self._pause_manager.set_paused(PauseScope.AGENT, True)
+        return {"status": "ok", "paused": True}
+
+    def resume_global(
+        self,
+        project_id: Optional[str] = None,
+        team_name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Reprend l'exécution et réveille les agents en attente."""
+        set_paused("project", project_id or "default", False)
+        set_paused("team", team_name or "default", False)
+        set_paused("agent", agent_id or "default", False)
+        self._pause_manager.set_paused(PauseScope.PROJECT, False)
+        self._pause_manager.set_paused(PauseScope.TEAM, False)
+        self._pause_manager.set_paused(PauseScope.AGENT, False)
+        return {"status": "ok", "paused": False}
+
+
+import time  # noqa: E402 - import tardif pour wait_if_paused

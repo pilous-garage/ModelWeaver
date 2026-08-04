@@ -33,7 +33,11 @@ _DEFAULT_DB = mw_home() / "pause_flags.db"
 
 
 class PauseFlagStore:
-    """Stockage SQLite WAL des flags de pause."""
+    """Stockage SQLite WAL des flags de pause, avec notification de réveil.
+
+    Un `threading.Condition` par scope permet aux agents en attente
+    d'être notifiés lors d'un changement d'état (pause/resume).
+    """
 
     def __init__(self, db_path: Optional[str] = None) -> None:
         path = Path(db_path) if db_path else _DEFAULT_DB
@@ -41,6 +45,7 @@ class PauseFlagStore:
         parent.mkdir(parents=True, exist_ok=True)
         self._path = str(path)
         self._write_lock = threading.Lock()
+        self._cond = threading.Condition(threading.Lock())
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
@@ -73,6 +78,12 @@ class PauseFlagStore:
 
     def _now(self) -> float:
         return time.time()
+
+    def _notify_waiters(self) -> None:
+        try:
+            self._cond.notify_all()
+        except Exception:
+            pass
 
     # ── API publique ───────────────────────────────────────────────
 
@@ -110,6 +121,8 @@ class PauseFlagStore:
             )
             self._conn.commit()
         logger.debug("pause flag set: %s/%s -> %s", scope, scope_id, state)
+        with self._cond:
+            self._notify_waiters()
         return row
 
     def get_flag(self, scope: str, scope_id: str) -> Optional[Dict[str, Any]]:
@@ -172,7 +185,10 @@ class PauseFlagStore:
             else:
                 cur = self._conn.execute("DELETE FROM pause_flags")
             self._conn.commit()
-            return cur.rowcount
+            count = cur.rowcount
+        with self._cond:
+            self._notify_waiters()
+        return count
 
     def list_flags(self, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """Liste les flags, éventuellement filtrés par scope."""
@@ -194,6 +210,31 @@ class PauseFlagStore:
             except Exception:
                 pass
             self._conn = None
+
+    # ── Attente notifiée ───────────────────────────────────────────
+
+    def wait_while_paused(
+        self,
+        project_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        poll_interval: float = 0.25,
+    ) -> None:
+        """Bloque tant que le flag effectif est actif.
+
+        Utilise un `Condition` pour être réveillé par `set_flag`/`clear_all`
+        sans polling actif.
+        """
+        while True:
+            with self._cond:
+                state = self.effective_state(
+                    project_id=project_id,
+                    team_id=team_id,
+                    agent_id=agent_id,
+                )
+                if not state.get("paused"):
+                    return
+                self._cond.wait(timeout=poll_interval)
 
 
 # Singleton

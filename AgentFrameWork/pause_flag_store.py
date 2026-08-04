@@ -75,6 +75,11 @@ def set_paused(level: str, ref: str, paused: bool) -> None:
                 conn.close()
             except Exception:
                 pass
+    try:
+        from AgentFrameWork.pause_notifier import PauseNotifier
+        PauseNotifier.get_instance().notify_all()
+    except Exception:
+        pass
 
 
 def get_paused(level: str, ref: str) -> bool:

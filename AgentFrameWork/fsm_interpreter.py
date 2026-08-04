@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
+from modules.control.pause_flag import get_pause_store
 from AgentFrameWork.tool_executor import ToolExecutor
 
 logger = logging.getLogger("modelweaver.fsm")
