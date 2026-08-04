@@ -1,6 +1,6 @@
 {
   "productName": "ModelWeaver",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "identifier": "com.modelweaver.main",
   "build": {
     "beforeDevCommand": "npm run dev",

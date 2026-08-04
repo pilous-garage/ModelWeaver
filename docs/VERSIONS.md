@@ -1283,3 +1283,44 @@ Approche **lib_système** (pas de switch/case par plateforme) — chaque command
 - `git_push` avec `pull --rebase` avant push (fini les boucles non-fast-forward)
 - **Provider `kilo`** : gateway `https://api.kilo.ai/api/gateway`, 10 modèles `:free` onboardés (clé gratuite sans budget)
 
+
+## V0.9.0 — Swarm Auto-Code, Watcher, Pause/Resume & Refactor db.py 🚀 (Livrée)
+
+### Swarm self-improve v2 (greedy, sans leader)
+- Team `swarm-selfimprove-v2` : 8 membres flat (analyst, coder-a/b/c, tester-a/b, reviewer, integrator)
+- Workflow greedy : pick → execute → done → sleep (wait_for) → fail
+- `workflow/autonomous_loop@v1` : boucle externe (max_iter) autour d'autonomous, mesure le progrès, escalade LLM
+- `wait_for` : agents endormis en attente d'une condition (task_for_role, issue_open, workspace_all_done), réveil FIFO
+- Waker : matche sur tous les workspaces, amorce au premier cycle, réveil du merger quand workspace all-done + commits non poussés
+- `_git_add_safe` : protège contre les suppressions accidentelles de masse (bug git add -A)
+- Agents poussent sur `auto_code_<team_id>` (pas la branche principale) ; merge manuel vers test-npm-dev
+
+### Watcher (surveillant du swarm, sans LLM)
+- `services/watcher/watcher.py` : process supervisé, boucle 30s
+- 8 détecteurs purs : P1 task orpheline, P2 agent jamais réveillé, P3 reliquat runtime, P5 spam wait_for, P6 issue analysing bloquée, P7 role_required multi, P8 agent bloqué (analyse FSM), P9 lien issue→workspace, P10 déblocage human_choice
+- Logs : `watcher_detail.log` (détaillé 10 Mo) + `watcher_summary.log` (synthèse problèmes récurrents)
+- Warnings git : taille repo, repos par-workspace, fichiers disparus
+
+### Pause/Resume rapide Agent/Team/Projet (#49)
+- `AgentFrameWork/pause_flag_store.py` : flag partagé SQLite (project/team/agent), fusion OR, notification threading
+- Routes : `project/pause|resume|status`, `team/pause|resume|status`, `pause/set|clear|status|wait`
+- FSM : vérification is_paused avant chaque step + wait_for_resume + _build_pause_check (streaming SSE)
+
+### Mécanisme human_choice
+- Table `human_choice` (workspace.db) : question, options, status (pending/answered), response
+- Skill `workspace/issue_block@v1` : l'agent bloque une issue + enregistre la question
+- Routes API : `human_choice/list`, `human_choice/answer`
+- Watcher P10 : débloque l'issue (blocked + answered → open + réponse injectée)
+
+### Refactor db.py (#11) — découpage par domaine
+- `modules/sql/db.py` : 2480 → 30 lignes (façade ré-exportante)
+- `schema.py`, `catalogue_repo.py`, `modelweaver_repo.py`, `agents_repo.py`, `runtime_repo.py`
+- Imports rétro-compatibles (`from modules.sql.db import CatalogueDB` fonctionne toujours)
+- Vérifié : 4 DB ouvertes, tous les modules métier s'importent, daemon répond
+
+### Fixes fondamentaux
+- Locks SQLite : CatalogueDB, ModelWeaverDB, WorkspaceDB en autocommit (isolation_level=None)
+- project_id résolu depuis le manifest de la team (source de vérité)
+- Table `key_endpoint_models` → `provider_models_mapping` (issue #28)
+- provider_type 'ollama' → 'local_ollama' (issue #15)
+- Logging structuré + retry backoff découverte modèles (issue #43)
