@@ -9,6 +9,7 @@ use std::fs::OpenOptions;
 use std::io::{Write, Read};
 use serde::Serialize;
 use tauri::Manager;
+use tauri::Emitter;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -1278,6 +1279,53 @@ fn get_window_profile(window: tauri::WebviewWindow) -> Result<WindowProfile, Str
     Ok(profile)
 }
 
+/// Liste les fenêtres ouvertes (labels des WebviewWindow actives).
+#[tauri::command]
+fn list_windows(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for (label, win) in app.webview_windows() {
+        let profile = load_window_profile(&label);
+        let visible = win.is_visible().unwrap_or(true);
+        let focused = win.is_focused().unwrap_or(false);
+        out.push(serde_json::json!({
+            "label": label,
+            "layout": profile.layout,
+            "theme": profile.theme,
+            "title": profile.title,
+            "visible": visible,
+            "focused": focused,
+        }));
+    }
+    log_to_file("WINDOW", &format!("list_windows -> {} fenêtres", out.len()));
+    Ok(serde_json::json!({"windows": out, "count": out.len()}))
+}
+
+/// Met une fenêtre au premier plan (focus) et la restaure si minimisée.
+#[tauri::command]
+fn focus_window(app: tauri::AppHandle, label: String) -> Result<serde_json::Value, String> {
+    log_to_file("WINDOW", &format!("focus_window({})", label));
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        let ok = win.set_focus().is_ok();
+        return Ok(serde_json::json!({"status": "ok", "label": label, "focused": ok}));
+    }
+    Ok(serde_json::json!({"status": "error", "label": label, "error": "fenêtre introuvable"}))
+}
+
+/// Diffuse l'état courant d'une fenêtre (label → layout/thème/titre) à TOUTES
+/// les fenêtres via un événement Tauri, pour la synchro du menu Fenêtre.
+#[tauri::command]
+fn broadcast_window_state(app: tauri::AppHandle, label: String, layout: String, theme: String, title: String) -> Result<(), String> {
+    log_to_file("WINDOW", &format!("broadcast_window_state({}) layout={} theme={}", label, layout, theme));
+    let payload = serde_json::json!({
+        "label": label, "layout": layout, "theme": theme, "title": title,
+    });
+    let _ = app.emit("mw:window-state", payload);
+    Ok(())
+}
+
 #[tauri::command]
 async fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
@@ -1894,6 +1942,9 @@ fn main() {
             toggle_fullscreen,
             get_window_metrics,
             get_window_profile,
+            list_windows,
+            focus_window,
+            broadcast_window_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

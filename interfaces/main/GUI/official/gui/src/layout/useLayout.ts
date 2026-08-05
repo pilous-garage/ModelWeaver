@@ -158,6 +158,33 @@ export function useLayout(layoutId: string) {
 
   const refresh = useCallback(() => loadLayout(layoutId), [layoutId, loadLayout]);
 
+  /** Change le layout de la fenêtre courante (nouveau layout chargé + thème). */
+  const applyLayout = useCallback((newLayoutId: string) => {
+    dirtyRef.current = false;
+    loadLayout(newLayoutId);
+  }, [loadLayout]);
+
+  /** Change le thème courant (persiste dans le layout si dirty). */
+  const applyTheme = useCallback((themeId: string) => {
+    setTheme((prev) => ({ ...prev, id: themeId, label: themeId }));
+    setLayout((prev) => {
+      if (!prev) return prev;
+      dirtyRef.current = true;
+      return { ...prev, theme: themeId };
+    });
+    // Charge le vrai thème depuis le backend (colors/spacing/fonts).
+    (async () => {
+      try {
+        const tResp = await daemonPost('theme/get', { name: themeId });
+        const tData: ThemeConfig = JSON.parse(tResp.yaml || tResp);
+        setTheme(tData);
+        injectTheme(tData);
+      } catch {
+        setTheme((prev) => ({ ...prev, id: themeId, label: themeId }));
+      }
+    })();
+  }, []);
+
   // Persistance automatique du layout quand l'utilisateur ajoute/retire un
   // panel (fenêtre vierge notamment). Écrit dans ~/.modelweaver/layouts/.
   useEffect(() => {
@@ -211,7 +238,7 @@ export function useLayout(layoutId: string) {
     });
   }, []);
 
-  return { layout, theme, menu, loading, error, refresh, loadLayout, addPanel, removePanel };
+  return { layout, theme, menu, loading, error, refresh, loadLayout, addPanel, removePanel, applyLayout, applyTheme };
 }
 
 function findPanel(node: PanelTreeNode | undefined, id: string): PanelTreeNode | null {
