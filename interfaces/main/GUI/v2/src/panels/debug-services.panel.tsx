@@ -282,5 +282,5 @@ export const Panel: PanelDef = {
   onRefresh() {
     return Promise.resolve();
   },
-  component: () => React.createElement(ServicesDebugPanel),
+  component: (props) => React.createElement(ServicesDebugPanel, props),
 };
