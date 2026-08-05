@@ -54,20 +54,41 @@ function PanelManager() {
       }),
     ),
 
-    card(React.createElement('div', { style: { fontWeight: 600, marginBottom: '0.3rem' } }, `Fenêtres ouvertes — ${windows.length}`),
-      windows.map((w: any) => React.createElement('div', { key: w.window_id, style: { display: 'flex', justifyContent: 'space-between', padding: '0.15rem 0' } },
-        React.createElement('span', null, `${w.title || w.window_id} (${w.template})`),
-        React.createElement('span', { style: { color: '#64748b', fontSize: '0.65rem' } }, w.opened_at),
+    card(React.createElement('div', { style: { fontWeight: 600, marginBottom: '0.3rem' } }, `Fenêtres — ${windows.length}`),
+      windows.map((w: any) => React.createElement('div', { key: w.window_id, style: { display: 'flex', justifyContent: 'space-between', padding: '0.15rem 0', alignItems: 'center' } },
+        React.createElement('span', null, `${w.title || w.window_id} — ${w.layout || w.template} (${w.theme || 'dark'})`),
+        React.createElement('div', { style: { display: 'flex', gap: '0.4rem', alignItems: 'center' } },
+          React.createElement('span', { style: { color: '#64748b', fontSize: '0.65rem' } }, w.width && `${w.width}x${w.height}`),
+          React.createElement('span', { style: { color: w.state === 'maximized' ? '#fbbf24' : '#94a3b8', fontSize: '0.65rem' } }, w.state || 'normal'),
+          React.createElement('button', { onClick: () => closeWin(w.window_id), style: { fontSize: '0.65rem', padding: '0.1rem 0.4rem', color: '#f87171', cursor: 'pointer' } }, '✕'),
+        ),
       )),
-      Object.keys(templates).length > 0 && React.createElement('div', { style: { marginTop: '0.3rem', color: '#94a3b8', fontSize: '0.7rem' } },
-        `Templates: ${Object.keys(templates).join(', ')}`),
+      Object.keys(templates).length > 0 && React.createElement('div', { style: { marginTop: '0.4rem', display: 'flex', gap: '0.3rem', flexWrap: 'wrap' } },
+        Object.keys(templates).map((t: string) =>
+          React.createElement('button', { key: t, onClick: () => openWin(t), style: { fontSize: '0.7rem', padding: '0.25rem 0.5rem', cursor: 'pointer' } }, `➕ ${templates[t].label}`),
+        ),
+      ),
     ),
-
-    React.createElement('button', {
-      onClick: () => daemonPost('windows/create', { template: 'dashboard' }).then(() => refresh()),
-      style: { fontSize: '0.72rem', padding: '0.3rem 0.6rem', marginTop: '0.3rem' },
-    }, '➕ Ouvrir une fenêtre Dashboard'),
   );
+
+  async function openWin(template: string) {
+    try {
+      const resp = await daemonPost('windows/create', { template });
+      const win = resp?.result?.window;
+      const { createWindow } = await import('../../bridge.ts');
+      if (win?.window_id) await createWindow(win.window_id);
+    } catch {}
+    refresh();
+  }
+
+  async function closeWin(window_id: string) {
+    try {
+      const { invoke } = await import('../../bridge.ts');
+      await invoke('close_window', { label: window_id });
+      await daemonPost('windows/close', { window_id });
+    } catch {}
+    refresh();
+  }
 }
 
 export const Panel: PanelDef = {
