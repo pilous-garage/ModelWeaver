@@ -59,13 +59,15 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
     const sync = async () => {
       try {
         const tpl = officialTemplateOf(selfLabel);
-        // Titre : préfère le label du layout chargé (plus fiable que le
-        // template pas encore chargé au premier rendu).
-        const title = layout?.label
-          ? (layout.label || selfLabel)
-          : (tpl ? (templates[tpl]?.label || tpl) : selfLabel);
+        // Layout : pour une officielle, le layout du template prime (ex.
+        // installator → layout 'default'), pas le profil éventuellement faux.
+        const effectiveLayout = tpl ? tpl : layoutId;
+        // Titre : label du layout chargé, sinon le template, sinon le label.
+        const title = tpl
+          ? (layout?.label || templates[tpl]?.label || tpl)
+          : (layout?.label || selfLabel);
         await daemonPost('windows/create', {
-          window_id: selfLabel, template: tpl || 'custom', layout: layoutId,
+          window_id: selfLabel, template: tpl || 'custom', layout: effectiveLayout,
           theme: injectedTheme || 'dark', title, visible: true,
         });
       } catch {}
@@ -403,7 +405,11 @@ export default function App() {
   };
   const injectedLayout = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LAYOUT : null;
   const injectedTheme = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_THEME : null;
-  const layoutId = injectedLayout || FALLBACK_LAYOUT[windowLabel] || windowLabel;
+  // Pour une fenêtre OFFICIELLE, le layout du template prime sur le profil
+  // injecté (corrige les profils corrompus ex. installator → default).
+  const layoutId = officialTemplateOf(windowLabel)
+    ? (FALLBACK_LAYOUT[windowLabel] || windowLabel)
+    : (injectedLayout || FALLBACK_LAYOUT[windowLabel] || windowLabel);
   // Trace le layout/fenêtre affiché (full-log).
   useEffect(() => {
     import('./gui_log.ts').then((g) => g.logGui('app:layout', { window: windowLabel, layout: layoutId, theme: injectedTheme || null }));
