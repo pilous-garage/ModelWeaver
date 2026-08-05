@@ -344,18 +344,28 @@ export function useLayout(layoutId: string) {
       if (fromG.activeTab === tabId) fromG.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
       const newGroup = makeGroup([tabId]);
       const sourceEmpty = tabs.length === 0;
-      // Groupe source vidé : on le retire (s'il est dans un children).
+      // Référence du parent du groupe source AVANT suppression (pour insérer
+      // le nouveau groupe à sa place si le groupe est vidé).
+      const sourceParent = sourceEmpty ? findParentSplitOf(tree, fromG) : null;
+      // Groupe source vidé : on le retire de l'arbre.
       if (sourceEmpty) {
         removeLeafNode(tree, fromGroupId);
       }
-      // La cible du split est le groupe source (drop sur son bord) : s'il a
-      // été vidé, on split la racine en {source_vide? newGroup, ...}.
+      // La cible du split : le groupe sur le bord duquel on a déposé.
       const target = findGroupById(tree, leafId);
       if (!target) {
-        // Le groupe source était la racine et a été vidé → l'arbre est vide :
-        // le nouveau groupe devient la racine (ou on enveloppe).
-        if (sourceEmpty && tree.type === 'group' && tree.tabs?.length === 0) {
-          return { ...prev, panelTree: newGroup };
+        // Groupe source vidé et c'est lui la cible : insérer le nouveau
+        // groupe à la position de l'ancien (dans le parent, ou racine).
+        if (sourceEmpty) {
+          if (sourceParent) {
+            sourceParent.children.splice(Math.min(sourceParent.insertIdx, sourceParent.children.length), 0, newGroup);
+            return { ...prev, panelTree: tree };
+          }
+          // Pas de parent → racine.
+          if (tree.type === 'group' && (tree.tabs || []).length === 0) {
+            return { ...prev, panelTree: newGroup };
+          }
+          return { ...prev, panelTree: { direction, sizes: [50, 50], children: [newGroup] } };
         }
         return { ...prev, panelTree: tree };
       }
@@ -480,6 +490,22 @@ function findParentSplit(node: PanelTreeNode | null, target: PanelTreeNode): { p
   if (node.children) {
     for (const c of node.children) {
       const r = findParentSplit(c, target);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+/** Split parent + index d'un groupe (pour insérer à sa place après retrait). */
+function findParentSplitOf(node: PanelTreeNode | null, target: PanelTreeNode): { parent: PanelTreeNode; children: PanelTreeNode[]; insertIdx: number } | null {
+  if (!node) return null;
+  if (node.children) {
+    const idx = node.children.indexOf(target);
+    if (idx !== -1) {
+      return { parent: node, children: node.children, insertIdx: idx };
+    }
+    for (const c of node.children) {
+      const r = findParentSplitOf(c, target);
       if (r) return r;
     }
   }
