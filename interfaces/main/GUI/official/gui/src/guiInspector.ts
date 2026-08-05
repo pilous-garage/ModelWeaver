@@ -170,9 +170,40 @@ export function runAct(action: string, params: any): { ok: boolean; info: string
       const r = el.getBoundingClientRect();
       const cx = params.x !== undefined ? params.x : Math.round(r.x + r.width / 2);
       const cy = params.y !== undefined ? params.y : Math.round(r.y + r.height / 2);
-      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
-      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
-      return { ok: true, info: `hover @(${cx},${cy})` };
+      // Série complète d'événements de survol (l'ordre compte pour les
+      // sous-menus : mouseover/mouseenter ouvrent, mousemove met à jour).
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, cancelable: false, clientX: cx, clientY: cy }));
+      el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      // Déclenche aussi les gestionnaires React onMouseEnter (le MenuBar
+      // utilise onMouseEnter pour ouvrir les sous-menus).
+      const anyEl = el as any;
+      if (typeof anyEl.onmouseenter === 'function') anyEl.onmouseenter(new MouseEvent('mouseenter', { bubbles: false, clientX: cx, clientY: cy }));
+      if (typeof anyEl.onmouseover === 'function') anyEl.onmouseover(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+      return { ok: true, info: `hover @(${cx},${cy}) sur <${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}>` };
+    }
+    case 'hover-out': {
+      const el = findTarget(params);
+      if (!el) return { ok: false, info: 'cible introuvable' };
+      const r = el.getBoundingClientRect();
+      const cx = params.x !== undefined ? params.x : Math.round(r.x + r.width / 2);
+      const cy = params.y !== undefined ? params.y : Math.round(r.y + r.height / 2);
+      el.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, cancelable: false, clientX: cx, clientY: cy }));
+      const anyEl = el as any;
+      if (typeof anyEl.onmouseleave === 'function') anyEl.onmouseleave(new MouseEvent('mouseleave', { bubbles: false, clientX: cx, clientY: cy }));
+      return { ok: true, info: `hover-out @(${cx},${cy}) sur <${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}>` };
+    }
+    case 'mousemove': {
+      // Déplacement de souris pur vers des coordonnées (sans cible précise).
+      // Le mousemove "entre" dans le sous-menu au passage sur ses items.
+      const el = params.x !== undefined && params.y !== undefined ? elementAtPoint(params.x, params.y) : null;
+      const cx = params.x !== undefined ? params.x : 0;
+      const cy = params.y !== undefined ? params.y : 0;
+      const target = el || document.body;
+      target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      return { ok: true, info: `mousemove @(${cx},${cy}) sur <${target.tagName.toLowerCase()}>` };
     }
     default:
       return { ok: false, info: `action inconnue: ${action}` };
