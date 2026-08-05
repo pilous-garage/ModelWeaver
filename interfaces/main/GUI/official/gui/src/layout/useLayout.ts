@@ -17,11 +17,16 @@ export interface PanelTreeNode {
   direction?: 'horizontal' | 'vertical';
   sizes?: number[];
   children?: PanelTreeNode[];
-  type?: 'panel' | 'ext';
+  type?: 'panel' | 'group' | 'ext';
   id?: string;
   url?: string;
   visible?: boolean;
   closable?: boolean;
+  /** Groupe d'onglets (ancien système) : tabs + activeTab. Un nœud `panel`
+   * simple est rétro-compatible (groupe à 1 onglet). */
+  tabs?: string[];
+  activeTab?: string;
+  groupId?: string;
 }
 
 export interface MenuItemDef {
@@ -129,7 +134,7 @@ export function useLayout(layoutId: string) {
           data = getFallbackLayout(id);
         }
       }
-      setLayout(data);
+      setLayout({ ...data, panelTree: normalizeTree(data.panelTree) });
 
       // Charger le thème
       const themeId = data.theme || 'dark';
@@ -199,72 +204,265 @@ export function useLayout(layoutId: string) {
     persist();
   }, [layout]);
 
-  /** Ajoute un panel au panelTree courant (mutations à chaud du layout). */
+  /** Ajoute un panel au panelTree courant (mutations à chaud du layout).
+   * S'il existe déjà un groupe d'onglets actif, l'ajoute en onglet ; sinon
+   * crée un groupe racine. (Ancien comportement : premier panel = racine.) */
   const addPanel = useCallback((panelId: string) => {
     dirtyRef.current = true;
     setLayout((prev) => {
       if (!prev) return prev;
       const tree = prev.panelTree ? JSON.parse(JSON.stringify(prev.panelTree)) : null;
-      // Fenêtre vierge : le premier panel devient la racine.
+      // Fenêtre vierge : le premier panel devient un groupe racine.
       if (!tree) {
-        return { ...prev, panelTree: { type: 'panel', id: panelId, visible: true, closable: true } };
+        return { ...prev, panelTree: makeGroup([panelId]) };
       }
-      // Si la racine est un simple panel, on l'enveloppe en splitter vertical.
+      // Déjà présent → juste le rendre visible.
+      const existing = findGroupWithTab(tree, panelId);
+      if (existing) {
+        existing.tabs = existing.tabs || [existing.id || ''];
+        existing.activeTab = panelId;
+        existing.visible = true;
+        return { ...prev, panelTree: tree };
+      }
+      // Racine simple panel → on l'enveloppe en groupe puis split vertical.
       let root = tree;
       if (root.type === 'panel') {
+        root = makeGroup([root.id || '']);
         root = { direction: 'vertical', sizes: [50, 50], children: [root] };
       }
-      // Anti-doublon : panel déjà présent → juste le rendre visible.
-      const exists = findPanel(root, panelId);
-      if (exists) {
-        exists.visible = true;
+      // Racine groupe sans onglets ? normaliser.
+      if (root.type === 'group') {
+        root.tabs = root.tabs || [root.id || ''];
+        // Ajoute en onglet au groupe racine.
+        if (!root.tabs.includes(panelId)) root.tabs.push(panelId);
+        root.activeTab = panelId;
         return { ...prev, panelTree: root };
       }
+      // Split racine : ajoute un nouveau groupe feuille (split vertical).
       root.children = root.children || [];
-      root.children.push({ type: 'panel', id: panelId, visible: true, closable: true });
+      root.children.push(makeGroup([panelId]));
+      if (root.sizes && root.sizes.length < root.children.length) root.sizes.push(50);
       return { ...prev, panelTree: root };
     });
   }, []);
 
-  /** Retire (masque) un panel du panelTree courant. */
+  /** Retire (masque) un panel du panelTree courant (retire l'onglet). */
   const removePanel = useCallback((panelId: string) => {
     dirtyRef.current = true;
     setLayout((prev) => {
       if (!prev || !prev.panelTree) return prev;
       const tree = JSON.parse(JSON.stringify(prev.panelTree));
-      const removed = hidePanel(tree, panelId);
+      const removed = removeTabFromTree(tree, panelId);
       if (removed) return { ...prev, panelTree: tree };
       return prev;
     });
   }, []);
 
-  return { layout, theme, menu, loading, error, refresh, loadLayout, addPanel, removePanel, applyLayout, applyTheme };
+  /** Active un onglet dans un groupe. */
+  const activateTab = useCallback((groupId: string, tabId: string) => {
+    setLayout((prev) => {
+      if (!prev?.panelTree) return prev;
+      const tree = JSON.parse(JSON.stringify(prev.panelTree));
+      const g = findGroupById(tree, groupId);
+      if (g) g.activeTab = tabId;
+      return { ...prev, panelTree: tree };
+    });
+  }, []);
+
+  /** Ferme (retire) un onglet d'un groupe. Supprime le groupe si vide. */
+  const closeTab = useCallback((groupId: string, tabId: string) => {
+    dirtyRef.current = true;
+    setLayout((prev) => {
+      if (!prev?.panelTree) return prev;
+      const tree = JSON.parse(JSON.stringify(prev.panelTree));
+      const g = findGroupById(tree, groupId);
+      if (!g) return prev;
+      const tabs = g.tabs || [];
+      const idx = tabs.indexOf(tabId);
+      if (idx === -1) return prev;
+      tabs.splice(idx, 1);
+      if (g.activeTab === tabId) g.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
+      if (tabs.length === 0) {
+        removeLeafNode(tree, groupId);
+      }
+      return { ...prev, panelTree: tree };
+    });
+  }, []);
+
+  /** Déplace un onglet vers un autre groupe (drag/drop sur la barre). */
+  const moveTabToGroup = useCallback((tabId: string, fromGroupId: string, toGroupId: string, insertIndex?: number) => {
+    dirtyRef.current = true;
+    setLayout((prev) => {
+      if (!prev?.panelTree) return prev;
+      const tree = JSON.parse(JSON.stringify(prev.panelTree));
+      const fromG = findGroupById(tree, fromGroupId);
+      const toG = findGroupById(tree, toGroupId);
+      if (!fromG || !toG) return prev;
+      const tabs = fromG.tabs || [];
+      const idx = tabs.indexOf(tabId);
+      if (idx === -1) return prev;
+      tabs.splice(idx, 1);
+      if (fromG.activeTab === tabId) fromG.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
+      if (tabs.length === 0) {
+        removeLeafNode(tree, fromGroupId);
+        const toG2 = findGroupById(tree, toGroupId);
+        if (toG2) {
+          const tt = toG2.tabs || [];
+          if (insertIndex !== undefined) tt.splice(insertIndex, 0, tabId);
+          else tt.push(tabId);
+          toG2.tabs = tt;
+          toG2.activeTab = tabId;
+        }
+        return { ...prev, panelTree: tree };
+      }
+      const tt = toG.tabs || [];
+      if (insertIndex !== undefined) tt.splice(insertIndex, 0, tabId);
+      else tt.push(tabId);
+      toG.tabs = tt;
+      toG.activeTab = tabId;
+      return { ...prev, panelTree: tree };
+    });
+  }, []);
+
+  /** Split d'un groupe avec un onglet déplacé (drag/drop sur les bords). */
+  const splitLeafAtWithTab = useCallback((leafId: string, direction: 'horizontal' | 'vertical', tabId: string, fromGroupId: string) => {
+    dirtyRef.current = true;
+    setLayout((prev) => {
+      if (!prev?.panelTree) return prev;
+      const tree = JSON.parse(JSON.stringify(prev.panelTree));
+      const fromG = findGroupById(tree, fromGroupId);
+      if (!fromG) return prev;
+      const tabs = fromG.tabs || [];
+      const idx = tabs.indexOf(tabId);
+      if (idx === -1) return prev;
+      tabs.splice(idx, 1);
+      if (fromG.activeTab === tabId) fromG.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
+      const newGroup = makeGroup([tabId]);
+      if (tabs.length === 0) {
+        removeLeafNode(tree, fromGroupId);
+      }
+      const target = findGroupById(tree, leafId) || (leafId === fromGroupId && tabs.length === 0 ? makeGroup([tabId]) : null);
+      if (!target) return { ...prev, panelTree: tree };
+      // Trouve le parent split du target.
+      const parent = findParentSplit(tree, target);
+      if (parent) {
+        if (parent.direction === direction) {
+          parent.children.splice(parent.children.indexOf(target) + 1, 0, newGroup);
+        } else {
+          parent.children[parent.children.indexOf(target)] = { direction, sizes: [50, 50], children: [target, newGroup] };
+        }
+      } else {
+        // Racine : on enveloppe.
+        return { ...prev, panelTree: { direction, sizes: [50, 50], children: [tree, newGroup] } };
+      }
+      return { ...prev, panelTree: tree };
+    });
+  }, []);
+
+  return { layout, theme, menu, loading, error, refresh, loadLayout, addPanel, removePanel, activateTab, closeTab, moveTabToGroup, splitLeafAtWithTab, applyLayout, applyTheme };
 }
 
-function findPanel(node: PanelTreeNode | undefined, id: string): PanelTreeNode | null {
+function genGroupId(): string {
+  return `pg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** Crée un groupe d'onglets à partir d'ids de panels. */
+function makeGroup(tabs: string[]): PanelTreeNode {
+  return { type: 'group', groupId: genGroupId(), tabs: [...tabs], activeTab: tabs[0], visible: true };
+}
+
+/** Normalise un arbre chargé depuis un layout JSON : chaque nœud `panel` est
+ * converti en groupe d'onglets à 1 tab (rétro-compatibilité). */
+export function normalizeTree(node: PanelTreeNode | null | undefined): PanelTreeNode | null {
   if (!node) return null;
-  if (node.type === 'panel' && node.id === id) return node;
+  if (node.type === 'panel' || (node.type === undefined && node.id && !node.direction && !node.children)) {
+    return { type: 'group', groupId: node.groupId || genGroupId(), tabs: [node.id || ''], activeTab: node.id || '', visible: node.visible !== false, closable: node.closable };
+  }
+  if (node.type === 'group') {
+    const tabs = (node.tabs && node.tabs.length > 0) ? node.tabs : (node.id ? [node.id] : []);
+    return { ...node, type: 'group', groupId: node.groupId || genGroupId(), tabs, activeTab: node.activeTab || tabs[0], visible: node.visible !== false };
+  }
+  if (node.direction || node.children) {
+    return { ...node, children: (node.children || []).map(normalizeTree).filter(Boolean) as PanelTreeNode[] };
+  }
+  return node;
+}
+
+function findGroupById(node: PanelTreeNode | null, groupId: string): PanelTreeNode | null {
+  if (!node) return null;
+  if (node.type === 'group' && node.groupId === groupId) return node;
   if (node.children) {
     for (const c of node.children) {
-      const f = findPanel(c, id);
+      const f = findGroupById(c, groupId);
       if (f) return f;
     }
   }
   return null;
 }
 
-function hidePanel(node: PanelTreeNode | undefined, id: string): boolean {
-  if (!node) return false;
-  if (node.type === 'panel' && node.id === id) {
-    node.visible = false;
-    return true;
+function findGroupWithTab(node: PanelTreeNode | null, tabId: string): PanelTreeNode | null {
+  if (!node) return null;
+  if (node.type === 'group') {
+    if ((node.tabs || []).includes(tabId)) return node;
   }
   if (node.children) {
     for (const c of node.children) {
-      if (hidePanel(c, id)) return true;
+      const f = findGroupWithTab(c, tabId);
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
+function removeTabFromTree(node: PanelTreeNode | null, tabId: string): boolean {
+  if (!node) return false;
+  if (node.type === 'group') {
+    const tabs = node.tabs || [];
+    const idx = tabs.indexOf(tabId);
+    if (idx !== -1) {
+      tabs.splice(idx, 1);
+      if (node.activeTab === tabId) node.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
+      return true;
+    }
+  }
+  if (node.children) {
+    for (const c of node.children) {
+      if (removeTabFromTree(c, tabId)) return true;
     }
   }
   return false;
+}
+
+/** Retire un nœud feuille (groupe) de l'arbre, par son groupId. */
+function removeLeafNode(node: PanelTreeNode | null, groupId: string): boolean {
+  if (!node) return false;
+  if (node.children) {
+    const idx = node.children.findIndex((c) => c.type === 'group' && c.groupId === groupId);
+    if (idx !== -1) {
+      node.children.splice(idx, 1);
+      if (node.sizes && node.sizes.length > node.children.length) node.sizes.splice(idx, 1);
+      return true;
+    }
+    for (const c of node.children) {
+      if (removeLeafNode(c, groupId)) return true;
+    }
+  }
+  return false;
+}
+
+/** Trouve le split parent d'un groupe (pour insérer un nouveau split). */
+function findParentSplit(node: PanelTreeNode | null, target: PanelTreeNode): { parent: PanelTreeNode; direction: string } | null {
+  if (!node) return null;
+  if (node.children && node.children.includes(target)) {
+    return { parent: node, direction: node.direction || 'vertical' };
+  }
+  if (node.children) {
+    for (const c of node.children) {
+      const r = findParentSplit(c, target);
+      if (r) return r;
+    }
+  }
+  return null;
 }
 
 function collectPanelMenu(node?: PanelTreeNode): MenuItemDef[] {

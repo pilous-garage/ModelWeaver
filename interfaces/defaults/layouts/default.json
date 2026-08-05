@@ -20,15 +20,11 @@
   ],
   "panelTree": {
     "direction": "vertical",
-    "sizes": [60, 40],
+    "sizes": [100],
     "children": [
-      { "type": "panel", "id": "installator-dashboard", "visible": true, "closable": false },
-      { "direction": "horizontal", "sizes": [50, 50],
-        "children": [
-          { "type": "panel", "id": "installator-deps", "visible": true, "closable": true },
-          { "type": "panel", "id": "installator-file-queue", "visible": true, "closable": true }
-        ]
-      }
+      { "type": "group", "groupId": "pg-install",
+        "tabs": ["installator-dashboard", "installator-deps", "installator-file-queue"],
+        "activeTab": "installator-dashboard", "visible": true, "closable": false }
     ]
   }
 }

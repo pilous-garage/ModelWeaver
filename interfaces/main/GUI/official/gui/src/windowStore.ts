@@ -146,12 +146,18 @@ export async function loadBackendWindows(): Promise<WindowState[]> {
   return _windows;
 }
 
-/** Extracteur : ids des panels visibles d'un panelTree. */
+/** Extracteur : ids des panels visibles d'un panelTree (supporte les groupes
+ * d'onglets : tabs du groupe). */
 export function collectTreePanels(tree: any): string[] {
   const out: string[] = [];
   const walk = (n: any) => {
     if (!n) return;
-    if (n.type === 'panel' && n.id && n.visible !== false) out.push(n.id);
+    if (n.type === 'group') {
+      const tabs = (n.tabs || []).filter((t: string) => t);
+      for (const t of tabs) if (t) out.push(t);
+    } else if (n.type === 'panel' && n.id && n.visible !== false) {
+      out.push(n.id);
+    }
     if (n.children) for (const c of n.children) walk(c);
   };
   walk(tree);

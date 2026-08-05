@@ -15,7 +15,7 @@ import type { MenuItemDef } from './layout/useLayout.ts';
 import * as winStore from './windowStore.ts';
 
 function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any; layoutId: string; windowLabel: string; injectedTheme: string | null }) {
-  const { layout, theme, menu, loading, error, addPanel, removePanel, applyLayout, applyTheme } = useLayout(layoutId);
+  const { layout, theme, menu, loading, error, addPanel, removePanel, activateTab, closeTab, moveTabToGroup, splitLeafAtWithTab, applyLayout, applyTheme } = useLayout(layoutId);
   const [templates, setTemplates] = useState<Record<string, any>>({});
   const [catalog, setCatalog] = useState<{ id: string; label: string }[]>([]);
   const [layouts, setLayouts] = useState<{ name: string; label: string }[]>([]);
@@ -138,7 +138,12 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
     console.log('[App] unknown action:', action);
   }, [layout, addPanel, removePanel, applyLayout, applyTheme]);
 
-  const ctx = { api: app, layout, theme, onMenuAction: handleMenuAction };
+  // Le ctx.api expose les opérations onglets/splits du layout (Portées depuis
+  // l'ancien useApp : activateTab/closeTab/moveTabToGroup/splitLeafAtWithTab).
+  const ctx = {
+    api: { ...app, activateTab, closeTab, moveTabToGroup, splitLeafAtWithTab, addPanel, removePanel },
+    layout, theme, onMenuAction: handleMenuAction,
+  };
 
   // ── Menu dynamique refondu ─────────────────────────────────────────
   // Fenêtre : fenêtres ouvertes (focus), ouvrir (vierge+templates+enregistrées),
