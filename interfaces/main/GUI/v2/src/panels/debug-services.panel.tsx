@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { daemonPost } from '../bridge.ts';
-import type { PanelDef } from '../types.ts';
+import type { PanelDef, PanelContext } from '../types.ts';
 
 type ServiceStatus = 'running' | 'stopped' | 'crashed' | 'restarting';
 type ServiceItem = {
@@ -36,7 +36,7 @@ function statusColor(status: ServiceStatus): string {
   }
 }
 
-function ServicesDebugPanel() {
+function ServicesDebugPanel({ ctx }: { ctx: PanelContext }) {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
