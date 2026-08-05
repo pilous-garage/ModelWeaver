@@ -873,6 +873,57 @@ fn find_repo_root() -> PathBuf {
     PathBuf::from(".")
 }
 
+/// Délègue au superviseur Python installé (services/supervisor/main.py) s'il
+/// existe. Ce superviseur est la source de vérité des services (api, catalogue,
+/// installer, watcher, etc.) et gère son propre single-instance (lock
+/// supervisor.pid). La GUI n'embarque donc PAS de superviseur Rust : elle
+/// s'appuie sur le superviseur Python.
+///
+/// Retourne true si la délégation a eu lieu (le superviseur Python tourne ou
+/// vient d'être lancé) — dans ce cas on NE lance PAS les services Rust.
+fn delegate_to_python_supervisor() -> bool {
+    let repo_root = find_repo_root();
+    let supervisor_py = repo_root.join("services").join("supervisor").join("main.py");
+    if !supervisor_py.exists() {
+        log_to_file("SUPERVISOR", "pas de superviseur Python installé — repli Rust");
+        return false;
+    }
+    log_to_file("SUPERVISOR", &format!("superviseur Python trouvé: {}", supervisor_py.display()));
+    // Si le superviseur Python tourne déjà (lock supervisor.pid), on ne fait
+    // rien : la GUI s'appuie simplement sur les services en cours.
+    if instance_lock_taken("supervisor") {
+        log_to_file("SUPERVISOR", "superviseur Python déjà en cours — délégation (rien à lancer)");
+        return true;
+    }
+    // Le superviseur Python n'est pas lancé → on le démarre en enfant.
+    log_to_file("SUPERVISOR", "démarrage du superviseur Python…");
+    let mut cmd = std::process::Command::new(python_bin());
+    cmd.arg(&supervisor_py)
+        .env("PYTHONPATH", repo_root.to_string_lossy().to_string());
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let logp = logs_dir().join("service-supervisor.log");
+    if let Ok(f) = OpenOptions::new().create(true).write(true).truncate(true).open(&logp) {
+        if let Ok(f2) = f.try_clone() {
+            cmd.stdout(std::process::Stdio::from(f2));
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            log_to_file("SUPERVISOR", &format!("superviseur Python lancé (pid {})", child.id()));
+            // Ne pas abandonner le child (le superviseur Python gère sa propre
+            // persistance) — on ne garde pas le handle pour ne pas le reaper.
+            std::mem::forget(child);
+            true
+        }
+        Err(e) => {
+            log_to_file("SUPERVISOR", &format!("échec lancement superviseur Python: {}", e));
+            false
+        }
+    }
+}
+
 /// Chemin de l'entrypoint d'un service : <repo>/services/<name>/service.py
 fn service_entry(repo: &PathBuf, name: &str) -> PathBuf {
     repo.join("services").join(name).join("service.py")
@@ -1811,8 +1862,17 @@ fn main() {
     log_to_file("INIT", &format!("ModelWeaver main starting, db={}", db_path.display()));
     log_to_file("INIT", &format!("OS={}, ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
 
-    // Un seul superviseur à la fois (single-instance, y compris le superviseur).
-    ensure_single_supervisor();
+    // Délégation au superviseur Python installé (source de vérité des services).
+    // S'il existe, la GUI n'embarque PAS de superviseur Rust et ne lance pas de
+    // services : elle s'appuie sur le superviseur Python (déjà en cours ou
+    // démarré ici). Sinon, repli sur le superviseur Rust embarqué.
+    let delegated = delegate_to_python_supervisor();
+    if delegated {
+        log_to_file("INIT", "GUI déléguée au superviseur Python — pas de superviseur Rust");
+    } else {
+        // Un seul superviseur à la fois (single-instance, y compris le superviseur).
+        ensure_single_supervisor();
+    }
 
     ensure_install_jobs(&db_path);
 
@@ -1836,34 +1896,32 @@ fn main() {
     watch_sys_state_rust(2.0);
     register_thread_service("watch:sys-state");
 
-    // Services complexes/distants : enfants Python supervisés (auto-restart).
-    // Chaque service est un seul processus à la fois (verrou d'instance unique
-    // posé côté Python via services._common.acquire_instance_lock ; le
-    // superviseur vérifie aussi le lock avant de (re)spawn).
-    // repo_root = racine du dépôt (contient services/), résolue en remontant
-    // depuis l'exécutable. Ne PAS utiliser helper_path.parent() : en runtime le
-    // helper est copié dans ~/.modelweaver, ce qui casserait le chemin des
-    // services Python (daemon.py introuvable -> crash en boucle du superviseur).
+    // Services complexes/distants : uniquement si PAS délégué au superviseur
+    // Python (sinon c'est lui qui gère api/catalogue/installer/etc.).
     let repo_root = find_repo_root();
-    let cat_entry = service_entry(&repo_root, "catalogue");
-    let cat_db = mw_home().join("catalogue.remote.db");
-    define_service("catalogue", "loop", python_bin(),
-        vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false, vec![], "0.1.0");
-    define_service("installer", "loop", python_bin(),
-        vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false, vec![], "0.1.0");
-    // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut.
-    if autotest_enabled() {
-        define_service("tester", "loop", python_bin(),
-            vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![], "0.1.0");
+    if !delegated {
+        let cat_entry = service_entry(&repo_root, "catalogue");
+        let cat_db = mw_home().join("catalogue.remote.db");
+        define_service("catalogue", "loop", python_bin(),
+            vec![cat_entry.display().to_string(), "--port".to_string(), "8765".to_string(), "--db".to_string(), cat_db.display().to_string()], None, true, false, vec![], "0.1.0");
+        define_service("installer", "loop", python_bin(),
+            vec![service_entry(&repo_root, "installer_worker").display().to_string()], None, true, false, vec![], "0.1.0");
+        // Service `tester` : opt-in (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut.
+        if autotest_enabled() {
+            define_service("tester", "loop", python_bin(),
+                vec![service_entry(&repo_root, "tester").display().to_string()], None, true, false, vec![], "0.1.0");
+        }
+        // Daemon API (backend unique, consommé par toute interface).
+
+        // Réutilise les services déjà en cours avec la bonne version (évite les
+        // redémarrages inutiles et les conflits de ports entre interfaces).
+        reuse_existing_services();
+
+        start_service_supervisor();
+        write_services_summary();
+    } else {
+        log_to_file("INIT", "services gérés par le superviseur Python — superviseur Rust inactif");
     }
-    // Daemon API (backend unique, consommé par toute interface).
-
-    // Réutilise les services déjà en cours avec la bonne version (évite les
-    // redémarrages inutiles et les conflits de ports entre interfaces).
-    reuse_existing_services();
-
-    start_service_supervisor();
-    write_services_summary();
 
     // Auto-install tous les outils dès que le daemon est prêt — opt-in uniquement
     // (MODELWEAVER_ENABLE_AUTOTEST). Désactivé par défaut : pas de déclenchement
