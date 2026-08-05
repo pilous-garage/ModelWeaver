@@ -5,14 +5,15 @@ import { Spinner } from '../components/ui.tsx';
 export function DependenciesPanel({ app }: { app: AppApi }) {
   return (
     <div style={{
-      height: '100vh',
+      height: '100%',
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#0f172a',
-      color: '#e2e8f0',
-      fontFamily: 'sans-serif',
-      padding: '2rem',
+      backgroundColor: 'transparent',
+      color: 'var(--fg, #e2e8f0)',
+      fontFamily: 'var(--font-ui, sans-serif)',
+      padding: '0.75rem',
       overflowY: 'auto',
+      boxSizing: 'border-box',
     }}>
       <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{ maxWidth: '800px', width: '100%', margin: '0 auto' }}>
