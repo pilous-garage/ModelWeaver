@@ -427,18 +427,27 @@ class Supervisor:
     # ── Supervision ──
 
     def supervise_once(self):
-        # Récolter les process morts qu'on a lancés (évite les zombies)
+        # Récolter les process morts qu'on a lancés (évite les zombies).
+        # On note le code de sortie des services `once` pour le traitement
+        # ci-dessous (code 0 = travail terminé, pas de relance).
+        exited_codes = {}
         for name, proc in list(self.procs.items()):
             if proc.poll() is not None:
+                code = None
                 try:
+                    code = proc.poll()
                     proc.wait()
                 except Exception:
                     pass
-                self.procs.pop(name, None)
+                try:
+                    self.procs.pop(name, None)
+                except Exception:
+                    pass
+                exited_codes[name] = code
         for name, info in list(self.registry.all().items()):
             pid = info.get("pid", -1)
             status = info.get("status", "unknown")
-            if status in ("stopped_manual", "stopped"):
+            if status in ("stopped_manual", "stopped", "done"):
                 continue
             if _pid_alive(pid):
                 continue
@@ -448,6 +457,18 @@ class Supervisor:
             launch = (spec or {}).get("launch", {}) or {}
             if not launch.get("command") or launch.get("mode") == "agent":
                 continue
+            mode = launch.get("mode", "loop")
+            # Service `once` : une sortie en code 0 = travail terminé → on ne
+            # relance PAS (status "done"). Seul un code non-zéro (échec réel)
+            # déclenche la relance.
+            if mode == "once":
+                code = exited_codes.get(name)
+                if code == 0:
+                    self.registry.set(name, {**info, "status": "done"})
+                    self.registry.save()
+                    print(f"[supervisor] {name} terminé (code 0) — done", flush=True)
+                    continue
+                # code non-zéro ou inconnu → échec, relance normale ci-dessous
             restart = bool((spec or {}).get("supervisor", {}).get("restart", True))
             if not restart:
                 self.registry.set(name, {**info, "status": "crashed"})
