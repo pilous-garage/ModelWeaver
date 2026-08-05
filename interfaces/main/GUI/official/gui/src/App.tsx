@@ -4,13 +4,6 @@ import { getWindowLabel, daemonPost } from './bridge.ts';
 import { useLayout } from './layout/useLayout.ts';
 import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
-
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useApp } from './useApp.ts';
-import { getWindowLabel, daemonPost } from './bridge.ts';
-import { useLayout } from './layout/useLayout.ts';
-import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
-import { MenuBar } from './layout/MenuBar.tsx';
 import type { MenuItemDef } from './layout/useLayout.ts';
 import * as winStore from './windowStore.ts';
 
@@ -28,7 +21,8 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
     (async () => {
       try {
         const t = await daemonPost('windows/templates', {});
-        if (alive) setTemplates(t?.result?.templates || t?.templates || {});
+        const tpls = t?.result?.templates || t?.templates || {};
+        if (alive) setTemplates(tpls);
       } catch {}
       try {
         const { PANEL_REGISTRY } = await import('./panels/index.ts');
@@ -57,6 +51,27 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
     const panels = winStore.collectTreePanels(layout.panelTree);
     winStore.publishLayout(selfLabel, layout.id, theme.id || 'dark', layout.label || selfLabel, panels);
   }, [layout, theme, selfLabel]);
+
+  // Synchronise le profil backend de la fenêtre (template + titre corrects).
+  // Déduit le template officiel du label ; sinon fenêtre "custom" (perso).
+  useEffect(() => {
+    if (!selfLabel) return;
+    const sync = async () => {
+      try {
+        const tpl = officialTemplateOf(selfLabel);
+        // Titre : préfère le label du layout chargé (plus fiable que le
+        // template pas encore chargé au premier rendu).
+        const title = layout?.label
+          ? (layout.label || selfLabel)
+          : (tpl ? (templates[tpl]?.label || tpl) : selfLabel);
+        await daemonPost('windows/create', {
+          window_id: selfLabel, template: tpl || 'custom', layout: layoutId,
+          theme: injectedTheme || 'dark', title, visible: true,
+        });
+      } catch {}
+    };
+    sync();
+  }, [selfLabel, layoutId, injectedTheme, layout, templates]);
 
   const handleMenuAction = useCallback(async (action: string) => {
     if (action === 'app:quit') {
@@ -169,7 +184,7 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
       winItems.push({ type: 'separator' as const });
     }
 
-    // Ouvrir une fenêtre : vierge d'abord, puis templates, puis enregistrées
+    // Ouvrir une fenêtre : vierge d'abord, puis templates officiels, puis perso
     const openItems: MenuItemDef[] = [
       { id: 'open-blank', label: 'Fenêtre vide', action: 'window:open-blank' },
     ];
@@ -177,9 +192,16 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
       if (tkey === 'blank') continue;
       openItems.push({ id: `open:${tkey}`, label: tval.label || tkey, action: `window:open:${tkey}` });
     }
-    const saved = openWins.filter((w) => !['installator', 'dashboard', 'agentIde'].includes(w.label));
-    for (const s of saved) {
-      openItems.push({ id: `open-saved:${s.label}`, label: `${s.title || s.label} (enregistrée)`, action: `window:open-saved:${s.label}` });
+    // Fenêtres PERSO uniquement : celles qui ne sont ni officielles ni déjà
+    // couvertes par un template. Pas de doublon avec les officielles.
+    const officialLabels = ['installator', 'dashboard', 'agentIde'];
+    const perso = openWins.filter((w) => !officialLabels.includes(w.label) && !templates[w.label]);
+    if (perso.length > 0) {
+      const persoItems = perso.map((s) => ({
+        id: `open-saved:${s.label}`, label: `${s.title || s.label} (perso)`, action: `window:open-saved:${s.label}`,
+      }));
+      openItems.push({ type: 'separator' as const });
+      openItems.push(...persoItems);
     }
     winItems.push({ id: 'open-window', label: 'Ouvrir une fenêtre', items: openItems });
     winItems.push({ type: 'separator' as const });
@@ -322,6 +344,13 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
   );
 }
 
+/** Template officiel d'une fenêtre statique (installator/dashboard/agentIde),
+ * ou null si c'est une fenêtre perso (dynamique). */
+function officialTemplateOf(label: string): string | null {
+  const map: Record<string, string> = { installator: 'default', dashboard: 'dashboard', agentIde: 'agentIde' };
+  return map[label] || null;
+}
+
 export default function App() {
   const app = useApp();
   const [windowLabel, setWindowLabel] = useState<string>('installator');
@@ -378,18 +407,6 @@ export default function App() {
   // Trace le layout/fenêtre affiché (full-log).
   useEffect(() => {
     import('./gui_log.ts').then((g) => g.logGui('app:layout', { window: windowLabel, layout: layoutId, theme: injectedTheme || null }));
-  }, [windowLabel, layoutId, injectedTheme]);
-
-  // À l'ouverture : synchronise le profil backend (créé par la GUI ou le
-  // superviseur) avec la fenêtre réelle et persiste layout/theme injectés.
-  useEffect(() => {
-    if (!windowLabel) return;
-    const sync = async () => {
-      try {
-        await daemonPost('windows/create', { window_id: windowLabel, layout: layoutId, theme: injectedTheme || 'dark', visible: true });
-      } catch {}
-    };
-    sync();
   }, [windowLabel, layoutId, injectedTheme]);
 
   // À la fermeture : persiste position/taille/état + retire du store.

@@ -117,7 +117,9 @@ export function useLayout(layoutId: string) {
       try {
         const resp = await daemonPost('layout/get', { name: id });
         console.log('[layout] daemon response:', resp ? 'OK' : 'empty');
-        data = JSON.parse(resp.yaml || resp);
+        // Le daemon enveloppe dans {ok, route, result:{name, yaml}}.
+        const yaml = resp?.result?.yaml || resp?.yaml || resp;
+        data = JSON.parse(yaml);
       } catch (e: any) {
         console.warn('[layout] daemon unreachable, trying ensure_daemon:', e.message);
         // Daemon indisponible → essayer de le démarrer
@@ -127,7 +129,8 @@ export function useLayout(layoutId: string) {
           console.log('[layout] ensure_daemon result:', msg);
           // Réessayer après démarrage
           const resp2 = await daemonPost('layout/get', { name: id });
-          data = JSON.parse(resp2.yaml || resp2);
+          const yaml2 = resp2?.result?.yaml || resp2?.yaml || resp2;
+          data = JSON.parse(yaml2);
         } catch (e2: any) {
           console.warn('[layout] daemon still unreachable after ensure:', e2.message);
           // Daemon vraiment indisponible → layout de secours
@@ -140,7 +143,8 @@ export function useLayout(layoutId: string) {
       const themeId = data.theme || 'dark';
       try {
         const tResp = await daemonPost('theme/get', { name: themeId });
-        const tData: ThemeConfig = JSON.parse(tResp.yaml || tResp);
+        const tYaml = tResp?.result?.yaml || tResp?.yaml || tResp;
+        const tData: ThemeConfig = JSON.parse(tYaml);
         setTheme(tData);
         injectTheme(tData);
       } catch {
@@ -181,7 +185,8 @@ export function useLayout(layoutId: string) {
     (async () => {
       try {
         const tResp = await daemonPost('theme/get', { name: themeId });
-        const tData: ThemeConfig = JSON.parse(tResp.yaml || tResp);
+        const tYaml = tResp?.result?.yaml || tResp?.yaml || tResp;
+        const tData: ThemeConfig = JSON.parse(tYaml);
         setTheme(tData);
         injectTheme(tData);
       } catch {
