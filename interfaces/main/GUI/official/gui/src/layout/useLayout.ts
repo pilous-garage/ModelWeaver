@@ -343,12 +343,22 @@ export function useLayout(layoutId: string) {
       tabs.splice(idx, 1);
       if (fromG.activeTab === tabId) fromG.activeTab = tabs[Math.min(idx, tabs.length - 1)] || '';
       const newGroup = makeGroup([tabId]);
-      if (tabs.length === 0) {
+      const sourceEmpty = tabs.length === 0;
+      // Groupe source vidé : on le retire (s'il est dans un children).
+      if (sourceEmpty) {
         removeLeafNode(tree, fromGroupId);
       }
-      const target = findGroupById(tree, leafId) || (leafId === fromGroupId && tabs.length === 0 ? makeGroup([tabId]) : null);
-      if (!target) return { ...prev, panelTree: tree };
-      // Trouve le parent split du target.
+      // La cible du split est le groupe source (drop sur son bord) : s'il a
+      // été vidé, on split la racine en {source_vide? newGroup, ...}.
+      const target = findGroupById(tree, leafId);
+      if (!target) {
+        // Le groupe source était la racine et a été vidé → l'arbre est vide :
+        // le nouveau groupe devient la racine (ou on enveloppe).
+        if (sourceEmpty && tree.type === 'group' && tree.tabs?.length === 0) {
+          return { ...prev, panelTree: newGroup };
+        }
+        return { ...prev, panelTree: tree };
+      }
       const parent = findParentSplit(tree, target);
       if (parent) {
         if (parent.direction === direction) {
@@ -357,7 +367,13 @@ export function useLayout(layoutId: string) {
           parent.children[parent.children.indexOf(target)] = { direction, sizes: [50, 50], children: [target, newGroup] };
         }
       } else {
-        // Racine : on enveloppe.
+        // Racine : on enveloppe. Si le groupe source a été vidé et que l'arbre
+        // ne contient que le nouveau groupe, la racine devient le split
+        // [newGroup] seul propre (pas de groupe vide fantôme).
+        const hasEmptyGroup = tree.type === 'group' && (tree.tabs || []).length === 0;
+        if (hasEmptyGroup) {
+          return { ...prev, panelTree: { direction, sizes: [50, 50], children: [newGroup] } };
+        }
         return { ...prev, panelTree: { direction, sizes: [50, 50], children: [tree, newGroup] } };
       }
       return { ...prev, panelTree: tree };
