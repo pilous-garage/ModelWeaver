@@ -5,12 +5,6 @@ import { useLayout } from './layout/useLayout.ts';
 import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
 
-const WINDOW_TO_LAYOUT: Record<string, string> = {
-  'installator': 'default',
-  'dashboard': 'dashboard',
-  'agentIde': 'agentIde',
-};
-
 function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
   const { layout, theme, menu, loading, error } = useLayout(layoutId);
 
@@ -24,7 +18,7 @@ function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
       return;
     }
     if (action === 'window:close') {
-      try { const { invoke } = await import('./bridge.ts'); await invoke('close_window'); } catch {}
+      try { const { invoke } = await import('./bridge.ts'); await invoke('close_current_window'); } catch {}
       return;
     }
     if (action === 'layout:save') {
@@ -133,11 +127,47 @@ export default function App() {
     getWindowLabel().then((l) => { console.log('[App] label from getWindowLabel:', l); fullLog.then((g) => g.logGui('app:window-label', { source: 'tauri', label: l })); setWindowLabel(l); });
   }, []);
 
-  const layoutId = WINDOW_TO_LAYOUT[windowLabel] || 'default';
+  // Layout + thème de la fenêtre : d'abord le profil injecté par Rust
+  // (__MW_WINDOW_LAYOUT/__MW_WINDOW_THEME), sinon le mapping de repli pour
+  // les fenêtres statiques. La source de vérité est le profil backend.
+  const FALLBACK_LAYOUT: Record<string, string> = {
+    'installator': 'default',
+    'dashboard': 'dashboard',
+    'agentIde': 'agentIde',
+  };
+  const injectedLayout = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LAYOUT : null;
+  const injectedTheme = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_THEME : null;
+  const layoutId = injectedLayout || FALLBACK_LAYOUT[windowLabel] || windowLabel;
   // Trace le layout/fenêtre affiché (full-log).
   useEffect(() => {
-    import('./gui_log.ts').then((g) => g.logGui('app:layout', { window: windowLabel, layout: layoutId }));
-  }, [windowLabel, layoutId]);
+    import('./gui_log.ts').then((g) => g.logGui('app:layout', { window: windowLabel, layout: layoutId, theme: injectedTheme || null }));
+  }, [windowLabel, layoutId, injectedTheme]);
+
+  // À l'ouverture : synchronise le profil backend (créé par la GUI ou le
+  // superviseur) avec la fenêtre réelle et persiste layout/theme injectés.
+  useEffect(() => {
+    if (!windowLabel) return;
+    const sync = async () => {
+      try {
+        await daemonPost('windows/create', { window_id: windowLabel, layout: layoutId, theme: injectedTheme || 'dark', visible: true });
+      } catch {}
+    };
+    sync();
+  }, [windowLabel, layoutId, injectedTheme]);
+
+  // À la fermeture : persiste position/taille/état via get_window_metrics +
+  // windows/update (async best-effort avant unload).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const persist = async () => {
+      try {
+        const { persistWindowMetrics } = await import('./bridge.ts');
+        await persistWindowMetrics();
+      } catch {}
+    };
+    window.addEventListener('beforeunload', persist);
+    return () => window.removeEventListener('beforeunload', persist);
+  }, []);
 
   return <LayoutWindow app={app} layoutId={layoutId} />;
 }

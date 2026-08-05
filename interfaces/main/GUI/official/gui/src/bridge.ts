@@ -120,3 +120,71 @@ export async function getWebviewWindowClass() {
   }
   return MockWebviewWindow;
 }
+
+// ── Gestion des fenêtres ────────────────────────────────────────────
+
+/** Crée une fenêtre Tauri dynamique liée à un layout/thème (label). */
+export async function createWindow(label: string): Promise<any> {
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) return await _tauriCore.invoke('create_window', { label });
+    } catch {}
+  }
+  return { status: 'ok', label, existing: false };
+}
+
+/** Ferme la fenêtre courante (menu). */
+export async function closeCurrentWindow(): Promise<any> {
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) return await _tauriCore.invoke('close_current_window');
+    } catch {}
+  }
+  return { status: 'ok' };
+}
+
+/** Bascule plein écran de la fenêtre courante. */
+export async function toggleFullscreen(): Promise<boolean> {
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) return await _tauriCore.invoke('toggle_fullscreen');
+    } catch {}
+  }
+  return false;
+}
+
+/** Métriques courantes (position/taille/état) pour persistance windows/update. */
+export async function getWindowMetrics(): Promise<any> {
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) return await _tauriCore.invoke('get_window_metrics');
+    } catch {}
+  }
+  return null;
+}
+
+/** Profil (layout+thème) de la fenêtre courante. */
+export async function getWindowProfile(): Promise<any> {
+  if (_hasTauri) {
+    try {
+      await loadModules();
+      if (_tauriCore) return await _tauriCore.invoke('get_window_profile');
+    } catch {}
+  }
+  return null;
+}
+
+/** Persiste la position/taille/état courants via windows/update (daemon). */
+export async function persistWindowMetrics(): Promise<void> {
+  const m = await getWindowMetrics();
+  if (!m) return;
+  try {
+    await daemonPost('windows/update', {
+      window_id: m.label, x: m.x, y: m.y, width: m.width, height: m.height, state: m.state,
+    });
+  } catch {}
+}

@@ -1120,6 +1120,164 @@ fn daemon_config() -> serde_json::Value {
     serde_json::json!({"token": token.trim(), "port": port.trim().parse::<u16>().unwrap_or(8770)})
 }
 
+// ============================================================
+//  Window manager — création/fermeture dynamique des fenêtres.
+//  Chaque fenêtre est liée à un layout + un thème (source de
+//  vérité : profil backend ~/.modelweaver/windows/<id>.json).
+//  Le label de la fenêtre ET le layout/thème sont injectés dans
+//  le webview pour que le React App les lise sans Tauri API.
+// ============================================================
+
+#[derive(Serialize)]
+struct WindowProfile {
+    label: String,
+    layout: String,
+    theme: String,
+    title: String,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: u32,
+    height: u32,
+    state: String,
+    visible: bool,
+}
+
+/// Charge le profil backend d'une fenêtre (~/.modelweaver/windows/<id>.json).
+/// Fallback : profil par défaut si absent.
+fn load_window_profile(label: &str) -> WindowProfile {
+    let dir = mw_home().join("windows");
+    let f = dir.join(format!("{}.json", label.replace('/', "_")));
+    let mut profile = WindowProfile {
+        label: label.to_string(),
+        layout: label.to_string(),
+        theme: "dark".to_string(),
+        title: label.to_string(),
+        x: None,
+        y: None,
+        width: 1200,
+        height: 800,
+        state: "normal".to_string(),
+        visible: true,
+    };
+    if let Ok(content) = std::fs::read_to_string(&f) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(s) = v.get("layout").and_then(|x| x.as_str()) { profile.layout = s.to_string(); }
+            if let Some(s) = v.get("theme").and_then(|x| x.as_str()) { profile.theme = s.to_string(); }
+            if let Some(s) = v.get("title").and_then(|x| x.as_str()) { profile.title = s.to_string(); }
+            if let Some(n) = v.get("x").and_then(|x| x.as_i64()) { profile.x = Some(n as i32); }
+            if let Some(n) = v.get("y").and_then(|x| x.as_i64()) { profile.y = Some(n as i32); }
+            if let Some(n) = v.get("width").and_then(|x| x.as_u64()) { profile.width = n as u32; }
+            if let Some(n) = v.get("height").and_then(|x| x.as_u64()) { profile.height = n as u32; }
+            if let Some(s) = v.get("state").and_then(|x| x.as_str()) { profile.state = s.to_string(); }
+            if let Some(b) = v.get("visible").and_then(|x| x.as_bool()) { profile.visible = b; }
+        }
+    }
+    profile
+}
+
+/// Injecte dans une fenêtre le label + layout + thème du profil.
+/// Le React App les lit via window.__MW_WINDOW_* (pas besoin de Tauri API).
+fn inject_window_meta(win: &tauri::WebviewWindow, profile: &WindowProfile) {
+    let script = format!(
+        "window.__MW_WINDOW_LABEL = '{}'; window.__MW_WINDOW_LAYOUT = '{}'; window.__MW_WINDOW_THEME = '{}';",
+        profile.label.replace('\'', ""), profile.layout.replace('\'', ""), profile.theme.replace('\'', "")
+    );
+    let _ = win.eval(&script);
+}
+
+/// Crée (ou ramène au premier plan) une fenêtre dynamique liée à un layout.
+#[tauri::command]
+fn create_window(app: tauri::AppHandle, label: String) -> Result<serde_json::Value, String> {
+    log_to_file("WINDOW", &format!("create_window({})", label));
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(serde_json::json!({"status": "ok", "label": label, "existing": true}));
+    }
+    let profile = load_window_profile(&label);
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+        .title(&profile.title)
+        .inner_size(profile.width as f64, profile.height as f64)
+        .min_inner_size(800.0, 600.0);
+    if let (Some(x), Some(y)) = (profile.x, profile.y) {
+        builder = builder.position(x as f64, y as f64);
+    }
+    if !profile.visible {
+        builder = builder.visible(false);
+    }
+    if profile.state == "maximized" {
+        builder = builder.maximized(true);
+    }
+    let win = builder.build().map_err(|e| format!("create_window échec: {}", e))?;
+    inject_window_meta(&win, &profile);
+    log_to_file("WINDOW", &format!("create_window OK {} layout={} theme={}", label, profile.layout, profile.theme));
+    Ok(serde_json::json!({"status": "ok", "label": label, "layout": profile.layout, "theme": profile.theme}))
+}
+
+/// Ferme une fenêtre dynamique (le profil est supprimé côté backend).
+#[tauri::command]
+fn close_window(app: tauri::AppHandle, label: String) -> Result<serde_json::Value, String> {
+    log_to_file("WINDOW", &format!("close_window({})", label));
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.close();
+        Ok(serde_json::json!({"status": "ok", "label": label, "closed": true}))
+    } else {
+        Ok(serde_json::json!({"status": "ok", "label": label, "closed": false, "error": "fenêtre introuvable"}))
+    }
+}
+
+/// Ferme la fenêtre COURANTE (action de menu "Fermer").
+#[tauri::command]
+fn close_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    log_to_file("WINDOW", &format!("close_current_window({})", window.label()));
+    window.close().map_err(|e| format!("close échec: {}", e))?;
+    Ok(())
+}
+
+/// Bascule plein écran de la fenêtre courante (action de menu F11).
+#[tauri::command]
+fn toggle_fullscreen(window: tauri::WebviewWindow) -> Result<bool, String> {
+    let fs = window.is_fullscreen().unwrap_or(false);
+    let next = !fs;
+    window.set_fullscreen(next).map_err(|e| format!("fullscreen échec: {}", e))?;
+    log_to_file("WINDOW", &format!("toggle_fullscreen({}) -> {}", window.label(), next));
+    Ok(next)
+}
+
+/// Retourne les métriques courantes de la fenêtre (position/taille/état)
+/// pour persistance via windows/update.
+#[tauri::command]
+fn get_window_metrics(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    let label = window.label().to_string();
+    let size = window.inner_size().map_err(|e| format!("inner_size: {}", e))?;
+    let pos = window.outer_position().map_err(|e| format!("position: {}", e))?;
+    let maximized = window.is_maximized().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let state = if maximized { "maximized" } else if minimized { "minimized" } else { "normal" };
+    let profile = load_window_profile(&label);
+    log_to_file("WINDOW", &format!("get_window_metrics({}) state={} {}x{} @({},{})", label, state, size.width, size.height, pos.x, pos.y));
+    Ok(serde_json::json!({
+        "label": label,
+        "layout": profile.layout,
+        "theme": profile.theme,
+        "title": profile.title,
+        "x": pos.x,
+        "y": pos.y,
+        "width": size.width,
+        "height": size.height,
+        "state": state,
+    }))
+}
+
+/// Retourne le profil (layout+thème) de la fenêtre courante — utilisé par le
+/// frontend pour choisir le bon layout/thème au démarrage.
+#[tauri::command]
+fn get_window_profile(window: tauri::WebviewWindow) -> Result<WindowProfile, String> {
+    let profile = load_window_profile(window.label());
+    log_to_file("WINDOW", &format!("get_window_profile({}) layout={} theme={}", profile.label, profile.layout, profile.theme));
+    Ok(profile)
+}
+
 #[tauri::command]
 async fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
@@ -1691,12 +1849,12 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Injecter le label de la fenêtre dans chaque webview
-            // pour que le React App puisse le lire sans Tauri API
+            // Injecter label + layout + thème dans chaque webview pour que le
+            // React App les lise sans Tauri API.
             for (_, window) in app.webview_windows() {
                 let label = window.label().to_string();
-                let script = format!("window.__MW_WINDOW_LABEL = '{}';", label);
-                let _ = window.eval(&script);
+                let profile = load_window_profile(&label);
+                inject_window_meta(&window, &profile);
             }
             Ok(())
         })
@@ -1730,6 +1888,12 @@ fn main() {
             close_splashscreen,
             app_version,
             autotest_enabled_cmd,
+            create_window,
+            close_window,
+            close_current_window,
+            toggle_fullscreen,
+            get_window_metrics,
+            get_window_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
