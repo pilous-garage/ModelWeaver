@@ -110,94 +110,133 @@ def op_panels_bundles_build(params):
         return {"status": "error", "error": str(e)}
 
 
-# ── Fenêtres (templates de base) ─────────────────────────────────────
+# ── Fenêtres (gestionnaire persistant) ───────────────────────────────
+# Chaque fenêtre = un profil JSON dans ~/.modelweaver/windows/<id>.json :
+# { window_id, template, layout, theme, title, x, y, width, height,
+#   state (normal|maximized|minimized), visible, opened_at }
+# La GUI crée les vraies fenêtres Tauri (create_window) et persiste leur
+# position/taille via windows/update.
 
 WINDOW_TEMPLATES = {
     "dashboard": {
         "label": "Dashboard",
         "icon": "dashboard",
         "layout": "dashboard",
+        "theme": "dark",
         "defaultSize": {"width": 1200, "height": 800},
+        "defaultPos": {"x": None, "y": None},
     },
     "default": {
         "label": "Par défaut",
         "icon": "window",
         "layout": "default",
+        "theme": "dark",
         "defaultSize": {"width": 1000, "height": 700},
+        "defaultPos": {"x": None, "y": None},
     },
     "agentIde": {
         "label": "Agent IDE",
         "icon": "code",
         "layout": "agentIde",
+        "theme": "dark",
         "defaultSize": {"width": 1400, "height": 900},
+        "defaultPos": {"x": None, "y": None},
     },
 }
 
+WINDOWS_DIR = mw_home() / "windows"
+
+
+def _windows_dir() -> Path:
+    WINDOWS_DIR.mkdir(parents=True, exist_ok=True)
+    return WINDOWS_DIR
+
+
+def _window_file(window_id: str) -> Path:
+    return _windows_dir() / f"{window_id.replace('/', '_')}.json"
+
+
+def _load_windows() -> list:
+    out = []
+    for f in sorted(_windows_dir().glob("*.json")):
+        try:
+            import json
+            out.append(json.loads(f.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return out
+
 
 def op_windows_templates(params):
-    """Templates de fenêtres de base."""
+    """Templates de fenêtres (layout + thème + taille/position par défaut)."""
     return {"status": "ok", "templates": WINDOW_TEMPLATES}
 
 
 def op_windows_list(params):
-    """Fenêtres ouvertes (déclarées par la GUI au runtime)."""
-    try:
-        from modules.sql.runtime_repo import RuntimeDB
-        db = RuntimeDB()
-        db.conn.execute("""CREATE TABLE IF NOT EXISTS gui_windows (
-            window_id TEXT PRIMARY KEY, template TEXT, title TEXT,
-            opened_at TEXT DEFAULT (datetime('now')))""")
-        rows = db.conn.execute("SELECT * FROM gui_windows").fetchall()
-        db.close()
-        return {"status": "ok", "windows": [dict(r) for r in rows]}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    """Profils de fenêtres persistés (layout, thème, position, taille, état)."""
+    return {"status": "ok", "windows": _load_windows(), "count": len(_load_windows())}
 
 
 def op_windows_create(params):
-    """Ouvre une fenêtre (template de base)."""
+    """Crée un profil de fenêtre (persisté dans ~/.modelweaver/windows/)."""
+    import json
+    import uuid
     template = params.get("template", "default")
     window_id = params.get("window_id", "")
     if template not in WINDOW_TEMPLATES:
         return {"status": "error", "error": f"template inconnu: {template}"}
     if not window_id:
-        import uuid
         window_id = f"win_{uuid.uuid4().hex[:6]}"
-    try:
-        from modules.sql.runtime_repo import RuntimeDB
-        db = RuntimeDB()
-        db.conn.execute("""CREATE TABLE IF NOT EXISTS gui_windows (
-            window_id TEXT PRIMARY KEY, template TEXT, title TEXT,
-            opened_at TEXT DEFAULT (datetime('now')))""")
-        db.conn.execute(
-            "INSERT OR REPLACE INTO gui_windows (window_id, template, title) "
-            "VALUES (?, ?, ?)",
-            (window_id, template, WINDOW_TEMPLATES[template]["label"]))
-        db.conn.commit()
-        db.close()
-        return {"status": "ok", "window_id": window_id,
-                "template": template, "layout": WINDOW_TEMPLATES[template]["layout"]}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    tpl = WINDOW_TEMPLATES[template]
+    size = params.get("size") or tpl["defaultSize"]
+    pos = params.get("pos") or tpl["defaultPos"]
+    profile = {
+        "window_id": window_id,
+        "template": template,
+        "layout": params.get("layout") or tpl["layout"],
+        "theme": params.get("theme") or tpl["theme"],
+        "title": params.get("title") or tpl["label"],
+        "x": pos.get("x"),
+        "y": pos.get("y"),
+        "width": int(size.get("width", tpl["defaultSize"]["width"])),
+        "height": int(size.get("height", tpl["defaultSize"]["height"])),
+        "state": params.get("state", "normal"),
+        "visible": bool(params.get("visible", True)),
+    }
+    _window_file(window_id).write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    return {"status": "ok", "window": profile}
 
 
-def op_windows_close(params):
-    """Ferme une fenêtre."""
+def op_windows_update(params):
+    """Met à jour un profil de fenêtre (position, taille, état, thème, layout)."""
+    import json
     window_id = params.get("window_id", "")
     if not window_id:
         return {"status": "error", "error": "window_id requis"}
+    f = _window_file(window_id)
+    if not f.exists():
+        return {"status": "error", "error": f"fenêtre '{window_id}' introuvable"}
     try:
-        from modules.sql.runtime_repo import RuntimeDB
-        db = RuntimeDB()
-        db.conn.execute("""CREATE TABLE IF NOT EXISTS gui_windows (
-            window_id TEXT PRIMARY KEY, template TEXT, title TEXT,
-            opened_at TEXT DEFAULT (datetime('now')))""")
-        db.conn.execute("DELETE FROM gui_windows WHERE window_id = ?", (window_id,))
-        db.conn.commit()
-        db.close()
-        return {"status": "ok", "window_id": window_id, "closed": True}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+        profile = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        profile = {"window_id": window_id}
+    for key in ("layout", "theme", "title", "state", "visible",
+                "x", "y", "width", "height"):
+        if key in params:
+            profile[key] = params[key]
+    f.write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    return {"status": "ok", "window": profile}
+
+
+def op_windows_close(params):
+    """Ferme et supprime le profil d'une fenêtre."""
+    window_id = params.get("window_id", "")
+    if not window_id:
+        return {"status": "error", "error": "window_id requis"}
+    f = _window_file(window_id)
+    if f.exists():
+        f.unlink()
+    return {"status": "ok", "window_id": window_id, "closed": True}
 
 
 register("panels/index",     op_panels_index)
@@ -210,4 +249,5 @@ register("panels/bundles/build", op_panels_bundles_build)
 register("windows/templates", op_windows_templates)
 register("windows/list",     op_windows_list)
 register("windows/create",   op_windows_create)
+register("windows/update",   op_windows_update)
 register("windows/close",    op_windows_close)
