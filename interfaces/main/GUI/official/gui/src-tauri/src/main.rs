@@ -1231,7 +1231,7 @@ fn load_window_profile(label: &str) -> WindowProfile {
 /// Le React App les lit via window.__MW_WINDOW_* (pas besoin de Tauri API).
 fn inject_window_meta(win: &tauri::WebviewWindow, profile: &WindowProfile) {
     let script = format!(
-        "window.__MW_WINDOW_LABEL = '{}'; window.__MW_WINDOW_LAYOUT = '{}'; window.__MW_WINDOW_THEME = '{}';",
+        "window.__MW_WINDOW_LABEL = '{}'; window.__MW_WINDOW_LAYOUT = '{}'; window.__MW_WINDOW_THEME = '{}'; window.__MW_FULL_LOG = true;",
         profile.label.replace('\'', ""), profile.layout.replace('\'', ""), profile.theme.replace('\'', "")
     );
     let _ = win.eval(&script);
@@ -1377,6 +1377,27 @@ fn broadcast_window_state(app: tauri::AppHandle, label: String, layout: String, 
     Ok(())
 }
 
+// ============================================================
+//  UI Inspector / Actions — traducteur DOM de la fenêtre.
+//  L'extraction du DOM et la simulation d'actions sont faites côté
+//  frontend (le poller React interroge le daemon et exécute le JS
+//  directement dans sa propre webview). Ces commandes Rust exposent
+//  le mécanisme pour un usage éventuel depuis le code natif.
+// ============================================================
+
+#[tauri::command]
+fn ui_inspect(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    let label = window.label().to_string();
+    log_to_file("UI", &format!("ui_inspect({}) — délégué au frontend", label));
+    Ok(serde_json::json!({"label": label, "status": "frontend-polling"}))
+}
+
+#[tauri::command]
+fn ui_act(window: tauri::WebviewWindow, action: String, _params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let label = window.label().to_string();
+    log_to_file("UI", &format!("ui_act({}) action={} — délégué au frontend", label, action));
+    Ok(serde_json::json!({"label": label, "action": action, "status": "frontend-polling"}))
+}
 #[tauri::command]
 async fn install_all_dependencies(include_optional: bool) -> Result<String, String> {
     // Installe les dépendances requises de la cible via le script compilé
@@ -2003,6 +2024,8 @@ fn main() {
             list_windows,
             focus_window,
             broadcast_window_state,
+            ui_inspect,
+            ui_act,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

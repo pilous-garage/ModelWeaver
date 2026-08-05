@@ -6,6 +6,7 @@ import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
 import type { MenuItemDef } from './layout/useLayout.ts';
 import * as winStore from './windowStore.ts';
+import { startGuiInspectorPoll } from './guiInspector.ts';
 
 function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any; layoutId: string; windowLabel: string; injectedTheme: string | null }) {
   const { layout, theme, menu, loading, error, addPanel, removePanel, activateTab, closeTab, moveTabToGroup, splitLeafAtWithTab, applyLayout, applyTheme } = useLayout(layoutId);
@@ -390,6 +391,15 @@ export default function App() {
       ws.startWindowSync();
       ws.loadBackendWindows();
     });
+
+    // Traducteur de fenêtre : poll le daemon pour les commandes inspect/act
+    // (utilisé par mgx/agents pour comprendre la GUI sans screenshot).
+    try {
+      startGuiInspectorPoll();
+    } catch (e: any) {
+      console.error('[guiInspector] erreur démarrage:', e);
+      import('./gui_log.ts').then((g) => g.logGui('gui:inspector-error', String(e?.message || e)));
+    }
 
     const injected = (typeof window !== 'undefined') ? (window as any).__MW_WINDOW_LABEL : null;
     if (injected) { console.log('[App] label from Rust inject:', injected); fullLog.then((g) => g.logGui('app:window-label', { source: 'inject', label: injected })); setWindowLabel(injected); return; }

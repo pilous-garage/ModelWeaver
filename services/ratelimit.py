@@ -74,7 +74,8 @@ def _get():
 def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
     rl = _get()
     route_lower = route.lower()
-    if route_lower in ("health",):
+    if route_lower in ("health", "gui/poll", "gui/result"):
+        # Polling interne du frontend (traducteur de fenêtre) : pas de limite.
         return
     base_key = f"{client_ip}:{route_lower}"
 
