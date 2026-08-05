@@ -1,0 +1,20 @@
+{
+  "$schema": "https://modelweaver.dev/schemas/layout.json",
+  "id": "blank",
+  "label": "Fenêtre vierge",
+  "icon": "window",
+  "theme": "dark",
+  "menu": [
+    { "id": "file", "label": "Fichier", "items": [
+      { "id": "save-layout", "label": "Enregistrer le layout", "shortcut": "Ctrl+S", "action": "layout:save" },
+      { "type": "separator" },
+      { "id": "close-window", "label": "Fermer", "shortcut": "Ctrl+W", "action": "window:close" }
+    ]},
+    { "id": "view", "label": "Affichage", "items": [
+      { "id": "panels", "label": "Panneaux", "type": "panel-toggle" },
+      { "type": "separator" },
+      { "id": "fullscreen", "label": "Plein écran", "shortcut": "F11", "action": "window:fullscreen" }
+    ]}
+  ],
+  "panelTree": null
+}

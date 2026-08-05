@@ -142,6 +142,14 @@ WINDOW_TEMPLATES = {
         "defaultSize": {"width": 1400, "height": 900},
         "defaultPos": {"x": None, "y": None},
     },
+    "blank": {
+        "label": "Fenêtre vierge",
+        "icon": "window",
+        "layout": "blank",
+        "theme": "dark",
+        "defaultSize": {"width": 1000, "height": 700},
+        "defaultPos": {"x": None, "y": None},
+    },
 }
 
 WINDOWS_DIR = mw_home() / "windows"

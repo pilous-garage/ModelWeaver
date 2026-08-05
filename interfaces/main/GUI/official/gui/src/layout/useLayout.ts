@@ -1,8 +1,9 @@
 /** useLayout — Hook de chargement du layout, thème, menu */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { daemonPost } from '../bridge.ts';
 import { PANEL_REGISTRY } from '../panels/index.ts';
+import { logGui } from '../gui_log.ts';
 
 export interface LayoutConfig {
   id: string;
@@ -101,8 +102,7 @@ export function useLayout(layoutId: string) {
   const [menu, setMenu] = useState<MenuItemDef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Charger le layout depuis le daemon
+  const dirtyRef = useRef(false);
   const loadLayout = useCallback(async (id: string) => {
     setLoading(true);
     setError(null);
@@ -158,7 +158,86 @@ export function useLayout(layoutId: string) {
 
   const refresh = useCallback(() => loadLayout(layoutId), [layoutId, loadLayout]);
 
-  return { layout, theme, menu, loading, error, refresh, loadLayout };
+  // Persistance automatique du layout quand l'utilisateur ajoute/retire un
+  // panel (fenêtre vierge notamment). Écrit dans ~/.modelweaver/layouts/.
+  useEffect(() => {
+    if (!dirtyRef.current || !layout) return;
+    dirtyRef.current = false;
+    const persist = async () => {
+      try {
+        await daemonPost('layout/save', { name: layout.id, yaml: JSON.stringify(layout, null, 2) });
+        logGui('layout:saved', { id: layout.id });
+      } catch {}
+    };
+    persist();
+  }, [layout]);
+
+  /** Ajoute un panel au panelTree courant (mutations à chaud du layout). */
+  const addPanel = useCallback((panelId: string) => {
+    dirtyRef.current = true;
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const tree = prev.panelTree ? JSON.parse(JSON.stringify(prev.panelTree)) : null;
+      // Fenêtre vierge : le premier panel devient la racine.
+      if (!tree) {
+        return { ...prev, panelTree: { type: 'panel', id: panelId, visible: true, closable: true } };
+      }
+      // Si la racine est un simple panel, on l'enveloppe en splitter vertical.
+      let root = tree;
+      if (root.type === 'panel') {
+        root = { direction: 'vertical', sizes: [50, 50], children: [root] };
+      }
+      // Anti-doublon : panel déjà présent → juste le rendre visible.
+      const exists = findPanel(root, panelId);
+      if (exists) {
+        exists.visible = true;
+        return { ...prev, panelTree: root };
+      }
+      root.children = root.children || [];
+      root.children.push({ type: 'panel', id: panelId, visible: true, closable: true });
+      return { ...prev, panelTree: root };
+    });
+  }, []);
+
+  /** Retire (masque) un panel du panelTree courant. */
+  const removePanel = useCallback((panelId: string) => {
+    dirtyRef.current = true;
+    setLayout((prev) => {
+      if (!prev || !prev.panelTree) return prev;
+      const tree = JSON.parse(JSON.stringify(prev.panelTree));
+      const removed = hidePanel(tree, panelId);
+      if (removed) return { ...prev, panelTree: tree };
+      return prev;
+    });
+  }, []);
+
+  return { layout, theme, menu, loading, error, refresh, loadLayout, addPanel, removePanel };
+}
+
+function findPanel(node: PanelTreeNode | undefined, id: string): PanelTreeNode | null {
+  if (!node) return null;
+  if (node.type === 'panel' && node.id === id) return node;
+  if (node.children) {
+    for (const c of node.children) {
+      const f = findPanel(c, id);
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
+function hidePanel(node: PanelTreeNode | undefined, id: string): boolean {
+  if (!node) return false;
+  if (node.type === 'panel' && node.id === id) {
+    node.visible = false;
+    return true;
+  }
+  if (node.children) {
+    for (const c of node.children) {
+      if (hidePanel(c, id)) return true;
+    }
+  }
+  return false;
 }
 
 function collectPanelMenu(node?: PanelTreeNode): MenuItemDef[] {

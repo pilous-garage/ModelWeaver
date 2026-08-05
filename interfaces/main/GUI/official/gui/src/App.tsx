@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from './useApp.ts';
 import { getWindowLabel, daemonPost } from './bridge.ts';
 import { useLayout } from './layout/useLayout.ts';
@@ -6,7 +6,32 @@ import { PanelTreeRenderer } from './layout/PanelTreeRenderer.tsx';
 import { MenuBar } from './layout/MenuBar.tsx';
 
 function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
-  const { layout, theme, menu, loading, error } = useLayout(layoutId);
+  const { layout, theme, menu, loading, error, addPanel, removePanel } = useLayout(layoutId);
+  const [templates, setTemplates] = useState<Record<string, any>>({});
+  const [catalog, setCatalog] = useState<{ id: string; label: string }[]>([]);
+
+  // Charger les templates de fenêtres + le catalogue complet des panels
+  // (essentiels + externes indexés) pour le menu "Nouvelle fenêtre"/"Ajouter".
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const t = await daemonPost('windows/templates', {});
+        if (alive) setTemplates(t?.result?.templates || t?.templates || {});
+      } catch {}
+      try {
+        const { PANEL_REGISTRY } = await import('./panels/index.ts');
+        const { loadExternalPanelIndex } = await import('./panels/loader.ts');
+        const externals = await loadExternalPanelIndex();
+        const all: { id: string; label: string }[] = [
+          ...Object.values(PANEL_REGISTRY as Record<string, any>).map((p: any) => ({ id: p.id, label: p.label || p.id })),
+          ...externals.filter((e) => !PANEL_REGISTRY[e.id]).map((e) => ({ id: e.id, label: e.label || e.id })),
+        ].sort((a, b) => a.label.localeCompare(b.label));
+        if (alive) setCatalog(all);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const handleMenuAction = useCallback(async (action: string) => {
     if (action === 'app:quit') {
@@ -21,7 +46,34 @@ function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
       try { const { invoke } = await import('./bridge.ts'); await invoke('close_current_window'); } catch {}
       return;
     }
-    if (action === 'layout:save') {
+    if (action.startsWith('window:open:')) {
+      const template = action.slice('window:open:'.length);
+      try {
+        const resp = await daemonPost('windows/create', { template });
+        const win = resp?.result?.window;
+        const { createWindow } = await import('./bridge.ts');
+        if (win?.window_id) await createWindow(win.window_id);
+      } catch {}
+      return;
+    }
+    if (action === 'window:open-blank') {
+      try {
+        const resp = await daemonPost('windows/create', { template: 'blank' });
+        const win = resp?.result?.window;
+        const { createWindow } = await import('./bridge.ts');
+        if (win?.window_id) await createWindow(win.window_id);
+      } catch {}
+      return;
+    }
+    if (action.startsWith('panel:add:')) {
+      addPanel(action.slice('panel:add:'.length));
+      return;
+    }
+    if (action.startsWith('panel:toggle:')) {
+      const pid = action.slice('panel:toggle:'.length);
+      removePanel(pid);
+      return;
+    }    if (action === 'layout:save') {
       if (layout) {
         try { await daemonPost('layout/save', { name: layout.id, yaml: JSON.stringify(layout, null, 2) }); } catch {}
       }
@@ -36,9 +88,48 @@ function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
       return;
     }
     console.log('[App] unknown action:', action);
-  }, [layout]);
+  }, [layout, addPanel, removePanel]);
 
   const ctx = { api: app, layout, theme, onMenuAction: handleMenuAction };
+
+  // Enrichit le menu chargé avec les sections dynamiques :
+  //  - Fenêtre → Nouvelle fenêtre (templates + vierge)
+  //  - Fenêtre → Ajouter un panneau (catalogue complet : essentiels + externes)
+  const [menuExtra, setMenuExtra] = useState<{ id: string; label: string }[]>([]);
+  const [tplExtra, setTplExtra] = useState<Record<string, any>>({});
+  useEffect(() => {
+    setMenuExtra(catalog);
+    setTplExtra(templates);
+  }, [catalog, templates]);
+
+  const dynamicMenu = useMemo(() => {
+    const base = JSON.parse(JSON.stringify(menu || []));
+    const windowItem = base.find((i: any) => i.id === 'window') || {
+      id: 'window', label: 'Fenêtre', items: [],
+    };
+    if (!base.includes(windowItem)) base.unshift(windowItem);
+    const winItems = windowItem.items || (windowItem.items = []);
+    // Groupe "Nouvelle fenêtre"
+    const newWin: any[] = [];
+    for (const [tkey, tval] of Object.entries(tplExtra)) {
+      newWin.push({ id: `open:${tkey}`, label: tval.label || tkey, action: tkey === 'blank' ? 'window:open-blank' : `window:open:${tkey}` });
+    }
+    if (newWin.length > 0) {
+      winItems.unshift({ id: 'new-window', label: 'Nouvelle fenêtre', items: newWin });
+      winItems.splice(1, 0, { type: 'separator' });
+    }
+    // Groupe "Ajouter un panneau" (catalogue complet)
+    if (menuExtra.length > 0) {
+      const addItems = menuExtra.map((p) => ({
+        id: `add:${p.id}`, label: p.label, action: `panel:add:${p.id}`,
+      }));
+      winItems.push({ type: 'separator' });
+      winItems.push({ id: 'add-panel', label: 'Ajouter un panneau', items: addItems });
+    }
+    // Si le layout est vierge (pas de panelTree), propose aussi un layout de
+    // départ classique.
+    return base;
+  }, [menu, menuExtra, tplExtra]);
 
   if (loading) {
     return (
@@ -77,15 +168,21 @@ function LayoutWindow({ app, layoutId }: { app: any; layoutId: string }) {
     }}>
       <style>{`@keyframes mw-spin { to { transform: rotate(360deg); } }`}</style>
 
-      {menu && menu.length > 0 && (
-        <MenuBar menu={menu} onAction={handleMenuAction} />
+      {dynamicMenu && dynamicMenu.length > 0 && (
+        <MenuBar menu={dynamicMenu} onAction={handleMenuAction} />
       )}
 
       <div style={{ flex: 1, overflow: 'hidden' }}>
         {layout?.panelTree ? (
           <PanelTreeRenderer tree={layout.panelTree} ctx={ctx} />
         ) : (
-          <div style={{ padding: '1rem', color: '#fca5a5' }}>Aucun panelTree dans le layout</div>
+          <div style={{
+            height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            color: '#64748b', gap: '0.5rem', fontSize: '0.8rem',
+          }}>
+            <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>Fenêtre vierge</div>
+            <div>Utilisez le menu « Fenêtre → Ajouter un panneau » pour commencer.</div>
+          </div>
         )}
       </div>
     </div>
