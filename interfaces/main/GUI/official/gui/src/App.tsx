@@ -62,9 +62,10 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
         // Layout : pour une officielle, le layout du template prime (ex.
         // installator → layout 'default'), pas le profil éventuellement faux.
         const effectiveLayout = tpl ? tpl : layoutId;
-        // Titre : label du layout chargé, sinon le template, sinon le label.
+        // Titre : pour une officielle, titre dédié (fiable, sans dépendre du
+        // chargement du layout/templates) ; sinon label du layout.
         const title = tpl
-          ? (layout?.label || templates[tpl]?.label || tpl)
+          ? officialTitleOf(selfLabel)
           : (layout?.label || selfLabel);
         await daemonPost('windows/create', {
           window_id: selfLabel, template: tpl || 'custom', layout: effectiveLayout,
@@ -351,6 +352,12 @@ function LayoutWindow({ app, layoutId, windowLabel, injectedTheme }: { app: any;
 function officialTemplateOf(label: string): string | null {
   const map: Record<string, string> = { installator: 'default', dashboard: 'dashboard', agentIde: 'agentIde' };
   return map[label] || null;
+}
+
+/** Titre officiel d'une fenêtre statique (indépendant du chargement backend). */
+function officialTitleOf(label: string): string {
+  const map: Record<string, string> = { installator: 'Installation', dashboard: 'Dashboard', agentIde: 'Agent IDE' };
+  return map[label] || label;
 }
 
 export default function App() {
