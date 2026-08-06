@@ -23,6 +23,7 @@ EXPOSES = {
     "system/deps/check": [],
     "system/state/get": [],
     "system/state/save": [],
+    "health": [],
     # B. Bases
     "db/init": [],
     "db/check": [],
