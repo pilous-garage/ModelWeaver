@@ -34,22 +34,40 @@ function AgentsActivityPanel({ ctx, params }: { ctx: any; params: Record<string,
   const teamFilter = params.team_name ?? 'dev-chat';
   const [sel, setSel] = useState<number | null>(null);
   const [conv, setConv] = useState<any[] | null>(null);
+  const [llmInfo, setLlmInfo] = useState<any>(null);
 
   const agents = usePoll<any>(ctx.api.post, 'agent/list', {}, 4000,
     (res) => unwrapResult(res).agents ?? [], true);
+  const llmUse = usePoll<any>(ctx.api.post, 'monitoring/metrics', {}, 15000,
+    (res) => unwrapResult(res).recent_llm?.calls ?? [], true);
 
   const running = (agents.data ?? []).filter((a: any) => a.running && (a.name ?? '').includes(`team:${teamFilter}`));
 
   const loadConv = async (agentId: number) => {
     setSel(agentId);
+    setLlmInfo(null);
     try {
       const r = await ctx.api.post('agent/get', { agent_id: agentId });
       const agent = unwrapResult(r).agent ?? {};
       let vars: any = {};
       try { vars = JSON.parse(agent.variables_json || '{}'); } catch { /* ignore */ }
+      let cfg: any = {};
+      try { cfg = JSON.parse(agent.config_json || '{}'); } catch { /* ignore */ }
+      const wf = cfg.workflow?.steps?.find((s: any) => s.provider_ref || s.model_ref);
       setConv(vars.messages ?? []);
+      // Provider/modèle depuis la config du workflow de l'agent.
+      if (wf) {
+        const calls = (llmUse.data ?? []).filter((c: any) =>
+          (!wf.model_ref || (c.model ?? '').includes(String(wf.model_ref))));
+        setLlmInfo({
+          provider: wf.provider_ref || '—',
+          model: wf.model_ref || '—',
+          calls: calls[0] ?? null,
+        });
+      }
     } catch {
       setConv([]);
+      setLlmInfo(null);
     }
   };
 
@@ -80,6 +98,12 @@ function AgentsActivityPanel({ ctx, params }: { ctx: any; params: Record<string,
       {sel !== null && conv !== null && (
         <div style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>{ctx.t?.('panels.agents-activity.conversation') ?? 'Conversation'}</div>
+          {llmInfo && (
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4, padding: '3px 6px', background: 'rgba(148,163,184,0.08)', borderRadius: 4, border: '1px solid var(--mw-border, #334155)' }}>
+              LLM : {llmInfo.model}{llmInfo.provider !== '—' ? ` · ${llmInfo.provider}` : ''}
+              {llmInfo.calls ? ` · ${llmInfo.calls.requests} req · in ${llmInfo.calls.tokens_in} · out ${llmInfo.calls.tokens_out}` : ''}
+            </div>
+          )}
           {conv.length === 0 && <div style={{ color: '#64748b' }}>—</div>}
           {conv.slice(-12).map((m: any, i: number) => (
             <div key={i} style={{ marginBottom: 3 }}>
@@ -97,12 +121,12 @@ export const Panel: PanelDef = {
   id: 'agents-activity',
   labelKey: 'panels.agents-activity.titre',
   iconKey: 'panels.agents-activity.titre',
-  version: '1.0.0',
+  version: '1.1.0',
   essential: false,
   bundles: ['agents', 'monitoring'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
-  declaration: () => '[agents-activity] Activité agents v1.0.0\n  routes: agent/list, agent/get',
+  declaration: () => '[agents-activity] Activité agents v1.1.0\n  routes: agent/list, agent/get, monitoring/metrics (LLM use)',
   component: AgentsActivityPanel,
 };
 

@@ -45,11 +45,18 @@ const STATUS_COLOR: Record<string, string> = {
 
 function WorkspacePanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
   const workspaceId = params.workspace_id ?? 'mw-dev-chat';
+  const team = params.team ?? '';
+  const baseTasksBody = { workspace_id: workspaceId, all: true };
 
   const issues = usePoll<any>(ctx.api.post, 'workspace/issues/list', { workspace_id: workspaceId }, 15000,
     (res) => unwrapResult(res).issues ?? []);
-  const tasks = usePoll<any>(ctx.api.post, 'workspace/tasks/list', { workspace_id: workspaceId, all: true }, 10000,
+  const tasks = usePoll<any>(ctx.api.post, 'workspace/tasks/list', baseTasksBody, 10000,
     (res) => unwrapResult(res).tasks ?? []);
+
+  // Filtre client : seules les tâches de la team demandée (préfixe team:XXX/).
+  const tasksData = team
+    ? (tasks.data ?? []).filter((t: any) => String(t.assigned_to ?? '').startsWith(`team:${team}/`))
+    : (tasks.data ?? []);
 
   const statusBadge = (s: string) => (
     <span style={{
@@ -61,7 +68,9 @@ function WorkspacePanel({ ctx, params }: { ctx: any; params: Record<string, any>
 
   return (
     <div className="mw-panel" style={{ height: '100%', overflow: 'auto', padding: 8, boxSizing: 'border-box', fontSize: 12 }}>
-      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>{workspaceId}</div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+        {workspaceId}{team ? ` · team ${team}` : ''}
+      </div>
 
       <div style={{ fontWeight: 600, marginBottom: 4 }}>{ctx.t?.('panels.monitoring-workspace.issues') ?? 'Issues'} ({issues.data?.length ?? 0})</div>
       {issues.error && <div style={{ color: '#f87171' }}>{issues.error}</div>}
@@ -72,12 +81,12 @@ function WorkspacePanel({ ctx, params }: { ctx: any; params: Record<string, any>
         </div>
       ))}
 
-      <div style={{ fontWeight: 600, margin: '8px 0 4px' }}>{ctx.t?.('panels.monitoring-workspace.taches') ?? 'Tâches'} ({tasks.data?.length ?? 0})</div>
+      <div style={{ fontWeight: 600, margin: '8px 0 4px' }}>{ctx.t?.('panels.monitoring-workspace.taches') ?? 'Tâches'} ({tasksData.length}{team ? ` / ${tasks.data?.length ?? 0}` : ''})</div>
       {tasks.error && <div style={{ color: '#f87171' }}>{tasks.error}</div>}
-      {(tasks.data ?? []).length === 0 && !tasks.error && (
+      {tasksData.length === 0 && !tasks.error && (
         <div style={{ color: '#64748b' }}>{ctx.t?.('panels.monitoring-workspace.vide') ?? 'Aucune tâche'}</div>
       )}
-      {(tasks.data ?? []).map((t: any) => (
+      {tasksData.map((t: any) => (
         <div key={t.task_id} style={{ border: '1px solid var(--mw-border, #1e293b)', borderRadius: 6, padding: '4px 6px', marginBottom: 4 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ color: 'var(--mw-fg, #e2e8f0)' }}>{t.title}</span>
@@ -87,6 +96,7 @@ function WorkspacePanel({ ctx, params }: { ctx: any; params: Record<string, any>
             #{t.task_id} · {ctx.t?.('panels.monitoring-workspace.role') ?? 'Rôle'} : {t.role_required || '—'} ·{' '}
             {ctx.t?.('panels.monitoring-workspace.difficulte') ?? 'Diff'} : {t.difficulty || '—'} ·{' '}
             {ctx.t?.('panels.monitoring-workspace.priorite') ?? 'Prio'} : {t.priority ?? 0}
+            {t.assigned_to ? ` · assigné : ${t.assigned_to}` : ''}
           </div>
         </div>
       ))}
@@ -98,12 +108,17 @@ export const Panel: PanelDef = {
   id: 'monitoring-workspace',
   labelKey: 'panels.monitoring-workspace.titre',
   iconKey: 'panels.monitoring-workspace.titre',
-  version: '1.0.0',
+  version: '1.1.0',
   essential: false,
   bundles: ['monitoring', 'projet'],
+  paramsSchema: {
+    workspace_id: { type: 'string', default: 'mw-dev-chat' },
+    team: { type: 'string', default: '' },
+  },
+  defaultParams: { workspace_id: 'mw-dev-chat', team: '' },
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
-  declaration: () => '[monitoring-workspace] Workspace v1.0.0\n  routes: workspace/issues/list, workspace/tasks/list',
+  declaration: () => '[monitoring-workspace] Workspace v1.1.0\n  tâches/issues du workspace (défaut mw-dev-chat), filtre team',
   component: WorkspacePanel,
 };
 

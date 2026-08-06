@@ -1,3 +1,5 @@
+import time
+
 from services.api._shared import _quiet
 from services.api.router import register
 
@@ -17,7 +19,63 @@ def op_monitoring_metrics(params):
         "provider_metrics": _provider_metrics(),
         "usage_summary": _usage_summary(),
         "system_status": _system_status(),
+        "recent_llm": _recent_llm(),
     }
+
+
+def _recent_llm(hours: int = 24, limit: int = 50):
+    """Derniers LLM réellement appelés (model_call_log, source de vérité).
+
+    Agrége par (provider, modèle) : requêtes, tokens in/out/thinking,
+    échecs, taux d'erreur, codes d'erreur (rate_limit…) et latence moyenne.
+    Le modèle est résolu par nom quand l'ID n'existe pas (modèles non
+    présents au catalogue) via provider_model_name du log (prov_model).
+    """
+    try:
+        from services.api._shared import _get_cat
+        cat = _get_cat()
+        now = int(time.time())
+        rows = cat.conn.execute("""
+            SELECT p.ref AS provider_ref,
+                   COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
+                   COUNT(*) AS requests,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok_req,
+                   SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS err_req,
+                   SUM(tokens_in)  AS tokens_in,
+                   SUM(tokens_out) AS tokens_out,
+                   SUM(tokens_thinking) AS tokens_thinking,
+                   ROUND(AVG(latency_ms), 1) AS latency_ms,
+                   GROUP_CONCAT(DISTINCT error_code) AS error_codes,
+                   MAX(l.created_at) AS last_call
+            FROM model_call_log l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m   ON m.id = l.model_id
+            LEFT JOIN provider_models pm   ON pm.id = l.provider_model_id
+            WHERE l.created_at >= ?
+            GROUP BY l.provider_id, l.model_id, l.provider_model_id
+            ORDER BY last_call DESC
+            LIMIT ?
+        """, (now - hours * 3600, limit)).fetchall()
+        out = []
+        for r in rows:
+            req = r["requests"] or 0
+            err = r["err_req"] or 0
+            out.append({
+                "provider": r["provider_ref"] or "?",
+                "model": r["model_ref"] or "?",
+                "requests": req,
+                "errors": err,
+                "error_rate": round(100.0 * err / req, 1) if req else 0.0,
+                "tokens_in": r["tokens_in"] or 0,
+                "tokens_out": r["tokens_out"] or 0,
+                "tokens_thinking": r["tokens_thinking"] or 0,
+                "latency_ms": r["latency_ms"],
+                "error_codes": [c for c in (r["error_codes"] or "").split(",") if c],
+                "last_call": r["last_call"],
+            })
+        return {"hours": hours, "calls": out}
+    except Exception as e:
+        return {"error": str(e), "calls": []}
 
 
 def _provider_metrics():

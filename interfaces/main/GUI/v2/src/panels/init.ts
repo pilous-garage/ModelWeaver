@@ -35,6 +35,7 @@ import { Panel as MonitoringWorkspace } from './monitoring-workspace.panel.tsx';
 import { Panel as AgentsTeamMembers } from './agents-team-members.panel.tsx';
 import { Panel as AgentsActivity } from './agents-activity.panel.tsx';
 import { Panel as CommunicationDevChat } from './communication-dev-chat.panel.tsx';
+import { Panel as AgentsEquipeLeger } from './agents-equipe-leger.panel.tsx';
 
 /** Enregistre tous les panels + charge leurs lang. */
 export async function initPanels(): Promise<void> {
@@ -83,5 +84,7 @@ export async function initPanels(): Promise<void> {
   registerPanel(AgentsActivity);
   // Chat de dev (agent pilote plan/build)
   registerPanel(CommunicationDevChat);
+  // Monitoring léger de la team (3 colonnes de carrés)
+  registerPanel(AgentsEquipeLeger);
   await loadAllPanelLangs();
 }

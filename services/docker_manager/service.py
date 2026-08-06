@@ -148,9 +148,15 @@ class DockerManager:
 
         Retourne le conteneur prêt à recevoir des batteries de tests.
         """
+        # Le cache peut être un nom enregistré OU une image mw-cache/ brute
+        # (image local non encore enregistrée) : le fork (copie de travail
+        # pour un testeur/codeur) doit marcher dans les deux cas.
         cache = self._registry["caches"].get(cache_name)
         if not cache:
-            return {"ok": False, "error": f"cache inconnu: {cache_name}"}
+            if self.cm.image_exists(cache_name):
+                cache = cache_name
+            else:
+                return {"ok": False, "error": f"cache inconnu: {cache_name}"}
         if not self.cm.image_exists(cache):
             return {"ok": False, "error": f"image cache absente: {cache}"}
 

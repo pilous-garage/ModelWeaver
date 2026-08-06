@@ -35,28 +35,45 @@ panels:
 
 interface State {
   version: string | null;
+  api: string | null;
+  os: string | null;
   services: number | null;
+  servicesRunning: number | null;
   agents: number | null;
+  agentsRunning: number | null;
   error: string | null;
 }
 
 function EtatSystemePanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
-  const [state, setState] = useState<State>({ version: null, services: null, agents: null, error: null });
+  const [state, setState] = useState<State>({ version: null, api: null, os: null, services: null, servicesRunning: null, agents: null, agentsRunning: null, error: null });
 
   const refresh = async () => {
     try {
       const info = await ctx.api?.post?.('system/info', {}) ?? null;
-      const svc = await ctx.api?.post?.('service/list', {}) ?? null;
-      const data = info?.result ?? info ?? {};
-      const svcData = svc?.result ?? svc ?? { services: [] };
+      const ver = await ctx.api?.post?.('version', {}) ?? null;
+      const svc = await ctx.api?.post?.('system/services', {}) ?? null;
+      const ags = await ctx.api?.post?.('agent/list', {}) ?? null;
+      const infoData = info?.result ?? info ?? {};
+      const verData = ver?.result ?? ver ?? {};
+      const svcData = svc?.result ?? svc?.services ?? {};
+      const agsData = ags?.result ?? ags ?? {};
+      const services = typeof svcData === 'object' && svcData !== null ? svcData : {};
+      const svcEntries = Object.values(services).filter((s: any) => s && typeof s === 'object');
+      const servicesRunning_ = svcEntries.filter((s: any) => s.status === 'running').length;
+      const agentsList = Array.isArray(agsData.agents) ? agsData.agents : [];
+      const agentsRunning_ = agentsList.filter((a: any) => a?.running).length;
       setState({
-        version: data.version ?? '0.9.0',
-        services: Array.isArray(svcData.services) ? svcData.services.length : svcData.count ?? 8,
-        agents: data.active_agents ?? data.agents ?? 2,
+        version: verData.version ?? verData.mw ?? infoData.version ?? '?',
+        api: verData.api ?? verData.api_version ?? null,
+        os: `${infoData.system ?? '?'} ${infoData.arch ?? ''}`.trim(),
+        services: svcEntries.length || 0,
+        servicesRunning: servicesRunning_,
+        agents: agentsList.length,
+        agentsRunning: agentsRunning_,
         error: null,
       });
     } catch {
-      setState({ version: '0.9.0', services: 8, agents: 2, error: null });
+      setState({ version: null, api: null, os: null, services: null, servicesRunning: null, agents: null, agentsRunning: null, error: 'erreur' });
     }
   };
 
@@ -81,8 +98,11 @@ function EtatSystemePanel({ ctx, params }: { ctx: any; params: Record<string, an
         </span>
       </div>
       {stat(ctx.t?.('panels.etat-systeme.version') ?? 'Version', state.version)}
-      {stat(ctx.t?.('panels.etat-systeme.services') ?? 'Services', state.services)}
-      {stat(ctx.t?.('panels.etat-systeme.actifs') ?? 'Agents actifs', state.agents)}
+      {state.api ? stat('API', state.api) : null}
+      {state.os ? stat('OS', state.os) : null}
+      {stat(ctx.t?.('panels.etat-systeme.services') ?? 'Services', state.services == null ? '…' : `${state.services} (${state.servicesRunning ?? 0} run)`)}
+      {stat(ctx.t?.('panels.etat-systeme.actifs') ?? 'Agents', state.agents == null ? '…' : `${state.agents} (${state.agentsRunning ?? 0} actifs)`)}
+      {state.error ? <div style={{ fontSize: 11, color: '#f87171', marginTop: 6 }}>{state.error}</div> : null}
     </div>
   );
 }
