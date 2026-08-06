@@ -713,6 +713,17 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
+        # CORS : la webview Tauri (Origin localhost:517x / http://tauri.localhost)
+        # lit le flux SSE via fetch → comme _send(), on renvoie l'Origin et on
+        # autorise les cross-origin. Sans ça le navigateur bloque la lecture du
+        # stream et le client GUI reçoit une erreur immédiate (« ✕ Erreur »).
+        origin = self.headers.get("Origin")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         self.end_headers()
         try:
             handler(params, self.wfile)
