@@ -48,10 +48,16 @@ panels:
     termine: "Done"
 `;
 
+interface Seg {
+  kind: 'thinking' | 'content';
+  text: string;
+}
+
 interface Msg {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;  // bloc de raisonnement du modèle (modèles raisonneurs)
+  segments?: Seg[];   // ordre d'arrivée réel du flux (thinking/content entremêlés)
   mode?: string;
   ts?: number;        // heure d'envoi (user) / heure de fin (assistant)
   provider?: string;  // qui répond
@@ -135,11 +141,23 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
             if (event === 'delta' && data) {
               const kind = data.kind ?? 'content';
               const chunk = data.chunk ?? '';
-              if (kind === 'thinking') {
-                setMessages((prev) => prev.map((m, i) => i === liveIdx ? { ...m, thinking: (m.thinking ?? '') + chunk } : m));
-              } else {
-                setMessages((prev) => prev.map((m, i) => i === liveIdx ? { ...m, content: (m.content ?? '') + chunk, streamed: true } : m));
-              }
+              setMessages((prev) => prev.map((m, i) => {
+                if (i !== liveIdx) return m;
+                const segs = m.segments ? [...m.segments] : [];
+                // Fusionne les morceaux consécutifs de même nature (thinking→
+                // thinking, content→content) pour éviter des blocs clignotants,
+                // MAIS conserve l'ordre d'arrivée réel entre thinking et content.
+                const lastIdx = segs.length - 1;
+                if (chunk && lastIdx >= 0 && segs[lastIdx].kind === kind) {
+                  segs[lastIdx] = { ...segs[lastIdx], text: segs[lastIdx].text + chunk };
+                } else if (chunk) {
+                  segs.push({ kind, text: chunk });
+                }
+                if (kind === 'thinking') {
+                  return { ...m, thinking: (m.thinking ?? '') + chunk, segments: segs };
+                }
+                return { ...m, content: (m.content ?? '') + chunk, streamed: true, segments: segs };
+              }));
             } else if (event === 'result' && data) {
               const doneTs = Date.now();
               setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
@@ -236,30 +254,64 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 </>
               )}
             </div>
-            {/* Bloc thinking (raisonnement cliquable — style opencode) */}
-            {m.role === 'assistant' && !!m.thinking && (
-              <div style={{ marginTop: 4 }}>
-                <div
-                  onClick={() => toggleThinking(i)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: '#818cf8', userSelect: 'none' }}>
-                  <span style={{ display: 'inline-block', transition: 'transform .15s', transform: showThinking[i] ? 'rotate(90deg)' : 'none' }}>▸</span>
-                  <span>{showThinking[i] ? 'Pensé' : 'Penser…'}</span>
-                </div>
-                {showThinking[i] && (
-                  <div style={{ marginTop: 2, padding: '6px 8px', background: 'var(--mw-bg-dim, rgba(129,140,248,.06))', borderLeft: '2px solid #818cf8', color: '#a5b4fc', whiteSpace: 'pre-wrap', fontSize: 11, borderRadius: 4 }}>
-                    {m.thinking}
-                  </div>
+            {/* Contenu + thinking dans l'ORDRE d'arrivée du flux (entremêlés) */}
+            {m.role === 'assistant' && m.segments && m.segments.length > 0 && (
+              <div style={{ marginTop: 2 }}>
+                {m.segments.map((seg, si) => (
+                  seg.kind === 'thinking' ? (
+                    <div key={si} style={{ marginBottom: 2 }}>
+                      <div
+                        onClick={() => toggleThinking(i)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: '#818cf8', userSelect: 'none' }}>
+                        <span style={{ display: 'inline-block', transition: 'transform .15s', transform: showThinking[i] ? 'rotate(90deg)' : 'none' }}>▸</span>
+                        <span>{showThinking[i] ? 'Pensé' : 'Penser…'}</span>
+                      </div>
+                      {showThinking[i] && (
+                        <div style={{ marginTop: 2, padding: '6px 8px', background: 'var(--mw-bg-dim, rgba(129,140,248,.06))', borderLeft: '2px solid #818cf8', color: '#a5b4fc', whiteSpace: 'pre-wrap', fontSize: 11, borderRadius: 4 }}>
+                          {seg.text}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div key={si} style={{ color: 'var(--mw-fg-dim, #cbd5e1)', whiteSpace: 'pre-wrap', fontSize: 12 }}>
+                      {seg.text}
+                    </div>
+                  )
+                ))}
+                {busy && i === messages.length - 1 && (
+                  <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}></span>
                 )}
               </div>
             )}
-            {/* Contenu */}
-            <div style={{ color: 'var(--mw-fg-dim, #cbd5e1)', whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 2 }}>
-              {m.content || (busy && i === messages.length - 1 ? (ctx.t('panels.communication-dev-chat.en_cours') ?? 'En cours…') : '')}
-              {busy && i === messages.length - 1 && (
-                <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}>
-                </span>
-              )}
-            </div>
+            {/* Repli : pas de segments (réponse sync/init) → thinking puis contenu */}
+            {!(m.segments && m.segments.length > 0) && (
+              <>
+                {m.role === 'assistant' && !!m.thinking && (
+                  <div style={{ marginTop: 4 }}>
+                    <div
+                      onClick={() => toggleThinking(i)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: '#818cf8', userSelect: 'none' }}>
+                      <span style={{ display: 'inline-block', transition: 'transform .15s', transform: showThinking[i] ? 'rotate(90deg)' : 'none' }}>▸</span>
+                      <span>{showThinking[i] ? 'Pensé' : 'Penser…'}</span>
+                    </div>
+                    {showThinking[i] && (
+                      <div style={{ marginTop: 2, padding: '6px 8px', background: 'var(--mw-bg-dim, rgba(129,140,248,.06))', borderLeft: '2px solid #818cf8', color: '#a5b4fc', whiteSpace: 'pre-wrap', fontSize: 11, borderRadius: 4 }}>
+                        {m.thinking}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Contenu */}
+                <div style={{ color: 'var(--mw-fg-dim, #cbd5e1)', whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 2 }}>
+                  {m.content || (busy && i === messages.length - 1 ? (ctx.t('panels.communication-dev-chat.en_cours') ?? 'En cours…') : '')}
+                  {busy && i === messages.length - 1 && (
+                    <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}>
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+            <div style={{ clear: 'both' }} />
             {/* Fin de réponse : marqueur explicite « réponse terminée » */}
             {m.role === 'assistant' && m.finished && (
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontSize: 10 }}>
@@ -270,6 +322,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                   {m.error
                     ? (ctx.t('panels.communication-dev-chat.erreur') ?? 'Erreur')
                     : (ctx.t('panels.communication-dev-chat.termine') ?? 'Terminé')}
+                  {m.ts ? ` · ${fmtTime(m.ts)}` : ''}
                 </span>
               </div>
             )}
