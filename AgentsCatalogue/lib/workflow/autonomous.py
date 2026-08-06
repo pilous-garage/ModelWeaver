@@ -152,6 +152,16 @@ def _resolve_skill_candidates(fn_name: str) -> List[str]:
     base = fn_name
     out: List[str] = []
 
+    # 0. Nettoyage du nom brut : le LLM ajoute souvent des caractères
+    # parasites (glob_v1>, list_dir_varglob_v1) qui cassent la résolution
+    # → 4 échecs consécutifs → run aborté sans livrable.
+    import re as _re
+    cleaned = _re.sub(r"[^A-Za-z0-9_@/]", "", base)
+    # `list_dir_varglob_v1` : le LLM a collé le début de la prochaine
+    # sélection ("arg...") à la fin — on reteste la base sans ce suffixe.
+    if cleaned != base:
+        base = cleaned
+
     # 1. Tel quel (déjà un nom de skill complet) : git/git_clone@v1
     if "@" in base or "/" in base:
         out.append(base)

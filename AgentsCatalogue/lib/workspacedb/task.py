@@ -103,6 +103,20 @@ def done(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id et task_id requis"}
     try:
         db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if task is None:
+            db.close()
+            return {"ok": False, "error": "tâche introuvable"}
+        # Garde anti faux-positif : une tâche de CODAGE ne peut pas être
+        # marquée done sans commit (le code produit est le livrable). Sans
+        # ça, les membres greedy marquent des tâches done à vide et la
+        # mission « avance » sans livrable réel.
+        role = (task.get("role_required") or "").lower()
+        if role.startswith("coder") and not (branch or commit_hash):
+            db.close()
+            return {"ok": False,
+                    "error": "tâche de codage : commit_hash/branch requis "
+                             "(travail non livré — commit d'abord via git)"}
         task = scope.tasks.done(int(task_id), branch, commit_hash)
         db.close()
         if not task:

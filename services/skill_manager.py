@@ -121,6 +121,29 @@ class SkillManager:
             if knorm.endswith(norm) or norm.endswith(knorm):
                 hits.append(k)
         if not hits:
+            # Fuzzy fallback : le LLM insère parfois du bruit dans le nom
+            # (list_dir_varglob_v1 → varglob au lieu de glob). On cherche un
+            # skill dont le nom contient un sous-mot significatif (≥4 lettres)
+            # de la base demandée, priorisé par la plus longue correspondance.
+            fuzzy = []
+            for k in self._defs:
+                kbase = k.split("/")[-1].split("@")[0]
+                kver = k.split("@")[-1] if "@" in k else ""
+                if ver and kver != ver:
+                    continue
+                if not ver and kver != "v1":
+                    continue
+                knorm = kbase.replace("_", "")
+                best = 0
+                for i in range(len(norm) - 3):
+                    sub = norm[i:i + 4]
+                    if sub in knorm and len(sub) > best:
+                        best = len(sub)
+                if best >= 4:
+                    fuzzy.append((best, k))
+            if fuzzy:
+                fuzzy.sort(key=lambda x: (-x[0], len(x[1])))
+                return fuzzy[0][1]
             return base or ver
         if len(hits) == 1:
             return hits[0]
@@ -139,6 +162,12 @@ class SkillManager:
         if len(exact) == 1:
             return exact[0]
         if exact:
+            # À longueur égale, préférer la catégorie `file/` (workspace) —
+            # ex. `glob` → file/glob plutôt que system/home/glob, sinon le
+            # LLM globbe dans le home de l'agent au lieu des fichiers projet.
+            file_exact = [k for k in exact if k.split("/")[0] == "file"]
+            if file_exact:
+                return sorted(file_exact, key=len)[-1]
             return sorted(exact, key=len)[-1]
         return sorted(hits, key=len)[-1]
 
