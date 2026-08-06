@@ -58,6 +58,8 @@ interface Msg {
   model?: string;
   durationMs?: number;
   streamed?: boolean; // la réponse a été affichée en temps réel
+  finished?: boolean; // la réponse est terminée (plus d'échange en cours)
+  error?: boolean;    // la réponse s'est terminée sur une erreur
 }
 
 function fmtTime(ts?: number): string {
@@ -98,6 +100,15 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [messages, busy]);
 
+  // Animation du curseur streaming (injectée une fois, partagée par tous les messages).
+  useEffect(() => {
+    if (document.getElementById('mw-blink-style')) return;
+    const st = document.createElement('style');
+    st.id = 'mw-blink-style';
+    st.textContent = '@keyframes mw-blink{0%,49%{opacity:1}50%,100%{opacity:0}}';
+    document.head.appendChild(st);
+  }, []);
+
   const send = async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -137,6 +148,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 model: m.model || data.model_ref,
                 durationMs: data.duration_ms ?? doneTs - sentTs,
                 ts: doneTs,
+                finished: true,
                 content: (m.content?.trim() || undefined) ? m.content : (data.reply ?? data.content ?? (data.error ?? '')),
               } : m));
               if (data.error) setError(String(data.error));
@@ -144,6 +156,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
               resolve();
             } else if (event === 'error') {
               const msg = data?.error ?? 'erreur de flux';
+              setMessages((prev) => prev.map((m, i) => i === liveIdx ? { ...m, finished: true, error: true, ts: Date.now() } : m));
               if (!data?.done) setError(String(msg));
               resolve();
             }
@@ -162,13 +175,14 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           ...m, content: reply || (r.error || '(pas de réponse)'),
           provider: r.provider_ref, model: r.model_ref, ts: doneTs,
           durationMs: r.duration_ms ?? doneTs - sentTs,
+          finished: true, error: !!r.error,
         } : m));
         if (r.error) setError(String(r.error));
       }
     } catch (e: any) {
       setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
         ...m, content: `Erreur : ${String(e?.message ?? e)}`, ts: Date.now(),
-        durationMs: Date.now() - sentTs,
+        durationMs: Date.now() - sentTs, finished: true, error: true,
       } : m));
     } finally {
       setBusy(false);
@@ -241,7 +255,24 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
             {/* Contenu */}
             <div style={{ color: 'var(--mw-fg-dim, #cbd5e1)', whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 2 }}>
               {m.content || (busy && i === messages.length - 1 ? (ctx.t('panels.communication-dev-chat.en_cours') ?? 'En cours…') : '')}
+              {busy && i === messages.length - 1 && (
+                <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}>
+                </span>
+              )}
             </div>
+            {/* Fin de réponse : marqueur explicite « réponse terminée » */}
+            {m.role === 'assistant' && m.finished && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontSize: 10 }}>
+                <span style={{ color: m.error ? '#f87171' : '#34d399', fontWeight: 600 }}>
+                  {m.error ? '✕' : '✓'}
+                </span>
+                <span style={{ color: m.error ? '#f87171' : '#34d399' }}>
+                  {m.error
+                    ? (ctx.t('panels.communication-dev-chat.erreur') ?? 'Erreur')
+                    : (ctx.t('panels.communication-dev-chat.termine') ?? 'Terminé')}
+                </span>
+              </div>
+            )}
           </div>
         ))}
       </div>
