@@ -17,7 +17,7 @@ import { PanelBoundary } from './components/PanelBoundary.tsx';
 import { getPanel, PANEL_REGISTRY, listPanels } from './panels/registry.ts';
 import { useRefreshCount, refreshAllPanels } from './panels/refreshStore.ts';
 import { listExternalCandidates, ensurePanelLoaded, getAllPanelStatus } from './panels/loader.ts';
-import { daemonPost } from './bridge.ts';
+import { daemonPost, daemonPostStream } from './bridge.ts';
 import { startGuiInspectorPoll } from './guiInspector.ts';
 import { t, setLocale, persistLocale, useLocale } from './i18n.ts';
 import { applyTheme, listThemes, getCurrentTheme } from './theme.ts';
@@ -290,9 +290,10 @@ export function App({ layout: initialLayout, windowId, onChange }: Props) {
   // ctx panels (enrichi : compatible panels V1 externes qui attendent un ctx
   // avec daemonPost/t/windowId, en plus du contrat V2 api/layout/params).
   const buildCtx = useCallback((occ: PanelOcc): PanelContext & Record<string, any> => ({
-    api: { post: daemonPost },
+    api: { post: daemonPost, stream: daemonPostStream },
     daemonPost,
     post: daemonPost,
+    daemonPostStream,
     layout,
     occId: occ.occId,
     params: occ.params ?? {},

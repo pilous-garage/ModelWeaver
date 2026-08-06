@@ -930,10 +930,221 @@ class DirectBridge(BaseBridge):
                     max_tokens: Optional[int] = None,
                     system_prompt: Optional[str] = None,
                     **params) -> Iterator[str]:
-        raise NotImplementedError("stream à implémenter")
+        """Flux de contenu texte seulement (compat) : délégué à chat_stream_events.
+
+        Les modèles raisonneurs émettent d'abord des deltas `thinking` puis des
+        deltas `content` — on ne renvoie ici QUE la partie content (interfaces
+        qui ne veulent pas le reasoning).
+        """
+        for ev in self.chat_stream_events(
+            provider_ref, model_ref, messages,
+            temperature=temperature, max_tokens=max_tokens,
+            system_prompt=system_prompt, **params,
+        ):
+            if ev.get("type") == "content":
+                yield ev["delta"]
+
+    def chat_stream_events(self, provider_ref: str, model_ref: str,
+                           messages: List[Dict[str, str]],
+                           temperature: float = 0.7,
+                           max_tokens: Optional[int] = None,
+                           system_prompt: Optional[str] = None,
+                           **params) -> Iterator[Dict[str, Any]]:
+        """Flux SSE réel (OpenAI-compatible) avec emissions thinking/content.
+
+        Yield des dicts : {"type": "thinking"|"content", "delta": str}. Les
+        modèles raisonneurs (deepseek-v4-flash, etc.) émettent d'abord des
+        deltas "thinking" puis la réponse dans "content".
+
+        Gemini (api_type=gemini) : converti en flux via le même contrat
+        (cf. _google_chat pour le format de requête Gemini).
+        """
+        ep = self._get_endpoint(provider_ref)
+        api_type = ep.get("api_type", "openai")
+        if api_type == "gemini":
+            yield from self._google_chat_stream(ep, provider_ref, model_ref,
+                                                messages, temperature,
+                                                max_tokens, system_prompt,
+                                                **params)
+            return
+
+        model_id = _build_model_id(provider_ref, model_ref)
+        msgs = _build_messages(messages, system_prompt)
+
+        url = urljoin(ep["base_url"].rstrip("/") + "/", "chat/completions")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {ep.get('api_key', '')}" if ep.get('api_key') else "",
+            "User-Agent": _USER_AGENT,
+        }
+        body = {
+            "model": model_id,
+            "messages": msgs,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+
+        tools = params.get("tools")
+        if tools:
+            body["tools"] = _build_tools_param(tools)
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={k: v for k, v in headers.items() if v},
+            method="POST",
+        )
+
+        _t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                for line in resp:
+                    line = line.strip()
+                    if not line or not line.startswith(b"data:"):
+                        continue
+                    payload = line[len(b"data:"):].strip()
+                    if payload in (b"[DONE]", b"[done]"):
+                        break
+                    try:
+                        chunk = json.loads(payload.decode("utf-8", "replace"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta", {}) or {}
+                    d_content = delta.get("content") or ""
+                    d_reason = delta.get("reasoning_content") or ""
+                    if d_reason:
+                        yield {"type": "thinking", "delta": d_reason}
+                    if d_content:
+                        yield {"type": "content", "delta": d_content}
+                    for tcf in (delta.get("tool_calls") or []):
+                        yield {"type": "tool_calls", "delta": tcf}
+            self._log_call(provider_ref, model_ref, True,
+                           (time.time() - _t0) * 1000.0,
+                           agent_id=params.get("agent_id"),
+                           call_type="chat_stream")
+        except Exception as exc:
+            err = _classify_exception(exc, provider_ref, model_ref)
+            _cat = getattr(err, "category", None)
+            self._log_call(provider_ref, model_ref, False,
+                           (time.time() - _t0) * 1000.0,
+                           error_code=_cat.value if _cat else str(err)[:100],
+                           error_msg=str(err)[:200],
+                           agent_id=params.get("agent_id"),
+                           call_type="chat_stream")
+            raise err
 
     def _chat_stream_internal(self, *args, **kwargs) -> ChatResponse:
-        raise NotImplementedError("stream à implémenter")
+        """Équivalent non-itérateur : agrège le flux en ChatResponse."""
+        provider_ref = args[0] if args else kwargs.get("provider_ref")
+        model_ref = args[1] if len(args) > 1 else kwargs.get("model_ref")
+        if not provider_ref or not model_ref:
+            raise ValueError("_chat_stream_internal: provider_ref/model_ref requis")
+        content_chunks: List[str] = []
+        for ev in self.chat_stream_events(*args, **kwargs):
+            if ev.get("type") == "content":
+                content_chunks.append(ev.get("delta", ""))
+        content = "".join(content_chunks)
+        return ChatResponse(
+            content=content,
+            model=model_ref,
+            finish_reason="stop",
+            usage={},
+        )
+
+    def _google_chat_stream(self, ep: dict, provider_ref: str, model_ref: str,
+                            messages: List[Dict[str, str]],
+                            temperature: float, max_tokens: Optional[int],
+                            system_prompt: Optional[str] = None,
+                            **params) -> Iterator[Dict[str, Any]]:
+        """Gemini streaming via generateContent?alt=sse — même contrat (dicts)."""
+        base = ep.get("base_url", "https://generativelanguage.googleapis.com/v1beta")
+        api_key = ep.get("api_key") or ""
+        url = f"{base.rstrip('/')}/models/{model_ref}:streamGenerateContent?alt=sse"
+
+        contents = []
+        system_instruction = None
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "system":
+                system_instruction = {"parts": [{"text": content}]}
+                continue
+            if role == "tool":
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                except Exception:
+                    payload = {"output": content}
+                contents.append({
+                    "role": "model",
+                    "parts": [{"functionResponse": {"name": m.get("name") or "function",
+                                                     "response": {"result": payload}}}],
+                })
+                continue
+            if role == "assistant":
+                parts = []
+                if content:
+                    parts.append({"text": content})
+                # Les functionCall/tool_calls ne sont pas rejoués en streaming
+                # (un seul appel de génération) : les outils précédents sont
+                # déjà rejoués via _google_chat en mode non-stream.
+                contents.append({"role": "model", "parts": parts})
+                continue
+            contents.append({"role": "user" if role == "user" else role,
+                             "parts": [{"text": content}]})
+
+        body = {"contents": contents,
+                "generationConfig": {"temperature": temperature}}
+        if system_instruction:
+            body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+        if max_tokens:
+            body["generationConfig"]["maxOutputTokens"] = max_tokens
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json",
+                     **({"Authorization": f"Bearer {api_key}"} if api_key else {})},
+            method="POST",
+        )
+        _t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                buf = ""
+                for raw in resp:
+                    buf += raw.decode("utf-8", "replace")
+                    while "\n\n" in buf:
+                        evt_block, buf = buf.split("\n\n", 1)
+                        data_line = ""
+                        for line in evt_block.splitlines():
+                            if line.startswith("data:"):
+                                data_line += line[5:].strip()
+                        if not data_line:
+                            continue
+                        try:
+                            data = json.loads(data_line)
+                        except json.JSONDecodeError:
+                            continue
+                        for cand in data.get("candidates", []):
+                            for part in (cand.get("content") or {}).get("parts", []) or []:
+                                if "text" in part:
+                                    yield {"type": "content", "delta": part["text"]}
+                                elif "thought" in part:
+                                    yield {"type": "thinking", "delta": part.get("thought", "")}
+            self._log_call(provider_ref, model_ref, True,
+                           (time.time() - _t0) * 1000.0,
+                           agent_id=params.get("agent_id"),
+                           call_type="chat_stream")
+        except Exception as exc:
+            err = _classify_exception(exc, provider_ref, model_ref)
+            self._log_call(provider_ref, model_ref, False,
+                           (time.time() - _t0) * 1000.0,
+                           error_code=str(err)[:100], error_msg=str(err)[:200],
+                           agent_id=params.get("agent_id"),
+                           call_type="chat_stream")
+            raise err
 
     # ── Parsing réponse ────────────────────────────────────
 
@@ -946,6 +1157,11 @@ class DirectBridge(BaseBridge):
 
         content = message.get("content") or ""
         tool_calls_raw = message.get("tool_calls")
+        # Modèles raisonneurs (deepseek-v4-flash, etc.) : mettent le texte dans
+        # `reasoning_content` et renvoient `content` vide. On retombe dessus
+        # pour ne pas renvoyer une « réponse vide » au workflow.
+        if not content and not tool_calls_raw:
+            content = message.get("reasoning_content") or ""
 
         tool_calls = None
         if tool_calls_raw:

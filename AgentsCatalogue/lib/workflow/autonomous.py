@@ -19,7 +19,7 @@ import json
 import time
 from pathlib import Path
 from pathlib import Path as _Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml as _yaml
 
@@ -198,6 +198,80 @@ def _count_match(fn_name: str, counts: Dict[str, int], thresholds: Dict[str, int
     return None
 
 
+def _stream_llm_round(bridge: Any, p_ref: str, m_ref: str, messages: List[Dict],
+                      tools: List[Dict], agent_id: str,
+                      on_event: Optional[Callable[[str, str], None]],
+                      temperature: float = 0.7,
+                      max_tokens: Optional[int] = None) -> Any:
+    """Tour LLM en streaming : agrège thinking/content/tool_calls depuis
+    bridge.chat_stream_events et diffuse chaque delta via on_event(kind, text).
+
+    Retourne un objet avec .content, .tool_calls, .finish_reason, .usage
+    (équivalent ChatResponse) construit depuis les événements de flux.
+    """
+    import types as _types
+    from modules.llm_manager.base_bridge import BridgeError
+
+    provider = str(agent_id) if agent_id else ""
+    try:
+        chunks = bridge.chat_stream_events(
+            provider_ref=p_ref, model_ref=m_ref, messages=messages,
+            temperature=temperature, max_tokens=max_tokens,
+            tools=tools if tools else None, agent_id=provider or None)
+    except AttributeError:
+        # Bridge sans chat_stream_events (litellm…) : repli sur chat() non-stream.
+        if on_event:
+            on_event("info", "bridge sans streaming — repli synchrone")
+        resp = bridge.chat(p_ref, m_ref, messages, tools=tools or None,
+                           temperature=temperature, max_tokens=max_tokens,
+                           agent_id=provider or None)
+        return resp
+
+    content = ""
+    tool_acc: Dict[int, Dict] = {}
+    finish = "stop"
+    try:
+        for ev in chunks:
+            et = ev.get("type")
+            delta = ev.get("delta", "") or ""
+            if et == "thinking":
+                if on_event and delta:
+                    on_event("thinking", delta)
+            elif et == "content":
+                if delta:
+                    content += delta
+                    if on_event:
+                        on_event("content", delta)
+            elif et == "tool_calls":
+                tc = ev.get("delta") or {}
+                idx = tc.get("index", 0)
+                acc = tool_acc.setdefault(idx, {"id": "", "type": "function",
+                                                "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    acc["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    acc["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    acc["function"]["arguments"] += fn["arguments"]
+            elif et == "finish":
+                finish = ev.get("reason") or finish
+    except BridgeError:
+        raise
+    except Exception as exc:
+        err = BridgeError("unknown", f"stream {p_ref}/{m_ref}: {exc}", p_ref, m_ref)
+        err.__cause__ = exc
+        raise err
+
+    tool_calls = None
+    if tool_acc:
+        tool_calls = [tool_acc[i] for i in sorted(tool_acc)]
+    resp = _types.SimpleNamespace(
+        content=content, model=m_ref, finish_reason=finish, usage={},
+        raw=None, tool_calls=tool_calls)
+    return resp
+
+
 def _chat_with_tools(request: str, context: str, tools: List[Dict],
                      max_loops: int = 30, grouping: str = "none",
                      break_on_signals: Optional[List[str]] = None,
@@ -205,7 +279,9 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                      llm_timeout: Optional[float] = None,
                      global_timeout: Optional[float] = None,
                      provider_ref: str = "", model_ref: str = "",
-                     skill_home: str = "/tmp") -> List[Dict]:
+                     skill_home: str = "/tmp",
+                     on_event: Optional[Callable[[str, str], None]] = None,
+                     stream_events: bool = False) -> List[Dict]:
     import time as _time
     from pathlib import Path as _Path
     from modules.sql.db import CatalogueDB
@@ -329,8 +405,13 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 _fsm_log.log("debug", "llm/call",
                              f"provider={p_ref} model={m_ref} "
                              f"round={_round} tools={len(tools)}")
-            response = bridge.chat(p_ref, m_ref, messages, tools=tools, temperature=0.7,
-                                   agent_id=_aid_from_home or None)
+            if stream_events:
+                response = _stream_llm_round(
+                    bridge, p_ref, m_ref, messages, tools, _aid_from_home,
+                    on_event, temperature=0.7)
+            else:
+                response = bridge.chat(p_ref, m_ref, messages, tools=tools, temperature=0.7,
+                                       agent_id=_aid_from_home or None)
             if _fsm_log is not None:
                 _fsm_log.log("debug", "llm/ok",
                              f"provider={p_ref} model={m_ref} "
@@ -642,6 +723,33 @@ def exec(inputs: dict, home: str) -> dict:
     model_ref = inputs.get("model_ref", "")
     branch = inputs.get("branch", "") or inputs.get("branch_name", "")
 
+    # Diffusion streaming : dev-chat (GUI) peut activer le mode streaming œ
+    # `stream_events=true`. Les deltas thinking/content sont publiés dans le
+    # StreamBus (cross-process) sous l'agent_id dérivé du home — la route SSE
+    # dev-chat/stream les relit pour l'affichage temps réel.
+    stream_events = bool(inputs.get("stream_events", False))
+    on_event = None
+    if stream_events:
+        try:
+            from AgentFrameWork.stream_bus import stream_bus as _sb
+            import re as _re
+            _parts = _Path(home).parts
+            _aid = ""
+            if "agent_home" in _parts:
+                _aid = str(_parts[_parts.index("agent_home") + 1])
+            elif _re.match(r"^\d+$", _Path(home).name):
+                _aid = _Path(home).name
+            if _aid:
+                agent_id_int = int(_aid)
+                def on_event(kind: str, text: str) -> None:
+                    try:
+                        _sb.publish(agent_id_int, text, kind)
+                    except Exception:
+                        pass
+        except Exception:
+            on_event = None
+            stream_events = False
+
     tools = resolve_bundles(bundle_names)
     if not tools:
         return {"signal": "error", "stdout": "", "stderr": f"aucun outil trouvé dans bundles {bundle_names}", "exit_code": 1}
@@ -652,7 +760,8 @@ def exec(inputs: dict, home: str) -> dict:
     signals = _chat_with_tools(request, context, tools, max_loops, grouping,
                                break_on_signals, break_on_counts,
                                llm_timeout, global_timeout,
-                               provider_ref, model_ref, home)
+                               provider_ref, model_ref, home,
+                               on_event=on_event, stream_events=stream_events)
 
     # Discipline git : commit + push après l'action (publier son travail)
     _auto_git_sync(home, "post", branch)

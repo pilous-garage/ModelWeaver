@@ -72,6 +72,69 @@ async function postOnce(cfg: DaemonConfig, route: string, body: any): Promise<an
   return res.json();
 }
 
+export interface SSEEvent {
+  event: string;
+  data: any;
+}
+
+/** POST en mode SSE vers le daemon : ouvre un flux text/event-stream et
+ * rappelle onEvent(event, data) pour chaque événement reçu (résolution à la
+ * fin du flux). Retourne un abort() pour stopper le flux. */
+export async function daemonPostStream(
+  route: string,
+  body: any,
+  onEvent: (ev: SSEEvent) => void,
+): Promise<() => void> {
+  const cfg = await getConfig();
+  const controller = new AbortController();
+  const fetchStream = async (cur: DaemonConfig) => {
+    const res = await fetch(`http://127.0.0.1:${cur.port}/v1/${route}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cur.token ? { Authorization: `Bearer ${cur.token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${route}: ${text.slice(0, 120)}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Découpe les blocs SSE « event: X\ndata: {...}\n\n »
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let event = 'message';
+        let dataRaw = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataRaw += line.slice(5).trim();
+        }
+        let data: any = null;
+        if (dataRaw) {
+          try { data = JSON.parse(dataRaw); } catch { data = dataRaw; }
+        }
+        onEvent({ event, data });
+      }
+    }
+  };
+
+  fetchStream(cfg).catch((e: any) => {
+    if (controller.signal.aborted) return;
+    onEvent({ event: 'error', data: { error: String(e?.message ?? e) } });
+  });
+  return () => controller.abort();
+}
+
 /** URL de base du daemon (http://127.0.0.1:<port>) pour les imports distants. */
 export async function daemonBaseUrl(): Promise<string> {
   const cfg = await getConfig();
