@@ -31,6 +31,53 @@ def op_version(_params):
     return {"version": MW_VERSION, "api": API_VERSION}
 
 
+def op_health(_params):
+    """Health check du daemon et des modules de domaine refactorisés.
+
+    Retourne un statut global et l'état des dépendances DB via
+    ``modules/sql`` plutôt que ``db.py`` à la racine.
+    """
+    databases = _get_databases_health()
+    status = "ok"
+    if any(not item.get("ok", False) for item in databases.values()):
+        status = "degraded"
+    return {
+        "status": status,
+        "version": MW_VERSION,
+        "api": API_VERSION,
+        "databases": databases,
+    }
+
+
+def _get_databases_health():
+    try:
+        from services.api.handlers.system import check_databases
+        details = check_databases({})
+    except Exception as e:
+        details = {"error": str(e)}
+
+    databases = {}
+    for name, info in details.items():
+        if not isinstance(info, dict):
+            continue
+        path = info.get("path") or info.get("db_path") or ""
+        exists = info.get("exists")
+        if exists is None and path:
+            try:
+                exists = Path(path).exists()
+            except Exception:
+                exists = False
+        ok = bool(exists) and "error" not in info
+        databases[name] = {
+            "ok": ok,
+            "exists": exists,
+            "path": path,
+        }
+        if "error" in info:
+            databases[name]["error"] = info["error"]
+    return databases
+
+
 def op_system_hardware():
     """Inventaire matériel complet (check système) — CPU, RAM, carte mère,
     GPU, disques, réseau, USB, températures."""
@@ -518,6 +565,7 @@ register("system/hardware",          _wrap(op_system_hardware))
 register("system/resources",         _wrap(op_system_resources))
 register("system/processes",         _wrap(op_system_processes))
 register("version",                  op_version)
+register("system/health",            op_health)
 register("system/deps/check",        _wrap(check_python_deps))
 register("system/state/get",         _wrap(op_system_state_get))
 register("system/state/save",        _wrap(save_system_state))
