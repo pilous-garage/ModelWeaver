@@ -292,6 +292,13 @@ export function PanelTreeRenderer({ tree, ctx }: Props) {
   if (children.length === 0) return null;
   if (children.length === 1) return <PanelTreeRenderer tree={children[0]} ctx={ctx} />;
 
+  // Normalise sizes : si le nombre de children ne correspond pas, répartit
+  // équitablement (évite que react-resizable-panels crashe sur un defaultSize
+  // incohérent après un split).
+  const sizes = (tree.sizes && tree.sizes.length === children.length)
+    ? tree.sizes
+    : Array(children.length).fill(Math.round(100 / children.length));
+
   return (
     <Group direction={direction} style={{ height: '100%', width: '100%' }}>
       {children.map((child, idx) => (
@@ -307,7 +314,7 @@ export function PanelTreeRenderer({ tree, ctx }: Props) {
             />
           )}
           <Panel
-            defaultSize={child.sizes?.[0] !== undefined ? child.sizes[idx] : undefined}
+            defaultSize={sizes[idx]}
             minSize={10}
           >
             <PanelTreeRenderer tree={child} ctx={ctx} />

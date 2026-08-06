@@ -441,7 +441,9 @@ class Agent:
                     "content": result.content,
                     "messages": new_history,
                     "tokens_used": result.tokens_used,
-                    "budget": result.budget}
+                    "budget": result.budget,
+                    "provider_ref": result.variables.get("_llm_provider", provider_ref),
+                    "model_ref": result.variables.get("_llm_model", model_ref)}
         except AgentAbort:
             self._record_failure()
             return {"status": "aborted", "error": "Interrompu par signal kill"}

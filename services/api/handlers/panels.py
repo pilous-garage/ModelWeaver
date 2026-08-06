@@ -150,6 +150,14 @@ WINDOW_TEMPLATES = {
         "defaultSize": {"width": 1000, "height": 700},
         "defaultPos": {"x": None, "y": None},
     },
+    "chatMonitoringDev": {
+        "label": "Dev Chat & Monitoring",
+        "icon": "code",
+        "layout": "chat-monitoring-dev",
+        "theme": "dark",
+        "defaultSize": {"width": 1700, "height": 1000},
+        "defaultPos": {"x": None, "y": None},
+    },
 }
 
 WINDOWS_DIR = mw_home() / "windows"

@@ -232,12 +232,15 @@ export async function startGuiInspectorPoll(intervalMs = 1500): Promise<void> {
   try { await daemonPost('logs/write', { level: 'GUI', message: '[full-log] guiInspector-start-line' }); } catch {}
   const tick = async () => {
     try {
-      const res = await daemonPost('gui/poll', {});
+      // Ce poller n'exécute que les commandes visant SA fenêtre (params.window)
+      // ou sans cible précise. Les autres fenêtres laisseront passer.
+      const selfLabel = (window as any).__MW_WINDOW_LABEL || null;
+      const res = await daemonPost('gui/poll', { window: selfLabel || undefined });
       const commands = res?.result?.commands || res?.commands || [];
       for (const cmd of commands) {
         const r = await executeCommand(cmd);
         await daemonPost('gui/result', { command_id: cmd.id, ok: r.ok, result: r.result });
-        logGui('gui:command', { id: cmd.id, type: cmd.type, ok: r.ok });
+        logGui('gui:command', { id: cmd.id, type: cmd.type, ok: r.ok, window: selfLabel });
       }
     } catch (e: any) {
       console.warn('[guiInspector] poll échec:', e?.message);

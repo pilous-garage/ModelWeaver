@@ -319,6 +319,15 @@ class Team:
         self._seed_leader_workflow()
         return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
 
+    def remove_member(self, agent_name: str) -> dict:
+        """Retire un membre de l'équipe à chaud (runtime + spec)."""
+        aid = self.member_agent_ids.pop(agent_name, None)
+        if aid is None:
+            return {"status": "error", "error": f"membre '{agent_name}' introuvable"}
+        # Retire du spec (pour ne pas le recréer au prochain setup)
+        self.spec.members = [m for m in self.spec.members if m.agent_name != agent_name]
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
+
     def set_leader(self, agent_name: str, role: str,
                    occupation: str = "continue",
                    provider_ref: str = "", model_ref: str = "") -> dict:
@@ -543,6 +552,12 @@ class TeamManager:
             return {"status": "error", "error": f"team inconnue: {team_name}"}
         return team.add_member(agent_name, role, occupation,
                                 provider_ref=provider_ref, model_ref=model_ref)
+
+    def remove_member(self, team_name: str, agent_name: str) -> dict:
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        return team.remove_member(agent_name)
 
     def set_leader(self, team_name: str, agent_name: str, role: str,
                    occupation: str = "continue",

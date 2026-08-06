@@ -105,3 +105,6 @@ reboot-npu.md
 modelweaver.db
 interfaces/main/GUI/official/gui/dump-ssr.css
 opencode_ref/
+
+# Fichiers de concaténation de sources (revue IA) — générés par scripts/gen_fake_md.py
+*.fake.md

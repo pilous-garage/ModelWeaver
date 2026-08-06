@@ -1,0 +1,76 @@
+{
+  "$schema": "https://modelweaver.dev/schemas/layout.json",
+  "id": "chat-monitoring-dev",
+  "label": "Dev Chat & Monitoring",
+  "icon": "code",
+  "theme": "dark",
+  "tree": {
+    "type": "split",
+    "id": "sp-main",
+    "direction": "horizontal",
+    "sizes": [15, 70, 15],
+    "children": [
+      {
+        "type": "split",
+        "id": "sp-left",
+        "direction": "vertical",
+        "sizes": [25, 25, 25, 25],
+        "children": [
+          { "type": "group", "id": "pg-hardware", "tabs": [{ "panel": "systeme-etat", "occId": "occ-hw" }], "active": "occ-hw" },
+          { "type": "group", "id": "pg-docker", "tabs": [{ "panel": "docker-ressources", "occId": "occ-docker" }], "active": "occ-docker" },
+          { "type": "group", "id": "pg-llm-local", "tabs": [{ "panel": "systeme-llm-locaux", "occId": "occ-llml" }], "active": "occ-llml" },
+          { "type": "group", "id": "pg-llm-distant", "tabs": [{ "panel": "monitoring-llm-distant", "occId": "occ-llmd" }], "active": "occ-llmd" }
+        ]
+      },
+      {
+        "type": "split",
+        "id": "sp-center",
+        "direction": "vertical",
+        "sizes": [50, 50],
+        "children": [
+          {
+            "type": "group",
+            "id": "pg-agents-live",
+            "tabs": [
+              { "panel": "agents-activity", "occId": "occ-agact", "params": { "team_name": "dev-chat" } },
+              { "panel": "agents-monitoring", "occId": "occ-agmon" }
+            ],
+            "active": "occ-agact"
+          },
+          {
+            "type": "group",
+            "id": "pg-dev-chat",
+            "tabs": [
+              { "panel": "communication-dev-chat", "occId": "occ-chat", "params": { "workspace_id": "mw-dev-chat" } }
+            ],
+            "active": "occ-chat"
+          }
+        ]
+      },
+      {
+        "type": "split",
+        "id": "sp-right",
+        "direction": "vertical",
+        "sizes": [50, 50],
+        "children": [
+          {
+            "type": "group",
+            "id": "pg-issues-tasks",
+            "tabs": [
+              { "panel": "monitoring-workspace", "occId": "occ-ws", "params": { "workspace_id": "mw-dev-chat" } }
+            ],
+            "active": "occ-ws"
+          },
+          {
+            "type": "group",
+            "id": "pg-team",
+            "tabs": [
+              { "panel": "agents-team-members", "occId": "occ-team", "params": { "team_name": "dev-chat" } }
+            ],
+            "active": "occ-team"
+          }
+        ]
+      }
+    ]
+  }
+}

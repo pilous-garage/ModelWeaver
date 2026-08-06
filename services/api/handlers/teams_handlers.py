@@ -110,6 +110,16 @@ def op_team_add_member(params):
     )
 
 
+def op_team_remove_member(params):
+    """Retire un membre d'une équipe à chaud."""
+    name = params.get("name", "")
+    agent_name = params.get("agent_name", "")
+    if not name or not agent_name:
+        return {"status": "error", "error": "name et agent_name requis"}
+    team_name = f"team:{name}" if not name.startswith("team:") else name
+    return _mgr.remove_member(team_name, agent_name)
+
+
 def op_team_set_leader(params):
     """Définit ou remplace le team_leader d'une équipe."""
     name = params.get("name", "")
@@ -222,6 +232,7 @@ register("team/restart",           op_team_restart)
 register("team/delegate",          op_team_delegate)
 register("team/chat",              op_team_chat)
 register("team/add-member",        op_team_add_member)
+register("team/remove-member",     op_team_remove_member)
 register("team/set-leader",        op_team_set_leader)
 register("team/init-workspace",    op_team_init_workspace)
 register("team/create",            op_team_create)

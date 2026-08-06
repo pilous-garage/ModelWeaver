@@ -371,10 +371,21 @@ export function useLayout(layoutId: string) {
       }
       const parent = findParentSplit(tree, target);
       if (parent) {
-        if (parent.direction === direction) {
-          parent.children.splice(parent.children.indexOf(target) + 1, 0, newGroup);
+        const tIdx = parent.children.indexOf(target);
+        if (tIdx === -1) {
+          // Sécurité : cible introuvable dans le parent (état incohérent),
+          // on insère à la fin du split.
+          parent.children.push(newGroup);
+        } else if (parent.direction === direction) {
+          parent.children.splice(tIdx + 1, 0, newGroup);
+          // Ajuste sizes : répartit également sur le nouveau nombre de children.
+          if (parent.sizes) {
+            const n = parent.children.length;
+            const share = Math.round(100 / n);
+            parent.sizes = Array(n).fill(share);
+          }
         } else {
-          parent.children[parent.children.indexOf(target)] = { direction, sizes: [50, 50], children: [target, newGroup] };
+          parent.children[tIdx] = { direction, sizes: [50, 50], children: [target, newGroup] };
         }
       } else {
         // Racine : on enveloppe. Si le groupe source a été vidé et que l'arbre

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from './useApp.ts';
 import { getWindowLabel, daemonPost } from './bridge.ts';
 import { useLayout } from './layout/useLayout.ts';
@@ -449,5 +449,41 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', persist);
   }, [windowLabel]);
 
-  return <LayoutWindow app={app} layoutId={layoutId} windowLabel={windowLabel} injectedTheme={injectedTheme} />;
+  return <GuiErrorBoundary windowLabel={windowLabel}><LayoutWindow app={app} layoutId={layoutId} windowLabel={windowLabel} injectedTheme={injectedTheme} /></GuiErrorBoundary>;
+}
+
+/** Capture les erreurs React (ex. crash du drag/split) au lieu d'un écran
+ * blanc : logue l'erreur dans le full-log + affiche un message. */
+class GuiErrorBoundary extends React.Component<{ children: any; windowLabel?: string }, { error: string | null }> {
+  state: { error: string | null } = { error: null };
+  static getDerivedStateFromError(e: any) {
+    return { error: String(e?.message || e) };
+  }
+  componentDidCatch(e: any, info: any) {
+    const msg = `[${this.props.windowLabel || 'gui'}] React error: ${e?.message || e} :: ${info?.componentStack || ''}`.slice(0, 500);
+    import('./gui_log.ts').then((g) => g.logGui('app:react-error', msg));
+    try {
+      import('./bridge.ts').then((b) => b.daemonPost('logs/write', { level: 'GUI', message: `[full-log] ${msg}` }));
+    } catch {}
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: '#1a1a2e', color: '#fca5a5', fontFamily: 'sans-serif', fontSize: '0.8rem', padding: '1rem',
+        }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Erreur d'affichage</div>
+            <div style={{ color: '#e2e8f0', wordBreak: 'break-all', maxWidth: '60vw' }}>{this.state.error}</div>
+            <button
+              onClick={() => this.setState({ error: null })}
+              style={{ marginTop: '1rem', padding: '0.3rem 0.8rem', cursor: 'pointer', background: '#334155', color: '#e2e8f0', border: 'none', borderRadius: '0.3rem' }}
+            >Recharger</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }

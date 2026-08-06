@@ -161,20 +161,31 @@ def _list_processes() -> List[tuple]:
 
 
 def _match_service(cmdline: str, name: str) -> bool:
-    """Vrai si la cmdline correspond au service `name`."""
+    """Vrai si la cmdline correspond au service `name`.
+
+    Les manifests utilisent des noms en tirets (llm-manager, model-sync,
+    agent-manager) alors que les modules/cmdlines réelles sont en
+    underscores (llm_manager/service.py) : on normalise les deux côtés
+    pour que l'adoption des services déjà en cours fonctionne (sinon le
+    superviseur relance un doublon à chaque boot).
+    """
     markers = {
         "api": ("daemon.py serve", "daemon.py",),
         "catalogue": ("catalogue/service.py",),
         "model_sync": ("model_sync.py",),
         "usage_collector": ("usage_collector.py",),
         "supervisor": ("supervisor/main.py",),
-        "llm": ("llm_manager/service.py",),
+        "llm_manager": ("llm_manager/service.py",),
         "ressource_manager": ("ressource_manager/service.py",),
         "afd": ("afd/service.py",),
         "tester": ("tester",),
         "installer_worker": ("installer_worker",),
-    }.get(name, (name,))
-    return any(m in cmdline for m in markers)
+        "agent_manager": ("agent_manager.service",),
+        "watcher": ("watcher/watcher.py",),
+    }
+    norm = name.lower().replace("-", "_")
+    marks = markers.get(norm, (norm,))
+    return any(m in cmdline for m in marks)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -356,6 +367,12 @@ class Supervisor:
     # ── Boot : adopter ou lancer ──
 
     def boot(self):
+        # Relance volontaire : on réarme la supervision (annule un éventuel
+        # shutdown_all précédent sans redémarrage explicite).
+        try:
+            (mw_home() / "supervisor.disabled").unlink(missing_ok=True)
+        except OSError:
+            pass
         procs = _list_processes()
         print(f"[supervisor] boot : {len(self.manifests)} manifests, "
               f"{len(procs)} process", flush=True)
@@ -565,6 +582,46 @@ class Supervisor:
         self._running = False
         return {"status": "ok", "message": "arrêt complet demandé"}
 
+    def reset(self, name: str) -> dict:
+        """Reset complet : arrêt, remise à zéro du compteur de restarts, relance.
+
+        Différence avec restart : même si le service était en arrêt manuel ou
+        en épuisement de restarts, on le relance avec un état vierge.
+        """
+        spec = self.manifests.get(name)
+        if not spec:
+            return {"status": "error", "error": f"service inconnu: {name}"}
+        self.stop(name)
+        self.manual_stop.discard(name)
+        self.registry.set(name, {"pid": -1, "socket": "", "status": "running",
+                                 "restarts": 0})
+        sock = _resolve_socket(name, spec, self.registry)
+        if self._launch(name, spec, sock):
+            self.registry.save()
+            return {"status": "ok", "pid": self.registry.get(name).get("pid"),
+                    "socket": sock}
+        return {"status": "error", "error": f"échec reset {name}"}
+
+    def reset_all(self) -> dict:
+        """Reset complet de tous les services gérés."""
+        results = {}
+        for name in list(self.registry.all().keys()):
+            try:
+                results[name] = self.reset(name).get("status", "error")
+            except Exception as e:
+                results[name] = "error"
+        self.registry.save()
+        return {"status": "ok", "results": results}
+
+    def shutdown_all(self) -> dict:
+        """Arrêt total DURABLE : stoppe tout et écrit un flag pour que le
+        daemon ne relance PAS le superviseur (arrêt volontaire ≠ crash)."""
+        try:
+            (mw_home() / "supervisor.disabled").write_text("shutdown_all")
+        except OSError:
+            pass
+        return self.shutdown()
+
     # ── Serveur socket ──
 
     def serve_socket(self):
@@ -629,8 +686,14 @@ class Supervisor:
                 result = self.stop(req.get("name", ""))
             elif call == "restart":
                 result = self.restart(req.get("name", ""))
+            elif call == "reset":
+                result = self.reset(req.get("name", ""))
+            elif call == "reset_all":
+                result = self.reset_all()
             elif call == "shutdown":
                 result = self.shutdown()
+            elif call == "shutdown_all":
+                result = self.shutdown_all()
             else:
                 result = {"status": "error", "error": f"call inconnu: {call}"}
         except Exception as e:
@@ -639,11 +702,34 @@ class Supervisor:
 
 
 def main():
+    # Singleton STRICT : s'il y a déjà un superviseur vivant, on s'éteint.
+    # (Le kill-and-replace de acquire_instance_lock laissait les services
+    # déjà lancés en orphelins → doublons à chaque relance.)
+    procs = _list_processes()
+    for pid, cmdline in procs:
+        if pid == os.getpid():
+            continue
+        if _match_service(cmdline, "supervisor"):
+            print(f"[supervisor] un autre superviseur tourne déjà "
+                  f"(pid {pid}) — arrêt.", file=sys.stderr)
+            sys.exit(1)
     if not acquire_instance_lock("supervisor"):
         print("[supervisor] déjà en cours (lock supervisor)", file=sys.stderr)
         sys.exit(1)
     sup = Supervisor()
     sup.boot()
+
+    def _on_term(signum, frame):
+        # Arrêt propre : stoppe les services enfants avant de mourir,
+        # sinon ils restent orphelins (→ doublons à la relance).
+        try:
+            sup.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
     threading.Thread(target=sup.serve_socket, daemon=True).start()
     print(f"[supervisor] prêt (pid {os.getpid()}, socket "
           f"{SUPERVISOR_SOCK})", flush=True)

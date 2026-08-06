@@ -50,8 +50,17 @@ class SupervisorClient:
     def restart(self, name: str) -> Dict[str, Any]:
         return self._call("restart", name=name)
 
+    def reset(self, name: str) -> Dict[str, Any]:
+        return self._call("reset", name=name)
+
+    def reset_all(self) -> Dict[str, Any]:
+        return self._call("reset_all")
+
     def shutdown(self) -> Dict[str, Any]:
         return self._call("shutdown")
+
+    def shutdown_all(self) -> Dict[str, Any]:
+        return self._call("shutdown_all")
 
 
 _supervisor_client: Optional[SupervisorClient] = None

@@ -35,6 +35,13 @@ TRAD = {
     "Statut": "Status", "Installé": "Installed", "Variant": "Variant",
     "Ressources (variant)": "Resources (variant)", "État (simple)": "State (simple)",
     "En ligne": "Online", "Services actifs": "Active services", "Slip": "Slip",
+    "Équipes": "Teams", "Rôle": "Role", "Requête": "Request", "Résultat": "Result",
+    "Arrêter": "Stop", "Redémarrer": "Restart", "Arêtes": "Edges",
+    "Créer un cache": "Create cache", "Libérer": "Release",
+    "Catalogue modèles": "Models catalogue", "Modèle": "Model",
+    "Fenêtres": "Windows", "Dépendances": "Dependencies", "Recommandé": "Recommended",
+    "Workspace initialisé": "Workspace initialized", "Système": "System",
+    "Disque": "Disk",
 }
 
 def translate_value(v: str) -> str:

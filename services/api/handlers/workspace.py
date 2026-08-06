@@ -66,6 +66,68 @@ def op_workspace_issues_list(params):
         return {"status": "error", "error": str(e)}
 
 
+# ── Tasks (greedy) : pont HTTP vers workspacedb (le panel moniteur les lit) ──
+
+def _tasks_scope(workspace_id: str):
+    from modules.sql.workspace import WorkspaceDB
+    db = WorkspaceDB()
+    return db, db.for_workspace(workspace_id)
+
+
+def op_workspace_tasks_list(params):
+    """Liste les tâches d'un workspace (pending par défaut, `all`=true pour tout)."""
+    workspace_id = params.get("workspace_id", "")
+    show_all = bool(params.get("all", False))
+    if not workspace_id:
+        return {"status": "error", "error": "workspace_id requis"}
+    try:
+        db, scope = _tasks_scope(workspace_id)
+        tasks = scope.tasks.list_all() if show_all else scope.tasks.list_pending()
+        db.close()
+        return {"status": "ok", "workspace_id": workspace_id, "tasks": tasks, "count": len(tasks)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_workspace_tasks_get(params):
+    """Détail d'une tâche (status, role_required, résultat, commit…)."""
+    workspace_id = params.get("workspace_id", "")
+    task_id = params.get("task_id")
+    if not workspace_id or task_id is None:
+        return {"status": "error", "error": "workspace_id et task_id requis"}
+    try:
+        db, scope = _tasks_scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        files = scope.tasks.get_files(int(task_id))
+        db.close()
+        if not task:
+            return {"status": "error", "error": f"tâche {task_id} introuvable"}
+        task["files"] = files
+        return {"status": "ok", "task": task}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def op_workspace_tasks_claim_next(params):
+    """Pioche la prochaine tâche pending pour un rôle (greedy atomique)."""
+    workspace_id = params.get("workspace_id", "")
+    role_required = params.get("role_required", "")
+    if not workspace_id:
+        return {"status": "error", "error": "workspace_id requis"}
+    try:
+        db, scope = _tasks_scope(workspace_id)
+        task = scope.tasks.claim_next(role_required=role_required)
+        db.close()
+        if not task:
+            return {"status": "ok", "task": None}
+        return {"status": "ok", "task": task, "task_id": task.get("task_id")}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+register("workspace/tasks/list",      op_workspace_tasks_list)
+register("workspace/tasks/get",       op_workspace_tasks_get)
+register("workspace/tasks/claim_next", op_workspace_tasks_claim_next)
 register("workspace/issues/add",  op_workspace_issues_add)
 register("workspace/issues/list", op_workspace_issues_list)
 
