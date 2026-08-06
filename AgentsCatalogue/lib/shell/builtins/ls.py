@@ -27,8 +27,13 @@ def cmd_ls(
             lines.append(name)
         return {"exit_code": 0, "stdout": "\n".join(lines) + ("\n" if lines else ""), "stderr": ""}
 
+    # Ignore les flags standard de ls (-l, -a, -la, -al, -lh, …) : ils ne
+    # sont pas des chemins. Sans ça, `ls -la` échoue en "introuvable" et les
+    # agents swarm (réflexe naturel) se bloquent.
+    paths = [a for a in args if not a.startswith("-")]
+
     lines = []
-    for path_arg in args:
+    for path_arg in (paths or ["."]):
         target = auth.check_path(Path(workdir) / path_arg)
         if target.is_dir():
             for entry in sorted(target.iterdir()):

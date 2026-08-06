@@ -114,6 +114,19 @@ def _cmd_init(inputs: Dict, home: str, agent_id: str, role: str) -> Dict:
         r = _git(["clone", str(central), str(ws)], cwd=str(ws.parent))
         if r["exit_code"] != 0:
             return {"exit_code": 1, "stdout": "", "stderr": f"clone agent: {r['stderr']}"}
+        # Le clone suit le HEAD du central. Si le central a été seedé depuis
+        # l'extérieur (HEAD=master) alors que le contenu est sur `main`,
+        # la branche locale master reste vide → aucun code dans le workspace.
+        # On bascule sur la branche par défaut contenant du contenu.
+        try:
+            has_main = _git_concise(["rev-parse", "--verify", "main"], str(ws))
+            if not has_main.startswith("ERR"):
+                head_branch = _git_concise(["rev-parse", "--abbrev-ref", "HEAD"], str(ws))
+                if head_branch == "master" and _git_concise(
+                        ["rev-parse", "master^{tree}"], str(ws)).startswith("ERR"):
+                    _git(["checkout", "-q", "-b", "main", "origin/main"], cwd=str(ws))
+        except Exception:
+            pass
 
     return {"exit_code": 0, "stdout": f"repo prêt dans {ws}"}
 

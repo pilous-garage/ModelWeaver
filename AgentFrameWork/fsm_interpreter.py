@@ -545,6 +545,23 @@ class FSMInterpreter:
         inputs = step.get("inputs", {})
         resolved = {k: self._resolve(v, result.variables) if isinstance(v, str) else v
                     for k, v in inputs.items()}
+        # Les templates de workspace restants ({{workspace_id}} etc.) : le
+        # workspace du chat de dev est le défaut connu. Sans cette résolution,
+        # les membres greedy appellent task_claim_next avec la chaîne littérale
+        # "{{workspace_id}}" → « aucune tâche dispo » → rien ne s'exécute.
+        def _resolve_residual(value):
+            if isinstance(value, str) and "{{" in value:
+                value = value.replace("{{workspace_id}}", "mw-dev-chat")
+            return value
+        resolved = {k: _resolve_residual(v) for k, v in resolved.items()}
+        # Le provider/model du run DOIT être propagé aux skills appelés
+        # (ex. workflow/autonomous@v1) quand le step ne les définit pas —
+        # sinon le skill appelé auto-assigne (google/nvidia…) au lieu
+        # d'honorer le provider explicitement demandé (team/delegate).
+        if provider_ref and not resolved.get("provider_ref"):
+            resolved["provider_ref"] = provider_ref
+        if model_ref and not resolved.get("model_ref"):
+            resolved["model_ref"] = model_ref
         # agent_id disponible pour les skills (memory/host/log)
         # Anti-spoof : un 'call' ne peut pas usurper l'identité d'un autre
         # agent — s'il fournit un agent_id différent, on force le sien.
