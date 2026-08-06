@@ -69,6 +69,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.projet-workspace.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['projet'],
   paramsSchema: {
     name: { type: 'string', description: 'Nom du workspace' },
   },

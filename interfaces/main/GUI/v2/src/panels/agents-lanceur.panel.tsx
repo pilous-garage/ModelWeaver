@@ -76,6 +76,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.agents-lanceur.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['agents'],
   paramsSchema: {
     role: { type: 'string', default: 'assistant', description: 'Rôle de l\'agent' },
   },

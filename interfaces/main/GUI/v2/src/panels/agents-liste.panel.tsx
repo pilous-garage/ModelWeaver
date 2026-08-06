@@ -76,6 +76,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.agents-liste.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['agents'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[agents-liste] Agents v1.0.0\n  routes: agent/list-by-team, agent/signal, agent/stop, agent/restart',

@@ -70,6 +70,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.gestion-cles-api.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['systeme', 'outils'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[gestion-cles-api] Clés API v1.0.0\n  routes: keys/list, keys/delete, keys/set_lock',

@@ -511,6 +511,30 @@ def op_logs_write(params):
     return {"status": "ok"}
 
 
+def op_logs_gui_write(params):
+    """Écrit un lot d'événements GUI (tracing) dans ~/.modelweaver/logs/gui.log.
+
+    Le frontend V2 envoie un tableau d'événements (batched, flush périodique) :
+    { events: [{ts, type, detail}] }. Chaque événement est une ligne JSON.
+    """
+    try:
+        from datetime import datetime
+        from services._common import mw_home
+        log_dir = mw_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        events = params.get("events") or []
+        if not events:
+            return {"status": "ok", "count": 0}
+        with open(log_dir / "gui.log", "a", encoding="utf-8") as f:
+            for ev in events:
+                ts = ev.get("ts", datetime.now().isoformat())
+                line = f"{ts} [{ev.get('level','INFO')}] {ev.get('type','?')} {ev.get('detail','')}"
+                f.write(line + "\n")
+        return {"status": "ok", "count": len(events)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # ── Providers ───────────────────────────────────────────────────────────
 
 def op_providers_list(_params):

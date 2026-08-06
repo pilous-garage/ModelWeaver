@@ -10,6 +10,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.agents-equipe.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['projet'],
   langEmbedded: (Base as any).langEmbedded,
   langEmbeddedEn: (Base as any).langEmbeddedEn,
   declaration: () => '[projet-equipes] Équipes v1.0.0\n  routes: team/list, team/add-member, team/set-leader, capabilities',

@@ -89,6 +89,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.communication-chat.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['communication'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[communication-chat] Chat v1.0.0\n  routes: chat/session/create, chat/session/send, chat/session/list',

@@ -129,6 +129,8 @@ MAX_TOTAL_AGENT_DISK_GB = 10  # espace disque total max utilisé par tous les ag
 ROLE_TO_TASK = {
     "architecte": "analyst",
     "planificateur": "analyst",
+    "explorateur": "explore",
+    "explore": "explore",
     "codeur": "coder_senior",
     "test_runner": "tester",
     "relecteur": "reviewer",
@@ -391,7 +393,10 @@ class Agent:
         llm_messages.append({"role": "user", "content": user_message})
 
         signal_check = self._make_signal_check()
-        stream_sink = lambda chunk: stream_bus.publish(self.agent_id, chunk, "token")
+        # Streaming non disponible sur DirectBridge (chat_stream non implémenté) :
+        # mode NON-stream (le FSM appelle bridge.chat()). Le stream_bus reste
+        # alimenté à la fin pour compat agent/stream.
+        stream_sink = None
         _hb_stop = _spawn_heartbeat(self.agent_id, self.db)
 
         try:
@@ -1701,22 +1706,80 @@ class AgentManager:
         p_ref = provider_ref or v.get("provider_ref", "")
         m_ref = model_ref or v.get("model_ref", "")
         if not p_ref or not m_ref:
+            # Auto-résolution LLM (façade LLMManager, singleton daemon) : la
+            # session n'a pas de provider/modèle explicite → on en choisit un.
+            try:
+                from services.api._shared import _get_llm
+                alloc = _get_llm().assign_llm(use_case="chat")
+                p_ref = p_ref or alloc.get("provider_ref", "")
+                m_ref = m_ref or alloc.get("model_ref", "")
+                # persiste pour les tours suivants
+                v["provider_ref"] = p_ref
+                v["model_ref"] = m_ref
+                self.db.conn.execute(
+                    "UPDATE agents SET variables_json=? WHERE agent_id=?",
+                    (json.dumps(v), aid))
+                self.db.conn.commit()
+            except Exception:
+                pass
+        if not p_ref or not m_ref:
             return {"status": "error", "error": "provider/model non défini pour la session"}
-        try:
-            agent = Agent.hydrate(aid, self.db)
-            res = agent.chat_turn(
-                message, provider_ref=p_ref, model_ref=m_ref,
-                temperature=temperature, max_tokens=max_tokens or 4096,
-                system_prompt=v.get("system_prompt", ""))
-            agent.dehydrate()
-            if res.get("status") not in ("ok", "success"):
-                return res
-            return {"status": "ok", "agent_id": aid, "name": name,
+        # Modèles FIABLES (testés, avec crédit) essayés en premier, puis
+        # assign_llm (best-fallback) en complément.
+        RELIABLE: List[Dict[str, str]] = [
+            {"provider_ref": "groq", "model_ref": "groq/llama-3.3-70b-versatile"},
+            {"provider_ref": "groq", "model_ref": "groq/llama-3.1-8b-instant"},
+        ]
+        # Tentatives : si un modèle échoue (rate-limit, sans crédit, erreur LLM),
+        # on RÉESSAIE avec un autre modèle (best-fallback côté exécution).
+        tried: List[str] = []
+        last_res: Dict[str, Any] = {"status": "error", "error": "aucune tentative"}
+        for attempt in range(6):
+            if attempt == 0:
+                # 1er essai : modèle fiable groq si la session n'en a pas déjà
+                if not (v.get("provider_ref") and v.get("model_ref")):
+                    p_ref = RELIABLE[0]["provider_ref"]
+                    m_ref = RELIABLE[0]["model_ref"]
+            elif attempt <= len(RELIABLE):
+                # les autres modèles fiables
+                cand = RELIABLE[attempt - 1]
+                p_ref = cand["provider_ref"]
+                m_ref = cand["model_ref"]
+            else:
+                # assign_llm en excluant ceux déjà tentés
+                try:
+                    from services.api._shared import _get_llm
+                    alloc = _get_llm().assign_llm(use_case="chat", exclude_models=tried)
+                    p_ref = alloc.get("provider_ref", "")
+                    m_ref = alloc.get("model_ref", "")
+                except Exception:
+                    break
+            tried.append(f"{p_ref}/{m_ref}")
+            try:
+                agent = Agent.hydrate(aid, self.db)
+                res = agent.chat_turn(
+                    message, provider_ref=p_ref, model_ref=m_ref,
+                    temperature=temperature, max_tokens=max_tokens or 4096,
+                    system_prompt=v.get("system_prompt", ""))
+                agent.dehydrate()
+                last_res = res
+            except Exception as e:
+                last_res = {"status": "error", "error": str(e)}
+            if last_res.get("status") in ("ok", "success"):
+                # persiste le modèle fonctionnel pour les tours suivants
+                v["provider_ref"] = p_ref
+                v["model_ref"] = m_ref
+                self.db.conn.execute(
+                    "UPDATE agents SET variables_json=? WHERE agent_id=?",
+                    (json.dumps(v), aid))
+                self.db.conn.commit()
+                return {"status": "ok", "agent_id": aid, "name": name,
                     "reply": res.get("reply", ""),
                     "model": f"{p_ref}/{m_ref}", "usage": {},
                     "messages": len(res.get("messages", []))}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
+        # Tous les modèles ont échoué → retourne la dernière erreur.
+        last_res["error"] = f"{last_res.get('error','')} (modèles testés: {', '.join(tried)})"
+        return last_res
 
     def chat_read(self, name: str, other: str) -> Dict[str, Any]:
         """Lit l'historique d'une AUTRE session (si celle-ci l'autorise)."""

@@ -63,6 +63,7 @@ def op_llm_recommend(params):
 # ── LLM Bridge ──────────────────────────────────────────────────────────
 
 def op_llm_chat(params):
+    from modules.llm_manager.llm_manager_module import BridgeError
     bridge = _get_bridge()
     provider_ref = params.get("provider_ref")
     model_ref = params.get("model_ref")
@@ -97,7 +98,6 @@ def op_llm_chat(params):
             "usage": resp.usage,
         }
     except BridgeError as be:
-        from modules.llm_manager.llm_manager_module import BridgeError
         return {
             "status": "error",
             "error": be.message,

@@ -69,6 +69,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.debug-services.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['debug'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[debug-services] Services v1.0.0\n  routes: service/list, service/restart, service/stop, service/start',

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import type { PanelDef } from './contract.ts';
+import { usePanelRefresh } from './refreshStore.ts';
 
 const LANG_FR = `
 panels:
@@ -61,6 +62,9 @@ function EtatSystemePanel({ ctx, params }: { ctx: any; params: Record<string, an
 
   useEffect(() => { refresh(); }, []);
 
+  // Refresh manuel (menu Affichage → Refresh).
+  usePanelRefresh(ctx?.occId, refresh);
+
   const stat = (label: string, value: string | number | null) => (
     <div className="mw-panel-etat-stat" style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--mw-border, #334155)' }}>
       <span style={{ fontSize: 12, color: 'var(--mw-fg, #94a3b8)' }}>{label}</span>
@@ -79,9 +83,6 @@ function EtatSystemePanel({ ctx, params }: { ctx: any; params: Record<string, an
       {stat(ctx.t?.('panels.etat-systeme.version') ?? 'Version', state.version)}
       {stat(ctx.t?.('panels.etat-systeme.services') ?? 'Services', state.services)}
       {stat(ctx.t?.('panels.etat-systeme.actifs') ?? 'Agents actifs', state.agents)}
-      <div style={{ fontSize: 10, color: 'var(--mw-fg, #64748b)', marginTop: 6 }}>
-        params: {JSON.stringify(params)}
-      </div>
     </div>
   );
 }
@@ -92,14 +93,12 @@ export const Panel: PanelDef = {
   iconKey: 'panels.etat-systeme.icone',
   version: '1.0.0',
   essential: true,
+  bundles: ['systeme'],
   paramsSchema: {
     compact: { type: 'boolean', default: false },
   },
   defaultParams: { compact: false },
   langFiles: [],
-  menu: [
-    { path: ['Panneaux', 'État système'], id: 'etat:refresh', labelKey: 'panels.etat-systeme.rafraichir', action: 'panel:etat:refresh' },
-  ],
   themeCss: 'panels/etat-systeme/etat-systeme.panel.css',
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,

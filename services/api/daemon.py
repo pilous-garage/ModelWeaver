@@ -448,6 +448,35 @@ def _agent_dynamic_route(method: str, parts: List[str], params: dict):
     return {"code": code, "payload": result}
 
 
+def _log_dynamic_route(method: str, parts: List[str], params: dict):
+    """Route dynamique `log/<name>/<action>` (et `log/list`).
+
+    Action : write | get | tail | list | clear | info. Le canal est
+    ~/.modelweaver/logs/<name>.log (service services.logs).
+    """
+    if not parts or parts[0] != "log":
+        return None
+    from services.logs import service as logs
+    if len(parts) == 1 or (len(parts) == 2 and parts[1] == "list"):
+        # log/list → tous les canaux
+        return {"code": 200, "payload": {"status": "ok", "channels": logs.list_channels()}}
+    name = parts[1]
+    action = parts[2] if len(parts) > 2 else "write"
+    if action == "write":
+        res = logs.write(name, params.get("level", "INFO"),
+                         params.get("message", ""), params.get("events"))
+        return {"code": 200, "payload": res}
+    if action == "get":
+        return {"code": 200, "payload": logs.get(name, params.get("max_lines"))}
+    if action == "tail":
+        return {"code": 200, "payload": logs.tail(name, params.get("lines", 100))}
+    if action == "clear":
+        return {"code": 200, "payload": logs.clear(name)}
+    if action == "info":
+        return {"code": 200, "payload": logs.info(name)}
+    return {"code": 400, "payload": {"error": "unknown_log_action", "action": action}}
+
+
 def _storage_route(agent_id: int, method: str, sub_parts: List[str], params: dict) -> dict:
     """Gère les sous-routes agents/{id}/storage/* (infra, pas agent)."""
     from AgentFrameWork.agent_storage import AgentStorage
@@ -656,6 +685,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
                                      "route": route, "result": dyn["payload"]})
             return
+        # Logs : log/<name>/<action>
+        dyn = _log_dynamic_route("GET", parts, {})
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
+            return
         # Catalogue des capacités (rôles/skills) ?
         if route == "capabilities":
             self._send(200, {"ok": True, "route": route, "result": router_capabilities()})
@@ -725,6 +760,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         # Route dynamique agents/{id}/{op} ?
         parts = [p for p in route.split("/") if p]
         dyn = _agent_dynamic_route("POST", parts, params)
+        if dyn is not None:
+            self._send(dyn["code"], {"ok": dyn["code"] == 200,
+                                     "route": route, "result": dyn["payload"]})
+            return
+        # Logs : log/<name>/<action>
+        dyn = _log_dynamic_route("POST", parts, params)
         if dyn is not None:
             self._send(dyn["code"], {"ok": dyn["code"] == 200,
                                      "route": route, "result": dyn["payload"]})

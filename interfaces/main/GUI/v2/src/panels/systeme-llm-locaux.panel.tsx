@@ -64,6 +64,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.systeme-llm-locaux.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['systeme'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[systeme-llm-locaux] LLM locaux v1.0.0\n  routes: llm/local/list, llm/local/start, llm/local/stop',

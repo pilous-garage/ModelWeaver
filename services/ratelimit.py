@@ -101,18 +101,21 @@ def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
                          "llm/chat/stream", "chat/session/stream",
                          "agent/chat", "agent/stream"):
         rl.check(f"r:{base_key}", limit=30, window=60)
-    elif route_lower.startswith(("windows/", "layout/", "theme/", "session/",
+    elif route_lower.startswith(("windows/", "windows-store/", "win-session/",
+                                 "layout/", "theme/", "session/",
                                  "panels/", "panel/")):
         # Polling GUI multi-fenêtres (windows/list, layout/get, panels/index) :
-        # le traducteur de fenêtre interroge plusieurs fenêtres → large limite.
-        rl.check(f"r:{base_key}", limit=240, window=60)
+        # le traducteur de fenêtre interroge plusieurs fenêtres + les tests E2E
+        # font des rafales → large limite.
+        rl.check(f"r:{base_key}", limit=1200, window=60)
     else:
         rl.check(f"r:{base_key}", limit=30, window=60)
 
     # ── req/day ──
     # Les routes GUI (layout/windows/session/theme/panels) sont interrogées en
     # continu par les fenêtres + les tests E2E → quota journalier généreux.
-    gui_routes = route_lower.startswith(("windows/", "layout/", "theme/",
+    gui_routes = route_lower.startswith(("windows/", "windows-store/", "win-session/",
+                                         "layout/", "theme/",
                                          "session/", "panels/", "panel/"))
     daily = 500_000 if gui_routes else 5000
     rl.check(f"d:{base_key}", limit=daily, window=86400)

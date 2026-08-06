@@ -17,3 +17,5 @@ from services.api.handlers import pause
 from services.api.handlers import panels
 from services.api.handlers import gui
 from services.api.handlers import monitoring
+from services.api.handlers import dev_chat
+from services.api.handlers import windows_store

@@ -3,6 +3,7 @@
 
 import React, { useEffect, useState } from 'react';
 import type { PanelDef } from './contract.ts';
+import { usePanelRefresh } from './refreshStore.ts';
 
 const LANG_FR = `
 panels:
@@ -24,7 +25,7 @@ panels:
     icone: "R"
     cpu: "CPU"
     ram: "Memory"
-    disque: "Disque"
+    disque: "Disk"
     vue: "View"
     rafraichir: "Refresh"
     config: "Configuration"
@@ -60,6 +61,9 @@ function RessourcesPanel({ ctx, params }: { ctx: any; params: Record<string, any
 
   useEffect(() => { refresh(); }, []);
 
+  // Refresh manuel (menu Affichage → Refresh).
+  usePanelRefresh(ctx?.occId, refresh);
+
   const row = (label: string, value: number | null, pct: boolean) => (
     <div className="mw-panel-ressources-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
       <span style={{ width: 90, fontSize: 12, color: 'var(--mw-fg, #94a3b8)' }}>{label}</span>
@@ -72,11 +76,6 @@ function RessourcesPanel({ ctx, params }: { ctx: any; params: Record<string, any
 
   return (
     <div className="mw-panel mw-panel-ressources" style={{ height: '100%', overflow: 'auto', padding: 8, boxSizing: 'border-box' }}>
-      {vue === 'detail' && (
-        <div style={{ fontSize: 12, color: 'var(--mw-fg, #e2e8f0)', marginBottom: 6 }}>
-          Ressources — vue détaillée (params: {JSON.stringify(params)})
-        </div>
-      )}
       {row(ctx.t?.('panels.ressources.cpu') ?? 'CPU', state.cpu, true)}
       {row(ctx.t?.('panels.ressources.ram') ?? 'RAM', state.ram, true)}
       {row(ctx.t?.('panels.ressources.disque') ?? 'Disk', state.disk, true)}
@@ -93,16 +92,12 @@ export const Panel: PanelDef = {
   iconKey: 'panels.ressources.icone',
   version: '1.0.0',
   essential: true,
+  bundles: ['systeme', 'ressources'],
   paramsSchema: {
     vue: { type: 'enum', enum: ['compact', 'detail'], default: 'detail' },
   },
   defaultParams: { vue: 'detail' },
   langFiles: [],
-  menu: [
-    { path: ['Panneaux', 'Ressources'], id: 'ressources:refresh', labelKey: 'panels.ressources.rafraichir', action: 'panel:ressources:refresh' },
-    { path: ['Panneaux', 'Ressources'], type: 'separator' },
-    { path: ['Panneaux', 'Ressources'], id: 'ressources:config', labelKey: 'panels.ressources.config', action: 'panel:ressources:config' },
-  ],
   themeCss: 'panels/ressources/ressources.panel.css',
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,

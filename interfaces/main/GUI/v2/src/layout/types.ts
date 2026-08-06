@@ -8,6 +8,16 @@
 
 // ── Occurrence de panel ──────────────────────────────────────────────
 
+/**
+ * Zoom d'un niveau (global, mini-layout ou panel). Stocké en float (×) :
+ * 1 = 100%, 1.5 = 150%, 0.66 = 66%. `locked` fige l'effectif affiché (les
+ * changements d'ancêtres compensent alors ce niveau pour garder la valeur).
+ */
+export interface ZoomState {
+  value: number;
+  locked?: boolean;
+}
+
 /** Occurrence d'un panel dans un onglet. */
 export interface PanelOcc {
   /** id du panel (registry). */
@@ -18,6 +28,17 @@ export interface PanelOcc {
   params?: Record<string, any>;
   /** thème panel surchargé pour CETTE occurrence (facultatif). */
   theme?: { panel?: string };
+  /** titre PERSONNALISÉ de l'onglet (éditable par double-clic), sinon le label du panel. */
+  label?: string;
+  /** zoom propre de CET onglet (panel OU mini-layout). Défaut : 1× non locké. */
+  zoom?: ZoomState;
+  /**
+   * MINI-LAYOUT : si défini, cet onglet rend ce sous-arbre (splits + groupes)
+   * au lieu d'un composant. Un mini-layout est donc un PANEAU comme les autres
+   * avec un layout interne ; on en a plusieurs par groupe (onglets), et le
+   * drag/drop/reorder/cross-group/split fonctionnent nativement.
+   */
+  tree?: TreeNode;
 }
 
 // ── Nœuds de l'arbre ─────────────────────────────────────────────────
@@ -32,21 +53,6 @@ export interface GroupNode {
   hideTabs?: boolean;
 }
 
-/**
- * Mini-layout : un LAYOUT IMBRIQUÉ dans un nœud, avec son propre onglet.
- * C'est le concept "fake-window" : une fenêtre interne avec son propre
- * sous-arbre (splits + groupes), un titre, un onglet pour la switcher, et ses
- * propres menus. Permet de basculer rapidement d'un mini-layout à l'autre.
- * (Ancien nom : "slip view" — renommé en mini-layout.)
- */
-export interface MiniLayoutNode {
-  type: 'miniLayout';
-  id: string;
-  title?: string;
-  tree: TreeNode; // sous-arbre (non vide)
-  menuExtra?: MenuItem[];
-}
-
 /** Nœud split (direction + sizes + children). */
 export interface SplitNode {
   type: 'split';
@@ -57,7 +63,7 @@ export interface SplitNode {
   children: TreeNode[];
 }
 
-export type TreeNode = SplitNode | GroupNode | MiniLayoutNode;
+export type TreeNode = SplitNode | GroupNode;
 
 // ── Layout ───────────────────────────────────────────────────────────
 
@@ -66,7 +72,9 @@ export interface Layout {
   label?: string;
   theme?: { global?: string; panel?: string };
   menuExtra?: MenuItem[];
-  tree: SplitNode | GroupNode | MiniLayoutNode;
+  tree: TreeNode;
+  /** zoom GLOBAL de la fenêtre (barre droite du menu). Défaut : 1× non locké. */
+  zoom?: ZoomState;
 }
 
 // ── Menu ─────────────────────────────────────────────────────────────
@@ -76,6 +84,10 @@ export interface MenuItem {
   labelKey?: string;
   type?: 'normal' | 'separator' | 'toggle' | 'radio';
   checked?: boolean;
+  /** suffixe affiché à droite du label (ex. '+' pour ajouter, '→' pour activer). */
+  suffix?: string;
+  /** style spécial (ex. 'section-header' : entête de section de panel, non cliquable). */
+  style?: 'section-header';
   action?: string;
   shortcut?: string;
   disabled?: boolean;

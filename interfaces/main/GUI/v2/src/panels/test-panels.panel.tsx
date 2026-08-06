@@ -26,7 +26,6 @@ function RessourcesVariant({ ctx, params }: { ctx: any; params: Record<string, a
     <div className="mw-panel mw-panel-ressources-variant" style={{ height: '100%', overflow: 'auto', padding: 8, boxSizing: 'border-box' }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Ressources (variant)</div>
       <div style={{ fontSize: 12 }}>CPU : {cpu ?? '…'}%</div>
-      <div style={{ fontSize: 12 }}>params : {JSON.stringify(params)}</div>
     </div>
   );
 }
@@ -37,6 +36,7 @@ export const RessourcesVariantPanel: PanelDef = {
   iconKey: 'panels.ressources-variant.icone',
   version: '1.0.0',
   essential: true,
+  bundles: ['systeme', 'ressources'],
   paramsSchema: { mode: { type: 'enum', enum: ['a', 'b'], default: 'a' } },
   defaultParams: { mode: 'a' },
   declaration: () => '[ressources-variant] Ressources (variant de test) v1.0.0',
@@ -58,7 +58,6 @@ function EtatSimple({ ctx, params }: { ctx: any; params: Record<string, any> }) 
     <div className="mw-panel mw-panel-etat-simple" style={{ height: '100%', overflow: 'auto', padding: 8, boxSizing: 'border-box' }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>État (simple)</div>
       <div style={{ fontSize: 12 }}>Statut : OK</div>
-      <div style={{ fontSize: 12 }}>params : {JSON.stringify(params)}</div>
     </div>
   );
 }
@@ -69,6 +68,7 @@ export const EtatSimplePanel: PanelDef = {
   iconKey: 'panels.etat-simple.icone',
   version: '1.0.0',
   essential: true,
+  bundles: ['systeme'],
   paramsSchema: {},
   defaultParams: {},
   declaration: () => '[etat-simple] État simple (variant de test) v1.0.0',

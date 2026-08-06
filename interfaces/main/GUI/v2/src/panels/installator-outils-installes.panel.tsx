@@ -62,6 +62,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.installator-outils-installes.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['install'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[installator-outils-installes] Outils installés v1.0.0\n  routes: tools/installed/list, jobs/add',

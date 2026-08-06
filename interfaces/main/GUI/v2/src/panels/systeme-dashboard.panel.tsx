@@ -134,6 +134,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.systeme-dashboard.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['systeme', 'monitoring'],
   paramsSchema: {
     tab: { type: 'enum', enum: ['systeme', 'ressources', 'services', 'agents'], default: 'systeme' },
   },

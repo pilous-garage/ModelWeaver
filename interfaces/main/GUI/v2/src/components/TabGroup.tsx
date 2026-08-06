@@ -17,17 +17,26 @@ import { getPanel } from '../panels/registry.ts';
 import type { ResolvedGroup } from '../layout/resolve.ts';
 import { startDrag } from '../dnd.ts';
 import { registerGroup, computeDrop, setDrop, clearDrop, useDropState } from '../dragStore.ts';
+import { effectiveZoom, occZoom } from '../layout/ops.ts';
+import { zoomToPct, nextZoom, prevZoom } from '../zoom.ts';
+import { ZoomBar } from './ZoomBar.tsx';
 
 interface Props {
   group: ResolvedGroup;
   windowId: string;
   t: (k: string) => string;
+  /** produit des zooms des ancêtres (global × mini-layouts) pour ce groupe. */
+  zoomFactor: number;
   onActivate(occId: string): void;
   onClose(occId: string): void;
   onMove(fromGroup: string, toGroup: string, occId: string, index?: number): void;
   onSplit(groupId: string, dir: 'horizontal' | 'vertical', occId: string, fromGroup?: string): void;
   onExtract(groupId: string, occId: string): void;
-  renderPanel(occ: PanelOcc): React.ReactNode;
+  onRename?(groupId: string, occId: string, label: string | null): void;
+  onZoom?(groupId: string, occId: string, localValue: number): void;
+  onZoomLock?(groupId: string, occId: string, ancestorFactor: number): void;
+  highlight?: string | null;
+  renderPanel(occ: PanelOcc, ancestorFactor?: number): React.ReactNode;
 }
 
 // Seuil de mouvement (px) : au-delà, c'est un drag ; en-deçà, un clic.
@@ -35,21 +44,56 @@ const DRAG_THRESHOLD = 5;
 // Délai (ms) : si le pointeur ne bouge pas dans ce délai, ce n'est pas un drag.
 const CLICK_TIMER_MS = 180;
 
-export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSplit, onExtract, renderPanel }: Props) {
+export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, onMove, onSplit, onExtract, onRename, onZoom, onZoomLock, highlight, renderPanel }: Props) {
   const barRef = useRef<HTMLDivElement>(null);
   const groupRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
   const draggingOcc = useRef<string>('');
   const [dragging, setDragging] = useState(false);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
+  // Onglet en cours d'édition du titre (double-clic) + valeur saisie.
+  const [editing, setEditing] = useState<{ occId: string; value: string } | null>(null);
   const drop = useDropState();
   // est-ce que CE groupe est la cible du drag en cours ?
   const isTarget = drop.targetGroupId === group.id;
 
   const labelOf = (occ: PanelOcc) => {
+    if (occ.label) return occ.label;
+    if (occ.tree) return t('menu.miniLayout') !== 'menu.miniLayout' ? t('menu.miniLayout') : 'Mini-layout';
     const def = getPanel(occ.panel);
     return def ? (t(def.labelKey) !== def.labelKey ? t(def.labelKey) : def.id) : occ.panel;
   };
+
+  // ── Édition du titre (double-clic) ──────────────────────────────────
+  const commitRename = useCallback((occId: string, value: string) => {
+    setEditing(null);
+    if (!onRename) return;
+    const trimmed = value.trim();
+    onRename(group.id, occId, trimmed || null);
+  }, [group.id, onRename]);
+
+  const editInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editing]);
+
+  // Commit au clic n'importe où pendant l'édition : le mousedown des onglets
+  // fait preventDefault (anti-sélection drag) ce qui EMPÊCHE le blur de
+  // l'input → le titre ne serait validé qu'au blur naturel (rare). On force
+  // donc le commit en écoute document (capture) dès qu'un clic sort de l'input.
+  useEffect(() => {
+    if (!editing) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (editInputRef.current && editInputRef.current.contains(t)) return;
+      commitRename(editing.occId, editing.value);
+    };
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    return () => document.removeEventListener('mousedown', onDocMouseDown, true);
+  }, [editing, commitRename]);
 
   /** Index d'insertion dans la barre selon le curseur (parmi les onglets). */
   const computeIndex = useCallback((x: number, excludeOccId: string): number => {
@@ -82,6 +126,10 @@ export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSp
 
   const handleMouseDown = (e: React.MouseEvent, occ: PanelOcc) => {
     if (e.button !== 0) return;
+    // Empêche la sélection de texte dès le mousedown (avant le seuil de drag) :
+    // sinon le navigateur sélectionne entre le point de départ et d'arrivée.
+    e.preventDefault();
+    document.body.style.userSelect = 'none';
     const start = { x: e.clientX, y: e.clientY };
     const tabEl = e.currentTarget as HTMLElement;
     const tabRect = tabEl.getBoundingClientRect();
@@ -94,6 +142,7 @@ export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSp
       window.removeEventListener('mousemove', onDragMove);
       window.removeEventListener('mouseup', onUp);
       if (timer !== undefined) window.clearTimeout(timer);
+      restoreBody(); // restaure userSelect même pour un simple clic
     };
 
     const onDragMove = (ev: MouseEvent) => {
@@ -220,14 +269,18 @@ export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSp
         {group.tabs.map((occ) => {
           const active = group.active?.occId === occ.occId;
           const dimmed = dragging && draggingOcc.current === occ.occId;
+          const hl = highlight === occ.occId;
           return (
             <div
               key={occ.occId}
-              className={`mw-tab ${active ? 'mw-tab-active' : ''} ${dimmed ? 'mw-tab-dragging' : ''}`}
+              className={`mw-tab ${active ? 'mw-tab-active' : ''} ${dimmed ? 'mw-tab-dragging' : ''} ${hl ? 'mw-tab-highlight' : ''}`}
               data-testid={`tab-${occ.panel}`}
               data-occ={occ.occId}
               onMouseDown={(e) => handleMouseDown(e, occ)}
               onClick={() => onActivate(occ.occId)}
+              onDoubleClick={() => {
+                if (onRename) setEditing({ occId: occ.occId, value: labelOf(occ) });
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px',
                 fontSize: 12, cursor: 'grab', userSelect: 'none', whiteSpace: 'nowrap',
@@ -236,9 +289,32 @@ export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSp
                 borderRadius: '6px 6px 0 0', border: '1px solid transparent',
                 boxSizing: 'border-box', minWidth: 60,
                 opacity: dimmed ? 0.35 : 1,
+                boxShadow: hl ? 'inset 0 -3px 0 var(--mw-accent, #3b82f6)' : undefined,
               }}
             >
-              <span>{labelOf(occ)}</span>
+              {editing?.occId === occ.occId ? (
+                <input
+                  ref={editInputRef}
+                  data-testid="tab-rename-input"
+                  value={editing.value}
+                  onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(occ.occId, editing.value);
+                    else if (e.key === 'Escape') setEditing(null);
+                  }}
+                  onBlur={() => commitRename(occ.occId, editing.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  style={{
+                    width: 100, fontSize: 12, padding: '1px 4px',
+                    background: 'var(--mw-bg, #0f172a)', color: 'var(--mw-fg, #e2e8f0)',
+                    border: '1px solid var(--mw-accent, #3b82f6)', borderRadius: 4,
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <span>{labelOf(occ)}</span>
+              )}
               <span
                 data-testid={`tab-close-${occ.panel}`}
                 onClick={(e) => { e.stopPropagation(); onClose(occ.occId); }}
@@ -254,9 +330,57 @@ export function TabGroup({ group, windowId, t, onActivate, onClose, onMove, onSp
             style={{ position: 'absolute', top: 2, bottom: 2, width: 2, background: 'var(--mw-accent, #3b82f6)', left: markerLeft, zIndex: 15, borderRadius: 1 }}
           />
         )}
+        {group.active && (onZoom || onZoomLock) && (
+          <div style={{ marginLeft: 'auto', padding: '0 2px', display: 'flex', alignItems: 'center' }}>
+            <ZoomBar
+              // valeur LOCALE du zoom (le calcul effectif = ancêtres × locale)
+              value={occZoom(group.active)}
+              locked={group.active.zoom?.locked}
+              onChange={(v) => onZoom?.(group.id, group.active!.occId, v)}
+              onToggleLock={onZoomLock ? () => onZoomLock!(group.id, group.active!.occId, zoomFactor) : undefined}
+              testidPrefix="group-"
+            />
+          </div>
+        )}
       </div>
-      <div className="mw-panel-body" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {group.active ? renderPanel(group.active) : null}
+      <div
+        className="mw-panel-body"
+        data-testid="mw-panel-body"
+        style={{
+          flex: 1, minHeight: 0, overflow: 'auto',
+          ...(highlight && highlight === group.active?.occId
+            ? { outline: '2px solid var(--mw-accent, #3b82f6)', outlineOffset: -2, borderRadius: 4 }
+            : {}),
+        }}
+        onWheel={(e) => {
+          // Ctrl+roulette → zoom du panel de l'onglet actif (le plus imbriqué).
+          if (!e.ctrlKey || !onZoom || !group.active) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const local = occZoom(group.active);
+          onZoom(group.id, group.active.occId, e.deltaY < 0 ? nextZoom(local) : prevZoom(local));
+        }}
+      >
+        {group.tabs.length === 0 ? (
+          <div data-testid="group-empty" style={{ padding: 16, color: '#64748b', fontSize: 12, textAlign: 'center' }}>
+            Mini-layout vide — déposez un panneau ici.
+          </div>
+        ) : group.active ? (
+          <div
+            data-testid="zoom-body"
+            style={{
+              height: '100%', minHeight: 0, transformOrigin: 'top left',
+              // zoom CSS (recalcule layout + scroll natif) — l'affichage du
+              // CONTENU du panel uniquement (les barres d'onglets restent 100%).
+              // Un mini-layout (onglet avec tree) n'est PAS scalé ici : son zoom
+              // est propagé aux panels internes (innerFactor) pour ne pas agrandir
+              // ses propres barres d'onglets.
+              zoom: group.active.tree ? 1 : effectiveZoom(zoomFactor, group.active),
+            }}
+          >
+            {renderPanel(group.active, zoomFactor)}
+          </div>
+        ) : null}
       </div>
 
       {/* Ghost flottant : clone de l'onglet dragué, suit le curseur */}

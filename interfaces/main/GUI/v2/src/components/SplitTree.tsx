@@ -9,15 +9,23 @@ import type { PanelOcc } from '../layout/types.ts';
 export interface RenderCtx {
   windowId: string;
   t: (k: string) => string;
+  /** occId de l'onglet à SURENCOUCHER (déclenché depuis le menu, jusqu'au prochain clic). */
+  highlight?: string | null;
   onActivate(groupId: string, occId: string): void;
   onClose(groupId: string, occId: string): void;
   onMove(fromGroup: string, toGroup: string, occId: string, index?: number): void;
   onSplit(groupId: string, dir: 'horizontal' | 'vertical', occId: string, fromGroup?: string): void;
   onExtract(groupId: string, occId: string): void;
-  onCloseMiniLayout?(miniLayoutId: string): void;
-  onResize?(splitId: string, index: number, deltaPx: number, totalPx: number): void;
-  renderPanel(occ: PanelOcc): React.ReactNode;
-  renderMiniLayout?(slip: any, close?: () => void): React.ReactNode;
+  /** renomme un onglet (titre personnalisé) ; label null = retirer le titre. */
+  onRename?(groupId: string, occId: string, label: string | null): void;
+  /** zoom d'un onglet : fixe sa valeur LOCALE (l'effectif est calculé au rendu). */
+  onZoom?(groupId: string, occId: string, localValue: number): void;
+  /** verrouille/déverrouille le zoom d'un onglet (ancestorFactor = produit des ancêtres). */
+  onZoomLock?(groupId: string, occId: string, ancestorFactor: number): void;
+  /** resize : sepPosPx = position du séparateur RELATIVE au container (px). */
+  onResize?(splitId: string, index: number, sepPosPx: number, totalPx: number): void;
+  /** rend l'onglet ; ancestorFactor = produit des zooms des ancêtres (pour mini-layouts). */
+  renderPanel(occ: PanelOcc, ancestorFactor?: number): React.ReactNode;
 }
 
 // ── Separator (drag souris custom — pas de DragEvent natif) ───────────
@@ -36,24 +44,24 @@ function Separator({ splitId, index, direction, totalRef, onResize }: {
     e.preventDefault();
     e.stopPropagation();
     dragging.current = true;
-    // Dernière position du pointeur : le delta est INCÉRÉMENTAL (depuis le
-    // dernier mousemove), pas total depuis le mousedown. Sinon, chaque mousemove
-    // ré-applique le déplacement complet au layout déjà redimensionné → le
-    // séparateur "dérape" (double-compte).
-    let lastX = e.clientX;
-    let lastY = e.clientY;
+    // Point d'ORIGINE : la position du séparateur (relative au container) au
+    // moment du clic = position souris relative (on clique dessus).
+    // Puis à chaque mousemove on TRANSLATE depuis l'origine par le déplacement
+    // total de la souris : sepPos = origin + (sourisActuelle - sourisDépart).
+    // → le séparateur est TOUJOURS sous la souris, sans dérive par accumulation.
+    const container = totalRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const origin = direction === 'horizontal' ? e.clientX - rect.left : e.clientY - rect.top;
+    const startPointer = direction === 'horizontal' ? e.clientX : e.clientY;
+    const total = direction === 'horizontal' ? rect.width : rect.height;
+    if (total <= 0) return;
 
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
-      const dx = ev.clientX - lastX;
-      const dy = ev.clientY - lastY;
-      lastX = ev.clientX;
-      lastY = ev.clientY;
-      const delta = direction === 'horizontal' ? dx : dy;
-      const total = direction === 'horizontal'
-        ? (totalRef.current?.clientWidth ?? 600)
-        : (totalRef.current?.clientHeight ?? 400);
-      if (total > 0) onResize(splitId, index, delta, total);
+      const pointer = direction === 'horizontal' ? ev.clientX : ev.clientY;
+      const sepPos = origin + (pointer - startPointer); // relative au container
+      onResize(splitId, index, sepPos, total);
     };
     const onUp = () => {
       dragging.current = false;
@@ -86,7 +94,7 @@ function Separator({ splitId, index, direction, totalRef, onResize }: {
 
 // ── SplitTree ─────────────────────────────────────────────────────────
 
-export function SplitTree({ node, ctx }: { node: ResolvedNode; ctx: RenderCtx }) {
+export function SplitTree({ node, ctx, zoomFactor = 1 }: { node: ResolvedNode; ctx: RenderCtx; zoomFactor?: number }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   if (node.kind === 'group') {
@@ -94,20 +102,20 @@ export function SplitTree({ node, ctx }: { node: ResolvedNode; ctx: RenderCtx })
       <TabGroup
         group={node}
         windowId={ctx.windowId}
+        zoomFactor={zoomFactor}
         t={ctx.t}
         onActivate={(o) => ctx.onActivate(node.id, o)}
         onClose={(o) => ctx.onClose(node.id, o)}
         onMove={ctx.onMove}
         onSplit={ctx.onSplit}
         onExtract={ctx.onExtract}
+        onRename={ctx.onRename}
+        onZoom={ctx.onZoom}
+        onZoomLock={ctx.onZoomLock}
+        highlight={ctx.highlight}
         renderPanel={ctx.renderPanel}
       />
     );
-  }
-  if (node.kind === "miniLayout") {
-    if (!ctx.renderMiniLayout) return null;
-    const close = ctx.onCloseMiniLayout ? () => ctx.onCloseMiniLayout!(node.id) : undefined;
-    return ctx.renderMiniLayout(node, close);
   }
   // split
   const hasResize = typeof ctx.onResize === 'function';
@@ -135,7 +143,7 @@ export function SplitTree({ node, ctx }: { node: ResolvedNode; ctx: RenderCtx })
             />
           )}
           <div style={{ flex: node.sizes[i] ?? 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
-            <SplitTree node={child} ctx={ctx} />
+            <SplitTree node={child} ctx={ctx} zoomFactor={zoomFactor} />
           </div>
         </React.Fragment>
       ))}

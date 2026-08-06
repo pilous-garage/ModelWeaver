@@ -11,8 +11,6 @@ export interface PanelContext {
   addTab(groupId: string, panelId: string, params?: Record<string, any>): void;
   closeTab(groupId: string, occId: string): void;
   activateTab(groupId: string, occId: string): void;
-  activateMiniLayout(occId: string): void;
-  closeMiniLayout(occId: string): void;
   extractTabToWindow(groupId: string, occId: string): void;
   setPanelTheme(occId: string, theme: string): void;
   t(key: string): string;
@@ -31,6 +29,8 @@ export interface PanelDef {
   iconKey?: string;                  // clé i18n de l'icône (onglet)
   version: string;
   essential?: boolean;               // true = bundle GUI
+  /** bundles (catégories) auxquels ce panel appartient (ex. ["monitoring", "install"]). */
+  bundles?: string[];
   paramsSchema?: Record<string, ParamsSchemaField>;
   defaultParams?: Record<string, any>;
   langFiles?: string[];              // fichiers .lang.<locale>.yaml

@@ -73,6 +73,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.installator-file-queue.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['install'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => "[installator-file-queue] File d'installation v1.0.0\n  routes: jobs/list, jobs/cancel, jobs/clear",

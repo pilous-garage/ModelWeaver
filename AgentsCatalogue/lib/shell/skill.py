@@ -22,7 +22,10 @@ def exec(inputs: dict, home: str) -> dict:
         agent_shell_manager.init()
         ag_sh = agent_shell_manager.get(agent_id)
         if ag_sh is None:
-            return {"stdout": "", "stderr": f"shell non trouvé pour {agent_id}", "exit_code": 1, "status": "error"}
+            # Crée le shell à la demande (home de l'agent) — sinon l'outil
+            # shell échoue pour les agents sans shell pré-initialisé.
+            ag_sh = agent_shell_manager.get_or_create(
+                agent_id=agent_id, home_root=Path(home))
         result = ag_sh.run(cmd)
         return {
             "stdout": result.get("stdout", ""),

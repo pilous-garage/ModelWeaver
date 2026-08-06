@@ -69,6 +69,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.gestion-panneaux.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['debug', 'outils'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[gestion-panneaux] Gestion panneaux v1.0.0\n  routes: panels/index, windows/list, windows/templates, windows/create, windows/close',

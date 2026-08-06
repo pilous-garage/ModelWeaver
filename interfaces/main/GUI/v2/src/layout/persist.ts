@@ -43,6 +43,9 @@ export function normalizeLayout(layout: Layout): Layout {
     layout.tree = { type: 'group', id: 'pg-root', tabs: [], active: '' };
   }
   layout.tree = normalizeNode(layout.tree);
+  if (layout.zoom) {
+    layout.zoom = { value: layout.zoom.value ?? 1, ...(layout.zoom.locked ? { locked: true } : {}) };
+  }
   return layout;
 }
 
@@ -54,8 +57,6 @@ function normalizeNode(node: any): any {
   let type = node.type;
   if (!type) {
     if (node.direction && Array.isArray(node.children)) type = 'split';
-    else if (Array.isArray(node.tabs)) type = 'group';
-    else if (node.tree) type = 'miniLayout';
     else type = 'group';
   }
   if (type === 'split') {
@@ -68,9 +69,20 @@ function normalizeNode(node: any): any {
       sizes: node.sizes,
     };
   }
-  // mini-layout (ancien nom "slip" accepté en entrée pour rétro-compat)
+  // Ancien format « nœud miniLayout / slip » (layouts persistés AVANT le nouveau
+  // modèle) : MIGRATION vers un GROUPE avec un onglet `__mini__` (PanelOcc.tree).
   if (type === 'miniLayout' || type === 'slip') {
-    return { type: 'miniLayout', id: node.id || `mini-${Math.random().toString(36).slice(2, 7)}`, title: node.title, tree: normalizeNode(node.tree), menuExtra: node.menuExtra };
+    const inner = normalizeNode(node.tree);
+    const innerTree = inner?.type === 'group'
+      ? { ...inner, tabs: inner.tabs || [], active: inner.active || inner.tabs?.[0]?.occId || '' }
+      : inner || { type: 'group', id: `pg-${Math.random().toString(36).slice(2, 7)}`, tabs: [], active: '' };
+    const occId = `mini-${Math.random().toString(36).slice(2, 7)}`;
+    return {
+      type: 'group',
+      id: node.id || `pg-${Math.random().toString(36).slice(2, 7)}`,
+      tabs: [{ panel: '__mini__', occId, ...(node.title ? { params: { title: node.title } } : {}), tree: innerTree }],
+      active: occId,
+    };
   }
   // group
   const tabs = (node.tabs || []).map((t: any) => ({
@@ -78,6 +90,10 @@ function normalizeNode(node: any): any {
     occId: t.occId ?? t.id ?? `occ-${Math.random().toString(36).slice(2, 7)}`,
     ...(t.params ? { params: t.params } : {}),
     ...(t.theme ? { theme: t.theme } : {}),
+    ...(t.label ? { label: t.label } : {}),
+    ...(t.zoom ? { zoom: { value: t.zoom.value ?? 1, ...(t.zoom.locked ? { locked: true } : {}) } } : {}),
+    // mini-layout : l'onglet porte un sous-arbre (normalisé lui aussi)
+    ...(t.tree ? { tree: normalizeNode(t.tree) } : {}),
   }));
   const active = (node.active && tabs.some((t: any) => t.occId === node.active))
     ? node.active

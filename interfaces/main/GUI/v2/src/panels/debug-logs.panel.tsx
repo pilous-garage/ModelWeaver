@@ -86,6 +86,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.debug-logs.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['debug'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[debug-logs] Debug v1.0.0\n  routes: system/processes, service/list, logs/read',

@@ -297,7 +297,7 @@ def allocate_llm(params: dict) -> dict:
             "budget": {...}
         }
     """
-    strategy_name = params.get("strategy", "random")
+    strategy_name = params.get("strategy", "best-fallback")
     request = AllocationRequest(
         strategy=strategy_name,
         task_type=params.get("task_type", "chat"),

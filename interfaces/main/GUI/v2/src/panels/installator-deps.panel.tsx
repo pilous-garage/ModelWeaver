@@ -71,6 +71,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.installator-deps.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['install'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[installator-deps] Dépendances v1.0.0\n  routes: deps/check_manifest, deps/install_target',

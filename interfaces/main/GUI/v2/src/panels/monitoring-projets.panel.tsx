@@ -59,6 +59,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.monitoring-projets.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['monitoring'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[monitoring-projets] Projets v1.0.0\n  routes: team/list',

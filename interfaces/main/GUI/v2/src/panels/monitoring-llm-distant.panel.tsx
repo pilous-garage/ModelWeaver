@@ -94,6 +94,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.monitoring-llm-distant.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['monitoring'],
   paramsSchema: {
     window: { type: 'enum', enum: ['1h', '24h', '7j'], default: '24h' },
   },

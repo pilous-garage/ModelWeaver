@@ -86,6 +86,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.docker-ressources.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['monitoring', 'docker'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[docker-ressources] Ressources Docker v1.0.0\n  routes: docker/caches/list, docker/status, docker/cache/create, docker/fork, docker/snapshot, docker/release',

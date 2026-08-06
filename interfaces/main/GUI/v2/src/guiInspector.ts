@@ -94,8 +94,8 @@ function findTarget(params: any): Element | null {
   return null;
 }
 
-function dispatchMouse(el: Element, type: string, x: number, y: number): boolean {
-  const opts: any = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail: 1, view: window };
+function dispatchMouse(el: Element, type: string, x: number, y: number, detail = 1): boolean {
+  const opts: any = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail, view: window };
   const ev = new MouseEvent(type, opts);
   return el.dispatchEvent(ev);
 }
@@ -111,6 +111,22 @@ function doClick(params: any): { ok: boolean; info: string; clicked?: boolean } 
   dispatchMouse(el, 'mouseup', cx, cy);
   const clicked = dispatchMouse(el, 'click', cx, cy);
   return { ok: true, info: `click @(${cx},${cy}) sur <${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}>`, clicked: !!clicked };
+}
+
+/** Double-clic (déclenche les onDoubleClick, ex. renommer un onglet). */
+function doDblClick(params: any): { ok: boolean; info: string; clicked?: boolean } {
+  const el = findTarget(params);
+  if (!el) return { ok: false, info: 'cible introuvable (dblclick)' };
+  const r = el.getBoundingClientRect();
+  const cx = params.x !== undefined ? params.x : Math.round(r.x + r.width / 2);
+  const cy = params.y !== undefined ? params.y : Math.round(r.y + r.height / 2);
+  for (let i = 1; i <= 2; i++) {
+    dispatchMouse(el, 'mousedown', cx, cy, i);
+    dispatchMouse(el, 'mouseup', cx, cy, i);
+    dispatchMouse(el, 'click', cx, cy, i);
+  }
+  const clicked = dispatchMouse(el, 'dblclick', cx, cy, 2);
+  return { ok: true, info: `dblclick @(${cx},${cy}) sur <${el.tagName.toLowerCase()}>`, clicked: !!clicked };
 }
 
 /** mousedown seul (laisse un drag "en cours" pour inspection des marqueurs). */
@@ -202,6 +218,7 @@ function doType(params: any): { ok: boolean; info: string } {
 export function runAct(action: string, params: any): { ok: boolean; info: string } {
   switch (action) {
     case 'click': return doClick(params);
+    case 'dblclick': return doDblClick(params);
     case 'mousedown': return doMouseDown(params);
     case 'drag': return doDrag(params);
     case 'drag-mouse': return doDragMouse(params);

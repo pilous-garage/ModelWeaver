@@ -57,6 +57,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.installator-dashboard.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['install'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[installator-dashboard] Dashboard v1.0.0\n  routes: system/hardware, system/resources',

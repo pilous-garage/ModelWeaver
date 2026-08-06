@@ -1,11 +1,17 @@
 // windows.ts — gestion multi-fenêtres + sync inter-fenêtres.
 //
-// Chaque fenêtre = un profil persisté via le daemon (windows/create|update|
-// close) + une vraie fenêtre Tauri. Ce module expose :
+// Chaque fenêtre = un profil persisté via le daemon + une vraie fenêtre Tauri.
+// Depuis la refonte « sessions », le daemon expose un store structuré
+// (windows-store/* + win-session/*) avec 3 listes de fenêtres :
+//   - officielles (templates intégrés au produit)
+//   - enregistrées (profils « modèle », hors session, register/)
+//   - vivantes (fenêtres réellement ouvertes de la session active)
+// Ce module expose :
 //  - un store React (subscribe/getSnapshot) alimenté par polling :
-//      * windows/list (profils daemon) + list_windows (fenêtres Tauri)
+//      * windows/list + list_windows (profils daemon + fenêtres Tauri)
+//      * windows-store/state + windows-store/windows-list (sessions + 3 listes)
 //      * layout/get des AUTRES fenêtres → panels ouverts chez elles
-//  - des actions (open/focus/close/fullscreen/enregistrer) combinant
+//  - des actions (open/focus/close/fullscreen/enregistrer/sessions) combinant
 //    Tauri (invoke) et daemon (HTTP).
 // Le polling est partagé par toutes les fenêtres (module singleton).
 
@@ -14,6 +20,7 @@ import { parse as parseYaml } from 'yaml';
 import {
   daemonPost,
   invoke,
+  createWindow,
   listWindows as tauriList,
   currentWindowState,
 } from './bridge.ts';
@@ -52,6 +59,40 @@ export interface RemotePresence {
   present: { panel: string; params?: Record<string, any> }[];
 }
 
+/** Source d'une fenêtre dans le store windows-store. */
+export type WindowSource = 'official' | 'registered' | 'live';
+
+/** Fenêtre ENREGISTRÉE (profil « modèle » conservé hors session). */
+export interface RegisteredWindow {
+  window_id: string;
+  title: string;
+  layout?: string;
+  theme?: string;
+  x?: number | null;
+  y?: number | null;
+  width?: number;
+  height?: number;
+  state?: string;
+}
+
+/** Fenêtre OFFICIELLE (template intégré au produit). */
+export interface OfficialWindow {
+  id: string;
+  title: string;
+  layout: string;
+  theme: string;
+  width?: number | null;
+  height?: number | null;
+}
+
+/** Session de fenêtres (métadonnées côté daemon). */
+export interface SessionInfo {
+  id: string;
+  name: string;
+  theme?: string | null;
+  open_windows: string[];
+}
+
 interface WindowsState {
   ready: boolean;
   profiles: WindowProfile[];
@@ -59,10 +100,27 @@ interface WindowsState {
   liveLabels: string[];   // fenêtres Tauri réellement ouvertes
   currentId: string;
   remote: RemotePresence[];
+  sessions: SessionInfo[];
+  activeSession: SessionInfo | null;
+  official: OfficialWindow[];
+  registered: WindowProfile[];
+  highlightWindow?: string | null;
   error?: string;
 }
 
-const initialState: WindowsState = { ready: false, profiles: [], templates: [], liveLabels: [], currentId: '', remote: [] };
+const initialState: WindowsState = {
+  ready: false,
+  profiles: [],
+  templates: [],
+  liveLabels: [],
+  currentId: '',
+  remote: [],
+  sessions: [],
+  activeSession: null,
+  official: [],
+  registered: [],
+  highlightWindow: null,
+};
 
 let _state: WindowsState = initialState;
 const _listeners = new Set<() => void>();
@@ -113,11 +171,11 @@ function collectPresent(node: any, out: { panel: string; params?: Record<string,
   if (node.type === 'group' && Array.isArray(node.tabs)) {
     for (const t of node.tabs) {
       out.push({ panel: t.panel ?? '', params: t.params ?? undefined });
+      // mini-layout : parcourir le sous-arbre de l'onglet
+      if (t.tree) collectPresent(t.tree, out);
     }
   } else if (node.type === 'split' && Array.isArray(node.children)) {
     for (const c of node.children) collectPresent(c, out);
-  } else if (node.type === "miniLayout") {
-    collectPresent(node.tree, out);
   }
 }
 
@@ -140,6 +198,7 @@ const POLL_MS = 5000;
 /**
  * Démarre le polling partagé (appelé par chaque fenêtre, idempotent).
  * - windows/list + list_windows → profils + live
+ * - windows-store/state + windows-store/windows-list → sessions + 3 listes
  * - layout/get des autres fenêtres → remote (panels ouverts chez elles)
  * - supprime les profils orphelins (fenêtre fermée par l'OS sans appel)
  */
@@ -187,13 +246,31 @@ export function startWindows(currentId: string): void {
         if (p.window_id === currentId) continue;
         if (!liveLabels.includes(p.window_id)) continue;
         let present: { panel: string; params?: Record<string, any> }[] = [];
-  try {
-    const res = await daemonPost('layout/get', { name: layoutNameFor(p.window_id) });
-    if (res?.result?.yaml ?? res?.yaml) present = presentFromLayoutYaml(res?.result?.yaml ?? res?.yaml);
-  } catch { /* best-effort */ }
+        try {
+          const res = await daemonPost('layout/get', { name: layoutNameFor(p.window_id) });
+          if (res?.result?.yaml ?? res?.yaml) present = presentFromLayoutYaml(res?.result?.yaml ?? res?.yaml);
+        } catch { /* best-effort */ }
         remote.push({ windowId: p.window_id, title: p.title || p.window_id, present });
       }
-      setState({ ready: true, profiles: merged, liveLabels, remote, error: undefined });
+
+      // Store structuré (sessions + 3 listes) : best-effort, indépendant du
+      // reste du tick (ne doit jamais faire planter le polling).
+      let sessions: SessionInfo[] = [];
+      let activeSession: SessionInfo | null = null;
+      try {
+        const st = await daemonPost('windows-store/state', {});
+        sessions = (st?.result?.sessions ?? st?.sessions) || [];
+        activeSession = (st?.result?.active_session ?? st?.active_session) || null;
+      } catch { /* best-effort */ }
+      let official: OfficialWindow[] = [];
+      let registered: WindowProfile[] = [];
+      try {
+        const wl = await daemonPost('windows-store/windows-list', {});
+        official = (wl?.result?.official ?? wl?.official) || [];
+        registered = (wl?.result?.registered ?? wl?.registered) || [];
+      } catch { /* best-effort */ }
+
+      setState({ ready: true, profiles: merged, liveLabels, remote, sessions, activeSession, official, registered, error: undefined });
     } catch (e: any) {
       setState({ error: String(e?.message ?? e) });
     }
@@ -228,12 +305,90 @@ async function ensureProfile(currentId: string, profiles: WindowProfile[]): Prom
 
 // ── Actions ──────────────────────────────────────────────────────────
 
-/** Ouvre une fenêtre depuis un template (Tauri + profil daemon).
- *  Si `extra.label` est fourni (fenêtre PRÉENREGISTRÉE), ce label devient le
- *  window_id → le boot chargera le layout référencé par le profil existant. */
+/** Options d'ouverture d'une fenêtre par id (résolution auto). */
+export interface OpenWindowExOpts {
+  pos?: { x: number; y: number };
+  size?: { width: number; height: number };
+  title?: string;
+  /** force le layout vierge "blank" (aucun arbre). */
+  blank?: boolean;
+}
+
+/**
+ * Ouvre une fenêtre par son id AVEC résolution auto (vivant → enregistré →
+ * officiel) via windows-store/window-get scope=auto. Crée la fenêtre Tauri
+ * (label = window_id → le boot retrouvera le layout) puis recrée le profil
+ * VIVANT (windows-store/window-save scope=live) pour la session active.
+ * Retourne le window_id. Best-effort : chaque étape est tolérante aux erreurs.
+ */
+export async function openWindowEx(windowId: string, opts?: OpenWindowExOpts): Promise<string> {
+  // 1. Résolution auto : vivant → enregistré → officiel.
+  let profile: any = null;
+  try {
+    const res = await daemonPost('windows-store/window-get', { window_id: windowId, scope: 'auto' });
+    profile = res?.result?.profile ?? res?.profile ?? null;
+  } catch { /* best-effort */ }
+
+  // 1b. Fenêtre VIERGE : on force le layout "blank" (pas d'arbre) au lieu du
+  //     layout vivant par défaut (qui pourrait être non vide).
+  if (opts?.blank) {
+    profile = { ...(profile ?? {}), template: 'blank', layout: 'blank', theme: profile?.theme ?? null };
+  }
+
+  // 2. Ouverture Tauri : label = window_id.
+  const size = opts?.size ?? (profile?.width && profile?.height ? { width: profile.width, height: profile.height } : undefined);
+  const pos = opts?.pos ?? (profile?.x != null && profile?.y != null ? { x: profile.x, y: profile.y } : undefined);
+  const title = opts?.title ?? profile?.title ?? windowId;
+  try {
+    await createWindow(windowId, {
+      ...(size ? { size } : {}),
+      ...(pos ? { pos } : {}),
+      ...(title ? { title } : {}),
+    });
+  } catch { /* web : fenêtre Tauri indisponible */ }
+
+  // 3. Recrée le profil VIVANT (session active) pour restaurer layout/thème.
+  try {
+    await daemonPost('windows-store/window-save', {
+      window_id: windowId,
+      scope: 'live',
+      profile: {
+        template: profile?.template ?? 'default',
+        layout: profile?.layout ?? layoutNameFor(windowId),
+        theme: profile?.theme ?? null,
+        title,
+        x: pos?.x ?? null,
+        y: pos?.y ?? null,
+        width: size?.width ?? null,
+        height: size?.height ?? null,
+        state: 'normal',
+      },
+    });
+  } catch { /* best-effort */ }
+
+  // 4. Ajoute la fenêtre aux fenêtres OUVERTES de la session active (open_windows).
+  try {
+    const st = await daemonPost('windows-store/state', {});
+    const active = st?.result?.active_session ?? st?.active_session;
+    if (active?.id) {
+      await daemonPost('win-session/add-window', { session_id: active.id, window_id: windowId });
+    }
+  } catch { /* best-effort */ }
+  return windowId;
+}
+
+/**
+ * Ouvre une fenêtre depuis un template (comportement historique).
+ * Si `extra.label` est fourni (fenêtre PRÉENREGISTRÉE/enregistrée), on délègue
+ * à openWindowEx (résolution auto du store) ; sinon on garde la logique
+ * actuelle (label généré win-<ts> + profil windows/create).
+ */
 export async function openWindow(templateId: string, extra?: { pos?: { x: number; y: number }; label?: string; title?: string; size?: { width: number; height: number } }): Promise<string | null> {
+  if (extra?.label) {
+    return openWindowEx(extra.label, { pos: extra.pos, title: extra.title, size: extra.size });
+  }
   const tpl = _state.templates.find((t) => t.id === templateId);
-  const label = extra?.label ?? `win-${Date.now().toString(36)}`;
+  const label = `win-${Date.now().toString(36)}`;
   const size = extra?.size ?? tpl?.defaultSize;
   const pos = extra?.pos ?? tpl?.defaultPos;
   const title = extra?.title ?? (tpl ? `ModelWeaver — ${tpl.label}` : label);
@@ -264,6 +419,246 @@ export async function openWindow(templateId: string, extra?: { pos?: { x: number
   return label;
 }
 
+/** Nouvelle fenêtre vide : window_N → openWindowEx → retourne l'id. */
+export async function newBlankWindow(): Promise<string> {
+  let windowId = '';
+  try {
+    const res = await daemonPost('windows-store/next-window-id', {});
+    windowId = res?.result?.window_id ?? res?.window_id ?? '';
+  } catch { /* best-effort */ }
+  if (!windowId) windowId = `win-${Date.now().toString(36)}`;
+  await openWindowEx(windowId, { blank: true });
+  return windowId;
+}
+
+/**
+ * Met au premier plan une fenêtre si elle est déjà ouverte (liveLabels),
+ * sinon l'ouvre (résolution auto). Signale la surbrillance dans le store.
+ */
+export async function focusOrOpenWindow(windowId: string): Promise<string | null> {
+  if (_state.liveLabels.includes(windowId)) {
+    try { await focusWindow(windowId); } catch { /* best-effort */ }
+    setState({ highlightWindow: windowId });
+    setTimeout(() => setState({ highlightWindow: null }), 2500);
+    return windowId;
+  }
+  return openWindowEx(windowId);
+}
+
+/** Enregistre une fenêtre : vivant → register/ (RENOMME sous `name` si fourni). */
+export async function registerWindow(windowId: string, name?: string, theme?: string, layout?: string): Promise<boolean> {
+  try {
+    const res = await daemonPost('windows-store/window-register', {
+      window_id: windowId,
+      ...(name && name !== windowId ? { new_window_id: name, title: name } : {}),
+      ...(theme != null ? { theme } : {}),
+      ...(layout != null ? { layout } : {}),
+    });
+    return (res?.result?.status ?? res?.status) === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+/** Réinitialise une fenêtre (supprime profil live/registered + layouts). */
+export async function resetWindowLayout(windowId: string): Promise<boolean> {
+  try {
+    const res = await daemonPost('windows-store/window-reset', { window_id: windowId });
+    return (res?.result?.status ?? res?.status) === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persiste le verrou de thème (theme_locked) + le thème courant dans le profil
+ * VIVANT de la fenêtre (session active). Best-effort.
+ */
+export async function persistWindowThemeLock(windowId: string, locked: boolean, theme?: string): Promise<boolean> {
+  try {
+    const cur = await daemonPost('windows-store/window-get', { window_id: windowId, scope: 'live' });
+    const existing = cur?.result?.profile ?? cur?.profile ?? {};
+    const profile = {
+      ...existing,
+      window_id: windowId,
+      theme: theme ?? existing?.theme ?? null,
+      theme_locked: locked,
+    };
+    const res = await daemonPost('windows-store/window-save', { window_id: windowId, scope: 'live', profile });
+    return (res?.result?.status ?? res?.status) === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+/** Les 3 listes de fenêtres depuis le store (officielles/enregistrées/vivantes). */
+export interface WindowSources {
+  official: OfficialWindow[];
+  registered: WindowProfile[];
+  live: WindowProfile[];
+}
+
+export function listWindowSources(): WindowSources {
+  return {
+    official: _state.official,
+    registered: _state.registered,
+    live: _state.profiles.filter((p) => _state.liveLabels.includes(p.window_id)),
+  };
+}
+
+// ── Sessions ──────────────────────────────────────────────────────────
+
+/** Liste les sessions + l'id de la session active. */
+export async function listSessions(): Promise<SessionInfo[]> {
+  try {
+    const res = await daemonPost('win-session/list', {});
+    return (res?.result?.sessions ?? res?.sessions) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Crée une session session_XXXX (ne change PAS la session active). */
+export async function createSession(name?: string): Promise<SessionInfo | null> {
+  try {
+    const res = await daemonPost('win-session/create', { ...(name ? { name } : {}) });
+    return (res?.result?.session ?? res?.session) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Active une session (écrit session_open.txt côté daemon). */
+export async function activateSession(id: string): Promise<SessionInfo | null> {
+  try {
+    const res = await daemonPost('win-session/activate', { session_id: id });
+    return (res?.result?.session ?? res?.session) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ouvre (active) une session et retourne ses fenêtres ouvertes. */
+export async function openSession(id: string): Promise<string[]> {
+  try {
+    const res = await daemonPost('win-session/open', { session_id: id });
+    return (res?.result?.open_windows ?? res?.open_windows) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Désactive une session si elle était active. */
+export async function closeSession(id: string): Promise<void> {
+  try { await daemonPost('win-session/close', { session_id: id }); } catch { /* best-effort */ }
+}
+
+/** Ferme TOUTES les fenêtres Tauri (hors celle courante) + vide open_windows. */
+async function closeAllWindows(currentId?: string): Promise<void> {
+  let live: string[] = [];
+  try { live = (await tauriList()).map((w) => w.label); } catch { /* best-effort */ }
+  for (const label of live) {
+    if (currentId && label === currentId) continue;
+    try { await closeWindow(label); } catch { /* best-effort */ }
+  }
+}
+
+/** Ferme les fenêtres de la session ACTIVE (toutes sauf la fenêtre courante). */
+export async function closeSessionWindows(currentId?: string): Promise<void> {
+  await closeAllWindows(currentId);
+}
+
+/**
+ * Bascule de session : ferme les fenêtres de la session courante (hors celle
+ * courante), active la session cible, puis réouvre ses fenêtres « ouvertes ».
+ * Si `id` vaut '__new__' : crée d'abord une nouvelle session par défaut.
+ * La fenêtre COURANTE (si elle n'est pas 'main') est fermée APRÈS le switch
+ * (délai), car elle appartenait à l'ancienne session.
+ */
+export async function switchSession(id: string, currentId?: string): Promise<string[]> {
+  await closeAllWindows(currentId);
+  let targetId = id;
+  if (id === '__new__') {
+    const created = await createSession();
+    if (created?.id) targetId = created.id;
+    else return [];
+  }
+  await activateSession(targetId);
+  const openWindows = await openSession(targetId);
+  for (const wid of openWindows) {
+    if (wid === currentId) continue;
+    try { await openWindowEx(wid); } catch { /* best-effort */ }
+  }
+  // Si la fenêtre d'origine n'est ni 'main' ni dans la nouvelle session, on la
+  // ferme après un délai (elle ne fait plus partie de la session active).
+  if (currentId && currentId !== 'main' && !openWindows.includes(currentId)) {
+    setTimeout(() => { try { void closeWindow(currentId!); } catch { /* best-effort */ } }, 600);
+  }
+  return openWindows;
+}
+
+/** Renomme une session. */
+export async function renameSession(id: string, name: string): Promise<SessionInfo | null> {
+  try {
+    const res = await daemonPost('win-session/rename', { session_id: id, name });
+    return (res?.result?.session ?? res?.session) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Définit le thème d'une session. */
+export async function setSessionTheme(id: string, theme: string): Promise<SessionInfo | null> {
+  try {
+    const res = await daemonPost('win-session/set-theme', { session_id: id, theme });
+    return (res?.result?.session ?? res?.session) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ajoute une fenêtre à open_windows d'une session. */
+export async function addSessionWindow(id: string, wid: string): Promise<string[]> {
+  try {
+    const res = await daemonPost('win-session/add-window', { session_id: id, window_id: wid });
+    return (res?.result?.open_windows ?? res?.open_windows) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Retire une fenêtre de open_windows d'une session. */
+export async function removeSessionWindow(id: string, wid: string): Promise<string[]> {
+  try {
+    const res = await daemonPost('win-session/remove-window', { session_id: id, window_id: wid });
+    return (res?.result?.open_windows ?? res?.open_windows) || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Supprime une session (et la déactive si c'était l'active). */
+export async function deleteSession(id: string): Promise<boolean> {
+  try {
+    const res = await daemonPost('win-session/delete', { session_id: id });
+    return (res?.result?.status ?? res?.status) === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+/** Fenêtres ouvertes (ids) d'une session. */
+export async function sessionOpenWindows(id: string): Promise<string[]> {
+  try {
+    const res = await daemonPost('win-session/open-windows', { session_id: id });
+    return (res?.result?.open_windows ?? res?.open_windows) || [];
+  } catch {
+    return [];
+  }
+}
+
+// ── Actions fenêtres (Tauri + daemon) ─────────────────────────────────
+
 /** Met une fenêtre au premier plan (menu Fenêtre → liste). */
 export async function focusWindow(windowId: string): Promise<void> {
   try { await invoke('focus_window', { label: windowId }); } catch { /* best-effort */ }
@@ -285,6 +680,16 @@ export async function closeCurrentWindow(windowId: string): Promise<void> {
 export async function toggleFullscreen(): Promise<boolean> {
   try {
     const res = await invoke('window_fullscreen');
+    return Boolean(res?.fullscreen);
+  } catch {
+    return false;
+  }
+}
+
+/** Plein écran SESSION : applique (ou sort) le plein écran à TOUTES les fenêtres. */
+export async function toggleFullscreenSession(fullscreen: boolean): Promise<boolean> {
+  try {
+    const res = await invoke('fullscreen_session', { fullscreen });
     return Boolean(res?.fullscreen);
   } catch {
     return false;

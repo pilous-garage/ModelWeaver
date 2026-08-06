@@ -76,6 +76,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.agents-monitoring.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['agents', 'monitoring'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[agents-monitoring] Monitoring agents v1.0.0\n  routes: agent/metrics, service/resources',

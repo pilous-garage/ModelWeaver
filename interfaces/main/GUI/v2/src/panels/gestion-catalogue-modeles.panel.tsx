@@ -67,6 +67,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.gestion-catalogue-modeles.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['systeme', 'outils'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[gestion-catalogue-modeles] Catalogue modèles v1.0.0\n  routes: llm/models/list, providers/list',

@@ -49,6 +49,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.gestion-outils.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['install'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[gestion-outils] Outils Registry v1.0.0\n  routes: catalogue/tools/list',

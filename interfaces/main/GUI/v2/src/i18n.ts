@@ -14,10 +14,19 @@ export type Locale = 'fr' | 'en';
 
 const _FR: Record<string, string> = {
   // menu
+  'menu.demarrer': 'Démarrer',
+  'menu.configuration': 'Configuration',
+  'menu.aide': 'Aide',
+  'menu.aPropos': 'À propos…',
+  'menu.refresh': 'Refresh',
+  'menu.refreshTout': 'Actualiser tout',
+  'menu.pleinEcranFenetre': 'Plein écran (fenêtre)',
+  'menu.pleinEcranSession': 'Plein écran (session)',
+  'menu.quitterPleinEcran': 'Quitter le plein écran',
   'menu.fichier': 'Fichier',
+  'menu.fenetre': 'Fenêtre',
   'menu.nouvelleFenetre': 'Nouvelle fenêtre',
   'menu.quitter': 'Quitter',
-  'menu.fenetre': 'Fenêtre',
   'menu.fenetresOuvertes': 'Fenêtres ouvertes',
   'menu.fenetreVide': '(fenêtre vide)',
   'menu.ouvertsDansFenetre': 'Ouverts dans une fenêtre',
@@ -27,9 +36,39 @@ const _FR: Record<string, string> = {
   'menu.fermerFenetre': 'Fermer la fenêtre',
   'menu.affichage': 'Affichage',
   'menu.themes': 'Thèmes',
+  'menu.themeLock': 'Verrouiller le thème',
+  'menu.themeSession': 'Thème de la session',
+  'menu.themeFenetre': 'Thème de la fenêtre',
   'menu.panneaux': 'Panneaux',
   'menu.onglet': 'Onglet',
   'menu.miniLayout': 'Mini-layout',
+  'menu.panneauxOuverts': 'Panneaux ouverts',
+  'menu.ouvrirNouveau': 'Ouvrir un nouveau panneau',
+  'menu.ouvrirFenetre': 'Ouvrir une fenêtre',
+  'menu.nouvelleFenetreVierge': 'Nouvelle fenêtre vierge',
+  'menu.enregistrerFenetre': 'Enregistrer la fenêtre',
+  'menu.resetLayoutFenetre': 'Réinitialiser le layout',
+  'menu.fenetresOfficielles': 'Fenêtres par défaut',
+  'menu.fenetresEnregistrees': 'Fenêtres enregistrées',
+  'menu.fenetresVivantes': 'Fenêtres vivantes',
+  'menu.sessions': 'Sessions',
+  'menu.sessionNouvelle': 'Nouvelle session',
+  'menu.sessionOuvrir': 'Ouvrir la session',
+  'menu.sessionRenommer': 'Renommer',
+  'menu.sessionTheme': 'Thème',
+  'menu.sessionFermer': 'Fermer',
+  'menu.sessionSupprimer': 'Supprimer',
+  'bundle.autres': 'Autres',
+  'bundle.monitoring': 'Monitoring',
+  'bundle.install': 'Installation',
+  'bundle.systeme': 'Système',
+  'bundle.agents': 'Agents',
+  'bundle.communication': 'Communication',
+  'bundle.outils': 'Outils',
+  'bundle.projet': 'Projet',
+  'bundle.debug': 'Debug',
+  'bundle.docker': 'Docker',
+  'bundle.ressources': 'Ressources',
   'menu.langue': 'Langue',
   'menu.langueFr': 'Français',
   'menu.langueEn': 'English',
@@ -37,9 +76,18 @@ const _FR: Record<string, string> = {
 };
 
 const _EN: Record<string, string> = {
-  'menu.fichier': 'File',
+  'menu.demarrer': 'Start',
   'menu.nouvelleFenetre': 'New window',
   'menu.quitter': 'Quit',
+  'menu.configuration': 'Configuration',
+  'menu.aide': 'Help',
+  'menu.aPropos': 'About…',
+  'menu.refresh': 'Refresh',
+  'menu.refreshTout': 'Refresh all',
+  'menu.pleinEcranFenetre': 'Fullscreen (window)',
+  'menu.pleinEcranSession': 'Fullscreen (session)',
+  'menu.quitterPleinEcran': 'Exit fullscreen',
+  'menu.fichier': 'File',
   'menu.fenetre': 'Window',
   'menu.fenetresOuvertes': 'Open windows',
   'menu.fenetreVide': '(empty window)',
@@ -50,9 +98,39 @@ const _EN: Record<string, string> = {
   'menu.fermerFenetre': 'Close window',
   'menu.affichage': 'View',
   'menu.themes': 'Themes',
+  'menu.themeLock': 'Lock theme',
+  'menu.themeSession': 'Session theme',
+  'menu.themeFenetre': 'Window theme',
   'menu.panneaux': 'Panels',
   'menu.onglet': 'Tab',
   'menu.miniLayout': 'Mini-layout',
+  'menu.panneauxOuverts': 'Open panels',
+  'menu.ouvrirNouveau': 'Open a new panel',
+  'menu.ouvrirFenetre': 'Open a window',
+  'menu.nouvelleFenetreVierge': 'New blank window',
+  'menu.enregistrerFenetre': 'Save window',
+  'menu.resetLayoutFenetre': 'Reset layout',
+  'menu.fenetresOfficielles': 'Default windows',
+  'menu.fenetresEnregistrees': 'Saved windows',
+  'menu.fenetresVivantes': 'Live windows',
+  'menu.sessions': 'Sessions',
+  'menu.sessionNouvelle': 'New session',
+  'menu.sessionOuvrir': 'Open session',
+  'menu.sessionRenommer': 'Rename',
+  'menu.sessionTheme': 'Theme',
+  'menu.sessionFermer': 'Close',
+  'menu.sessionSupprimer': 'Delete',
+  'bundle.autres': 'Others',
+  'bundle.monitoring': 'Monitoring',
+  'bundle.install': 'Installation',
+  'bundle.systeme': 'System',
+  'bundle.agents': 'Agents',
+  'bundle.communication': 'Communication',
+  'bundle.outils': 'Tools',
+  'bundle.projet': 'Project',
+  'bundle.debug': 'Debug',
+  'bundle.docker': 'Docker',
+  'bundle.ressources': 'Resources',
   'menu.langue': 'Language',
   'menu.langueFr': 'French',
   'menu.langueEn': 'English',
@@ -91,11 +169,26 @@ export function loadLangYamls(yamls: string[], locale?: Locale): void {
   for (const y of yamls) loadLangYaml(y, locale);
 }
 
-/** Définit la locale active (fr/en) et notifie les abonnés. */
+/** Définit la locale active (fr/en) et notifie les abonnés + les AUTRES
+ *  fenêtres de la session (BroadcastChannel). */
+const _localeChannel: BroadcastChannel | null = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mw-locale') : null;
 export function setLocale(locale: Locale): void {
   if (locale === _locale) return;
   _locale = locale;
   rebuildDict();
+  // Diffuse aux autres fenêtres (elles appliquent sans re-broadcaster).
+  try { _localeChannel?.postMessage({ locale }); } catch { /* best-effort */ }
+}
+
+// Réception : une autre fenêtre a changé la langue → on applique.
+if (_localeChannel) {
+  _localeChannel.onmessage = (ev: MessageEvent) => {
+    const l = ev?.data?.locale;
+    if (l && l !== _locale) {
+      _locale = l;
+      rebuildDict();
+    }
+  };
 }
 
 export function getLocale(): Locale {

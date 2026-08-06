@@ -69,6 +69,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.systeme-ressources.titre',
   version: '1.0.0',
   essential: true,
+  bundles: ['systeme'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[systeme-ressources] Ressources v1.0.0\n  routes: system/resources',

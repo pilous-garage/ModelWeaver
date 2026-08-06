@@ -71,16 +71,7 @@ const ZERO = { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, right: 0, botto
  * groupes imbriqués des mini-layouts), puis la zone dans ce groupe.
  */
 export function computeDrop(x: number, y: number, excludeOccId: string): DropState {
-  let best: GroupHandle | null = null;
-  let bestArea = Infinity;
-  for (const g of _groups) {
-    const r = g.rect() || ZERO;
-    if (r.width === 0) continue;
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-      const area = r.width * r.height;
-      if (area < bestArea) { best = g; bestArea = area; }
-    }
-  }
+  const best = groupAt(x, y);
   if (!best) return { targetGroupId: null, zone: 'outside', insertIndex: null, excludeOccId };
   const r = best.rect();
   const br = best.barRect();
@@ -97,4 +88,23 @@ export function computeDrop(x: number, y: number, excludeOccId: string): DropSta
   if (relY > 1 - EDGE) return { targetGroupId: best.id, zone: 'bottom', insertIndex: null, excludeOccId };
   // centre → ajout en fin de file
   return { targetGroupId: best.id, zone: 'center', insertIndex: null, excludeOccId };
+}
+
+/**
+ * Groupe le plus PRÉCIS contenant un point (le plus petit rect). Gère les
+ * groupes imbriqués (mini-layouts) : retourne le plus imbriqué. Utilisé pour
+ * le zoom clavier (Ctrl+±/Ctrl+0) : le zoom s'applique au panel sous le curseur.
+ */
+export function groupAt(x: number, y: number): GroupHandle | null {
+  let best: GroupHandle | null = null;
+  let bestArea = Infinity;
+  for (const g of _groups) {
+    const r = g.rect() || ZERO;
+    if (r.width === 0) continue;
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      const area = r.width * r.height;
+      if (area < bestArea) { best = g; bestArea = area; }
+    }
+  }
+  return best;
 }

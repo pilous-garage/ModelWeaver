@@ -279,6 +279,19 @@ fn window_fullscreen(window: tauri::WebviewWindow) -> Result<serde_json::Value, 
     Ok(serde_json::json!({"status": "ok", "fullscreen": next}))
 }
 
+/// Plein écran SESSION : applique (fullscreen=true) ou sort (false) le plein
+/// écran sur TOUTES les fenêtres. F11 sort les deux (fenêtre + session).
+#[tauri::command]
+fn fullscreen_session(app: tauri::AppHandle, fullscreen: bool) -> Result<serde_json::Value, String> {
+    let mut count = 0usize;
+    for (_, win) in app.webview_windows() {
+        let _ = win.set_fullscreen(fullscreen);
+        count += 1;
+    }
+    log_to_file("WINDOW", &format!("fullscreen_session({}) sur {} fenêtres", fullscreen, count));
+    Ok(serde_json::json!({"status": "ok", "fullscreen": fullscreen, "windows": count}))
+}
+
 fn main() {
     let _ = std::fs::create_dir_all(mw_home().join("logs"));
     log_to_file("INIT", &format!("ModelWeaver v2 starting, home={}", mw_home().display()));
@@ -324,6 +337,7 @@ fn main() {
             list_windows,
             window_state,
             window_fullscreen,
+            fullscreen_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running modelweaver v2");

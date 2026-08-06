@@ -7,7 +7,8 @@ import { initPanels } from './panels/init.ts';
 import { loadExternalPanelIndex } from './panels/loader.ts';
 import { layoutFromYaml } from './layout/persist.ts';
 import { applyThemeFromLayout } from './theme.ts';
-import { daemonPost } from './bridge.ts';
+import { daemonPost, listWindows } from './bridge.ts';
+import { openWindowEx } from './windows.ts';
 import type { Layout } from './layout/types.ts';
 
 // React PARTAGÉ : les panels externes compilés importent React via l'URL du
@@ -41,11 +42,25 @@ tree:
 `;
 
 /** Résout le layout de la fenêtre :
+ * 0. Résolution AUTO via le store (vivant → enregistré → officiel).
  * 1. Profil de fenêtre (windows/list) → son layout référencé (ex. "monitoring").
  * 2. Sinon layout-<windowId> (sauvegarde temps réel de cette fenêtre).
  * 3. Sinon layout par défaut.
  */
 async function loadWindowLayout(windowId: string): Promise<{ layout: Layout; profile?: any }> {
+  // 0. Store structuré (sessions) : résolution vivant → enregistré → officiel.
+  try {
+    const ws = await daemonPost('windows-store/window-get', { window_id: windowId, scope: 'auto' });
+    const profile = ws?.result?.profile ?? ws?.profile;
+    if (profile?.layout) {
+      const res = await daemonPost('layout/get', { name: profile.layout });
+      if (res?.result?.yaml ?? res?.yaml) {
+        return { layout: layoutFromYaml(res?.result?.yaml ?? res?.yaml), profile };
+      }
+    }
+  } catch {
+    // best-effort
+  }
   // 1. profil de la fenêtre (fenêtres préenregistrées / windows/create)
   try {
     const wp = await daemonPost('windows/list', {});
@@ -84,8 +99,9 @@ async function bootstrap() {
   // Label réel de la fenêtre (injecté par le binaire Tauri dans chaque webview)
   const windowId = (window as any).__MW_WINDOW_LABEL || 'main';
   const { layout, profile } = await loadWindowLayout(windowId);
-  // Thème : le profil de la fenêtre prime (thème préenregistré), sinon le layout.
-  await applyThemeFromLayout(profile?.theme ? { global: profile.theme } : layout.theme);
+  // Thème : theme-lock (fenêtre) → session active → profil/layout.
+  const theme = await resolveTheme(windowId, profile?.theme);
+  await applyThemeFromLayout(theme ? { global: theme } : layout.theme);
 
   const root = document.getElementById('root');
   if (!root) return;
@@ -94,6 +110,84 @@ async function bootstrap() {
       <App layout={layout} windowId={windowId} />
     </React.StrictMode>,
   );
+
+  // Restauration de la session active APRÈS le rendu initial (délai ~1200ms),
+  // uniquement depuis la fenêtre 'main'. Guard anti-boucle par sessionStorage.
+  setTimeout(() => {
+    void restoreActiveSession(windowId);
+  }, 1200);
+}
+
+/**
+ * Restaure la session active au boot : réouvre ses fenêtres (sauf la fenêtre
+ * courante et celles déjà ouvertes), ou crée/active la session par défaut si
+ * aucune n'est active. Best-effort : toute erreur est ignorée.
+ */
+async function restoreActiveSession(windowId: string): Promise<void> {
+  if (windowId !== 'main') return;
+  try {
+    if (sessionStorage.getItem('__MW_SESSION_BOOTED__')) return;
+    sessionStorage.setItem('__MW_SESSION_BOOTED__', '1');
+  } catch {
+    // sessionStorage indisponible → guard perdu, on continue en best-effort
+  }
+
+  try {
+    // a) Session active du store
+    const ws = await daemonPost('windows-store/state', {});
+    const state = ws?.result ?? ws;
+    const active = state?.active_session ?? null;
+
+    if (active?.id) {
+      // Session active existante (même vide) : on la garde, on rouvre ses
+      // fenêtres ouvertes (sauf déjà vivantes).
+      if (Array.isArray(active.open_windows) && active.open_windows.length) {
+        let live: string[] = [];
+        try {
+          live = (await listWindows()).map((w) => w.label);
+        } catch { /* best-effort */ }
+        for (const wid of active.open_windows) {
+          if (wid === windowId) continue;
+          if (live.includes(wid)) continue;
+          try { await openWindowEx(wid); } catch { /* best-effort */ }
+        }
+      }
+      return;
+    }
+
+    // c) Aucune session active → session par défaut + activation.
+    try {
+      const created = await daemonPost('win-session/create', { name: 'Session par défaut' });
+      const sid = created?.result?.session?.id ?? created?.session?.id;
+      if (sid) await daemonPost('win-session/activate', { session_id: sid });
+    } catch { /* best-effort */ }
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Résout le thème d'une fenêtre au boot :
+ *   theme-lock (fenêtre) → session active → profil de fenêtre → null (layout).
+ * Expose aussi window.__MW_THEME_LOCKED__ (utilisé par le broadcast du thème de
+ * session : une fenêtre lockée ignore les changements de thème de session).
+ */
+async function resolveTheme(windowId: string, profileTheme?: string | null): Promise<string | null> {
+  // 1. theme-lock : le profil vivant de la fenêtre porte un thème forcé.
+  try {
+    const ws = await daemonPost('windows-store/window-get', { window_id: windowId, scope: 'live' });
+    const live = ws?.result?.profile ?? ws?.profile;
+    (window as any).__MW_THEME_LOCKED__ = Boolean(live?.theme_locked);
+    if (live?.theme_locked && live?.theme) return live.theme;
+  } catch { /* best-effort */ }
+  // 2. session active (thème de session).
+  try {
+    const st = await daemonPost('windows-store/state', {});
+    const active = st?.result?.active_session ?? st?.active_session;
+    if (active?.theme) return active.theme;
+  } catch { /* best-effort */ }
+  // 3. profil de la fenêtre.
+  return profileTheme ?? null;
 }
 
 bootstrap();

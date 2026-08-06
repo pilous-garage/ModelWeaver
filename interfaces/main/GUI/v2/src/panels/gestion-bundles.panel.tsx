@@ -51,6 +51,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.gestion-bundles.titre',
   version: '1.0.0',
   essential: false,
+  bundles: ['install', 'outils'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[gestion-bundles] Bundles v1.0.0\n  routes: catalogue/bundles/list',
