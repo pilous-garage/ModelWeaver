@@ -59,7 +59,13 @@ def _get_json(d: Path, name: str, default_dir: Optional[Path] = None) -> Optiona
 def _save_json(d: Path, name: str, content: str) -> Dict:
     _ensure_dir(d)
     p = d / f"{name}.json"
-    p.write_text(content)
+    # Écriture ATOMIQUE : tmp + rename. Les mutations GUI (ex. drag continu)
+    # déclenchent plusieurs layout/save concurrents ; sans atomicité, deux
+    # write_text parallèles se chevauchent et corrompent le fichier.
+    tmp = d / f".{name}.json.tmp"
+    tmp.write_text(content, encoding="utf-8")
+    import os
+    os.replace(tmp, p)
     return {"ok": True, "path": str(p)}
 
 

@@ -49,7 +49,8 @@ def _new_command(cmd_type: str, params: dict, window: str = "") -> dict:
 
 def op_gui_inspect(params: dict) -> Dict[str, Any]:
     """Demande une inspection DOM de la GUI (fenêtre courante du frontend)."""
-    cmd = _new_command("inspect", {"what": params.get("what", "dom")}, window=params.get("window", ""))
+    cmd = _new_command("inspect", {"what": params.get("what", "dom"), **{k: v for k, v in params.items() if k != "what"}},
+                       window=params.get("window", ""))
     return {"status": "ok", "command_id": cmd["id"], "type": "inspect"}
 
 
@@ -70,16 +71,32 @@ def op_gui_act(params: dict) -> Dict[str, Any]:
 
 
 def op_gui_poll(params: dict) -> Dict[str, Any]:
-    """Poll du frontend : renvoie les commandes en attente (FIFO)."""
+    """Poll du frontend : renvoie les commandes en attente (FIFO).
+
+    Si params.window est fourni, ne renvoie que les commandes visant cette
+    fenêtre (ou sans cible). Sinon, renvoie les commandes en attente.
+    """
     import time as _t
     _LAST_POLL[0] = _t.time()
+    target = params.get("window", "")
     with _LOCK:
         if not _PENDING:
             return {"status": "ok", "commands": [], "count": 0, "last_poll": _LAST_POLL[0]}
         cids = list(_PENDING)
-        _PENDING.clear()
-        cmds = []
+        taken = []
+        keep = []
         for cid in cids:
+            c = _QUEUE.get(cid)
+            if not c:
+                continue
+            cw = (c.get("params") or {}).get("window", "")
+            if target and cw and cw != target:
+                keep.append(cid)  # pas pour cette fenêtre → on laisse
+                continue
+            taken.append(cid)
+        _PENDING[:] = keep
+        cmds = []
+        for cid in taken:
             c = _QUEUE.get(cid)
             if c:
                 cmds.append({"id": c["id"], "type": c["type"], "params": c["params"]})

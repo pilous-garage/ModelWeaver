@@ -1,0 +1,19 @@
+id: principale
+label: "Session principale"
+theme:
+  global: dark
+windows:
+  - id: main
+    title: "Principale"
+    layout: main
+    x: 40
+    y: 40
+    width: 1200
+    height: 800
+  - id: ide
+    title: "IDE"
+    layout: slips
+    x: 500
+    y: 60
+    width: 1000
+    height: 700

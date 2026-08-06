@@ -77,6 +77,10 @@ def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
     if route_lower in ("health", "gui/poll", "gui/result"):
         # Polling interne du frontend (traducteur de fenêtre) : pas de limite.
         return
+    if route_lower.startswith("gui/"):
+        # Traducteur de fenêtre (gui/inspect, gui/act, gui/status…) : le
+        # backend/agent pilote la GUI via ces routes → pas de limite.
+        return
     base_key = f"{client_ip}:{route_lower}"
 
     # ── req/min (existant) ──
@@ -97,11 +101,21 @@ def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
                          "llm/chat/stream", "chat/session/stream",
                          "agent/chat", "agent/stream"):
         rl.check(f"r:{base_key}", limit=30, window=60)
+    elif route_lower.startswith(("windows/", "layout/", "theme/", "session/",
+                                 "panels/", "panel/")):
+        # Polling GUI multi-fenêtres (windows/list, layout/get, panels/index) :
+        # le traducteur de fenêtre interroge plusieurs fenêtres → large limite.
+        rl.check(f"r:{base_key}", limit=240, window=60)
     else:
         rl.check(f"r:{base_key}", limit=30, window=60)
 
     # ── req/day ──
-    rl.check(f"d:{base_key}", limit=5000, window=86400)
+    # Les routes GUI (layout/windows/session/theme/panels) sont interrogées en
+    # continu par les fenêtres + les tests E2E → quota journalier généreux.
+    gui_routes = route_lower.startswith(("windows/", "layout/", "theme/",
+                                         "session/", "panels/", "panel/"))
+    daily = 500_000 if gui_routes else 5000
+    rl.check(f"d:{base_key}", limit=daily, window=86400)
 
     # ── token/min ──
     if tokens:

@@ -1,0 +1,11 @@
+panels:
+  etat-systeme:
+    titre: "System state"
+    icone: "S"
+    version: "Version"
+    services: "Services"
+    actifs: "Active agents"
+    statut: "Status"
+    enLigne: "Online"
+    horsLigne: "Offline"
+    rafraichir: "Refresh"

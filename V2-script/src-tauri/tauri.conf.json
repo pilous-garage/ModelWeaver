@@ -1,0 +1,27 @@
+{
+ "productName": "ModelWeaver",
+ "version": "0.9.0",
+ "identifier": "com.modelweaver.v2",
+ "build": {
+  "beforeDevCommand": "npm run dev",
+  "beforeBuildCommand": "npm run build",
+  "devUrl": "http://localhost:5174",
+  "frontendDist": "../dist"
+ },
+ "app": {
+  "windows": [],
+  "security": {
+   "csp": "default-src 'self'; script-src 'self' https://tauri.localhost http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*"
+  }
+ },
+ "bundle": {
+  "active": true,
+  "targets": [
+   "deb"
+  ],
+  "resources": {},
+  "icon": [
+   "icons/icon.png"
+  ]
+ }
+}

@@ -478,7 +478,36 @@ def run_once() -> int:
     return total
 
 
+def _acquire_singleton() -> Optional[object]:
+    """Garde SINGLETON via flock sur un pidfile.
+
+    Empêche plusieurs usage_collector de tourner en même temps (fuite de
+    process observée : des collecteurs lancés hors du chemin daemon s'empilaient
+    et consolidaient le même log en concurrence). Retourne le handle de lock
+    (à garder pour la durée de vie du process) ou None si un autre tourne déjà.
+    """
+    import fcntl
+    from pathlib import Path as _Path
+    pidfile = _Path.home() / ".modelweaver" / "run" / "usage_collector.lock"
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(pidfile, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{os.getpid()}\n")
+    fh.flush()
+    return fh  # handle gardé pour la durée de vie du process
+
+
 def main() -> None:
+    lock = _acquire_singleton()
+    if lock is None:
+        print("usage_collector deja en cours — abandon (singleton)")
+        sys.exit(0)
     print(f"usage_collector demarre (poll={POLL_INTERVAL}s, "
           f"archive_max={usage_log.MAX_ARCHIVE_BYTES()//(1024*1024)}Mo, "
           f"ram_max={usage_log.MAX_RAM_BUFFER_BYTES()//(1024*1024)}Mo)")

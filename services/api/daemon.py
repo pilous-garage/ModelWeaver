@@ -374,10 +374,12 @@ def _supervise_supervisor_loop(interval: float = 10.0):
         log = None
     while True:
         try:
-            from services.supervisor.client import get_supervisor_client
-            if not get_supervisor_client().ping():
-                log.warning("Superviseur absent, relance") if log else None
-                _start_supervisor()
+            from services._common import mw_home
+            if not (mw_home() / "supervisor.disabled").exists():
+                from services.supervisor.client import get_supervisor_client
+                if not get_supervisor_client().ping():
+                    log.warning("Superviseur absent, relance") if log else None
+                    _start_supervisor()
         except Exception:
             pass
         time.sleep(interval)
@@ -590,7 +592,7 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         try:
             from services._common import mw_home
             if pid == "_shared/react":
-                body = b'const React = window.React; export default React; export const { useEffect, useState, useCallback, useMemo, useRef } = React;\n'
+                body = b'const React = window.React; export default React; export const { useEffect, useState, useCallback, useMemo, useRef } = React; export const jsx = React.createElement; export const jsxs = React.createElement; export const Fragment = React.Fragment;\n'
                 self._send_js(body)
                 return
             if pid == "_shared/react-dom":
@@ -627,6 +629,13 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         prefix = f"/{API_VERSION}/"
         if not self.path.startswith(prefix):
             self._send(404, {"error": "not_found", "path": self.path})
+            return
+        # Les JS compilés des panels sont servis SANS auth : import() dynamique
+        # du navigateur ne peut pas envoyer le header Authorization (ni le token
+        # en query). Ce sont des modules publics (pas de secret dedans).
+        route_early = self.path[len(prefix):].strip("/")
+        if route_early.startswith("panels/file/"):
+            self._serve_panel_js(route_early[len("panels/file/"):])
             return
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})

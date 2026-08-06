@@ -49,7 +49,7 @@ def _collect_state() -> Dict[str, Any]:
         db = AgentsDB()
         st["agents"] = _rows(db.conn.execute(
             "SELECT agent_id, name, role_type, status FROM agents "
-            "WHERE name LIKE 'team:swarm-selfimprove-v2/%'").fetchall())
+            "WHERE name LIKE 'team:%/%'").fetchall())
         team_ids = [r["agent_id"] for r in st["agents"]]
         if team_ids:
             ph = ",".join("?" for _ in team_ids)
@@ -65,22 +65,29 @@ def _collect_state() -> Dict[str, Any]:
         pass
     try:
         wdb = WorkspaceDB()
-        # Workspaces pertinents : mw-swarm (la team) + ceux liés à une issue
-        # de mw-swarm (analysis_workspace_id). Évite de toucher aux tasks des
-        # autres teams/workspaces.
+        # Workspaces des teams actives : tous les workspaces dirigés par une
+        # team (director LIKE 'team:%') + les workspaces liés aux issues de
+        # mw-swarm (rétro-compatibilité). Générique : permet à CHAQUE team
+        # (ex. gui-tasks → mw-gui-tasks) de recevoir ses issues/tasks.
+        team_ws = {r["workspace_id"] for r in wdb.conn.execute(
+            "SELECT DISTINCT workspace_id FROM workspaces "
+            "WHERE director LIKE 'team:%'").fetchall()}
+        # autres workspaces liés à une issue de mw-swarm (ancien comportement)
         linked = {r["workspace_id"] for r in wdb.conn.execute(
             "SELECT DISTINCT analysis_workspace_id AS workspace_id "
             "FROM issues WHERE workspace_id='mw-swarm' "
             "AND analysis_workspace_id IS NOT NULL").fetchall()}
         linked.add("mw-swarm")
-        ph = ",".join("?" for _ in linked)
+        watched = team_ws | linked
+        ph = ",".join("?" for _ in watched)
         st["tasks"] = _rows(wdb.conn.execute(
             f"SELECT task_id, workspace_id, title, status, role_required, "
             f"updated_at, assigned_to FROM tasks WHERE workspace_id IN ({ph})",
-            tuple(linked)).fetchall())
+            tuple(watched)).fetchall())
         st["issues"] = _rows(wdb.conn.execute(
-            "SELECT issue_id, workspace_id, title, status, priority, "
-            "analysis_workspace_id FROM issues WHERE workspace_id='mw-swarm'").fetchall())
+            f"SELECT issue_id, workspace_id, title, status, priority, "
+            f"analysis_workspace_id FROM issues WHERE workspace_id IN ({ph})",
+            tuple(watched)).fetchall())
         wdb.close()
     except Exception:
         pass

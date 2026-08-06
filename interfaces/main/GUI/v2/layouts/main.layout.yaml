@@ -1,0 +1,21 @@
+id: main
+label: "Fenêtre principale"
+theme:
+  global: dark
+tree:
+  type: split
+  direction: horizontal
+  sizes: [50, 50]
+  children:
+    - type: group
+      id: pg-gauche
+      tabs:
+        - { panel: ressources, occId: occ-ressources, params: { vue: detail } }
+        - { panel: ressources-variant, occId: occ-ressources-variant }
+      active: occ-ressources
+    - type: group
+      id: pg-droit
+      tabs:
+        - { panel: etat-systeme, occId: occ-etat }
+        - { panel: etat-simple, occId: occ-etat-simple }
+      active: occ-etat

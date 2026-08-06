@@ -1,0 +1,10 @@
+panels:
+  ressources:
+    titre: "Ressources"
+    icone: "R"
+    cpu: "CPU"
+    ram: "Mémoire"
+    disque: "Disque"
+    vue: "Vue"
+    rafraichir: "Rafraîchir"
+    config: "Configuration"

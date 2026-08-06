@@ -1,0 +1,10 @@
+id: slips
+label: "Fenêtre slip views"
+theme:
+  global: dark
+tree:
+  type: group
+  id: pg-main
+  tabs:
+    - { panel: ressources, occId: occ-1 }
+  active: occ-1

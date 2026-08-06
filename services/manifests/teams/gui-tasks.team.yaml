@@ -1,0 +1,165 @@
+name: gui-tasks
+version: 0.1.0
+description: "Swarm dédié à la GUI V2 (interfaces/main/GUI/v2) — migration des panels V1→V2, tests E2E, améliorations. Analyste découpe → codeurs (junior/senior selon difficulté) → testeurs (typecheck + tests) → reviewer → merger. Workspace dédié mw-gui-tasks."
+workspace_id: mw-gui-tasks
+topology: flat
+
+members:
+  # ── Analyste : pioche une issue, analyse le code V1/V2, découpe en tâches ──
+  - agent_name: analyst
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["dev"]
+              context: "Analyste GUI. Projet: ModelWeaver, GUI V2 dans interfaces/main/GUI/v2 (React/TS). TU DISPOSES DE CES OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1 (bash complet : ls, cat, grep, npx tsc --noEmit), git/lite@v1, file/write_file@v1. N'appelle JAMAIS code_gen_v1/analyse_v1 (inexistants). Pour migrer un panel: lis le .panel.tsx V1 (interfaces/main/GUI/official/gui/src/panels/) via read_file, identifie les routes daemon réellement appelées (grep services/api/handlers/ via shell/exec) et la structure de réponse (result.xxx), puis écris le PanelDef V2 (interfaces/main/GUI/v2/src/panels/) : composant avec ctx.api.post, usePoll (panel-utils.ts), langEmbedded, paramsSchema si utile, déclaration. Réponds avec l'analyse + le code du panel prêt à enregistrer dans init.ts."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+  # ── Codeurs : écrivent les panels / modifications ──
+  - agent_name: coder-a
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    config: &coder_cfg
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["dev"]
+              context: "Codeur GUI V2. OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1 (bash complet : ls, cat, grep, npx tsc --noEmit dans interfaces/main/GUI/v2), git/lite@v1, file/write_file@v1. JAMAIS code_gen_v1/analyse_v1. Contrat PanelDef: {id, labelKey, iconKey?, version, essential?, paramsSchema?, langEmbedded?, menu?, declaration(), component({ctx, params})}. ctx.api.post(route, body) → POST daemon (réponse enveloppée {ok, route, result} → lire res.result.xxx). Polling: usePoll(post, route, body, ms, unwrap) dans src/panels/panel-utils.ts. Vérifier la structure de réponse réelle des routes daemon (grep services/api/handlers/). Enregistrer le panel dans src/panels/init.ts. Vérifier `npx tsc --noEmit` avant de répondre."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+  - agent_name: coder-b
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    config: *coder_cfg
+  - agent_name: coder-c
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["dev"]
+              context: "Codeur senior GUI V2. OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1, git/lite@v1, file/write_file@v1. JAMAIS code_gen_v1/analyse_v1. Mêmes règles que les codeurs (contrat PanelDef, ctx.api.post, res.result.xxx, usePoll, init.ts, tsc). Pour les panels complexes (graphes, interactions, état) : lis bien le composant V1 complet, porte la logique (polling, états), et fais un typecheck strict. Signale toute route daemon manquante au lieu de la contourner."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+  # ── Testeurs : typecheck + tests unitaires sur ce qui a été modifié ──
+  - agent_name: tester-a
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    config: &tester_cfg
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["test"]
+              context: "Testeur GUI V2. OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1 (bash : npx tsc --noEmit, npm test dans interfaces/main/GUI/v2), git/lite@v1, file/write_file@v1. JAMAIS code_gen_v1/analyse_v1. Exécute `npx tsc --noEmit` et `npm test` (vitest). Identifie d'abord les fichiers modifiés (git diff), puis vérifie qu'ils compilent et que les tests passent. Si un test manque, ajoute-le. Réponds STATUS: PASSED ou STATUS: FAILED avec la sortie."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+  - agent_name: tester-b
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    config: *tester_cfg
+
+  # ── Reviewer : relit les changements, bloque si problème ──
+  - agent_name: reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["dev"]
+              context: "Relecteur GUI V2. OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1, git/lite@v1, file/write_file@v1. JAMAIS code_gen_v1/analyse_v1. Vérifie que les panels migrés respectent le contrat PanelDef (pas de texte en dur → labelKey/langEmbedded, ctx.api.post avec res.result, polling propre avec cleanup, pas de crash si daemon down). Relis le diff. Réponds REVIEW: OK ou REVIEW: issues + liste."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+  # ── Merger : intègre les branches une fois les tâches terminées ──
+  - agent_name: integrator
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "{{request}}"
+              bundles: ["dev", "test"]
+              context: "Intégrateur GUI V2. OUTILS UNIQUEMENT : file/read_file@v1, shell/exec@v1, git/lite@v1, file/write_file@v1. JAMAIS code_gen_v1/analyse_v1. Vérifie que les tests passent (npm test + tsc), résout les conflits, merge et push si tout est OK. Réponds INTEGRATION: OK ou INTEGRATION: bloqué."
+              max_loops: 100
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+resources:
+  budget_per_hour: 100
+  max_concurrent: 6
+  llm_quota_per_day: 500

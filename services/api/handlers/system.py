@@ -278,11 +278,63 @@ def system_service_restart(name: str):
         return {"status": "error", "error": str(e)}
 
 
+def system_service_start(name: str):
+    """Démarre un service via le superviseur."""
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().start(name)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_service_stop(name: str):
+    """Arrête un service via le superviseur."""
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().stop(name)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_service_reset(name: str):
+    """Reset complet d'un service (arrêt + relance à froid)."""
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().reset(name)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_services_reset_all():
+    """Reset complet de tous les services gérés."""
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().reset_all()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def system_shutdown():
     """Arrêt complet : stoppe tous les services via le superviseur."""
     try:
         from services.supervisor.client import get_supervisor_client
         return get_supervisor_client().shutdown()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def system_shutdown_all():
+    """Arrêt total durable : stoppe tous les services + le superviseur,
+    et empêche le daemon de le relancer (flag supervisor.disabled)."""
+    try:
+        from services.supervisor.client import get_supervisor_client
+        return get_supervisor_client().shutdown_all()
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -530,7 +582,12 @@ register("system/state/get",         _wrap(op_system_state_get))
 register("system/state/save",        _wrap(save_system_state))
 register("system/services",          _wrap(system_services_list))
 register("system/services/restart",  lambda p: _quiet(system_service_restart, p.get("name")))
+register("system/services/start",    lambda p: _quiet(system_service_start, p.get("name")))
+register("system/services/stop",     lambda p: _quiet(system_service_stop, p.get("name")))
+register("system/services/reset",    lambda p: _quiet(system_service_reset, p.get("name")))
+register("system/services/reset_all",_wrap(system_services_reset_all))
 register("system/shutdown",          _wrap(system_shutdown))
+register("system/shutdown_all",      _wrap(system_shutdown_all))
 register("db/init",                  _wrap(init_databases))
 register("db/check",                 _wrap(check_databases))
 register("catalogue/tools/list",     _wrap(get_catalogue_tools))
