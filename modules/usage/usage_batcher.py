@@ -586,6 +586,13 @@ def run_once() -> Dict[str, Any]:
     frontier = _data_frontier(cat)
     if frontier is None:
         return {"batched": 0, "cascade": 0, "purged": 0, "frontier": None}
+    # Blocs glissants de score (fail_rate + latence) : AVANT _batch_1m car il
+    # supprime le détail. Le tracking meta évite de recalculer les blocs figés.
+    try:
+        from modules.usage.score_blocks import run as run_blocks
+        score_blocks = run_blocks(cat, rt, frontier)
+    except Exception:
+        score_blocks = {}
     batched = _batch_1m(cat, rt)
     cascaded = _cascade(cat, rt, frontier)
     purged = _purge_expired(rt)
@@ -596,7 +603,8 @@ def run_once() -> Dict[str, Any]:
     except Exception:
         pass
     return {"batched": batched, "cascade": cascaded, "purged": purged,
-            "frontier": frontier, "reconciled": reconciled}
+            "frontier": frontier, "reconciled": reconciled,
+            "score_blocks": score_blocks}
 
 
 def _acquire_singleton() -> Optional[object]:

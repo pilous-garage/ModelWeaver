@@ -326,6 +326,76 @@ class RuntimeDB:
                     warnings        TEXT DEFAULT '[]'
                 );
                 CREATE INDEX IF NOT EXISTS idx_apr_time ON archive_processing_report(processed_at);
+
+                -- Blocs glissants de score par (provider, model) : totaux
+                -- par bucket (requests, fail_count, total_latency_ms) servant à
+                -- calculer fail_rate + latence des fenêtres 5m/1h/1j/1w sans
+                -- rescanner le détail à chaque tick. Le batcheur ne calcule que
+                -- le bloc le plus récent (tracking meta score_batch.last_5m/1h/1d)
+                -- et les blocs supérieurs somment les blocs inférieurs.
+                CREATE TABLE IF NOT EXISTS score_batch_blocks_5m (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT NOT NULL,
+                    model_ref       TEXT NOT NULL,
+                    requests        INTEGER DEFAULT 0,
+                    fail_count      INTEGER DEFAULT 0,
+                    total_latency_ms REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sbb5m_bucket ON score_batch_blocks_5m(bucket);
+                CREATE TABLE IF NOT EXISTS score_batch_blocks_1h (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT NOT NULL,
+                    model_ref       TEXT NOT NULL,
+                    requests        INTEGER DEFAULT 0,
+                    fail_count      INTEGER DEFAULT 0,
+                    total_latency_ms REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sbb1h_bucket ON score_batch_blocks_1h(bucket);
+                CREATE TABLE IF NOT EXISTS score_batch_blocks_1d (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT NOT NULL,
+                    model_ref       TEXT NOT NULL,
+                    requests        INTEGER DEFAULT 0,
+                    fail_count      INTEGER DEFAULT 0,
+                    total_latency_ms REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sbb1d_bucket ON score_batch_blocks_1d(bucket);
+
+                -- Scores batch par (provider, model) : fail_rate + latence des
+                -- 4 fenêtres, composées depuis les blocs stockés. fr = 0 si aucun
+                -- appel (pas d'échec → score parfait). lat = moyenne pondérée.
+                CREATE TABLE IF NOT EXISTS score_batch (
+                    provider_ref    TEXT NOT NULL,
+                    model_ref       TEXT NOT NULL,
+                    requests_5m     INTEGER DEFAULT 0,
+                    requests_1h     INTEGER DEFAULT 0,
+                    requests_1j     INTEGER DEFAULT 0,
+                    requests_1w     INTEGER DEFAULT 0,
+                    fail_count_5m   INTEGER DEFAULT 0,
+                    fail_count_1h   INTEGER DEFAULT 0,
+                    fail_count_1j   INTEGER DEFAULT 0,
+                    fail_count_1w   INTEGER DEFAULT 0,
+                    total_lat_ms_5m REAL DEFAULT 0,
+                    total_lat_ms_1h REAL DEFAULT 0,
+                    total_lat_ms_1j REAL DEFAULT 0,
+                    total_lat_ms_1w REAL DEFAULT 0,
+                    fr_5m           REAL DEFAULT 0,
+                    fr_1h           REAL DEFAULT 0,
+                    fr_1j           REAL DEFAULT 0,
+                    fr_1w           REAL DEFAULT 0,
+                    lat_5m_ms       REAL DEFAULT 0,
+                    lat_1h_ms       REAL DEFAULT 0,
+                    lat_1j_ms       REAL DEFAULT 0,
+                    lat_1w_ms       REAL DEFAULT 0,
+                    score_fail_rate REAL DEFAULT 0,
+                    score_latency   REAL DEFAULT 0,
+                    updated_at      INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(provider_ref, model_ref)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sbatch_model ON score_batch(provider_ref, model_ref);
             """)
         except Exception as e:
             self.conn.rollback()
