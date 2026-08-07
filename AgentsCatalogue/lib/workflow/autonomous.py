@@ -192,6 +192,40 @@ def _resolve_skill_candidates(fn_name: str) -> List[str]:
     return out
 
 
+def _log_no_tools_call(cat, p_ref: str, m_ref: str, agent_id: str = "") -> None:
+    """Trace un « faux appel » : le LLM a répondu en texte SANS tool call.
+
+    Ces réponses « descriptives » ne font rien (l'agent décrit au lieu d'agir).
+    On les enregistre dans model_call_log avec error_code='no_tools' pour que
+    le scoring d'allocation pénalise les modèles qui n'utilisent pas les
+    outils (taux de faux appels) — sinon un modèle bavard non-agentic reste
+    scoré comme fiable alors qu'il bloque le swarm.
+    """
+    if cat is None:
+        return
+    try:
+        cat.conn.execute("""
+            INSERT INTO model_call_log
+                (provider_id, model_id, provider_model_id, agent_id, success,
+                 tokens_in, tokens_out, tokens_thinking, latency_ms,
+                 error_code, error_msg, call_type)
+            VALUES (
+                COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
+                COALESCE((SELECT id FROM catalogue_models WHERE ref = ?), 0),
+                (SELECT pm.id FROM provider_models pm
+                  JOIN catalogue_providers p ON p.id = pm.provider_id
+                 WHERE p.ref = ? AND pm.provider_model_name = ?),
+                ?, 0, 0, 0, 0, 0, 'no_tools', 'réponse texte sans tool call', 'chat')
+        """, (p_ref, m_ref, p_ref, m_ref,
+              (str(agent_id)[:80] if agent_id else None)))
+        cat.conn.commit()
+    except Exception:
+        try:
+            cat.conn.rollback()
+        except Exception:
+            pass
+
+
 def _extract_toolcalls_from_text(content: str):
     """Extrait des toolcalls sérialisés dans la réponse texte d'un LLM.
 
@@ -676,6 +710,12 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                                                  "directement un outil pour faire le travail.")})
                     continue
                 else:
+                    # Faux appel : réponse texte sans tool call ni action.
+                    # On le trace pour pénaliser le modèle au scoring.
+                    try:
+                        _log_no_tools_call(_cat, p_ref, m_ref, _aid_from_home or "")
+                    except Exception:
+                        pass
                     signals.append({"signal": "no_action",
                                     "stdout": "Réponse texte sans aucun outil exécuté — rien n'a été fait",
                                     "exit_code": 1})
