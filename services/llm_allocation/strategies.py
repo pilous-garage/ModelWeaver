@@ -22,6 +22,11 @@ class AllocationRequest:
     max_cost_per_call: float = 0.0
     exclude: List[str] = field(default_factory=list)
     agent_name: str = ""
+    # Tolérance latence (score_latence = exp( -(max(penalise,lat)-penalise)/regule )).
+    # Défauts : penalise=1.0s, regule=60.0s. Une tâche tolérante peut passer
+    # penalise/regule élevés pour garder les LLM lents compétitifs.
+    latence_penalise: float = 1.0
+    latence_regule: float = 60.0
 
 
 @dataclass

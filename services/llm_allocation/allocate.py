@@ -311,6 +311,8 @@ def allocate_llm(params: dict) -> dict:
         max_cost_per_call=float(params.get("max_cost_per_call", 0)),
         exclude=params.get("exclude", []),
         agent_name=params.get("agent_name", ""),
+        latence_penalise=float(params.get("latence_penalise", 1.0)),
+        latence_regule=float(params.get("latence_regule", 60.0)),
     )
 
     strategy_fn = get_strategy(strategy_name)

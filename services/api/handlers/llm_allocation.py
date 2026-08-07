@@ -18,6 +18,9 @@ def op_llm_allocate(params):
         max_cost_per_call : float
         exclude      : [str] (refs "provider/model" à exclure)
         agent_name   : str
+        latence_penalise : float (s) — seuil latence sans pénalité (défaut 1.0)
+        latence_regule   : float (s) — échelle de pénalité (défaut 60.0)
+        (une tâche tolérante peut passer 60/300 pour garder les LLM lents)
 
     Retourne :
         {

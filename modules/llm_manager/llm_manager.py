@@ -251,7 +251,9 @@ class LLMManager:
                    exclude_models: Optional[list] = None,
                    max_candidates: int = 8,
                    min_window: int = 0,
-                   agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                   agent_id: Optional[str] = None,
+                   latence_penalise: float = 1.0,
+                   latence_regule: float = 60.0) -> Optional[Dict[str, Any]]:
         """Trouve un LLM disponible via le service LLM Manager (ou fallback).
 
         Si le service LLM Manager (socket llm.sock) est disponible, on lui
@@ -261,6 +263,10 @@ class LLMManager:
         ``agent_id`` permet l'anti-affinité : un modèle pris par un autre agent
         actif n'est pas ré-alloué (les agents parallèles ont des modèles
         différents, sinon les RPM bas se saturent).
+        ``latence_penalise``/``latence_regule`` (s) : tolérance latence pour le
+        calcul du score (score_latence = exp( -(max(penalise,lat)-penalise)/
+        regule )). Défauts 1.0/60.0. Une tâche tolérante peut passer des
+        valeurs élevées pour garder les LLM lents compétitifs.
         """
         # Délégation au service LLM Manager (décision centralisée)
         try:
@@ -278,6 +284,8 @@ class LLMManager:
                                           + ([exclude_provider] if exclude_provider else []),
                     "exclude_models": excl_models,
                     "agent_id": agent_id or "",
+                    "latence_penalise": latence_penalise,
+                    "latence_regule": latence_regule,
                 })
                 if res.get("status") == "ok" and res.get("provider_ref"):
                     return {"provider_ref": res["provider_ref"],
