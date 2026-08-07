@@ -186,7 +186,10 @@ avec la section précise (inspiré de <repo> pour <feature>).
   4. snapshot → image mw-image/...:latest sauvegardée (sha256)
   5. release → conteneur libéré, 0 conteneur restant
   Toute la chaîne docker fonctionne (fork/running/tests/snapshot/release).
-- Corrections à faire (issues des audits) : panels avec données mockées,
+- 18h50 : CORRECTION 1 (commit 00b1369) — agents-equipe-leger : ajout des
+  métriques d'exécution (nb tâches, tokens, échecs via agent/metrics).
+  GUI relancée avec le nouveau bundle (index-BydUYKHj.js).
+- Corrections restantes (issues des audits) : panels avec données mockées,
   gestion d'erreurs/loading non uniforme, typage React manquant.
 
 ## Modèles utiles (probes réussis cette nuit)
