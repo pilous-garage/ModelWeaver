@@ -87,6 +87,21 @@ def _batch_1m(cat, rt) -> int:
         return 0
     cutoff = frontier - BATCH_MARGIN_SECONDS
     try:
+        # Assure les colonnes par type (req_<type>/tok_<type>) sur la table.
+        try:
+            from modules.usage.rates import ensure_rate_columns, rate_fields
+            ensure_rate_columns(rt.conn, "usage_history_1m")
+        except Exception:
+            pass
+        # Récupère les call_types présents dans la fenêtre pour les colonnes.
+        try:
+            ctypes = [r["call_type"] for r in cat.conn.execute(
+                "SELECT DISTINCT call_type FROM model_call_log WHERE created_at <= ?",
+                (cutoff,)).fetchall()]
+            ctypes = [c for c in ctypes if c]
+            ensure_rate_columns(rt.conn, "usage_history_1m", ctypes)
+        except Exception:
+            ctypes = []
         rows = cat.conn.execute("""
             SELECT
                 CAST(l.created_at / 60 AS INTEGER) * 60 AS bucket,
@@ -105,26 +120,73 @@ def _batch_1m(cat, rt) -> int:
             WHERE l.created_at <= ?
             GROUP BY 1, 2, 3, 4
         """, (cutoff,)).fetchall()
+        # Agrégats par type (chat/chat_stream/probe…) pour les colonnes par type.
+        type_rows = cat.conn.execute("""
+            SELECT CAST(l.created_at / 60 AS INTEGER) * 60 AS bucket,
+                   COALESCE(p.ref, '') AS provider_ref,
+                   COALESCE(m.ref, '') AS model_ref,
+                   COALESCE(l.agent_id, '') AS agent_id,
+                   COALESCE(l.call_type, 'chat') AS call_type,
+                   COUNT(*) AS req,
+                   SUM(l.tokens_in + l.tokens_out) AS tok
+            FROM model_call_log l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.created_at <= ?
+            GROUP BY 1, 2, 3, 4, 5
+        """, (cutoff,)).fetchall()
+        # Index des colonnes par type.
+        rate_cols = set(rate_fields(ctypes))
         if not rows:
             return 0
         for r in rows:
-            rt.conn.execute("""
-                INSERT INTO usage_history_1m
-                    (bucket, provider_ref, model_ref, agent_id,
-                     requests, tokens_in, tokens_out, tokens_thinking, cost,
-                     first_call, last_call)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
-                ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
-                    requests = usage_history_1m.requests + excluded.requests,
-                    tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
-                    tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
-                    tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
-                    cost = usage_history_1m.cost + excluded.cost,
-                    last_call = MAX(usage_history_1m.last_call, excluded.last_call),
-                    first_call = MIN(usage_history_1m.first_call, excluded.first_call)
-            """, (r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
-                  r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
-                  r["tokens_thinking"] or 0, r["first_call"], r["last_call"]))
+            # req_total = requests (tous types), tok_total = tokens_in+out.
+            sql_insert = """INSERT INTO usage_history_1m
+                (bucket, provider_ref, model_ref, agent_id,
+                 requests, tokens_in, tokens_out, tokens_thinking, cost,
+                 first_call, last_call, req_total, tok_total)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?)"""
+            sql_update = """ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
+                requests = usage_history_1m.requests + excluded.requests,
+                tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
+                tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
+                tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
+                cost = usage_history_1m.cost + excluded.cost,
+                last_call = MAX(usage_history_1m.last_call, excluded.last_call),
+                first_call = MIN(usage_history_1m.first_call, excluded.first_call),
+                req_total = usage_history_1m.req_total + excluded.req_total,
+                tok_total = usage_history_1m.tok_total + excluded.tok_total"""
+            params = [r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
+                      r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
+                      r["tokens_thinking"] or 0, r["first_call"], r["last_call"],
+                      r["requests"] or 0, (r["tokens_in"] or 0) + (r["tokens_out"] or 0)]
+            # Colonnes par type (req_<type>/tok_<type>).
+            type_map = {}
+            for tr in type_rows:
+                if (tr["bucket"] == r["bucket"] and tr["provider_ref"] == r["provider_ref"]
+                        and tr["model_ref"] == r["model_ref"] and tr["agent_id"] == r["agent_id"]):
+                    safe = (tr["call_type"] or "chat").replace(" ", "_").replace("-", "_")
+                    type_map.setdefault(safe, [0, 0])
+                    type_map[safe][0] += tr["req"] or 0
+                    type_map[safe][1] += tr["tok"] or 0
+            extra_cols = []
+            extra_params = []
+            for safe, (req, tok) in type_map.items():
+                if f"req_{safe}" in rate_cols:
+                    extra_cols.append(f"req_{safe}")
+                    extra_cols.append(f"tok_{safe}")
+                    extra_params.append(req)
+                    extra_params.append(tok)
+            if extra_cols:
+                sql_insert = sql_insert.replace(
+                    "req_total, tok_total)",
+                    "req_total, tok_total, " + ", ".join(extra_cols) + ")")
+                sql_insert = sql_insert.replace(
+                    "?, ?, ?)",
+                    "?, ?, ?, " + ", ".join("?" for _ in extra_params) + ")")
+                sql_update += ", " + ", ".join(
+                    f"{c} = usage_history_1m.{c} + excluded.{c}" for c in extra_cols)
+            rt.conn.execute(sql_insert + " " + sql_update, params + extra_params)
         rt.conn.commit()
         # ── Séquences de réussite par (provider, model) ──
         # Pour chaque modèle ayant des appels dans la fenêtre :

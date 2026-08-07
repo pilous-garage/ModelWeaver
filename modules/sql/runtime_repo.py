@@ -197,6 +197,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -212,6 +214,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -227,6 +231,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -242,6 +248,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -257,6 +265,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -272,6 +282,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     first_call      INTEGER,
                     last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
@@ -293,6 +305,8 @@ class RuntimeDB:
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     avg_latency_ms  REAL DEFAULT 0,
+                    req_total       INTEGER DEFAULT 0,
+                    tok_total       INTEGER DEFAULT 0,
                     status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
                     updated_at      INTEGER DEFAULT (strftime('%s','now'))
                 );
@@ -336,6 +350,12 @@ class RuntimeDB:
                        "usage_history_1w", "usage_history_1mo"):
                 _add_column_if_missing(self.conn, _t, "first_call", "INTEGER")
                 _add_column_if_missing(self.conn, _t, "last_call", "INTEGER")
+                _add_column_if_missing(self.conn, _t, "req_total", "INTEGER DEFAULT 0")
+                _add_column_if_missing(self.conn, _t, "tok_total", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "model_success_runs",
+                                   "req_total", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "model_success_runs",
+                                   "tok_total", "INTEGER DEFAULT 0")
         except Exception:
             self.conn.rollback()
 
