@@ -1313,6 +1313,18 @@ class CatalogueDB:
             self.conn.rollback()
             print(f"⚠️  Migration provider_endpoints ignorée: {e}")
 
+        # ── Migration model_key (identifiant canonique par MODÈLE) ──
+        # Permet d'agréger les scores de benchmark par modèle (pas par
+        # provider_model) et de comparer les variantes entre elles.
+        try:
+            _add_column_if_missing(self.conn, "catalogue_models", "model_key", "TEXT")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cat_models_model_key "
+                "ON catalogue_models(model_key)")
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration model_key ignorée: {e}")
+
         # ── Migration context_window_effective + context_audit_log ──
         try:
             _add_column_if_missing(self.conn, "provider_models", "context_window_effective", "INTEGER")

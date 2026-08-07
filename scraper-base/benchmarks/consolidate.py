@@ -437,7 +437,33 @@ def _resolve_model_id(conn: sqlite3.Connection, model_ref: str) -> Optional[int]
     row = conn.execute("SELECT id FROM catalogue_models WHERE ref LIKE ?", (f"%{short}%",)).fetchone()
     if row:
         return row["id"] if isinstance(row, sqlite3.Row) else row[0]
+    # Fallback par model_key : le model_ref a été normalisé en identifiant
+    # canonique — on le matche aux modèles du catalogue qui partagent ce key.
+    try:
+        row = conn.execute(
+            "SELECT id FROM catalogue_models WHERE model_key = ? "
+            "ORDER BY id LIMIT 1", (model_ref,)).fetchone()
+        if row:
+            return row["id"] if isinstance(row, sqlite3.Row) else row[0]
+    except Exception:
+        pass
     return None
+
+
+def _load_model_key():
+    """Charge le module model_key (normalisation des refs → identifiant canonique).
+
+    Retourne le module ou None si indisponible (fallback : pas de normalisation).
+    """
+    try:
+        import importlib.util
+        p = Path(__file__).resolve().parent / "model_key.py"
+        spec = importlib.util.spec_from_file_location("benchmarks.model_key", p)
+        mk = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mk)
+        return mk
+    except Exception:
+        return None
 
 
 def _model_name_to_ref(conn: sqlite3.Connection, name: str) -> Optional[str]:
@@ -461,16 +487,24 @@ def _model_name_to_ref(conn: sqlite3.Connection, name: str) -> Optional[str]:
 
 
 def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
+    # Normalisation par MODEL_KEY : le même modèle physique peut apparaître
+    # sous plusieurs refs (deepseek-v4-flash vs deepseek-ai/deepseek-v4-flash).
+    # On regroupe les benchmarks par identifiant canonique pour agréger le
+    # score PAR MODÈLE (pas par provider_model). En local, on résout aussi
+    # vers le model_id du catalogue correspondant.
+    mk = _load_model_key()
     count = 0
     skipped = 0
     for r in rows:
+        ref = r["model_ref"]
+        key = mk.model_key(ref) if mk else ref
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO model_benchmarks_raw "
                 "(model_ref, benchmark_key, metric_name, raw_value, percentile, "
                 "source_url, fetched_at, is_synthetic, confidence) "
                 "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)",
-                (r["model_ref"], r["benchmark_key"], r["metric_name"],
+                (key, r["benchmark_key"], r["metric_name"],
                  r["raw_value"], r.get("percentile", 50.0),
                  r.get("source_url", ""),
                  r.get("is_synthetic", 0),
@@ -480,7 +514,7 @@ def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
         except Exception as e:
             skipped += 1
             if skipped <= 5:
-                print(f"    ⚠ skip {r.get('model_ref','?')}: {e}")
+                print(f"    ⚠ skip {key}: {e}")
     conn.commit()
     print(f"    → {count} écrits, {skipped} skipped")
 
@@ -488,6 +522,14 @@ def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
 TASK_TYPE_COLS = "score_chat REAL DEFAULT 0, score_knowledge REAL DEFAULT 0, score_coding REAL DEFAULT 0, score_reasoning REAL DEFAULT 0, score_agentic REAL DEFAULT 0"
 
 def write_efficacy(conn: sqlite3.Connection, rows: List[Dict], local: bool):
+    if local:
+        # Purge avant réécriture : évite que les anciennes variantes (refs non
+        # normalisés) gardent leur score et polluent le Top / l'allocation.
+        try:
+            conn.execute("DELETE FROM model_efficacy")
+            conn.commit()
+        except Exception as e:
+            print(f"    ⚠ purge model_efficacy: {e}")
     written = 0
     for r in rows:
         try:
@@ -599,12 +641,30 @@ def main():
 
     print(f"\n  Total: {len(all_raw)} lignes brutes")
 
+    # 4bis. Normalisation des refs par MODEL_KEY : le même modèle physique peut
+    # arriver sous plusieurs refs selon la source (deepseek-v4-flash vs
+    # deepseek-ai/deepseek-v4-flash). On réduit à l'identifiant canonique AVANT
+    # la normalisation percentiles et la consolidation pour scorer PAR MODÈLE.
+    mk = _load_model_key()
+    if mk:
+        for r in all_raw:
+            if r.get("model_ref"):
+                r["model_ref"] = mk.model_key(r["model_ref"])
+
     # 5. Normalize percentiles
     print("\n  Normalisation percentiles...")
     all_raw = normalize_all(all_raw)
 
     # 6. Write raw
     print("\n  Écriture model_benchmarks_raw...")
+    # Purge avant réécriture : les refs non normalisés (deepseek-ai/xxx,
+    # kilo/deepseek/xxx…) doivent disparaître pour que la consolidation par
+    # model_key regroupe CHAQUE modèle une seule fois.
+    try:
+        conn.execute("DELETE FROM model_benchmarks_raw")
+        conn.commit()
+    except Exception as e:
+        print(f"    ⚠ purge model_benchmarks_raw: {e}")
     write_raw(conn, all_raw)
     append_scrape_log(conn, "all_sources", "", len(all_raw), True)
     print(f"✅ model_benchmarks_raw: {len(all_raw)} lignes")
@@ -617,8 +677,6 @@ def main():
 
     # 8. Write efficacy
     write_efficacy(conn, efficacy, local)
-    print(f"✅ model_efficacy: {len(efficacy)} modèles")
-
     # 9. Top 10
     top = sorted(efficacy, key=lambda r: r["global_score"], reverse=True)[:10]
     print(f"\n  Top 10 (score global):")

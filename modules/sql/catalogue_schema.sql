@@ -255,20 +255,21 @@ SELECT id, 'workspace', 'https://{workspace}.databricks.com/serving-endpoints', 
 -- 2. CATALOGUE_MODELS — Modèles LLM (référence)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS catalogue_models (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ref             TEXT UNIQUE NOT NULL,
-    name            TEXT NOT NULL,
-    developer       TEXT,
-    release_year    INTEGER,
-    architecture    TEXT,
-    parameter_count TEXT,
-    modality        TEXT,
-    target_use      TEXT,
-    license         TEXT,
-    is_open_weights INTEGER DEFAULT 0,
-    parent_model_ref TEXT,
-    created_at      INTEGER DEFAULT (strftime('%s', 'now'))
-);
+     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+     ref             TEXT UNIQUE NOT NULL,
+     model_key       TEXT,
+     name            TEXT NOT NULL,
+     developer       TEXT,
+     release_year    INTEGER,
+     architecture    TEXT,
+     parameter_count TEXT,
+     modality        TEXT,
+     target_use      TEXT,
+     license         TEXT,
+     is_open_weights INTEGER DEFAULT 0,
+     parent_model_ref TEXT,
+     created_at      INTEGER DEFAULT (strftime('%s', 'now'))
+ );
 
 -- ============================================================
 -- 3. PROVIDER_MODELS — Jointure provider ↔ modèle (prix, tokens)
