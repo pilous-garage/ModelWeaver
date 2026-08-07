@@ -1350,9 +1350,11 @@ class AgentManager:
                     # Ne réveiller que si des tasks du RÔLE de l'agent sont dispo
                     # (sinon il re-pioche rien et spam les wait_for).
                     # Hiérarchie : un rôle senior peut piocher les tâches de
-                    # niveau inférieur (coder_senior → coder_junior/mid).
+                    # niveau inférieur (coder_senior → coder_junior/mid), donc
+                    # on teste si _r (rôle tâche) ∈ _compatible_roles(rt) où rt
+                    # est le rôle greedy de l'agent.
                     if not any(
-                        rt in _compatible_roles(_r) or _r == rt
+                        _r in _compatible_roles(rt) or _r == rt
                         for _w, _t, _r in pending_tasks):
                         continue
                     threading.Thread(target=self._run_sleeping_agent,
