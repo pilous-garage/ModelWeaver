@@ -100,6 +100,7 @@ def done(inputs: dict, home: str) -> dict:
     branch = inputs.get("branch", "")
     commit_hash = inputs.get("commit_hash", "")
     approve = bool(inputs.get("approve", False))
+    delivered = bool(inputs.get("delivered", False))
     if not workspace_id or task_id is None:
         return {"ok": False, "error": "workspace_id et task_id requis"}
     try:
@@ -109,11 +110,12 @@ def done(inputs: dict, home: str) -> dict:
             db.close()
             return {"ok": False, "error": "tâche introuvable"}
         # Garde anti faux-positif : une tâche de CODAGE ne peut pas être
-        # marquée done sans commit (le code produit est le livrable). Sans
-        # ça, les membres greedy marquent des tâches done à vide et la
+        # marquée done sans livrable. Le livrable = un commit git (le code
+        # produit) OU un fichier écrit (delivered=true, ex. rapport d'audit).
+        # Sans ça, les membres greedy marquent des tâches done à vide et la
         # mission « avance » sans livrable réel.
         role = (task.get("role_required") or "").lower()
-        if role.startswith("coder") and not (branch or commit_hash):
+        if role.startswith("coder") and not (branch or commit_hash or delivered):
             db.close()
             return {"ok": False,
                     "error": "tâche de codage : commit_hash/branch requis "

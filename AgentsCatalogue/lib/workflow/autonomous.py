@@ -775,6 +775,11 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             # s'en servent pour le home et le clone.
             if _aid_from_home:
                 _injected["agent_id"] = _aid_from_home
+            # Un write_file réussi = un livrable existe : on le signale au
+            # task_done pour qu'il accepte le done même sans commit (cas des
+            # rapports d'audit/analyse écrits dans le home).
+            if _write_tools_ok > 0 and fn_name in ("task_done_v1", "workspace_task_done_v1"):
+                _injected["delivered"] = True
             candidates = _resolve_skill_candidates(fn_name)
             for cand in candidates:
                 try:
