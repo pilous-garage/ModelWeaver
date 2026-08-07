@@ -125,6 +125,15 @@ avec la section précise (inspiré de <repo> pour <feature>).
   task_claim_next_v1 OK, mais le fallback a enchaîné des modèles payants/morts
   (kilo/qwen "Paid Model", openrouter o1:batch) → "réponse vide", tâche 335
   pending. → filtrer les modèles payants du pool de fallback.
+- 05h10 : DÉCOUVERTE CLÉ — le probe marquait laguna-s-2.1-free "non-agentic"
+  alors qu'il utilise les tools dans opencode. Cause : nom d'outil artificiel
+  'fake_shell_v1' que les modèles ne reconnaissent pas → ils répondent en
+  texte. opencode nomme l'outil 'bash'. Avec 'bash' + question disque, TOUS
+  les modèles testés appellent df -h (agentic). Commit 5784557.
+- 05h15 : probe() parallélisé PAR PROVIDER (un thread par provider, séquentiel
+  intra-provider + sleep 0.3s) — le probe massif précédent (20 threads sur le
+  même provider) saturait le quota → faux unavailable. Colonne `agentic` à
+  ajouter dans provider_models (à faire).
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les

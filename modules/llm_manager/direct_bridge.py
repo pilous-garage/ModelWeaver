@@ -1539,10 +1539,11 @@ class DirectBridge(BaseBridge):
                 r["provider"] = prov
                 r["model"] = mname
                 if r["ok"]:
-                    self._probe_set_available(prov, mname, True)
+                    self._probe_set_available(prov, mname, True, agentic=True)
                 elif self._probe_is_api_fail(r.get("error_code", "unknown")):
                     self._probe_set_available(prov, mname, False,
-                                              r.get("error_code", "unknown"))
+                                              r.get("error_code", "unknown"),
+                                              agentic=False)
                 with lock:
                     results.append(r)
                 # Petit espacement intra-provider : évite le rate-limit
@@ -1607,8 +1608,9 @@ class DirectBridge(BaseBridge):
         return [dict(r) for r in rows]
 
     def _probe_set_available(self, provider_ref: str, model_name: str,
-                             available: bool, reason: str = "") -> None:
-        """Marque un modèle disponible/indisponible en base."""
+                             available: bool, reason: str = "",
+                             agentic: Optional[bool] = None) -> None:
+        """Marque un modèle disponible/indisponible en base (+ agentic)."""
         if not self.cat:
             return
         try:
@@ -1635,6 +1637,12 @@ class DirectBridge(BaseBridge):
                     WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
                       AND provider_model_name = ?
                 """, (reason[:200], provider_ref, model_name))
+            if agentic is not None:
+                self.cat.conn.execute("""
+                    UPDATE provider_models SET agentic = ?
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (1 if agentic else 0, provider_ref, model_name))
             self.cat.conn.commit()
         except Exception:
             try:

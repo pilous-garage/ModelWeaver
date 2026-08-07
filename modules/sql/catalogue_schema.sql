@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS provider_models (
     free_tier               INTEGER DEFAULT 0,
     context_window_effective INTEGER,
     status                  TEXT DEFAULT 'active' CHECK(status IN ('active','deprecated','experimental')),
+    agentic                 INTEGER DEFAULT 0,
     created_at          INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at          INTEGER DEFAULT (strftime('%s', 'now')),
     UNIQUE(provider_id, model_id)

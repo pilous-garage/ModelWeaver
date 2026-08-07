@@ -1338,6 +1338,10 @@ class CatalogueDB:
             _add_column_if_missing(self.conn, "provider_models", "unavailable", "INTEGER DEFAULT 0")
             _add_column_if_missing(self.conn, "provider_models", "noretryuntil", "REAL DEFAULT 0")
             _add_column_if_missing(self.conn, "provider_models", "notrytime", "REAL DEFAULT 0")
+            # Agentic = le modèle sait utiliser les tools (tool calling fiable).
+            # Rempli par le probe (bridge.probe) : 1 si le modèle appelle un
+            # outil de façon cohérente, 0 sinon / inconnu.
+            _add_column_if_missing(self.conn, "provider_models", "agentic", "INTEGER DEFAULT 0")
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS context_audit_log (
                     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
