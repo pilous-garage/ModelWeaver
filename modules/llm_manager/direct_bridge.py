@@ -1386,27 +1386,30 @@ class DirectBridge(BaseBridge):
     # ── Probe (disponibilité réelle des modèles) ─────────────
 
     # Test agentic RÉALISTE : une question qui nécessite un outil.
-    # Le modèle doit comprendre qu'il faut appeler fake_shell_v1 AVEC une
+    # Le modèle doit comprendre qu'il faut appeler l'outil `bash` AVEC une
     # commande cohérente (ex. `df -h` pour l'espace disque). On vérifie :
     #   - l'appel d'outil est bien produit (tool_calls),
     #   - l'argument `command` est cohérent avec la question (mots-clés).
-    # Si le modèle répond en texte OU avec une commande hors-sujet → non-agentic.
+    # IMPORTANT : le nom de l'outil doit être NATUREL (`bash`, comme opencode)
+    # — un nom artificiel (fake_shell_v1) n'est pas reconnu par les modèles
+    # qui répondent alors en texte (faux « non-agentic »).
     PROBE_TOOLS = [{
         "type": "function",
         "function": {
-            "name": "fake_shell_v1",
-            "description": "Exécute une commande shell sur la machine et renvoie sa sortie (ex. df -h, free -m, ls, pwd).",
+            "name": "bash",
+            "description": "Execute a bash command on this system and return its output. Use for terminal operations like df, free, ls, git, etc.",
             "parameters": {"type": "object",
                            "properties": {
                                "command": {"type": "string",
-                                           "description": "Commande shell à exécuter, ex. df -h"},
+                                           "description": "The bash command to execute, e.g. df -h"},
+                               "timeout": {"type": "integer",
+                                           "description": "Optional timeout in milliseconds"},
                            },
                            "required": ["command"]},
         },
     }]
     PROBE_MSG = [{"role": "user",
-                  "content": "Combien d'espace libre reste-t-il sur mon disque dur ? "
-                             "Utilise l'outil fake_shell_v1 pour le savoir."}]
+                  "content": "Combien d'espace libre reste-t-il sur mon disque dur ?"}]
     # Mots-clés attendus dans la commande pour valider la cohérence agentic.
     PROBE_KEYWORDS = ("df", "disk", "space", "storage", "filesystem",
                       "free", "usage", "mount", "fs")
@@ -1508,42 +1511,51 @@ class DirectBridge(BaseBridge):
         - probe(provider)             → tous les modèles du provider
         - probe(provider, model)      → un seul modèle
 
+        PARALLÉLISME PAR PROVIDER : un thread par provider, chaque provider
+        probe ses modèles SÉQUENTIELLEMENT. Paralléliser par MODÈLE (20 requêtes
+        simultanées vers le même provider) sature son quota/rate-limit
+        (ex. opencode-zen, google à RPM bas) → faux unavailable. Un thread par
+        fournisseur reste dans la limite ~20 threads simultanés.
+
         Marque `unavailable` les modèles en échec API (auth/404/timeout/
-        credit) et réactive ceux qui répondent. Retourne un résumé.
+        credit/rate_limit répété) et réactive ceux qui répondent.
         """
         import threading
-        targets: List[tuple] = []  # (provider_ref, model_ref)
+        # Cible : {provider: [modèles]} — pour un seul modèle, (provider,[model]).
+        by_prov: Dict[str, List[str]] = {}
         if provider_ref and model_ref:
-            targets = [(provider_ref, model_ref)]
+            by_prov[provider_ref] = [model_ref]
         else:
-            rows = self._probe_candidates(provider_ref)
-            targets = [(r["prov"], r["pname"]) for r in rows]
+            for r in self._probe_candidates(provider_ref):
+                by_prov.setdefault(r["prov"], []).append(r["pname"])
 
         results: List[Dict] = []
         lock = threading.Lock()
 
-        def _work(prov, mname):
-            r = self._probe_one(prov, mname, timeout)
-            r["provider"] = prov
-            r["model"] = mname
-            if r["ok"]:
-                self._probe_set_available(prov, mname, True)
-            elif self._probe_is_api_fail(r.get("error_code", "unknown")):
-                self._probe_set_available(prov, mname, False,
-                                          r.get("error_code", "unknown"))
-            with lock:
-                results.append(r)
+        def _probe_provider(prov, models):
+            """Probe séquentiellement les modèles d'un provider."""
+            for mname in models:
+                r = self._probe_one(prov, mname, timeout)
+                r["provider"] = prov
+                r["model"] = mname
+                if r["ok"]:
+                    self._probe_set_available(prov, mname, True)
+                elif self._probe_is_api_fail(r.get("error_code", "unknown")):
+                    self._probe_set_available(prov, mname, False,
+                                              r.get("error_code", "unknown"))
+                with lock:
+                    results.append(r)
+                # Petit espacement intra-provider : évite le rate-limit
+                # (RPM) quand on enchaîne les probes du même fournisseur.
+                time.sleep(0.3)
 
-        threads = [threading.Thread(target=_work, args=(p, m), daemon=True)
-                   for (p, m) in targets]
-        # Limite de threads simultanés (~20) : les probes sont légers.
-        MAX_THREADS = 20
-        for i in range(0, len(threads), MAX_THREADS):
-            batch = threads[i:i + MAX_THREADS]
-            for t in batch:
-                t.start()
-            for t in batch:
-                t.join()
+        threads = [threading.Thread(target=_probe_provider,
+                                    args=(prov, models), daemon=True)
+                   for prov, models in by_prov.items()]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         ok = sum(1 for r in results if r["ok"])                       # agentic (tool cohérent)
         non_agentic = sum(1 for r in results if not r["ok"]
@@ -1557,8 +1569,13 @@ class DirectBridge(BaseBridge):
         }
 
     def _probe_candidates(self, provider_ref: Optional[str] = None):
-        """Liste des modèles à prober : (provider, provider_model_name), triés
-        par score décroissant (benchmark modèle) pour prober le meilleur d'abord."""
+        """Liste des modèles à prober : (provider, provider_model_name).
+
+        NE filtre PAS sur available (on probe aussi les modèles marqués
+        unavailable, pour les réévaluer) — on trie simplement par score
+        benchmark décroissant (les modèles sans score vont en dernier).
+        model_efficacy.model_ref = model_key canonique → jointure directe.
+        """
         rows = []
         if not self.cat:
             return rows
@@ -1568,34 +1585,21 @@ class DirectBridge(BaseBridge):
                     SELECT p.ref AS prov, kem.provider_model_name AS pname
                     FROM provider_models_mapping kem
                     JOIN catalogue_providers p ON p.id = kem.provider_id
-                    LEFT JOIN catalogue_models cm ON cm.id = kem.model_id
-                    LEFT JOIN (
-                        SELECT MIN(id) AS canonical_id, model_key
-                        FROM catalogue_models
-                        WHERE model_key IS NOT NULL AND model_key != ''
-                        GROUP BY model_key
-                    ) cmk ON cmk.model_key = cm.model_key
-                    LEFT JOIN model_efficacy me ON me.model_id = cmk.canonical_id
+                    JOIN catalogue_models cm ON cm.id = kem.model_id
+                    LEFT JOIN model_efficacy me ON me.model_ref = cm.model_key
                         AND me.use_case = 'general'
-                    WHERE p.ref = ? AND kem.available = 1 AND kem.declared = 1
-                    ORDER BY COALESCE(me.global_score, 0) DESC, kem.provider_model_name
+                    WHERE p.ref = ?
+                    ORDER BY COALESCE(me.global_score, -1) DESC, kem.provider_model_name
                 """, (provider_ref,)).fetchall()
             else:
                 rows = self.cat.conn.execute("""
                     SELECT p.ref AS prov, kem.provider_model_name AS pname
                     FROM provider_models_mapping kem
                     JOIN catalogue_providers p ON p.id = kem.provider_id
-                    LEFT JOIN catalogue_models cm ON cm.id = kem.model_id
-                    LEFT JOIN (
-                        SELECT MIN(id) AS canonical_id, model_key
-                        FROM catalogue_models
-                        WHERE model_key IS NOT NULL AND model_key != ''
-                        GROUP BY model_key
-                    ) cmk ON cmk.model_key = cm.model_key
-                    LEFT JOIN model_efficacy me ON me.model_id = cmk.canonical_id
+                    JOIN catalogue_models cm ON cm.id = kem.model_id
+                    LEFT JOIN model_efficacy me ON me.model_ref = cm.model_key
                         AND me.use_case = 'general'
-                    WHERE kem.available = 1 AND kem.declared = 1
-                    ORDER BY p.ref, COALESCE(me.global_score, 0) DESC,
+                    ORDER BY p.ref, COALESCE(me.global_score, -1) DESC,
                              kem.provider_model_name
                 """).fetchall()
         except Exception:
