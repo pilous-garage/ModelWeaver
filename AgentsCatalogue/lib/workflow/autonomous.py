@@ -192,6 +192,52 @@ def _resolve_skill_candidates(fn_name: str) -> List[str]:
     return out
 
 
+def _extract_toolcalls_from_text(content: str):
+    """Extrait des toolcalls sérialisés dans la réponse texte d'un LLM.
+
+    Certains LLM (ex. poolside/laguna) répondent en texte avec les appels
+    d'outils SÉRIALISÉS au lieu du mécanisme natif de tool_calling, ex. :
+      {"name": "write_file_v1", "parameters": {...}}
+      {"tool": "git_commit_v1", "args": {...}}
+    Le script texte→toolcalls les parse en toolcalls natifs
+    (format OpenAI {function:{name, arguments}}) pour que la boucle les
+    exécute réellement — sinon l'agent « décrit » le travail sans jamais agir.
+
+    Retourne [] si aucun toolcall exploitable n'est trouvé.
+    """
+    import json as _j
+    import re as _re
+    if not content:
+        return []
+    out = []
+    # Forme 1 : blocs JSON `{"name": "...", "parameters": {...}}` souvent
+    # produits par les LLM « descriptifs » (liste d'appels planifiés).
+    for m in _re.finditer(r'\{"name"\s*:\s*"([A-Za-z0-9_>]+)"\s*,\s*"parameters"\s*:\s*(\{.*?\})\s*\}', content, _re.DOTALL):
+        try:
+            params = _j.loads(m.group(2))
+        except Exception:
+            continue
+        fn = m.group(1)
+        out.append({"id": f"texttc_{len(out)}", "type": "function",
+                    "function": {"name": fn, "arguments": _j.dumps(params, default=str)}})
+        if len(out) >= 6:
+            break
+    if out:
+        return out
+    # Forme 2 : `{"tool": "write_file_v1", "args": {...}}` ou `{...}` avec clé
+    # `name`/`function.name` simple.
+    for m in _re.finditer(r'\{"tool"\s*:\s*"([A-Za-z0-9_>]+)"\s*,\s*"args"\s*:\s*(\{.*?\})\s*\}', content, _re.DOTALL):
+        try:
+            args = _j.loads(m.group(2))
+        except Exception:
+            continue
+        out.append({"id": f"texttc_{len(out)}", "type": "function",
+                    "function": {"name": m.group(1), "arguments": _j.dumps(args, default=str)}})
+        if len(out) >= 6:
+            break
+    return out
+
+
 def _count_match(fn_name: str, counts: Dict[str, int], thresholds: Dict[str, int]) -> Optional[str]:
     """Vérifie si un tool a atteint son seuil de comptage."""
     for pattern, limit in thresholds.items():
@@ -399,6 +445,19 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     # On re-sollicite UNE fois en rappelant d'utiliser les outils (certains
     # modèles de fallback répondent en texte au 1er tour), puis échec.
     _no_action_retries = 0
+    # Compteurs anti « liseur sans conclusion » : un membre qui lit beaucoup
+    # (read_file/list_dir/glob…) sans jamais produire de livrable (write_file,
+    # git_commit, task_done…) tourne jusqu'à max_loops sans rien livrer.
+    # Après quelques tours de lecture pure, on injecte UN rappel système qui
+    # force la synthèse/écriture — sinon les agents « analysent » à l'infini.
+    _conclusion_pushed = False
+    _write_tools_ok = 0
+    _READ_TOOLS = ("read_file", "list_dir", "glob", "grep", "search",
+                   "task_list", "task_get", "chat_recent", "get_env",
+                   "workspace_task_list", "workspace_task_get", "list_files")
+    _WRITE_TOOLS = ("write_file", "git_commit", "git_push", "task_done",
+                    "workspace_task_done", "git_lite", "memory_write",
+                    "workspace_task_create", "task_create")
     # Échecs LLM consécutifs SANS outil réussi : si le fallback enchaîne les
     # modèles morts (chacun "réussi" par assign_llm mais échoue au vrai appel),
     # on doit abandonner vite — sinon coder-c/tester-a font 99 tours de
@@ -592,10 +651,20 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             # Garde-fou : répondre en texte sans avoir exécuté AUCUN outil
             # (même en échec) = l'agent décrit au lieu d'agir → pas un succès.
             if successful_tools == 0:
-                # Certains modèles de fallback répondent en texte au 1er tour
-                # au lieu d'appeler les outils. On les re-sollicite UNE fois en
-                # le rappelant explicitement, puis on échoue (no_action).
-                if _no_action_retries < 1:
+                # Script texte→toolcalls : certains LLM (ex. poolside) répondent
+                # en texte avec les toolcalls SÉRIALISÉS dans le contenu au lieu
+                # d'appeler le mécanisme natif. On tente de les extraire
+                # ({"name": "...", "parameters": {...}} ou {"tool": ...}) et de
+                # les exécuter — sinon l'agent « décrit » sans jamais agir.
+                parsed_calls = _extract_toolcalls_from_text(content)
+                if parsed_calls:
+                    tool_calls = parsed_calls
+                    if _fsm_log is not None:
+                        _fsm_log.log("warn", "tool/text_to_toolcalls",
+                                     f"{len(parsed_calls)} toolcalls extraits du texte")
+                    # On laisse le flux normal construire asst_msg AVEC les
+                    # tool_calls extraits (tc_list) — pas de message séparé.
+                elif _no_action_retries < 1:
                     _no_action_retries += 1
                     if _fsm_log is not None:
                         _fsm_log.log("warn", "tool/no_action_retry",
@@ -606,10 +675,11 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                                                  "git_push_v1). Ne réponds pas en texte : appelle "
                                                  "directement un outil pour faire le travail.")})
                     continue
-                signals.append({"signal": "no_action",
-                                "stdout": "Réponse texte sans aucun outil exécuté — rien n'a été fait",
-                                "exit_code": 1})
-                return signals
+                else:
+                    signals.append({"signal": "no_action",
+                                    "stdout": "Réponse texte sans aucun outil exécuté — rien n'a été fait",
+                                    "exit_code": 1})
+                    return signals
             signals.append({"signal": "loop_end", "stdout": content, "exit_code": 0})
             return signals
         if not tool_calls and not content:
@@ -688,6 +758,23 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 # Un outil réussi = le membre avance → reset les échecs LLM
                 # consécutifs (le pool n'est plus la cause du blocage).
                 _consec_llm_fails = 0
+                # Suivi des outils de lecture vs d'écriture : si le membre
+                # enchaîne les lectures sans produire de livrable, on le pousse
+                # à conclure (sinon il « analyse » jusqu'à max_loops).
+                if any(w in fn_name for w in _WRITE_TOOLS):
+                    _write_tools_ok += 1
+                elif any(r in fn_name for r in _READ_TOOLS):
+                    if (_tool_rounds >= 5 and _write_tools_ok == 0
+                            and not _conclusion_pushed):
+                        _conclusion_pushed = True
+                        messages.append({
+                            "role": "system",
+                            "content": ("Tu as suffisamment lu/exploré. Tu DOIS maintenant "
+                                        "PRODUIRE le livrable : écris le rapport/fichier "
+                                        "demandé avec write_file_v1, puis commite-le avec "
+                                        "git_commit_v1 et marque la tâche done avec "
+                                        "task_done_v1. Ne relis plus de fichiers "
+                                        "inutilement : synthétise et écris.")})
             if _fsm_log is not None:
                 _fsm_log.log("warn" if failed else "debug", "tool/" + ("error" if failed else "ok"),
                              f"name={fn_name} exit={tool_result.get('exit_code')} "
