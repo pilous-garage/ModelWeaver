@@ -21,6 +21,7 @@ from pathlib import Path
 
 from services._common import mw_home, acquire_instance_lock
 from modules.sql.db import AgentsDB
+from modules.sql.workspace import _compatible_roles
 from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
@@ -1308,7 +1309,11 @@ class AgentManager:
         if count == 0 and (open_issues or pending_tasks):
             rows = self.db.conn.execute("""
                 SELECT agent_id, name, role_type FROM agents
-                WHERE config_json LIKE '%\"pick\"%'
+                WHERE (config_json LIKE '%\"pick\"%'
+                       OR config_json LIKE '%claim_next%'
+                       OR config_json LIKE '%Boucle gloutonne%'
+                       OR config_json LIKE '%greedy%'
+                       OR occupation = 'continue')
                   AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
                   AND agent_id NOT IN (SELECT agent_id FROM wait_for WHERE status='waiting')
                 LIMIT 20
@@ -1342,7 +1347,13 @@ class AgentManager:
                         continue
                     # Ne réveiller que si des tasks du RÔLE de l'agent sont dispo
                     # (sinon il re-pioche rien et spam les wait_for).
-                    if not any(_r == rt for _w, _t, _r in pending_tasks):
+                    # Ne réveiller que si des tasks du RÔLE de l'agent sont dispo
+                    # (sinon il re-pioche rien et spam les wait_for).
+                    # Hiérarchie : un rôle senior peut piocher les tâches de
+                    # niveau inférieur (coder_senior → coder_junior/mid).
+                    if not any(
+                        rt in _compatible_roles(_r) or _r == rt
+                        for _w, _t, _r in pending_tasks):
                         continue
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: task pending",
