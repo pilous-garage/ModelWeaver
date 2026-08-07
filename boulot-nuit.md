@@ -111,7 +111,20 @@ avec la section précise (inspiré de <repo> pour <feature>).
   tools) très fiables ; openrouter sans crédit (auth) ; opencode-zen no-tools.
 - 00h20 : team élargie (commit 5017f7a) : analyst, merger, surveillant ajoutés.
   Flux review : tâche coder → 'review' → le reviewer valide en 'done'.
-- À faire ensuite : relancer les tâches 330-333, surveiller, merger.
+- 04h15 : RETOUR OPENCODE-ZEN — les modèles free d'opencode-zen RÉPONDENT et
+  utilisent les tools ! Le probe initial "no-tools" venait de MON prompt de
+  probe (system "Réponds UNIQUEMENT via l'outil" faisait dévier). Avec un
+  message user direct, deepseek-v4-flash-free fait 1-3 tool_calls propres
+  (vérifié avec workflow complet 56 tools : get_env, ls, lite).
+- 04h30 : refonte scoring — score par MODÈLE (model_key) + pénalité provider.
+  model_key normalise les refs (deepseek-v4-flash == kilo/... == opencode-zen/
+  ...-free). Scraper regroupe par model_key (purge avant réécriture).
+  allocate.py joint par model_key + runtime par provider. Pénalité latence :
+  1 min = -0.3 pt. Commits : a3aa2e9, 6f118e4, d2e59af, d3aac31.
+- 04h45 : run swarm coder11 (deepseek-v4-flash-free) : lite_v1 init +
+  task_claim_next_v1 OK, mais le fallback a enchaîné des modèles payants/morts
+  (kilo/qwen "Paid Model", openrouter o1:batch) → "réponse vide", tâche 335
+  pending. → filtrer les modèles payants du pool de fallback.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
