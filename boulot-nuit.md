@@ -199,6 +199,16 @@ avec la section précise (inspiré de <repo> pour <feature>).
   priorise les tâches de la team de l'agent (b03f11a).
 - Panels dev-chat prêts : tsc propre, GUI (index-BydUYKHj.js) relancée,
   8 panels dev-chat présents.
+- 19h30 : FIX PANEL TEAM VIDE — la dev-chat window affichait une team vide.
+  Cause RACINE (pas le code du panel, mais la config persistée) :
+  1. ~/.modelweaver/windows/chatMonitoringDev.json référençait un layout
+     inexistant (layout-chatMonitoringDev) + template 'default' (sans panels).
+  2. ~/.modelweaver/layouts/chat-monitoring-dev.json était CORROMPU (YAML
+     mal dumpé, theme=dict à clés numériques).
+  Fix : window → template chatMonitoringDev + layout chat-monitoring-dev ;
+  layout persisté remplacé par le bon JSON (9 panels dont agents-team-members).
+  GUI relancée (pid 200024). Les routes team/get et agent/list-by-team
+  retournaient déjà les 9 membres — c'était purement un problème de layout.
 - Corrections restantes (issues des audits) : panels avec données mockées,
   gestion d'erreurs/loading non uniforme, typage React manquant.
 
