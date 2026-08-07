@@ -392,6 +392,8 @@ class RuntimeDB:
                     lat_1w_ms       REAL DEFAULT 0,
                     score_fail_rate REAL DEFAULT 0,
                     score_latency   REAL DEFAULT 0,
+                    score_etire     REAL DEFAULT 0,
+                    score_final     REAL DEFAULT 0,
                     updated_at      INTEGER DEFAULT (strftime('%s','now')),
                     UNIQUE(provider_ref, model_ref)
                 );
@@ -461,6 +463,16 @@ class RuntimeDB:
                                    "req_total", "INTEGER DEFAULT 0")
             _add_column_if_missing(self.conn, "model_success_runs",
                                    "tok_total", "INTEGER DEFAULT 0")
+        except Exception:
+            self.conn.rollback()
+
+        # Migration scores batch : score_etire (benchmark étiré croisé) et
+        # score_final (score_etire × score_latence × (1 - score_fail_rate)).
+        try:
+            _add_column_if_missing(self.conn, "score_batch",
+                                   "score_etire", "REAL DEFAULT 0")
+            _add_column_if_missing(self.conn, "score_batch",
+                                   "score_final", "REAL DEFAULT 0")
         except Exception:
             self.conn.rollback()
 

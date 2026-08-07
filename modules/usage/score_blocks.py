@@ -191,8 +191,17 @@ def _win_rows(rt, table: str, n: int) -> List[dict]:
 def update_scores(rt) -> int:
     """Recompose score_batch (4 fenêtres) depuis les blocs stockés, tout modèle.
 
+    score_final = score_etire × score_latence × (1 - score_fail_rate)
+      - score_etire : benchmark étiré (score_benchmark_etire) croisé par model_ref,
+        baseline 0.1 si absent (modèle jamais benchmarké).
+      - score_latence : décroissance exponentielle de la latence moyenne
+        (référence absolue) : exp( -(max(1s, lat_s) - 1)/60 ), lat_s en
+        secondes. Latence ≤ 1s → 1.0 (parfait) ; 1min1s (61s) → e⁻¹ ≈ 0.37.
+      - score_fail_rate : composite pondéré (0.4/0.3/0.2/0.1), déjà dans 0-1.
+
     Retourne le nombre de lignes score_batch mises à jour.
     """
+    import math
     try:
         rows5 = {f"{r['provider_ref']}/{r['model_ref']}": dict(r)
                  for r in _win_rows(rt, "score_batch_blocks_5m", 1)}
@@ -205,6 +214,12 @@ def update_scores(rt) -> int:
         keys = set(rows5) | set(rows1h) | set(rows1j) | set(rows1w)
         if not keys:
             return 0
+
+        # Benchmarks étirés par model_ref (cross-référence).
+        bench = {r["model_ref"]: r["score_etire"]
+                 for r in rt.conn.execute(
+                     "SELECT model_ref, score_etire FROM score_benchmark_etire")}
+
         upserts = 0
         for key in keys:
             prov, model = key.split("/", 1)
@@ -227,13 +242,21 @@ def update_scores(rt) -> int:
             rw_ = fr_and_lat(rw)
             frs = [r5_[3], rh_[3], rj_[3], rw_[3]]
             score_fail_rate = sum(w * f for w, f in zip(FAIL_WEIGHTS, frs))
-            # Latence composite : moyenne pondérée sur les appels (récent
-            # dominant). En ms.
+            # Latence moyenne pondérée sur les appels (récent dominant), ms.
             lat_w = (r5_[2], rh_[2], rj_[2], rw_[2])
             req_w = (r5_[0], rh_[0], rj_[0], rw_[0])
             tot_lat = sum(a for a in lat_w)
             tot_req = sum(a for a in req_w)
-            score_latency = (tot_lat / tot_req) if tot_req else 0.0
+            lat_ms = (tot_lat / tot_req) if tot_req else 0.0
+            # Score latence : exp( -(max(1s, lat_s) - 1)/60 ), lat_s en secondes.
+            # ≤ 1s → 1.0 (parfait) ; 1min1s (61s) → e⁻¹ ≈ 0.37.
+            if tot_req == 0:
+                score_latence = 1.0
+            else:
+                lat_s = max(1.0, lat_ms / 1000.0)
+                score_latence = math.exp(-(lat_s - 1.0) / 60.0)
+            score_etire = bench.get(model, 0.1)
+            score_final = score_etire * score_latence * (1.0 - score_fail_rate)
             rt.conn.execute("""
                 INSERT OR REPLACE INTO score_batch
                     (provider_ref, model_ref,
@@ -242,8 +265,9 @@ def update_scores(rt) -> int:
                      total_lat_ms_5m, total_lat_ms_1h, total_lat_ms_1j, total_lat_ms_1w,
                      fr_5m, fr_1h, fr_1j, fr_1w,
                      lat_5m_ms, lat_1h_ms, lat_1j_ms, lat_1w_ms,
-                     score_fail_rate, score_latency, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                     score_fail_rate, score_latency, score_etire, score_final,
+                     updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
             """, (prov, model,
                   r5_[0], rh_[0], rj_[0], rw_[0],
                   r5_[1], rh_[1], rj_[1], rw_[1],
@@ -253,7 +277,8 @@ def update_scores(rt) -> int:
                   rh_[2] / rh_[0] if rh_[0] else 0.0,
                   rj_[2] / rj_[0] if rj_[0] else 0.0,
                   rw_[2] / rw_[0] if rw_[0] else 0.0,
-                  score_fail_rate, score_latency))
+                  score_fail_rate, lat_ms,
+                  score_etire, score_final))
             upserts += 1
         rt.conn.commit()
         return upserts
