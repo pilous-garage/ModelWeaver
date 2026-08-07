@@ -197,6 +197,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1m_bucket ON usage_history_1m(bucket);
@@ -210,6 +212,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh15m_bucket ON usage_history_15m(bucket);
@@ -223,6 +227,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh3h_bucket ON usage_history_3h(bucket);
@@ -236,6 +242,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1d_bucket ON usage_history_1d(bucket);
@@ -249,6 +257,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1w_bucket ON usage_history_1w(bucket);
@@ -262,6 +272,8 @@ class RuntimeDB:
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
                     cost            REAL DEFAULT 0,
+                    first_call      INTEGER,
+                    last_call       INTEGER,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1mo_bucket ON usage_history_1mo(bucket);
@@ -278,6 +290,17 @@ class RuntimeDB:
                                    "tokens_thinking", "INTEGER DEFAULT 0")
             _add_column_if_missing(self.conn, "real_call_models",
                                    "rolled_at", "INTEGER")
+        except Exception:
+            self.conn.rollback()
+
+        # Migration batchage cascade : first_call / last_call (bornes temporelles
+        # du batch) sur chaque table d'agrégats — pour afficher « dernier call ».
+        try:
+            for _t in ("usage_history_1m", "usage_history_15m",
+                       "usage_history_3h", "usage_history_1d",
+                       "usage_history_1w", "usage_history_1mo"):
+                _add_column_if_missing(self.conn, _t, "first_call", "INTEGER")
+                _add_column_if_missing(self.conn, _t, "last_call", "INTEGER")
         except Exception:
             self.conn.rollback()
 

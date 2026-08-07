@@ -77,6 +77,8 @@ def op_usage_monitor(params):
         # tables plus grossières que la fenêtre elle-même).
         relevant = [t for t in CASCADE_TABLES
                     if _bucket_size(t) <= wsec]
+        # Agrégats des tables de cascade (runtime DB).
+        cascade_rows = []
         if relevant:
             try:
                 unions = []
@@ -92,9 +94,34 @@ def op_usage_monitor(params):
                        "SUM(cost) cost FROM ( " + " UNION ALL ".join(unions) +
                        " ) GROUP BY provider_ref, model_ref, agent_id "
                        "ORDER BY cost DESC")
-                rows = rt.conn.execute(sql).fetchall()
+                cascade_rows = rt.conn.execute(sql).fetchall()
             except Exception:
-                rows = None
+                cascade_rows = []
+        # DéTAIL RÉCENT non batché (catalogue DB) : model_call_log contient les
+        # appels de moins de ~5 min (le batcheur ne les a pas encore agrégés).
+        # Sans cette source, les fenêtres courtes (5m/15m) sous-comptent
+        # (15m < 5m bizarre) car elles ne voient que ce qui est batché.
+        detail_rows = []
+        if cat is not None:
+            try:
+                detail_rows = cat.conn.execute("""
+                    SELECT COALESCE(p.ref, '?') AS provider_ref,
+                           COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
+                           COALESCE(l.agent_id, '') AS agent_id,
+                           COUNT(*) AS req, SUM(l.tokens_in) AS tin,
+                           SUM(l.tokens_out) AS tout,
+                           SUM(l.tokens_thinking) AS tthink, 0.0 AS cost
+                    FROM model_call_log l
+                    LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+                    LEFT JOIN catalogue_models m ON m.id = l.model_id
+                    LEFT JOIN provider_models pm ON pm.id = l.provider_model_id
+                    WHERE l.created_at >= ?
+                    GROUP BY p.ref, m.ref, pm.provider_model_name, l.agent_id
+                """, (now - wsec,)).fetchall()
+            except Exception:
+                detail_rows = []
+        # Fusion cascade + détail (mêmes colonnes).
+        rows = [dict(r) for r in cascade_rows] + [dict(r) for r in detail_rows]
         # Si aucun agrégat dispo → détail model_call_log (source de vérité).
         if not rows and cat is not None:
             try:
@@ -148,6 +175,16 @@ def op_usage_monitor(params):
             m["tokens_thinking"] += tthink or 0
             m["cost"] += cost
         global_sum["cost"] = round(global_sum["cost"], 6)
+        # Dernier call réel (dans la fenêtre) : MAX(created_at) de model_call_log.
+        global_sum["last_call"] = None
+        if cat is not None:
+            try:
+                _r = cat.conn.execute(
+                    "SELECT MAX(created_at) m FROM model_call_log "
+                    "WHERE created_at >= ?", (now - wsec,)).fetchone()
+                global_sum["last_call"] = _r["m"] if _r and _r["m"] else None
+            except Exception:
+                pass
         out[wname] = {
             "summary": global_sum,
             "providers": [dict(v, models=sorted(v["models"])) for v in by_provider.values()],

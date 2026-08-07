@@ -96,7 +96,9 @@ def _batch_1m(cat, rt) -> int:
                 COUNT(*) AS requests,
                 SUM(l.tokens_in) AS tokens_in,
                 SUM(l.tokens_out) AS tokens_out,
-                SUM(l.tokens_thinking) AS tokens_thinking
+                SUM(l.tokens_thinking) AS tokens_thinking,
+                MIN(l.created_at) AS first_call,
+                MAX(l.created_at) AS last_call
             FROM model_call_log l
             LEFT JOIN catalogue_providers p ON p.id = l.provider_id
             LEFT JOIN catalogue_models m ON m.id = l.model_id
@@ -109,17 +111,20 @@ def _batch_1m(cat, rt) -> int:
             rt.conn.execute("""
                 INSERT INTO usage_history_1m
                     (bucket, provider_ref, model_ref, agent_id,
-                     requests, tokens_in, tokens_out, tokens_thinking, cost)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0)
+                     requests, tokens_in, tokens_out, tokens_thinking, cost,
+                     first_call, last_call)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
                 ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
                     requests = usage_history_1m.requests + excluded.requests,
                     tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
                     tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
                     tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
-                    cost = usage_history_1m.cost + excluded.cost
+                    cost = usage_history_1m.cost + excluded.cost,
+                    last_call = MAX(usage_history_1m.last_call, excluded.last_call),
+                    first_call = MIN(usage_history_1m.first_call, excluded.first_call)
             """, (r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
                   r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
-                  r["tokens_thinking"] or 0))
+                  r["tokens_thinking"] or 0, r["first_call"], r["last_call"]))
         rt.conn.commit()
         # Supprimer les lignes détaillées batchées (idempotent).
         del_cur = cat.conn.execute(
@@ -153,13 +158,15 @@ def _cascade(cat, rt, frontier: int) -> int:
             cur = rt.conn.execute(f"""
                 INSERT INTO {dst}
                     (bucket, provider_ref, model_ref, agent_id,
-                     requests, tokens_in, tokens_out, tokens_thinking, cost)
+                     requests, tokens_in, tokens_out, tokens_thinking, cost,
+                     first_call, last_call)
                 SELECT
                     CAST(s.bucket / {bucket_s} AS INTEGER) * {bucket_s},
                     COALESCE(s.provider_ref, ''), COALESCE(s.model_ref, ''),
                     COALESCE(s.agent_id, ''),
                     SUM(s.requests), SUM(s.tokens_in), SUM(s.tokens_out),
-                    SUM(s.tokens_thinking), SUM(s.cost)
+                    SUM(s.tokens_thinking), SUM(s.cost),
+                    MIN(s.first_call), MAX(s.last_call)
                 FROM {src} s
                 WHERE s.bucket + {bucket_s} <= ?
                 GROUP BY 1, 2, 3, 4
@@ -168,7 +175,9 @@ def _cascade(cat, rt, frontier: int) -> int:
                     tokens_in = {dst}.tokens_in + excluded.tokens_in,
                     tokens_out = {dst}.tokens_out + excluded.tokens_out,
                     tokens_thinking = {dst}.tokens_thinking + excluded.tokens_thinking,
-                    cost = {dst}.cost + excluded.cost
+                    cost = {dst}.cost + excluded.cost,
+                    last_call = MAX({dst}.last_call, excluded.last_call),
+                    first_call = MIN({dst}.first_call, excluded.first_call)
             """, (cutoff,))
             n += cur.rowcount if hasattr(cur, "rowcount") else 0
             # Purge des buckets source agrégés.

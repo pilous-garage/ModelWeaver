@@ -21,6 +21,7 @@ panels:
     recents: "Derniers LLM utilisés"
     latence: "Latence"
     dispo: "Disponibilité"
+    dernierCall: "Dernier call"
 `;
 
 const LANG_EN = `
@@ -38,6 +39,7 @@ panels:
     recents: "Last LLMs used"
     latence: "Latency"
     dispo: "Availability"
+    dernierCall: "Last call"
 `;
 
 
@@ -71,6 +73,10 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
   const sysStatus = metrics?.system_status ?? {};
 
   const fmt = (n: number | null | undefined) => n == null ? '0' : Number(n).toLocaleString('fr-FR');
+  const fmtTime = (ts: number | null | undefined) => {
+    if (!ts) return '—';
+    return new Date(ts * 1000).toLocaleTimeString('fr-FR');
+  };
 
   return (
     <div className="mw-panel" style={{ height: '100%', overflow: 'auto', padding: 8, boxSizing: 'border-box', fontSize: 12 }}>
@@ -101,6 +107,9 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
         <div>{ctx.t?.('panels.monitoring-llm-distant.tokensIn') ?? 'Tokens in'} : {fmt(summary.tokens_in)}</div>
         <div>{ctx.t?.('panels.monitoring-llm-distant.tokensOut') ?? 'Tokens out'} : {fmt(summary.tokens_out)}</div>
         <div>{ctx.t?.('panels.monitoring-llm-distant.cout') ?? 'Coût'} : {Number(summary.cost ?? 0).toFixed(4)} $</div>
+        <div style={{ gridColumn: '1 / -1', color: '#a5b4fc' }}>
+          {ctx.t?.('panels.monitoring-llm-distant.dernierCall') ?? 'Dernier call'} : {fmtTime(summary.last_call)}
+        </div>
       </div>
 
       {/* ── Derniers LLM utilisés (model_call_log réel) ── */}
