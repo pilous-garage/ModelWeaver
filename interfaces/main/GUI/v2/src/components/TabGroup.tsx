@@ -53,6 +53,10 @@ export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, 
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   // Onglet en cours d'édition du titre (double-clic) + valeur saisie.
   const [editing, setEditing] = useState<{ occId: string; value: string } | null>(null);
+  // La barre d'onglets déborde-t-elle (nécessite un scroll horizontal) ?
+  const [canScroll, setCanScroll] = useState(false);
+  const [scrollAtStart, setScrollAtStart] = useState(true);
+  const [scrollAtEnd, setScrollAtEnd] = useState(true);
   const drop = useDropState();
   // est-ce que CE groupe est la cible du drag en cours ?
   const isTarget = drop.targetGroupId === group.id;
@@ -94,6 +98,39 @@ export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, 
     document.addEventListener('mousedown', onDocMouseDown, true);
     return () => document.removeEventListener('mousedown', onDocMouseDown, true);
   }, [editing, commitRename]);
+
+  // Détection d'overflow de la barre d'onglets → affiche les flèches de scroll
+  // et met à jour les positions start/end quand on scroll.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const update = () => {
+      const over = bar.scrollWidth > bar.clientWidth + 2;
+      setCanScroll(over);
+      setScrollAtStart(bar.scrollLeft <= 2);
+      setScrollAtEnd(bar.scrollLeft + bar.clientWidth >= bar.scrollWidth - 2);
+    };
+    update();
+    // ResizeObserver : la largeur de la barre change avec le layout.
+    let ro: ResizeObserver | null = null;
+    try {
+      ro = new ResizeObserver(update);
+      ro.observe(bar);
+    } catch { /* fallback */ }
+    bar.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      ro?.disconnect();
+      bar.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [group.tabs.length]);
+
+  const scrollTabs = (dir: 'left' | 'right') => {
+    const bar = barRef.current;
+    if (!bar) return;
+    bar.scrollBy({ left: dir === 'left' ? -140 : 140, behavior: 'smooth' });
+  };
 
   /** Index d'insertion dans la barre selon le curseur (parmi les onglets). */
   const computeIndex = useCallback((x: number, excludeOccId: string): number => {
@@ -257,15 +294,37 @@ export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, 
         </div>
       )}
 
-      <div
-        ref={barRef}
-        className="mw-tab-bar"
-        style={{
-          display: 'flex', flexWrap: 'wrap', gap: 2, padding: '4px 4px 0', position: 'relative',
-          borderBottom: '1px solid var(--mw-border, #334155)', flexShrink: 0, minHeight: 32,
-          background: 'var(--mw-bg, #0f172a)',
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'stretch', flexShrink: 0, position: 'relative' }}>
+        {canScroll && (
+          <button
+            onClick={() => scrollTabs('left')}
+            title="Défiler à gauche"
+            style={{
+              flexShrink: 0, width: 22, border: 'none', cursor: scrollAtStart ? 'default' : 'pointer',
+              background: 'transparent', color: scrollAtStart ? '#334155' : '#94a3b8',
+              fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRight: '1px solid var(--mw-border, #334155)',
+            }}
+            disabled={scrollAtStart}
+          >‹</button>
+        )}
+        <div
+          ref={barRef}
+          className="mw-tab-bar"
+          style={{
+            display: 'flex', flexWrap: 'nowrap', overflowX: 'auto', overflowY: 'hidden',
+            scrollbarWidth: 'thin', gap: 2, padding: '4px 4px 0', position: 'relative',
+            borderBottom: '1px solid var(--mw-border, #334155)', flexShrink: 0, minHeight: 32,
+            background: 'var(--mw-bg, #0f172a)', flex: 1,
+          }}
+          onWheel={(e) => {
+            // Molette verticale → défilement horizontal de la barre d'onglets
+            // (les onglets sont sur UNE seule ligne, scrollables).
+            if (barRef.current && Math.abs(e.deltaY) > 0) {
+              barRef.current.scrollLeft += e.deltaY;
+            }
+          }}
+        >
         {group.tabs.map((occ) => {
           const active = group.active?.occId === occ.occId;
           const dimmed = dragging && draggingOcc.current === occ.occId;
@@ -330,8 +389,9 @@ export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, 
             style={{ position: 'absolute', top: 2, bottom: 2, width: 2, background: 'var(--mw-accent, #3b82f6)', left: markerLeft, zIndex: 15, borderRadius: 1 }}
           />
         )}
+        </div>
         {group.active && (onZoom || onZoomLock) && (
-          <div style={{ marginLeft: 'auto', padding: '0 2px', display: 'flex', alignItems: 'center' }}>
+          <div style={{ flexShrink: 0, padding: '0 2px', display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--mw-border, #334155)' }}>
             <ZoomBar
               // valeur LOCALE du zoom (le calcul effectif = ancêtres × locale)
               value={occZoom(group.active)}
@@ -341,6 +401,19 @@ export function TabGroup({ group, windowId, t, zoomFactor, onActivate, onClose, 
               testidPrefix="group-"
             />
           </div>
+        )}
+        {canScroll && (
+          <button
+            onClick={() => scrollTabs('right')}
+            title="Défiler à droite"
+            style={{
+              flexShrink: 0, width: 22, border: 'none', cursor: scrollAtEnd ? 'default' : 'pointer',
+              background: 'transparent', color: scrollAtEnd ? '#334155' : '#94a3b8',
+              fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderLeft: '1px solid var(--mw-border, #334155)',
+            }}
+            disabled={scrollAtEnd}
+          >›</button>
         )}
       </div>
       <div
