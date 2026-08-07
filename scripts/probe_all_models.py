@@ -61,7 +61,7 @@ def main():
         print(f"Probe {provs[0]} (timeout {args.timeout}s/probe, threads ≤ 20)")
         res = bridge.probe(provider_ref=provs[0], timeout=args.timeout)
     else:
-        print(f"Probe tous ({timeout} {args.timeout}s/probe, threads ≤ 20)")
+        print(f"Probe tous (timeout {args.timeout}s/probe, threads ≤ 20)")
         res = bridge.probe(timeout=args.timeout)
 
     dt = time.time() - t0

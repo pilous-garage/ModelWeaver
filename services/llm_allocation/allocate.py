@@ -61,18 +61,12 @@ def _query_candidates() -> List[Dict[str, Any]]:
             JOIN catalogue_providers cp ON cp.id = kem.provider_id
             JOIN catalogue_models cm ON cm.id = kem.model_id
             JOIN provider_models pm ON pm.provider_id = kem.provider_id AND pm.model_id = kem.model_id
-            -- Score benchmark PAR MODÈLE (model_key) : le même modèle physique
-            -- a plusieurs model_id (variantes provider). model_efficacy n'a
-            -- qu'une ligne par model_key — on la retrouve via UN SEUL modèle
-            -- du catalogue partageant le même model_key (le plus petit id,
-            -- pour éviter les doublons de jointure).
-            LEFT JOIN (
-                SELECT MIN(id) AS canonical_id, model_key
-                FROM catalogue_models
-                WHERE model_key IS NOT NULL AND model_key != ''
-                GROUP BY model_key
-            ) cmk ON cmk.model_key = cm.model_key
-            LEFT JOIN model_efficacy me ON me.model_id = cmk.canonical_id AND me.use_case = 'general'
+            -- Score benchmark PAR MODÈLE (model_key) : model_efficacy.model_ref
+            -- EST le model_key canonique (écrit par le scraper). On joint
+            -- directement sur cm.model_key → toutes les variantes d'un modèle
+            -- (deepseek-ai/xxx, kilo/xxx, opencode-zen/xxx-free…) partagent le
+            -- MÊME score benchmark (score par MODÈLE, pas par provider_model).
+            LEFT JOIN model_efficacy me ON me.model_ref = cm.model_key AND me.use_case = 'general'
             LEFT JOIN (
                 -- Métriques runtime AGRÉGÉES par (provider, provider_model_name) :
                 -- fenêtre glissante des 200 derniers logs PAR MODÈLE (pas les
