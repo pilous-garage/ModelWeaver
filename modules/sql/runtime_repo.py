@@ -277,6 +277,28 @@ class RuntimeDB:
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1mo_bucket ON usage_history_1mo(bucket);
+
+                -- Séquences de réussite par (provider, model) : période continue
+                -- de succès entre deux échecs. Le batcheur ouvre/ferme les
+                -- séquences. Servira au calibrage rate_limit (p10/p90 req/min)
+                -- et au budget d'allocation. Pas par agent (global modèle).
+                CREATE TABLE IF NOT EXISTS model_success_runs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_ref    TEXT NOT NULL,
+                    model_ref       TEXT NOT NULL,
+                    seq_start       INTEGER NOT NULL,
+                    seq_end         INTEGER,
+                    duration_s      INTEGER,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    avg_latency_ms  REAL DEFAULT 0,
+                    status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_msr_model ON model_success_runs(provider_ref, model_ref);
+                CREATE INDEX IF NOT EXISTS idx_msr_status ON model_success_runs(status);
+                CREATE INDEX IF NOT EXISTS idx_msr_seqend ON model_success_runs(seq_end);
             """)
         except Exception as e:
             self.conn.rollback()

@@ -126,6 +126,80 @@ def _batch_1m(cat, rt) -> int:
                   r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
                   r["tokens_thinking"] or 0, r["first_call"], r["last_call"]))
         rt.conn.commit()
+        # ── Séquences de réussite par (provider, model) ──
+        # Pour chaque modèle ayant des appels dans la fenêtre :
+        #   - succès → ouvre/continue la séquence open (cumule req/tok/latence)
+        #   - échec  → clôture la séquence open (seq_end, duration_s, closed)
+        try:
+            seq_rows = cat.conn.execute("""
+                SELECT COALESCE(p.ref, '?') AS provider_ref,
+                       COALESCE(m.ref, '?') AS model_ref,
+                       SUM(CASE WHEN l.success = 1 THEN 1 ELSE 0 END) AS ok,
+                       SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END) AS ko,
+                       SUM(CASE WHEN l.success = 1 THEN l.tokens_in ELSE 0 END) AS tok_in,
+                       SUM(CASE WHEN l.success = 1 THEN l.tokens_out ELSE 0 END) AS tok_out,
+                       MIN(CASE WHEN l.success = 1 THEN l.created_at END) AS first_ok,
+                       MAX(CASE WHEN l.success = 1 THEN l.created_at END) AS last_ok,
+                       MAX(CASE WHEN l.success = 0 THEN l.created_at END) AS last_ko,
+                       AVG(CASE WHEN l.success = 1 THEN l.latency_ms END) AS avg_lat
+                FROM model_call_log l
+                LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+                LEFT JOIN catalogue_models m ON m.id = l.model_id
+                WHERE l.created_at <= ?
+                GROUP BY p.ref, m.ref
+            """, (cutoff,)).fetchall()
+            for s in seq_rows:
+                prov, model = s["provider_ref"], s["model_ref"]
+                ok, ko = s["ok"] or 0, s["ko"] or 0
+                # Séquence open existante ?
+                run = rt.conn.execute(
+                    "SELECT id, seq_start, requests, tokens_in, tokens_out, "
+                    "avg_latency_ms FROM model_success_runs "
+                    "WHERE provider_ref = ? AND model_ref = ? AND status = 'open' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (prov, model)).fetchone()
+                run_id = run["id"] if run else None
+                if ok > 0:
+                    # Cumuler les succès dans la séquence open (ou en ouvrir une).
+                    n = ok
+                    tin = s["tok_in"] or 0
+                    tout = s["tok_out"] or 0
+                    avg = s["avg_lat"]
+                    if run_id:
+                        rt.conn.execute("""
+                            UPDATE model_success_runs SET
+                                requests = requests + ?,
+                                tokens_in = tokens_in + ?,
+                                tokens_out = tokens_out + ?,
+                                avg_latency_ms = CASE WHEN requests + ? > 0 THEN
+                                    ((avg_latency_ms * requests) + ?) / (requests + ?) ELSE 0 END,
+                                updated_at = strftime('%s','now')
+                            WHERE id = ?
+                        """, (n, tin, tout, n, avg or 0, n, run_id))
+                    else:
+                        cur = rt.conn.execute("""
+                            INSERT INTO model_success_runs
+                                (provider_ref, model_ref, seq_start, requests,
+                                 tokens_in, tokens_out, avg_latency_ms, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
+                        """, (prov, model, s["first_ok"] or int(time.time()),
+                              n, tin, tout, avg or 0))
+                        run_id = cur.lastrowid if hasattr(cur, "lastrowid") else None
+                if ko > 0 and run_id:
+                    # Clôturer la séquence open (l'échec met fin au run de succès),
+                    # même si elle vient d'être ouverte dans ce batch.
+                    rt.conn.execute("""
+                        UPDATE model_success_runs SET
+                            seq_end = ?, duration_s = ? - seq_start,
+                            status = 'closed', updated_at = strftime('%s','now')
+                        WHERE id = ?
+                    """, (s["last_ko"], s["last_ko"], run_id))
+            rt.conn.commit()
+        except Exception:
+            try:
+                rt.conn.rollback()
+            except Exception:
+                pass
         # Supprimer les lignes détaillées batchées (idempotent).
         del_cur = cat.conn.execute(
             "DELETE FROM model_call_log WHERE created_at <= ?", (cutoff,))
