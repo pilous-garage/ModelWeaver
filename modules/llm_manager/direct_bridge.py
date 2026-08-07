@@ -1383,6 +1383,261 @@ class DirectBridge(BaseBridge):
             })
         return result
 
+    # ── Probe (disponibilité réelle des modèles) ─────────────
+
+    # Test agentic RÉALISTE : une question qui nécessite un outil.
+    # Le modèle doit comprendre qu'il faut appeler fake_shell_v1 AVEC une
+    # commande cohérente (ex. `df -h` pour l'espace disque). On vérifie :
+    #   - l'appel d'outil est bien produit (tool_calls),
+    #   - l'argument `command` est cohérent avec la question (mots-clés).
+    # Si le modèle répond en texte OU avec une commande hors-sujet → non-agentic.
+    PROBE_TOOLS = [{
+        "type": "function",
+        "function": {
+            "name": "fake_shell_v1",
+            "description": "Exécute une commande shell sur la machine et renvoie sa sortie (ex. df -h, free -m, ls, pwd).",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "command": {"type": "string",
+                                           "description": "Commande shell à exécuter, ex. df -h"},
+                           },
+                           "required": ["command"]},
+        },
+    }]
+    PROBE_MSG = [{"role": "user",
+                  "content": "Combien d'espace libre reste-t-il sur mon disque dur ? "
+                             "Utilise l'outil fake_shell_v1 pour le savoir."}]
+    # Mots-clés attendus dans la commande pour valider la cohérence agentic.
+    PROBE_KEYWORDS = ("df", "disk", "space", "storage", "filesystem",
+                      "free", "usage", "mount", "fs")
+
+    def _probe_command_coherent(self, command: str) -> bool:
+        """Vrai si la commande demandée est cohérente avec la question disque."""
+        low = (command or "").lower()
+        return any(k in low for k in self.PROBE_KEYWORDS)
+
+    def _probe_one(self, provider_ref: str, model_ref: str,
+                   timeout: float = 12.0) -> Dict[str, Any]:
+        """Probe UN modèle : succès, latence, capacité agentic réelle.
+
+        `timeout` = timeout réseau pour CETTE requête (pas un timeout global).
+        Retourne {ok, latency_ms, tool_calls, coherent, error?, error_code?}.
+        `ok` = le modèle a appelé fake_shell_v1 avec une commande COHÉRENTE.
+        Un modèle qui répond en texte n'est PAS compté ok (non-agentic).
+        """
+        import threading
+        import time as _t
+        result: Dict[str, Any] = {}
+        t0 = _t.time()
+
+        def _run():
+            try:
+                resp = self.chat(
+                    provider_ref=provider_ref, model_ref=model_ref,
+                    messages=self.PROBE_MSG, tools=self.PROBE_TOOLS,
+                    temperature=0.0, max_tokens=100, stream=False)
+                tc = getattr(resp, "tool_calls", None) or []
+                result["tool_calls"] = bool(tc)
+                coherent = False
+                cmd = ""
+                if tc:
+                    try:
+                        args = json.loads(tc[0]["function"].get("arguments", "{}"))
+                        cmd = str(args.get("command") or "")
+                    except Exception:
+                        cmd = ""
+                    coherent = self._probe_command_coherent(cmd)
+                result["coherent"] = coherent
+                result["command"] = cmd[:80]
+                result["ok"] = coherent
+                result["latency_ms"] = int((_t.time() - t0) * 1000)
+            except Exception as e:
+                result["ok"] = False
+                result["latency_ms"] = int((_t.time() - t0) * 1000)
+                result["error"] = str(e)[:300]
+
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout)
+        if th.is_alive():
+            result["ok"] = False
+            result["timeout"] = True
+            result["error"] = f"timeout après {timeout}s"
+        if "error_code" not in result and result.get("error"):
+            result["error_code"] = self._probe_classify(result["error"])
+        return result
+
+    @staticmethod
+    def _probe_classify(err: str) -> str:
+        low = (err or "").lower()
+        for kw in ("auth", "401", "invalid api key", "api key", "unauthorized",
+                   "permission denied"):
+            if kw in low:
+                return "auth"
+        for kw in ("insufficient credits", "never purchased", "billing",
+                   "credit"):
+            if kw in low:
+                return "credit"
+        for kw in ("404", "not found", "not exist", "does not exist",
+                   "no model", "unknown model"):
+            if "404" in low or "not found" in low or "not exist" in low:
+                return "not_found"
+        for kw in ("timeout", "timed out", "took too long"):
+            if kw in low:
+                return "timeout"
+        for kw in ("rate limit", "429", "quota", "per-day", "rpm"):
+            if kw in low:
+                return "rate_limit"
+        return "unknown"
+
+    def _probe_is_api_fail(self, code: str) -> bool:
+        """Un échec API (auth/404/timeout/credit) = modèle indisponible.
+
+        `unknown` (erreur réseau bizarre, modèle qui lève une exception) est
+        aussi traité comme indisponible : un modèle qui ne répond pas du tout
+        ne doit pas rester allouable.
+        """
+        return code in ("auth", "credit", "not_found", "timeout", "unknown")
+
+    def probe(self, provider_ref: Optional[str] = None,
+              model_ref: Optional[str] = None,
+              timeout: float = 12.0) -> Dict[str, Any]:
+        """Probe un modèle, tous les modèles d'un provider, ou tous.
+
+        - probe()                     → tous les modèles de tous les providers
+        - probe(provider)             → tous les modèles du provider
+        - probe(provider, model)      → un seul modèle
+
+        Marque `unavailable` les modèles en échec API (auth/404/timeout/
+        credit) et réactive ceux qui répondent. Retourne un résumé.
+        """
+        import threading
+        targets: List[tuple] = []  # (provider_ref, model_ref)
+        if provider_ref and model_ref:
+            targets = [(provider_ref, model_ref)]
+        else:
+            rows = self._probe_candidates(provider_ref)
+            targets = [(r["prov"], r["pname"]) for r in rows]
+
+        results: List[Dict] = []
+        lock = threading.Lock()
+
+        def _work(prov, mname):
+            r = self._probe_one(prov, mname, timeout)
+            r["provider"] = prov
+            r["model"] = mname
+            if r["ok"]:
+                self._probe_set_available(prov, mname, True)
+            elif self._probe_is_api_fail(r.get("error_code", "unknown")):
+                self._probe_set_available(prov, mname, False,
+                                          r.get("error_code", "unknown"))
+            with lock:
+                results.append(r)
+
+        threads = [threading.Thread(target=_work, args=(p, m), daemon=True)
+                   for (p, m) in targets]
+        # Limite de threads simultanés (~20) : les probes sont légers.
+        MAX_THREADS = 20
+        for i in range(0, len(threads), MAX_THREADS):
+            batch = threads[i:i + MAX_THREADS]
+            for t in batch:
+                t.start()
+            for t in batch:
+                t.join()
+
+        ok = sum(1 for r in results if r["ok"])                       # agentic (tool cohérent)
+        non_agentic = sum(1 for r in results if not r["ok"]
+                          and not r.get("error_code"))                # répond mais non-agentic
+        fail = sum(1 for r in results if not r["ok"]
+                   and r.get("error_code"))                           # échec API
+        return {
+            "status": "ok", "probed": len(results),
+            "ok_agentic": ok, "non_agentic": non_agentic, "unavailable": fail,
+            "results": results,
+        }
+
+    def _probe_candidates(self, provider_ref: Optional[str] = None):
+        """Liste des modèles à prober : (provider, provider_model_name), triés
+        par score décroissant (benchmark modèle) pour prober le meilleur d'abord."""
+        rows = []
+        if not self.cat:
+            return rows
+        try:
+            if provider_ref:
+                rows = self.cat.conn.execute("""
+                    SELECT p.ref AS prov, kem.provider_model_name AS pname
+                    FROM provider_models_mapping kem
+                    JOIN catalogue_providers p ON p.id = kem.provider_id
+                    LEFT JOIN catalogue_models cm ON cm.id = kem.model_id
+                    LEFT JOIN (
+                        SELECT MIN(id) AS canonical_id, model_key
+                        FROM catalogue_models
+                        WHERE model_key IS NOT NULL AND model_key != ''
+                        GROUP BY model_key
+                    ) cmk ON cmk.model_key = cm.model_key
+                    LEFT JOIN model_efficacy me ON me.model_id = cmk.canonical_id
+                        AND me.use_case = 'general'
+                    WHERE p.ref = ? AND kem.available = 1 AND kem.declared = 1
+                    ORDER BY COALESCE(me.global_score, 0) DESC, kem.provider_model_name
+                """, (provider_ref,)).fetchall()
+            else:
+                rows = self.cat.conn.execute("""
+                    SELECT p.ref AS prov, kem.provider_model_name AS pname
+                    FROM provider_models_mapping kem
+                    JOIN catalogue_providers p ON p.id = kem.provider_id
+                    LEFT JOIN catalogue_models cm ON cm.id = kem.model_id
+                    LEFT JOIN (
+                        SELECT MIN(id) AS canonical_id, model_key
+                        FROM catalogue_models
+                        WHERE model_key IS NOT NULL AND model_key != ''
+                        GROUP BY model_key
+                    ) cmk ON cmk.model_key = cm.model_key
+                    LEFT JOIN model_efficacy me ON me.model_id = cmk.canonical_id
+                        AND me.use_case = 'general'
+                    WHERE kem.available = 1 AND kem.declared = 1
+                    ORDER BY p.ref, COALESCE(me.global_score, 0) DESC,
+                             kem.provider_model_name
+                """).fetchall()
+        except Exception:
+            pass
+        return [dict(r) for r in rows]
+
+    def _probe_set_available(self, provider_ref: str, model_name: str,
+                             available: bool, reason: str = "") -> None:
+        """Marque un modèle disponible/indisponible en base."""
+        if not self.cat:
+            return
+        try:
+            now = int(time.time())
+            if available:
+                self.cat.conn.execute("""
+                    UPDATE provider_models SET unavailable = 0, noretryuntil = 0
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (provider_ref, model_name))
+                self.cat.conn.execute("""
+                    UPDATE provider_models_mapping SET available = 1, last_error = NULL
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (provider_ref, model_name))
+            else:
+                self.cat.conn.execute("""
+                    UPDATE provider_models SET unavailable = 1, noretryuntil = ?
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (now + 3600, provider_ref, model_name))
+                self.cat.conn.execute("""
+                    UPDATE provider_models_mapping SET available = 0, last_error = ?
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (reason[:200], provider_ref, model_name))
+            self.cat.conn.commit()
+        except Exception:
+            try:
+                self.cat.conn.rollback()
+            except Exception:
+                pass
+
     # ── Santé ──────────────────────────────────────────────
 
     def health_check(self, provider_ref: Optional[str] = None) -> Dict[str, Any]:

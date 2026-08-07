@@ -144,6 +144,19 @@ class LLMManager:
         """Liste les modèles disponibles d'un provider via le bridge actif."""
         return self.get_bridge().list_available_models(provider_ref)
 
+    def probe(self, provider_ref: Optional[str] = None,
+              model_ref: Optional[str] = None,
+              timeout: float = 12.0) -> Dict[str, Any]:
+        """Probe la disponibilité réelle des modèles (voir DirectBridge.probe).
+
+        - probe()                  → tous les providers
+        - probe(provider)          → tous les modèles du provider
+        - probe(provider, model)   → un seul modèle
+        `timeout` = timeout réseau par probe. Threads simultanés ≤ 20.
+        Marque unavailable les modèles en échec API.
+        """
+        return self.get_bridge().probe(provider_ref, model_ref, timeout)
+
     def list_available_providers(self) -> List[Dict[str, Any]]:
         """Liste les providers disponibles via le bridge actif."""
         return self.get_bridge().list_available_providers()
