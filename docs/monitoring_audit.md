@@ -1,69 +1,56 @@
 # Audit des panneaux de monitoring
 
-## 1. État actuel des panneaux de monitoring
+## Contexte
+Le tableau de bord existant collecte déjà des métriques clés (CPU, mémoire, latence). Cependant, les panneaux de monitoring actuels ne couvrent pas l'ensemble des indicateurs de performance et de fiabilité nécessaires pour une supervision fine.
 
-- **Panneaux existants** : liste des panneaux actuellement déployés dans le dashboard (ex. CPU usage, Memory, Disk I/O, Network latency).
-- **Sources de données** : Prometheus, Grafana Loki, ElasticSearch, etc.
-- **Fréquence de rafraîchissement** : 30s, 1min, etc.
-- **Qualité des métriques** : précision, agrégation, tags manquants.
-- **Sécurité** : accès RBAC, chiffrement des flux.
+## Analyse des panneaux actuels
+| Panneau | Métrique(s) couverte(s) | Limites |
+|---|---|---|
+| **CPU Usage** | Utilisation CPU globale | Pas de répartition par service / thread, pas d'histogramme d'utilisation.
+| **Memory** | Mémoire totale utilisée | Aucun suivi du garbage collection, pas de distinction entre heap / non‑heap.
+| **Latency** | Latence moyenne des requêtes | Pas de percentiles (p95, p99) ni de suivi des spikes.
+| **Errors** | Nombre d'erreurs HTTP 5xx | Pas de classification par type d'erreur ou par endpoint.
 
-## 2. Problèmes identifiés
+## Recommandations
 
-| Problème | Impact | Priorité |
-|----------|--------|----------|
-| Redondance de panneaux (CPU et Load Average) | Confusion, surcharge visuelle | Medium |
-| Métriques critiques manquantes (e.g., error rate des services) | Blind spots | High |
-| Temps de latence de rafraîchissement trop long pour les alertes critiques | Délai de réaction | High |
-| Absence de labels standardisés (env, service, version) | Difficulté de corrélation | Medium |
-| Pas de suivi de la télémétrie des logs côté front | Visibilité limitée | Low |
+### 1. Étendre la télémétrie côté back‑end
+- **Instrumentation** : Utiliser OpenTelemetry SDK pour instrumenter les services (Java, Python, Go). Exporter les traces et métriques vers un collecteur (ex. `otel-collector`).
+- **Métriques additionnelles** :
+  - **Histogrammes** pour la latence (p50, p95, p99).
+  - **Compteurs** pour les erreurs classées par code et par endpoint.
+  - **Gauge** pour la taille du heap, le nombre de threads actifs, le temps de GC.
+  - **Custom metrics** : taux de requêtes par seconde, taux de succès vs échec.
 
-## 3. Recommandations
+### 2. Centraliser les logs et traces
+- Configurer les applications pour exporter les logs en JSON vers un pipeline (ex. Loki) et les traces vers Jaeger/Tempo.
+- Ajouter des labels (`service`, `environment`, `version`) pour faciliter le filtrage.
 
-### 3.1 Consolidation des panneaux
-- Fusionner les panneaux redondants en un seul tableau de bord "Performance serveur".
-- Utiliser des variables de tableau de bord (e.g., `$instance`, `$service`) pour rendre les panneaux réutilisables.
+### 3. Mise à jour du dashboard
+- **Prometheus** : Ajouter les nouvelles métriques dans les `scrape_configs`.
+- **Grafana** : Créer de nouveaux panneaux :
+  - **Latency distribution** – histogramme avec p95/p99.
+  - **Error breakdown** – tableau avec top 5 endpoints en erreur.
+  - **GC activity** – gauge du temps de pause GC.
+  - **Thread pool** – gauge du nombre de threads actifs vs max.
+- Utiliser des variables de tableau de bord (`$service`, `$env`) pour permettre le filtrage dynamique.
 
-### 3.2 Ajout de métriques critiques
-- **Error rate** : `rate(http_requests_total{status=~"5.."}[1m])`
-- **Latency percentiles** : `histogram_quantile(0.95, request_duration_seconds_bucket{service="{{service}}"})`
-- **Taux de saturation CPU** : `100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`
+### 4. Alerting
+- Définir des alertes basées sur les percentiles de latence (`latency_seconds{quantile="0.99"} > 1.5`) et sur le taux d'erreurs (`rate(http_requests_total{status=~"5.."}[5m]) > 0.01`).
+- Configurer des notifications vers Slack/Teams.
 
-### 3.3 Optimisation du rafraîchissement
-- Configurer les panneaux critiques à 10 s de rafraîchissement, les autres à 30 s.
-- Activer le mode *live tail* pour les logs critiques via Loki.
+### 5. Documentation & gouvernance
+- Rédiger un guide d'intégration OpenTelemetry pour les équipes de développement.
+- Mettre en place un processus de revue de la télémétrie avant le merge de nouvelles fonctionnalités.
 
-### 3.4 Standardisation des labels
-- Appliquer un schéma de tags commun : `env`, `service`, `region`, `version`.
-- Mettre à jour les jobs Prometheus pour exporter ces labels.
-
-### 3.5 Intégration de la télémétrie front‑end
-- Instrumenter le front avec **OpenTelemetry JS** pour capturer les traces et les métriques (page load time, API latency, UI error count).
-- Exporter les données vers le même backend Prometheus via le **OTLP exporter**.
-- Ajouter un panneau "Front‑end performance" affichant :
-  - `web_vital_fcp_seconds`
-  - `web_vital_lcp_seconds`
-  - `api_request_duration_seconds`
-
-### 3.6 Sécurité & gouvernance
-- Restreindre l’accès aux tableaux de bord sensibles aux rôles `monitoring_viewer` et `monitoring_admin`.
-- Activer le chiffrement TLS entre les agents de collecte et le serveur de métriques.
-
-## 4. Plan de mise en œuvre
-
-| Étape | Action | Responsable | Durée estimée |
-|-------|--------|--------------|----------------|
-| 1 | Audit du fichier de configuration Grafana (datasources, dashboards) | DevOps | 1 jour |
-| 2 | Ajout des métriques manquantes dans les jobs Prometheus | SRE | 2 jours |
-| 3 | Déploiement des panneaux consolidés (JSON) via CI/CD | DevOps | 1 jour |
-| 4 | Instrumentation front‑end avec OpenTelemetry | Front‑end team | 3 jours |
-| 5 | Tests de charge et validation des temps de rafraîchissement | SRE | 1 jour |
-| 6 | Documentation & formation des équipes | Docs team | 0.5 jour |
-
-## 5. Livrables
-- Fichier `dashboard_monitoring.json` contenant les nouveaux panneaux.
-- Scripts d’instrumentation OpenTelemetry (ex. `otel_init.js`).
-- Documentation mise à jour dans le repo (`docs/monitoring_audit.md`).
+## Plan d'action (Roadmap)
+| Sprint | Action | Responsable |
+|---|---|---|
+| 1 | Ajouter OpenTelemetry SDK aux services critiques | Équipe backend |
+| 1 | Configurer le collecteur et exporter vers Prometheus | Infra |
+| 2 | Créer les nouveaux panneaux Grafana et les variables | DevOps |
+| 2 | Définir les règles d'alerting initiales | SRE |
+| 3 | Documenter le processus d'instrumentation | Docs Team |
+| 3 | Revue et validation avec les PO | QA |
 
 ---
-*Ce document a été généré pour guider l’amélioration du système de monitoring et l’intégration de la télémétrie dans le tableau de bord existant.*
+*Ce document doit être versionné dans le dépôt `mw-swarm` sous le répertoire `docs/` et intégré au pipeline CI pour être publié automatiquement sur le site interne.*
