@@ -133,6 +133,7 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
               <span>out {fmt(r.tokens_out)}</span>
               {r.latency_ms != null && <span>{ctx.t?.('panels.monitoring-llm-distant.latence') ?? 'Lat'}. {r.latency_ms}ms</span>}
               {r.errors > 0 && <span style={{ color: '#f87171' }}>{r.errors} erreurs ({r.error_rate}%)</span>}
+              <span style={{ color: '#a5b4fc' }}>{fmtTime(r.last_call)}</span>
             </div>
           </div>
         );
