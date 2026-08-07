@@ -18,16 +18,20 @@ def op_usage_free_tier(params):
 def op_usage_monitor(params):
     """Consommation LLM agrégée par fenêtres 1h/24h/7j, par provider/modèle.
 
-    Sources : usage_history_1m (1h), usage_history_1h (24h/7j).
+    Sources : usage_history_1m (1h), usage_history_1h (24h/7j). Si ces
+    historiques sont vides (collecteur d'usage pas encore alimenté), on
+    aggrège directement depuis model_call_log (appels LLM réels, source de
+    vérité) sur la même fenêtre temporelle.
     Retourne pour chaque fenêtre un résumé global + la répartition par
     provider et par modèle (requests, tokens in/out/thinking, cost).
     """
     import time as _t
-    from services.api._shared import _get_rt
+    from services.api._shared import _get_rt, _get_cat
     rt = _get_rt()
     now = int(_t.time())
     windows = {"1h": 3600, "24h": 86400, "7j": 7 * 86400}
     out = {}
+    cat = _get_cat()
     for wname, wsec in windows.items():
         cutoff_1h = now - 3600
         if wname == "1h":
@@ -54,6 +58,27 @@ def op_usage_monitor(params):
                 GROUP BY provider_ref, model_ref, agent_id
                 ORDER BY cost DESC
             """, (now - wsec,)).fetchall()
+        # Si l'historique est vide → agréger depuis model_call_log (réel).
+        if not rows and cat is not None:
+            try:
+                rows = cat.conn.execute("""
+                    SELECT p.ref AS provider_ref,
+                           COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
+                           l.agent_id,
+                           COUNT(*) AS req,
+                           SUM(l.tokens_in) AS tin,
+                           SUM(l.tokens_out) AS tout,
+                           SUM(l.tokens_thinking) AS tthink,
+                           0.0 AS cost
+                    FROM model_call_log l
+                    LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+                    LEFT JOIN catalogue_models m ON m.id = l.model_id
+                    LEFT JOIN provider_models pm ON pm.id = l.provider_model_id
+                    WHERE l.created_at >= ?
+                    GROUP BY p.ref, m.ref, pm.provider_model_name, l.agent_id
+                """, (now - wsec,)).fetchall()
+            except Exception:
+                rows = []
         global_sum = {"requests": 0, "tokens_in": 0, "tokens_out": 0,
                       "tokens_thinking": 0, "cost": 0.0}
         by_provider: dict = {}

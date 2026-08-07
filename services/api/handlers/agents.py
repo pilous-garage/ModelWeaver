@@ -19,22 +19,64 @@ def _get_agent_db():
 def op_agent_metrics(params):
     db = _get_agent_db()
     agent_id = params.get("agent_id") if params else None
+    # Source de vérité des tokens/requêtes : model_call_log (appels LLM réels),
+    # agrégé par agent_id. agent_metrics ne couvre que le bridge direct (Phase 1)
+    # — les agents greedy (FSM) ne l'alimentent pas → tokens ~0. On agrège donc
+    # depuis model_call_log et on fusionne avec agent_metrics (tasks/failed).
+    try:
+        from services.api._shared import _get_cat
+        cat = _get_cat()
+        def _call_log_stats(aid):
+            rows = cat.conn.execute("""
+                SELECT COUNT(*) AS requests,
+                       SUM(tokens_in) AS tokens_in,
+                       SUM(tokens_out) AS tokens_out,
+                       SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS errors
+                FROM model_call_log
+                WHERE agent_id = ?
+            """, (str(aid),)).fetchone()
+            return dict(rows) if rows else {}
+    except Exception:
+        def _call_log_stats(aid):
+            return {}
     if agent_id:
         row = db.conn.execute(
             "SELECT agent_id, total_tasks, total_tokens, failed_tasks, "
             "       total_runtime_ms, avg_latency_ms, last_updated "
             "FROM agent_metrics WHERE agent_id = ?", (agent_id,)
         ).fetchone()
-        if not row:
-            return {"status": "error", "error": "aucune métrique pour cet agent"}
-        return {"agent_id": agent_id, "metrics": dict(row)}
+        cl = _call_log_stats(agent_id)
+        base = dict(row) if row else {"agent_id": agent_id, "total_tasks": 0,
+                                      "total_tokens": 0, "failed_tasks": 0,
+                                      "total_runtime_ms": 0, "avg_latency_ms": 0}
+        return {"agent_id": agent_id, "metrics": {
+            **base,
+            "requests": cl.get("requests") or 0,
+            "total_tokens": (base.get("total_tokens") or 0)
+                            + (cl.get("tokens_in") or 0) + (cl.get("tokens_out") or 0),
+            "tokens_in": cl.get("tokens_in") or 0,
+            "tokens_out": cl.get("tokens_out") or 0,
+            "errors": cl.get("errors") or 0,
+        }}
     else:
         rows = db.conn.execute(
             "SELECT agent_id, total_tasks, total_tokens, failed_tasks, "
             "       total_runtime_ms, avg_latency_ms, last_updated "
             "FROM agent_metrics ORDER BY agent_id"
         ).fetchall()
-        return {"agents": [dict(r) for r in rows], "count": len(rows)}
+        out = []
+        for r in rows:
+            cl = _call_log_stats(r["agent_id"])
+            out.append({
+                **dict(r),
+                "requests": cl.get("requests") or 0,
+                "total_tokens": (r["total_tokens"] or 0)
+                                + (cl.get("tokens_in") or 0) + (cl.get("tokens_out") or 0),
+                "tokens_in": cl.get("tokens_in") or 0,
+                "tokens_out": cl.get("tokens_out") or 0,
+                "errors": cl.get("errors") or 0,
+            })
+        return {"agents": out, "count": len(out)}
 
 
 def op_service_resources(params):
