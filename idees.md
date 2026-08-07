@@ -36,3 +36,29 @@ réhabilitation. Pas un "score" à part entière.
   longues séquences récentes.
 - Fenêtres de monitoring : 5m/15m/1h/4h/24h/7j (fait) ; mode avancé avec
   graphes (fait, panel monitoring-llm-avance).
+
+## Sources de benchmark — audit + élargissement (mission swarm)
+
+État actuel : model_benchmarks_raw = 92% synthétique (synthetic_catalogue,
+frontier_estimate), seulement ~445 lignes réelles (lmsys_arena, arena_hard).
+artificial_analysis.py ne produit AUCUNE donnée (bug à diagnostiquer).
+
+Sources officielles à couvrir (Top prioritaire → académique → spécialisé) :
+1. Artificial Analysis (À RÉPARER — référence qualité/latence/prix, TTFT,
+   tokens/s, variance providers). Notre fichier est vide.
+2. OpenRouter Rankings (leaderboard usage réel, ratio qualité/prix).
+3. Hugging Face Open LLM Leaderboard v2 (MMLU-Pro, GPQA, MuSR — open-source).
+4. LiveBench (AbacusAI — anti-triche, questions changent chaque mois).
+5. SWE-bench / SWE-agent (code réel, résolution issues GitHub).
+6. MMLU-Pro / GPQA (raisonnement complexe niveau doctorat).
+7. Vectara Hughes Hallucination Leaderboard (taux d'hallucination).
+
+Pour CHAQUE source :
+  - créer une table dédiée complète (source, modèle, score, métadonnées),
+  - scraper un maximum (≤ 10k modèles les plus populaires),
+  - stocker avec les NOMS DE LA SOURCE,
+  - réconcilier les noms source → model_ref du catalogue.
+
+Tâches transverse : réconciliation par provider ; recherche doublon/manquant
+dans catalogue_models (via noms provider). Le tout SANS brancher sur
+l'allocation tant que non validé.
