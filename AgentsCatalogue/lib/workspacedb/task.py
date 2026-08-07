@@ -147,19 +147,27 @@ def claim_next(inputs: dict, home: str) -> dict:
     """Pioche la prochaine tâche dispo pour le rôle de l'agent (greedy).
 
     La tâche au statut cible la plus prioritaire correspondant à role_required
-    passe en 'running'. Par défaut pioche les 'pending' ; le reviewer passe
-    status='review' pour piocher les tâches livrées à valider.
+    passe en 'running'. Par défaut pioche les 'pending' ; le reviewer pioche
+    automatiquement les tâches livrées en 'review' (une tâche n'est done que
+    si reviewée) avant les pending.
     """
     workspace_id = inputs.get("workspace_id", "")
     role_required = inputs.get("role_required", "")
     team_id = int(inputs.get("team_id", -1))
-    status = inputs.get("status", "pending")
+    status = inputs.get("status", "")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
     try:
         db, scope = _scope(workspace_id)
-        task = scope.tasks.claim_next(role_required=role_required,
-                                      team_id=team_id, status=status)
+        task = None
+        # Le reviewer valide d'abord les tâches livrées en review.
+        if not status and role_required and "review" in role_required.lower():
+            task = scope.tasks.claim_next(role_required=role_required,
+                                          team_id=team_id, status="review")
+        if task is None:
+            task = scope.tasks.claim_next(
+                role_required=role_required, team_id=team_id,
+                status=status or "pending")
         db.close()
         if not task:
             return {"ok": False, "error": "aucune tâche dispo pour ce rôle"}
