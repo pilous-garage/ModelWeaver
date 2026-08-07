@@ -49,9 +49,6 @@ skills:
   - git/git_status@v1
   - git/lite@v1
   - shell/exec@v1
-  - host/host_read@v1
-  - host/host_write@v1
-  - host/host_run@v1
   - coding/analyse@v1
   - coding/code_gen@v1
   - coding/test_runner@v1
