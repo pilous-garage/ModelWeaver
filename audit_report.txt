@@ -1,0 +1,45 @@
+# Audit Report – Interfaces/main/GUI/v2/src/panels/
+
+## Overview
+The `panels/` directory is the central location for the React components that implement the user‑interface panels in the *mw-swarm* project.  The current repository contains a single panel component – `debug-services.panel.tsx` – which exposes a set of debugging utilities for the underlying services.
+
+## Panels Reviewed
+1. **debug-services.panel.tsx** – a TypeScript React component that renders a debugging panel for the *mw-swarm* service stack.  The component is responsible for:
+   * Displaying real‑time service health metrics.
+   * Exposing a log viewer for the Docker‑managed containers.
+   * Providing controls to restart or stop individual services.
+   * Integrating with the shared communication layer (WebSocket / HTTP).
+
+> **Note**: No other panel files are present in the current branch; the audit therefore focuses exclusively on the `debug-services.panel.tsx` component.
+
+## Communication Layer
+| Feature | Implementation | Observations |
+|---------|---------------|--------------|
+| WebSocket | Uses `socket.io-client` to subscribe to `service/status` events. | Handled with a `useEffect` hook that automatically cleans up on unmount. |
+| HTTP API | Calls `GET /api/services` to fetch initial state and `POST /api/services/:id/restart` to trigger restarts. | Endpoints are secured via JWT; the component correctly attaches the token from context. |
+| Error handling | Errors are displayed via a toast component. | No retry logic implemented – a production‑grade component would benefit from exponential back‑off on failed requests. |
+
+## Docker Integration
+The component relies on the backend to provide Docker status information.  The Docker integration is managed by the service‑side API; the panel merely consumes the exposed data.  No direct Docker API calls are made from the front‑end, which is appropriate for security reasons.
+
+## GUI/UX
+* The panel uses Material‑UI components (`Accordion`, `Table`, `Button`).
+* Styling is scoped via CSS‑modules (`debug-services.panel.module.css`).
+* Accessibility checks: all interactive elements have ARIA labels and keyboard focus styles.
+
+## Recommendations
+1. **Add retry logic** for HTTP calls to improve resilience.
+2. **Expose a WebSocket fallback** using Server‑Sent Events for clients that cannot maintain a persistent connection.
+3. **Add unit tests** for the component’s data‑fetching logic.
+4. **Document the API contract** in a dedicated `api-spec.md`.
+5. **Add a `README.md`** in the `panels/` folder explaining the conventions for adding new panels.
+
+## Docker‑Related Notes
+* The Docker Compose configuration for the services lives in `docker-compose.yml` at the repository root.
+* No panel directly manipulates Docker; all interactions are mediated by the backend.
+* Future panels that require container introspection should adhere to the existing API patterns.
+
+---
+
+**Prepared by**: ModelWeaver
+**Date**: $(date +%Y-%m-%d)
