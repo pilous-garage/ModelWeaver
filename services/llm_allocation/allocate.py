@@ -105,13 +105,12 @@ def _query_candidates() -> List[Dict[str, Any]]:
                                 ELSE kem.provider_model_name
                            END
                        )
-             WHERE kem.available = 1 AND kem.declared = 1
-               AND pm.status = 'active'
-               AND pm.unavailable = 0
-             -- Dédupliquer : un même (provider, model) peut exister via
-             -- plusieurs provider_models_mapping (endpoints/clés). On garde UNE
-             -- ligne par modèle — sinon un doublon à 0/0 ressort en tête avec
-             -- score plein pendant que son jumeau pénalisé est ignoré.
+            WHERE kem.available = 1 AND kem.declared = 1
+              AND pm.status = 'active'
+            -- Dédupliquer : un même (provider, model) peut exister via
+            -- plusieurs provider_models_mapping (endpoints/clés). On garde UNE
+            -- ligne par modèle — sinon un doublon à 0/0 ressort en tête avec
+            -- score plein pendant que son jumeau pénalisé est ignoré.
             GROUP BY cp.ref, cm.ref, kem.provider_model_name,
                      pm.context_window_effective, pm.context_window_tokens,
                      pm.cost_per_input_token, pm.cost_per_output_token,
