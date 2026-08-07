@@ -201,7 +201,12 @@ class TaskRepository:
             ph = ",".join("?" for _ in exclude_assigned)
             sel += f" AND COALESCE(assigned_to,'') NOT IN ({ph})"
             sel_args.extend(exclude_assigned)
-        sel += " ORDER BY priority DESC, created_at LIMIT 1"
+        # Prioriser les tâches de la TEAM de l'agent (team_id exact) avant les
+        # tâches projet partagées (-1) : un greedy dev-chat pioche d'abord les
+        # tâches de mw-dev-chat avant celles des autres workspaces.
+        sel += (" ORDER BY CASE WHEN team_id = ? THEN 0 ELSE 1 END, "
+                "priority DESC, created_at LIMIT 1")
+        sel_args.append(team_id)
         row = _row(self.conn.execute(sel, sel_args).fetchone())
         if not row:
             return None
