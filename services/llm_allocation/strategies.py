@@ -204,11 +204,11 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
         smoothed = (1.0 + option.runtime_success_count) / (1.0 + option.runtime_calls)
         fail_rate = 1.0 - smoothed
         score -= fail_rate
-        # Pénalité latence : un modèle lent ralentit TOUTE la boucle agent
-        # (chaque round LLM à ~5s × 100 rounds = 8 min). On pénalise fortement
-        # au-delà de ~2s (les bons modèles répondent en <1.5s) :
-        #   0.5s → -0.005 ; 1s → -0.01 ; 2s → -0.02 ; 5s → -0.08 ; 10s → -0.18
-        score -= (option.runtime_latency_ms / 1000.0) ** 1.5 / 150.0
+        # Pénalité latence : linéaire, règle utilisateur — 1 minute de latence
+        # = -0.3 pt (score max = 1). Donc latency_ms / 60000 × 0.3 = /200000.
+        #   0.5s → -0.0025 ; 1s → -0.005 ; 2s → -0.01 ; 5s → -0.025
+        #   10s → -0.05 ; 30s → -0.15 ; 60s → -0.30
+        score -= option.runtime_latency_ms / 200000.0
         # Bonus de FIABILITÉ éprouvée : un modèle testé avec un bon taux de
         # succès passe DEVANT un modèle jamais testé (inconnu = risque de
         # modèle mort, deprecated, 404…). Sans ça, les non-testés à score
