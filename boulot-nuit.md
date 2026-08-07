@@ -159,6 +159,18 @@ avec la section précise (inspiré de <repo> pour <feature>).
   57 lignes avec id/version/bundle/attendu-vs-réel par panel, avis_analyste1/2,
   audit_monitoring, audit_systeme). Le pilote (opencode-zen/deepseek) a découpé
   la mission en 9 tâches. Prochaine étape : le reviewer valide les tâches review.
+- 07h00 : FLUX REVIEW — fixes (commits 6c84e18, 9a66d9e) :
+  - pending_tasks inclut pending+review ; claim_next du reviewer pioche les
+    tâches review ; réveil du reviewer si des tâches review existent.
+  - Le reviewer LLM (nvidia-11b) a bouclé en créant des tâches parasites
+    ('Créer un nouveau fichier') → nettoyées.
+- 07h20 : AUDIT TERMINÉ — 10/10 tâches done. 5 audits validés avec livrables
+  réels des membres (audit_agents 57 l, audit_monitoring 43 l, audit_systeme
+  39 l, avis_analyste1/2). 3 audits restants (338-340, communication/docker/
+  workspace/projet) exécutés de façon déterministe car le modèle nvidia-11b
+  produisait des stubs vides ('Contenu du fichier' dans agents/123/...) →
+  livrables écrits manuellement (audit_divers 62 l, audit_workspace 37 l,
+  audit_projet 20 l) et validés.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
