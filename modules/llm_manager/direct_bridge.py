@@ -738,7 +738,11 @@ class DirectBridge(BaseBridge):
         """Appelle l'API Google Gemini (format différent d'OpenAI)."""
         base = ep.get("base_url", "https://generativelanguage.googleapis.com/v1beta")
         api_key = ep.get("api_key") or ""
-        url = f"{base.rstrip('/')}/models/{model_ref}:generateContent"
+        # L'API Gemini attend le NOM du modèle sans préfixe provider redondant
+        # (google/gemini-3.5-flash → gemini-3.5-flash). Sans ça l'API renvoie
+        # "model not found" (ex. google/google/gemini-3.5-flash).
+        model_id = _build_model_id(provider_ref, model_ref)
+        url = f"{base.rstrip('/')}/models/{model_id}:generateContent"
 
         # Convertir les messages au format Gemini
         contents = []
