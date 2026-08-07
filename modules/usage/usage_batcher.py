@@ -593,6 +593,12 @@ def run_once() -> Dict[str, Any]:
         score_blocks = run_blocks(cat, rt, frontier)
     except Exception:
         score_blocks = {}
+    # Score benchmark étiré (model_efficacy → score_benchmark_etire).
+    try:
+        from modules.usage.score_benchmark import compute_etire
+        benchmark = compute_etire(cat, rt)
+    except Exception:
+        benchmark = {}
     batched = _batch_1m(cat, rt)
     cascaded = _cascade(cat, rt, frontier)
     purged = _purge_expired(rt)
@@ -604,7 +610,7 @@ def run_once() -> Dict[str, Any]:
         pass
     return {"batched": batched, "cascade": cascaded, "purged": purged,
             "frontier": frontier, "reconciled": reconciled,
-            "score_blocks": score_blocks}
+            "score_blocks": score_blocks, "score_benchmark": benchmark}
 
 
 def _acquire_singleton() -> Optional[object]:

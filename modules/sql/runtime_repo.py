@@ -396,6 +396,41 @@ class RuntimeDB:
                     UNIQUE(provider_ref, model_ref)
                 );
                 CREATE INDEX IF NOT EXISTS idx_sbatch_model ON score_batch(provider_ref, model_ref);
+
+                -- Scores benchmark ÉTIRÉS par modèle (sans provider).
+                -- Étirement par min/max de colonne :
+                --   score_etire = (score - min_col)/(max_col - min_col)*0.8 + 0.1
+                -- Les bornes min/max UTILISÉES sont stockées dans
+                -- score_benchmark_meta (une ligne par colonne) pour pouvoir
+                -- appliquer le même étirement à un nouveau modèle. Si un score
+                -- sort des bornes stockées, on recalcule toute la colonne.
+                -- Fallback : modèle sans score spécialité → score_etire du
+                -- global (src_* = 'global'), sans aucun score → baseline 0.1.
+                CREATE TABLE IF NOT EXISTS score_benchmark_etire (
+                    model_ref       TEXT PRIMARY KEY,
+                    score_global    REAL DEFAULT 0,
+                    score_etire     REAL DEFAULT 0.1,
+                    score_etire_chat       REAL DEFAULT 0.1,
+                    score_etire_coding     REAL DEFAULT 0.1,
+                    score_etire_reasoning  REAL DEFAULT 0.1,
+                    score_etire_knowledge  REAL DEFAULT 0.1,
+                    score_etire_agentic    REAL DEFAULT 0.1,
+                    src_chat        TEXT NOT NULL DEFAULT 'spec',
+                    src_coding      TEXT NOT NULL DEFAULT 'spec',
+                    src_reasoning   TEXT NOT NULL DEFAULT 'spec',
+                    src_knowledge   TEXT NOT NULL DEFAULT 'spec',
+                    src_agentic     TEXT NOT NULL DEFAULT 'spec',
+                    is_synthetic    INTEGER DEFAULT 0,
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_sbe_etire ON score_benchmark_etire(score_etire);
+                CREATE TABLE IF NOT EXISTS score_benchmark_meta (
+                    column_name     TEXT PRIMARY KEY,
+                    min_value       REAL NOT NULL,
+                    max_value       REAL NOT NULL,
+                    nb_models       INTEGER DEFAULT 0,
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
             """)
         except Exception as e:
             self.conn.rollback()
