@@ -583,32 +583,12 @@ class DirectBridge(BaseBridge):
                   float(latency_ms or 0), (error_code or "")[:100],
                   (error_msg or "")[:200], (call_type or "chat")[:30]))
             self.cat.conn.commit()
-            # Fenêtre bornée : ARCHIVER au-delà de 10k lignes au lieu de
-            # supprimer (garder l'historique pour les analyses de patterns sur
-            # les limites réelles et usages). Les lignes les plus anciennes
-            # (hors 10k plus récentes) sont déplacées vers l'archive.
-            try:
-                self.cat.conn.execute("""
-                    INSERT INTO model_call_log_archive
-                        (id, provider_id, model_id, provider_model_id, agent_id,
-                         success, tokens_in, tokens_out, tokens_thinking,
-                         latency_ms, error_code, error_msg, call_type, created_at)
-                    SELECT id, provider_id, model_id, provider_model_id, agent_id,
-                           success, tokens_in, tokens_out, tokens_thinking,
-                           latency_ms, error_code, error_msg, call_type, created_at
-                    FROM model_call_log
-                    WHERE id NOT IN (
-                        SELECT id FROM model_call_log
-                        ORDER BY created_at DESC, id DESC LIMIT 10000)
-                """)
-                self.cat.conn.execute("""
-                    DELETE FROM model_call_log WHERE id NOT IN (
-                        SELECT id FROM model_call_log
-                        ORDER BY created_at DESC, id DESC LIMIT 10000)
-                """)
-                self.cat.conn.commit()
-            except Exception:
-                pass
+            # Les lignes détaillées sont agrégées par le TICKER DE BATCHAGE
+            # (usage_batcher, service séparé) : il lit model_call_log par
+            # fenêtres de temps, alimente les tables d'agrégats (1m/15m/3h/…)
+            # en cascade, puis supprime les lignes détaillées > 5 min. On ne
+            # borne plus ici (10k) — le batcheur fait le ménage, et le détail
+            # récent reste dispo pour recent_llm.
         except Exception:
             try:
                 self.cat.conn.rollback()

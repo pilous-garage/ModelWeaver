@@ -184,9 +184,9 @@ class RuntimeDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
 
-                -- Historique 3 niveaux (moniteur LLM) :
-                --   1m : détails agrégés par minute, conservés 24h
-                --   1h : agrégats horaires, conservés 30j
+                -- Historique en CASCADE (moniteur LLM) : le batcheur agrège
+                -- model_call_log (détail) vers usage_history_1m, puis chaque
+                -- niveau agrège le précédent (15m → 3h → 1d → 1w → 1mo).
                 CREATE TABLE IF NOT EXISTS usage_history_1m (
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
@@ -200,7 +200,7 @@ class RuntimeDB:
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_uh1m_bucket ON usage_history_1m(bucket);
-                CREATE TABLE IF NOT EXISTS usage_history_1h (
+                CREATE TABLE IF NOT EXISTS usage_history_15m (
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
@@ -212,7 +212,59 @@ class RuntimeDB:
                     cost            REAL DEFAULT 0,
                     UNIQUE(bucket, provider_ref, model_ref, agent_id)
                 );
-                CREATE INDEX IF NOT EXISTS idx_uh1h_bucket ON usage_history_1h(bucket);
+                CREATE INDEX IF NOT EXISTS idx_uh15m_bucket ON usage_history_15m(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_3h (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh3h_bucket ON usage_history_3h(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_1d (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1d_bucket ON usage_history_1d(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_1w (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1w_bucket ON usage_history_1w(bucket);
+                CREATE TABLE IF NOT EXISTS usage_history_1mo (
+                    bucket          INTEGER NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    agent_id        TEXT,
+                    requests        INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    tokens_thinking INTEGER DEFAULT 0,
+                    cost            REAL DEFAULT 0,
+                    UNIQUE(bucket, provider_ref, model_ref, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_uh1mo_bucket ON usage_history_1mo(bucket);
             """)
         except Exception as e:
             self.conn.rollback()
