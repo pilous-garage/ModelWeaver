@@ -173,7 +173,8 @@ class TaskRepository:
     def claim_next(self, role_required: str = "",
                    exclude_assigned: tuple = (),
                    team_id: int = -1,
-                   status: str = "pending") -> Optional[Dict[str, Any]]:
+                   status: str = "pending",
+                   assigned_to: str = "") -> Optional[Dict[str, Any]]:
         """Pioche la prochaine tâche dispo pour un rôle (greedy).
 
         Hiérarchie de capabilité : un rôle `X_senior` peut piocher les tâches
@@ -205,9 +206,10 @@ class TaskRepository:
         if not row:
             return None
         cur = self.conn.execute(
-            "UPDATE tasks SET status = 'running', updated_at = ? "
+            "UPDATE tasks SET status = 'running', assigned_to = ?, updated_at = ? "
             "WHERE task_id = ? AND workspace_id = ? AND status = ?",
-            (datetime.utcnow().isoformat(), row["task_id"], self.wid, status))
+            (assigned_to, datetime.utcnow().isoformat(),
+             row["task_id"], self.wid, status))
         self.conn.commit()
         return self.get(row["task_id"]) if cur.rowcount else None
 

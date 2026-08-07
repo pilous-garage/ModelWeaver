@@ -155,6 +155,9 @@ def claim_next(inputs: dict, home: str) -> dict:
     role_required = inputs.get("role_required", "")
     team_id = int(inputs.get("team_id", -1))
     status = inputs.get("status", "")
+    # agent_id injecté par le workflow → utilisé comme assigned_to pour éviter
+    # que deux greedy piochent la MÊME tâche en parallèle (double exécution).
+    agent_id = str(inputs.get("agent_id", "") or "")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
     try:
@@ -163,11 +166,12 @@ def claim_next(inputs: dict, home: str) -> dict:
         # Le reviewer valide d'abord les tâches livrées en review.
         if not status and role_required and "review" in role_required.lower():
             task = scope.tasks.claim_next(role_required=role_required,
-                                          team_id=team_id, status="review")
+                                          team_id=team_id, status="review",
+                                          assigned_to=agent_id)
         if task is None:
             task = scope.tasks.claim_next(
                 role_required=role_required, team_id=team_id,
-                status=status or "pending")
+                status=status or "pending", assigned_to=agent_id)
         db.close()
         if not task:
             return {"ok": False, "error": "aucune tâche dispo pour ce rôle"}
