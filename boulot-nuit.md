@@ -41,25 +41,51 @@ Consignes utilisateur (verbatim, à ne pas perdre) :
 ## Problèmes CONSTATÉS (swarm)
 1. Les agents lisent les fichiers mais ne CONCLUENT pas avant max_loops
    (coder-a : 100 tours de read_file sans écrire le rapport). → fix prompt
-   + script texte→toolcalls.
-2. Faux positifs : tâches marquées done sans livrable (garde ajoutée, à vérifier).
+   + script texte→toolcalls (fait, commit 3c91f52).
+2. Faux positifs : tâches marquées done sans livrable (garde ajoutée, commit
+   34f0015 + flux review 5017f7a).
 3. Fallback kilo→nvidia lent (11b-vision) : récupération lente.
 4. Le delegate de requêtes directes ignore la requête (workflow greedy écrase).
 5. Modèles auto-assignés parfois mauvais (llama-3.2-11b-vision pour missions
-   complexes) → rescoring + allocation latence/faux-appels.
+   complexes) → rescoring + allocation latence/faux-appels (fait).
+6. **PROBLÈME CENTRAL (02h50) : les modèles agentic dispo sont insuffisants.**
+   - kilo/poolside : produit des rapports STUB (placeholders vides) et des
+     noms d'outils fantaisistes (host_run_v1>) — ne fait pas l'audit réel.
+   - nvidia/llama-3.2-11b-vision : invente des task_id (12345) au lieu de
+     piocher la vraie tâche → "tâche introuvable" → 4 échecs → abort.
+   - groq : rate-limit intermittent (RPM bas), fallback rapide vers kilo.
+   - google/gemini-3.5-flash-lite : auth intermittent + RPM très bas.
+   - openrouter : PAS DE CRÉDIT (auth "never purchased credits").
+   - opencode-zen : quota épuisé.
+   → Le swarm ne peut pas tourner de façon fiable tant qu'on n'a pas un
+     meilleur modèle agentic. Options : gemini flash (fenêtre haute, prompts
+     complets hors chat), groq (respecter RPM), ou configurer un modèle
+     local (ollama) de bonne taille.
 
 ## TODO (cocher au fur et à mesure)
-- [ ] boulot-nuit.md créé + last_session.md à jour
-- [ ] Étudier prompts/skills opencode pour s'en inspirer
-- [ ] Fix « agents lisent mais ne concluent pas » (prompt + script texte→toolcalls)
-- [ ] assign_llm : intégrer latence + taux de faux appels (model_call_log)
-- [ ] Rescorer les modèles du catalogue (artificialanalysis.ai, latence, erreurs)
-- [ ] Probes espacés par fournisseur (google en priorité, fenêtres hautes)
-- [ ] openrouter : tri par score + probe descendant (50 req/jour max)
-- [ ] Agrandir la team dev-chat : analyst, planificateur, surveillant, merger, reviewer
-- [ ] Tâche done seulement si reviewée par reviewer
+- [x] boulot-nuit.md créé + last_session.md à jour
+- [x] Étudier prompts/skills opencode pour s'en inspirer
+- [x] Fix « agents lisent mais ne concluent pas » (prompt + script texte→toolcalls)
+- [x] assign_llm : intégrer latence + taux de faux appels (model_call_log)
+- [x] Rescorer les modèles du catalogue (artificialanalysis.ai, latence, erreurs)
+- [x] Probes espacés par fournisseur (google en priorité, fenêtres hautes)
+- [x] openrouter : tri par score + probe descendant (clé sans crédit)
+- [x] Agrandir la team dev-chat : analyst, planificateur, surveillant, merger, reviewer
+- [x] Tâche done seulement si reviewée par reviewer
 - [ ] Lancer les tâches 330-333, surveiller, merger les livrables dans home
-- [ ] Commit + push au fil sur test-npm-dev
+      → bloqué : pas de modèle agentic fiable (voir problème central 6)
+- [x] Commit + push au fil sur test-npm-dev
+
+## Commits pushés cette nuit
+- e5b11fb fix(swarm): ls -la, provider, workspace_id, clone git-lite
+- 34f0015 fix(swarm): noms d'outils malformés + garde task_done
+- 3c91f52 fix(swarm): agents lisent sans conclure → conclusion forcée + texte→toolcalls
+- ef0cf9e feat(swarm): allocation LLM — pénalité latence + trace faux appels
+- 9193e8d feat(swarm): probe providers + rescoring trusted
+- 5017f7a feat(swarm): team élargie (analyst, merger, surveillant) + flux review
+- 3934639 fix(swarm): coder navigue vers le workspace + pousse-à-conclure tôt
+- a6089bb fix(swarm): retirer host/* du bundle dev
+- ded9c75 feat(swarm): task_done accepte delivered sans commit
 
 ## Inspirations (dépôts externes — options supplémentaires, SEULEMENT en dernier
 recours si les agents restent inefficaces ; ne pas s'y précipiter)
@@ -78,14 +104,19 @@ avec la section précise (inspiré de <repo> pour <feature>).
   imiter : skills `name+description+corps` avec « Source of Truth » (recherche
   > mémoire), subagents spécialisés (explore/general/plan), phases strictes,
   guidelines d'outils (parallélisme, recherche, vérification), system-reminder.
-- 23h30 : fix agents qui lisent sans conclure (commit 3c91f52 pushé) :
-  - conclusion forcée après 5 tours de lecture pure sans outil d'écriture
-  - script texte→toolcalls (_extract_toolcalls_from_text) : parse les toolcalls
-    sérialisés dans la réponse texte des LLM descriptifs (poolside) et les exécute.
-- À faire ensuite : assign_llm latence/faux-appels, rescoring, team élargie,
-  reviewer pour done, relancer les tâches 330-333.
+- 23h50 : allocation LLM (commit ef0cf9e) : pénalité latence progressive
+  (lat_ms/1000)^1.5/150 + trace des faux appels (no_tools) dans model_call_log.
+- 00h05 : probes providers (commit 9193e8d) + script probe_providers.py.
+  Résultats : groq/llama-3.3-70b (0.2s tools) et nvidia/llama-3.2-11b (0.7s
+  tools) très fiables ; openrouter sans crédit (auth) ; opencode-zen no-tools.
+- 00h20 : team élargie (commit 5017f7a) : analyst, merger, surveillant ajoutés.
+  Flux review : tâche coder → 'review' → le reviewer valide en 'done'.
+- À faire ensuite : relancer les tâches 330-333, surveiller, merger.
 
 ## Modèles utiles (probes réussis cette nuit)
+- openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
+  modèles échouent auth. Script probe_openrouter.py prêt (tri+probe descendant),
+  mais inutile tant qu'il n'y a pas de crédit. NE PAS consommer les 50 req/jour.
 - kilo / poolside/laguna-s-2.1:free : OK (2.1s, tools) — 286 req 0 err
 - nvidia / meta/llama-3.2-11b-vision-instruct : OK (0.7s, tools) — rapide fiable
 - nvidia / meta/llama-3.3-70b-instruct : OK tools mais 74s (très lent → pénalisé)
