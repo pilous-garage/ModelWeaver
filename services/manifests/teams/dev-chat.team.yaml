@@ -323,7 +323,8 @@ members:
             type: end
             status: SUCCESS
 
-  # ── SURVEILLANT : supervise l'avancement global du workspace ──
+  # ── COORDINATEUR : explore le taskflow, analyse ce que font les autres,
+  #    et garantit que le chemin chat → swarm → chat est complété. ──
   - agent_name: surveillant
     role: planificateur
     occupation: continue
@@ -336,21 +337,44 @@ members:
             type: call
             fn: workflow/autonomous@v1
             inputs:
-              request: "Surveille le workspace {{workspace_id}} et supervise l'avancement (role surveillant)"
+              request: "Coordinateur : explore le taskflow du workspace {{workspace_id}} et assure la complétion de bout en bout"
               bundles: ["dev"]
               workspace_id: "{{workspace_id}}"
               context: |
-                Tu es le surveillant du chat de dev. Boucle gloutonne :
-                1. Liste les tâches (workspace/task_list@v1, all=true) du
-                   workspace {{workspace_id}}.
-                2. Identifie les tâches bloquées (pending depuis longtemps,
-                   running sans agent, done sans livrable) et les faux positifs.
-                3. Pour les blocages : relance une tâche corrective
-                   (workspace/task_create@v1) ou notifie (workspace/chat_post@v1).
-                4. Écris un rapport d'avancement dans ton home
-                   (write_file_v1), puis reprends à l'étape 1.
-                Réponds avec le résumé de l'avancement + les blocages.
-              max_loops: 80
+                Tu es le COORDINATEUR du swarm. Ta mission : explorer le
+                TASKFLOW complet et t'assurer que chaque mission va de
+                chat → swarm → chat sans rester bloquée. Boucle gloutonne :
+
+                1. EXPLORE le taskflow :
+                   - workspace/task_list@v1 (all=true) : toutes les tâches,
+                     statuts (pending/running/review/done), rôles, assignations.
+                   - workspace/task_get@v1 sur les tâches clés.
+                   - git/lite@v1 status + log : les commits récents.
+
+                2. ANALYSE avec ton LLM ce que font les autres :
+                   - Quelles tâches sont pending depuis longtemps ? bloquées ?
+                   - Quelles tâches done n'ont AUCUN livrable réel (fichier .md
+                     absent ou stub vide "à compléter"/"Contenu du fichier") ?
+                   - Y a-t-il des agents qui tournent sans avancer ?
+
+                3. ASSURE la complétion :
+                   - Tâche pending actionnable → vérifie qu'un agent va la
+                     piocher (un agent greedy devrait être actif) ; sinon
+                     relance (workspace/task_create_v1 corrective).
+                   - Tâche done SANS livrable réel → remets-la en pending
+                     (workspace/task_done_v1 est refusé, utilise task_create
+                     corrective + signale le problème).
+                   - Tâche review → le reviewer doit la valider ; sinon signale.
+
+                4. Écris un RAPPORT DE COORDINATION dans ton home
+                   (write_file_v1, fichier coordination.md) : état global,
+                   blocages, tâches relancées, ce qui reste pour compléter
+                   chat → swarm → chat.
+
+                IMPORTANT : ne crée PAS de tâches parasites inutiles. Ta valeur
+                = VÉRIFIER la complétion réelle et REMETTRE en route ce qui
+                est bloqué/stub. Réponds avec le rapport + actions prises.
+              max_loops: 120
             capture:
               stdout: result
             next: end

@@ -934,6 +934,10 @@ class AgentManager:
         woken = self._wake_sleeping_agents()
         # Réveiller les agents quand des tâches workspace sont dispo (greedy)
         woken_tasks = self._wake_for_tasks()
+        # Réveiller périodiquement le COORDINATEUR (surveillant) : il explore
+        # le taskflow et vérifie la complétion chat → swarm → chat, même sans
+        # tâches à piocher.
+        woken_coord = self._wake_coordinator()
 
         active = len(self.list_active())
 
@@ -944,9 +948,46 @@ class AgentManager:
             "zombies_killed": killed,
             "woken_agents": woken,
             "woken_tasks": woken_tasks,
+            "woken_coordinator": woken_coord,
             "tasks_reclaimed": reclaimed,
             "issues_completed": issues_completed,
         }
+
+    _COORD_INTERVAL = 90.0     # réveil périodique du coordinateur (s)
+    _coord_last: float = 0.0   # timestamp du dernier réveil
+
+    def _wake_coordinator(self) -> int:
+        """Réveille périodiquement le COORDINATEUR (agent surveillant).
+
+        Le coordinateur explore le taskflow (tâches, agents, livrables) et
+        vérifie la complétion de bout en bout — il doit tourner même sans
+        tâche à piocher. Réveillé toutes les _COORD_INTERVAL secondes s'il
+        n'est pas déjà actif (pas de thread concurrent).
+        """
+        import time as _t
+        now = _t.time()
+        if now - self._coord_last < self._COORD_INTERVAL:
+            return 0
+        self._coord_last = now
+        try:
+            row = self.db.conn.execute(
+                "SELECT agent_id FROM agents WHERE name = 'team:dev-chat/surveillant' "
+                "LIMIT 1").fetchone()
+            if not row:
+                return 0
+            aid = row["agent_id"] if not isinstance(row, tuple) else row[0]
+            # Déjà actif ? → skip (évite les doubles cycles concurrents).
+            active = {r["agent_id"] for r in self.db.conn.execute(
+                "SELECT agent_id FROM agent_runtime").fetchall()}
+            if aid in active:
+                return 0
+            threading.Thread(
+                target=self._run_sleeping_agent,
+                args=(aid, "wakeup: cycle coordination", "mw-dev-chat"),
+                daemon=True).start()
+            return 1
+        except Exception:
+            return 0
 
     def _complete_done_issues(self) -> int:
         """Marque 'done' les issues dont le workspace d'analyse est terminé.
