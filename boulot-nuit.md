@@ -134,6 +134,14 @@ avec la section précise (inspiré de <repo> pour <feature>).
   intra-provider + sleep 0.3s) — le probe massif précédent (20 threads sur le
   même provider) saturait le quota → faux unavailable. Colonne `agentic` à
   ajouter dans provider_models (à faire).
+- 05h30 : fixes probe/agentic (commits c1be616, a5dff44, 5784557) :
+  - colonne provider_models.agentic (INTEGER) remplie par le probe (1 si agentic).
+  - probe : outil nommé 'bash' (naturel, comme opencode) → les modèles
+    appellent df -h. fake_shell_v1 non reconnu → faux non-agentic.
+  - google : l'URL Gemini recevait google/google/gemini-3.5-flash (préfixe
+    redondant) → "model not found". Fix : _build_model_id dans _google_chat.
+    gemini-3.5-flash + flash-lite sont maintenant agentic (df -h).
+  - probe complet relancé (par provider, timeout 10s) en arrière-plan.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
