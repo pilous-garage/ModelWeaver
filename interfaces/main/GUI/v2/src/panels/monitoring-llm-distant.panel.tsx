@@ -41,7 +41,7 @@ panels:
 `;
 
 
-const WINDOWS = ['1h', '24h', '7j'];
+const WINDOWS = ['5m', '15m', '1h', '4h', '24h', '7j'];
 
 function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
   const [metrics, setMetrics] = useState<any>(null);
@@ -140,7 +140,7 @@ export const Panel: PanelDef = {
   essential: false,
   bundles: ['monitoring'],
   paramsSchema: {
-    window: { type: 'enum', enum: ['1h', '24h', '7j'], default: '24h' },
+    window: { type: 'enum', enum: ['5m', '15m', '1h', '4h', '24h', '7j'], default: '24h' },
   },
   defaultParams: { window: '24h' },
   langEmbedded: LANG_FR,

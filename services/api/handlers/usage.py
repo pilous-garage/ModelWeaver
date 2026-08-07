@@ -15,6 +15,24 @@ _CASCADE_BUCKETS = {
 def _bucket_size(tbl: str) -> int:
     return _CASCADE_BUCKETS.get(tbl, 3600)
 
+
+# Fenêtres supportées (nom → secondes) : courtes (5m/15m), moyennes (1h/4h),
+# longues (24h/7j). Chaque fenêtre a une granularité de POINT de série
+# (taille des buckets de sortie pour le graphe).
+WINDOWS = {
+    "5m": (300, 60), "15m": (900, 60),
+    "1h": (3600, 300), "4h": (14400, 900),
+    "24h": (86400, 3600), "7j": (604800, 10800),
+}
+
+
+def _window_seconds(name: str) -> int:
+    return WINDOWS.get(name, (3600, 300))[0]
+
+
+def _series_granularity(name: str) -> int:
+    return WINDOWS.get(name, (3600, 300))[1]
+
 # ── Usage ───────────────────────────────────────────────────────────────
 
 def op_usage_budget(params):
@@ -43,10 +61,10 @@ def op_usage_monitor(params):
     from services.api._shared import _get_rt, _get_cat
     rt = _get_rt()
     now = int(_t.time())
-    windows = {"1h": 3600, "24h": 86400, "7j": 7 * 86400}
     out = {}
     cat = _get_cat()
-    for wname, wsec in windows.items():
+    for wname, wsec in WINDOWS.items():
+        wsec = _window_seconds(wname)
         rows = None
         # Le batchage en cascade pousse les données vers les tables plus
         # grossières : pour couvrir une fenêtre, il faut UNION les tables dont
@@ -138,6 +156,106 @@ def op_usage_monitor(params):
     return {"windows": out, "ts": now}
 
 
+# ── Série temporelle (graphe) ────────────────────────────────────────────
+
+def op_usage_series(params):
+    """Série temporelle de consommation pour un graphe (token/min, req/min).
+
+    params : { window: '5m'|'15m'|'1h'|'4h'|'24h'|'7j',
+               dim: 'global'|'agent'|'provider'|'provider_model' (défaut global) }
+
+    Retourne { points: [{bucket, label, requests, tokens_in, tokens_out}], ... }.
+    Chaque point est un bucket de la granularité de la fenêtre. Les séries
+    multi-voies (par agent/provider/modèle) sont regroupées par clé : pour
+    `dim=provider`, la clé est provider_ref ; pour `agent`, agent_id ; pour
+    `provider_model`, "provider/model".
+    """
+    import time as _t
+    from services.api._shared import _get_rt
+    rt = _get_rt()
+    now = int(_t.time())
+    wname = params.get("window", "1h")
+    dim = params.get("dim", "global")
+    wsec = _window_seconds(wname)
+    gran = _series_granularity(wname)
+
+    # Tables de cascade pertinentes (granularité <= fenêtre).
+    CASCADE_TABLES = ("usage_history_1m", "usage_history_15m",
+                      "usage_history_3h", "usage_history_1d",
+                      "usage_history_1w", "usage_history_1mo")
+    relevant = [t for t in CASCADE_TABLES if _bucket_size(t) <= wsec]
+    if not relevant:
+        return {"status": "error", "error": "fenêtre invalide"}
+
+    # SELECT de groupe selon la dimension.
+    if dim == "agent":
+        group = "COALESCE(agent_id,'?')"
+        key = "COALESCE(agent_id,'?')"
+    elif dim == "provider":
+        group = "COALESCE(provider_ref,'?')"
+        key = "COALESCE(provider_ref,'?')"
+    elif dim == "provider_model":
+        group = "COALESCE(provider_ref,'?') || '/' || COALESCE(model_ref,'?')"
+        key = "COALESCE(provider_ref,'?') || '/' || COALESCE(model_ref,'?')"
+    else:
+        group = "'global'"
+        key = "'global'"
+
+    try:
+        unions = []
+        for tbl in relevant:
+            unions.append(f"""
+                SELECT {group} AS grp,
+                       CAST(bucket / {gran} AS INTEGER) * {gran} AS bkt,
+                       SUM(requests) req, SUM(tokens_in) tin, SUM(tokens_out) tout
+                FROM {tbl} WHERE bucket >= {now - wsec}
+                GROUP BY 1, 2""")
+        rows = rt.conn.execute(
+            "SELECT grp, bkt, SUM(req) req, SUM(tin) tin, SUM(tout) tout "
+            "FROM ( " + " UNION ALL ".join(unions) +
+            " ) GROUP BY grp, bkt ORDER BY grp, bkt").fetchall()
+    except Exception:
+        rows = []
+
+    # Regroupe par clé → liste de points.
+    series: dict = {}
+    for r in rows:
+        g = r["grp"] or "global"
+        s = series.setdefault(g, [])
+        s.append({
+            "bucket": r["bkt"],
+            "requests": r["req"] or 0,
+            "tokens_in": r["tin"] or 0,
+            "tokens_out": r["tout"] or 0,
+        })
+
+    # Points global = fusion de toutes les voies.
+    if dim == "global" and "global" in series:
+        global_points = series["global"]
+    else:
+        merged: dict = {}
+        for g, pts in series.items():
+            for p in pts:
+                b = merged.setdefault(p["bucket"], {"bucket": p["bucket"],
+                                                    "requests": 0, "tokens_in": 0,
+                                                    "tokens_out": 0})
+                b["requests"] += p["requests"]
+                b["tokens_in"] += p["tokens_in"]
+                b["tokens_out"] += p["tokens_out"]
+        global_points = [merged[k] for k in sorted(merged)]
+
+    for pts in series.values():
+        pts.sort(key=lambda p: p["bucket"])
+
+    return {
+        "status": "ok", "window": wname, "dim": dim,
+        "granularity_s": gran,
+        "series": series,
+        "global": global_points,
+        "ts": now,
+    }
+
+
 # ── Tarif ───────────────────────────────────────────────────────────────
 
 def _op_tarif_info(_params):
@@ -171,6 +289,7 @@ def op_usage_batch_run(_params=None):
 register("usage/budget",    op_usage_budget)
 register("usage/free_tier", op_usage_free_tier)
 register("usage/monitor",   lambda p: _quiet(op_usage_monitor, p))
+register("usage/series",    lambda p: _quiet(op_usage_series, p))
 register("usage/batch/run", lambda p: _quiet(op_usage_batch_run, p))
 register("tarif/info",      lambda p: _quiet(_op_tarif_info, p))
 register("tarif/sync",      lambda p: _quiet(_op_tarif_sync, p.get("url")))
