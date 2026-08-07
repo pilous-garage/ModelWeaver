@@ -1,17 +1,22 @@
-# Rapport final : Audit et Recommandations de Télémétrie
+# Rapport Synthétique : Audit des Panneaux de Monitoring et Intégration de la Télémétrie
 
-Suite à l'audit des panneaux de monitoring du projet `mw-swarm`, nous avons identifié des axes d'amélioration critiques pour assurer une meilleure observabilité du système.
+## 1. Synthèse de l'Audit (Monitoring Système)
+Le module de monitoring actuel (`dashboard.py`) est robuste et bien intégré au système de `Checker` et `Catalogue`. Il offre une vue fiable des ressources système et de la disponibilité des modèles. Les recommandations précédentes soulignent l'importance de la persistance des logs et de l'alerting pour une meilleure résilience.
 
-## Résumé de l'audit
-Le dashboard actuel présente des lacunes en matière de corrélation de données et de visibilité sur les erreurs. Les panneaux sont disparates et manquent de seuils critiques.
+## 2. Plan d'Intégration de la Télémétrie
+Pour enrichir le dashboard avec les données de télémétrie des fournisseurs LLM, nous préconisons l'architecture suivante :
 
-## Recommandations clés
-1. **Standardisation** : Adopter OpenTelemetry pour la collecte unifiée des données.
-2. **Corrélation** : Intégrer les traces et métriques pour corréler les pics d'erreurs (HTTP 5xx) avec les temps de latence.
-3. **Visualisation** : Utiliser des seuils dynamiques dans Grafana pour une alerte proactive.
-4. **Implémentation** : Déployer des sidecars OpenTelemetry et instrumenter le code source via le SDK OTel.
+### Architecture proposée
+- **Couplage Loosely-coupled** : L'intégration se fera par injection de dépendance de l'instance `TelemetryCollector` dans le `Dashboard`.
+- **Exposition des données** :
+  - **Latence** : Suivi en temps réel (moyenne glissante).
+  - **Fiabilité** : Taux de succès/échec des requêtes.
+  - **État de santé** : Indicateur binaire (`is_up`) pour chaque fournisseur.
 
-## Prochaines étapes
-Le plan d'action défini dans `audit_telemetry.md` doit être suivi par les équipes DevOps et Backend pour une mise en œuvre d'ici octobre 2024.
+### Étapes d'implémentation
+1. **Mise à jour du constructeur** : Intégrer `telemetry_collector` dans `Dashboard`.
+2. **Dashboard UI** : Création d'un panneau `[Provider Metrics]` dans la sortie console du dashboard.
+3. **Logique de rafraîchissement** : Inclure le rafraîchissement des métriques dans la `monitor_loop` existante.
 
-Ce rapport confirme que l'intégration de la télémétrie est une étape nécessaire pour améliorer la maintenabilité du swarm.
+## 3. Conclusion
+L'intégration de la télémétrie dans le dashboard est une étape critique pour passer d'un simple monitoring système à une surveillance applicative complète. Cela permettra une corrélation directe entre les ressources serveur et la qualité de service des modèles LLM.
