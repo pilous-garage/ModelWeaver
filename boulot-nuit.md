@@ -189,6 +189,16 @@ avec la section précise (inspiré de <repo> pour <feature>).
 - 18h50 : CORRECTION 1 (commit 00b1369) — agents-equipe-leger : ajout des
   métriques d'exécution (nb tâches, tokens, échecs via agent/metrics).
   GUI relancée avec le nouveau bundle (index-BydUYKHj.js).
+- 19h10 : SWARM PRÊT — cycle chat→swarm→chat VALIDÉ de bout en bout :
+  1. Pilote (opencode-zen/deepseek) reçoit la mission via dev-chat/send et
+     crée la tâche 393 (coder_junior) dans mw-dev-chat.
+  2. Un membre greedy (coordinateur 468) pioche, exécute (lit le panel),
+     écrit ready3.md = "READY3".
+  3. Tâche 393 done (commit présent).
+  Fixes : claim_next assigne assigned_to (anti double-pioche, 770a261),
+  priorise les tâches de la team de l'agent (b03f11a).
+- Panels dev-chat prêts : tsc propre, GUI (index-BydUYKHj.js) relancée,
+  8 panels dev-chat présents.
 - Corrections restantes (issues des audits) : panels avec données mockées,
   gestion d'erreurs/loading non uniforme, typage React manquant.
 
