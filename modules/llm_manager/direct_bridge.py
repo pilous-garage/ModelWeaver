@@ -286,10 +286,15 @@ def _build_model_id(provider_ref: str, model_ref: str) -> str:
     La plupart des providers OpenAI-compatibles acceptent le model_ref tel
     quel. Si la ref est préfixée par le provider lui-même (ex. openrouter/
     openai/gpt-5.2-chat pour provider openrouter), on retire le préfixe
-    redondant pour envoyer openai/gpt-5.2-chat.
+    redondant pour envoyer openai/gpt-5.2-chat. Certains provider_model_name
+    ont un préfixe DOUBLÉ (kilo/kilo/meta-llama/…) → on retire les préfixes
+    provider répétés jusqu'à stabilité.
     """
-    if model_ref.startswith(f"{provider_ref}/"):
-        return model_ref[len(provider_ref) + 1:]
+    prev = None
+    while model_ref != prev:
+        prev = model_ref
+        if model_ref.startswith(f"{provider_ref}/"):
+            model_ref = model_ref[len(provider_ref) + 1:]
     return model_ref
 
 
