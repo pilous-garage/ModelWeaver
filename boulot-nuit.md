@@ -142,6 +142,12 @@ avec la section précise (inspiré de <repo> pour <feature>).
     redondant) → "model not found". Fix : _build_model_id dans _google_chat.
     gemini-3.5-flash + flash-lite sont maintenant agentic (df -h).
   - probe complet relancé (par provider, timeout 10s) en arrière-plan.
+- 06h00 : PROBE COMPLET TERMINÉ (1761 modèles, 30 min, commit aae9de9).
+  Agentic marqués : nvidia 24 (llama-3.1/3.2, gpt-oss, laguna), google 19
+  (gemini-3.5/3.6/3.1, gemma), kilo 10, groq 9, opencode-zen 6 (5 free),
+  llm7 4. openai/mistral/hf/cohere 0 agentic (auth/payant).
+  Fix _build_model_id : retire les préfixes provider DOUBLÉS
+  (kilo/kilo/meta-llama/... → meta-llama/...).
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
