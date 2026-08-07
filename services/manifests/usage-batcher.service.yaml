@@ -1,0 +1,22 @@
+name: usage-batcher
+version: 0.1.0
+description: Ticker de batchage de la consommation LLM (model_call_log → usage_history_* en cascade 1m/15m/3h/1d/1w/1mo)
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - modules/usage/usage_batcher.py
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 60
+
+entrypoints:
+  usage-batch-run:
+    type: daemon-api
+    method: POST
+    path: usage/batch/run
+    description: Déclenche un cycle manuel de batchage
