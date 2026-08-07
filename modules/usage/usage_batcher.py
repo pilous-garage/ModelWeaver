@@ -295,8 +295,230 @@ def _purge_expired(rt) -> int:
     return n
 
 
+def _reconcile_archive(cat, rt, start_ts: int, end_ts: int) -> Dict[str, Any]:
+    """Réconcilie les tables de batch depuis l'archive de logs (détail complet).
+
+    L'archive (model_call_log_archive) contient le détail réel des appels
+    (1 ligne/appel). Pour le timeframe [start_ts, end_ts] :
+      1. Agrége l'archive en buckets 1 min (provider, model, agent).
+      2. UPSERT MAX dans usage_history_1m : on ne réduit JAMAIS un batch — si
+         le batch existant a déjà plus d'infos, on le garde (warning si écart).
+      3. RECONSTRUIT les séquences (model_success_runs) depuis l'archive + le
+         détail courant — purgé puis recréé (les séquences sont récentes).
+      4. Écrit un rapport (archive_processing_report) : frame, timestamp,
+         lignes lues, warnings. L'archive n'est JAMAIS supprimée.
+
+    Retourne {lines_read, upserts, warnings, sequences}.
+    """
+    import json as _json
+    warnings: List[str] = []
+    lines_read = 0
+    upserts = 0
+    try:
+        # 1. Lignes d'archive dans le timeframe (détail complet).
+        rows = cat.conn.execute("""
+            SELECT CAST(l.created_at / 60 AS INTEGER) * 60 AS bucket,
+                   COALESCE(p.ref, '?') AS provider_ref,
+                   COALESCE(m.ref, '?') AS model_ref,
+                   COALESCE(l.agent_id, '') AS agent_id,
+                   COUNT(*) AS requests,
+                   SUM(l.tokens_in) AS tokens_in,
+                   SUM(l.tokens_out) AS tokens_out,
+                   SUM(l.tokens_thinking) AS tokens_thinking,
+                   MIN(l.created_at) AS first_call,
+                   MAX(l.created_at) AS last_call,
+                   SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END) AS ko
+            FROM model_call_log_archive l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.created_at >= ? AND l.created_at < ?
+            GROUP BY 1, 2, 3, 4
+        """, (start_ts, end_ts)).fetchall()
+        lines_read = sum(r["requests"] or 0 for r in rows)
+    except Exception as e:
+        warnings.append(f"archive select: {e}")
+        rows = []
+
+    # 2. Upsert MAX dans usage_history_1m (ne réduit jamais).
+    for r in rows:
+        try:
+            rt.conn.execute("""
+                INSERT INTO usage_history_1m
+                    (bucket, provider_ref, model_ref, agent_id,
+                     requests, tokens_in, tokens_out, tokens_thinking, cost,
+                     first_call, last_call)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
+                ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
+                    requests = MAX(usage_history_1m.requests, excluded.requests),
+                    tokens_in = MAX(usage_history_1m.tokens_in, excluded.tokens_in),
+                    tokens_out = MAX(usage_history_1m.tokens_out, excluded.tokens_out),
+                    tokens_thinking = MAX(usage_history_1m.tokens_thinking, excluded.tokens_thinking),
+                    first_call = MIN(usage_history_1m.first_call, excluded.first_call),
+                    last_call = MAX(usage_history_1m.last_call, excluded.last_call)
+            """, (r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
+                  r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
+                  r["tokens_thinking"] or 0, r["first_call"], r["last_call"]))
+            upserts += 1
+        except Exception as e:
+            warnings.append(f"upsert {r['provider_ref']}/{r['model_ref']}: {e}")
+    try:
+        rt.conn.commit()
+    except Exception:
+        pass
+
+    # 3. Reconstruire les SÉQUENCES depuis archive + détail (purge puis rebuild).
+    seq_n = _rebuild_sequences(cat, rt, start_ts, end_ts)
+
+    # 4. Rapport.
+    try:
+        rt.conn.execute("""
+            INSERT INTO archive_processing_report
+                (start_ts, end_ts, lines_read, warnings)
+            VALUES (?, ?, ?, ?)
+        """, (start_ts, end_ts, lines_read, _json.dumps(warnings[:20])))
+        rt.conn.commit()
+    except Exception:
+        pass
+
+    return {"lines_read": lines_read, "upserts": upserts,
+            "warnings": warnings, "sequences": seq_n}
+
+
+def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
+    """Reconstruit les séquences (model_success_runs) depuis l'archive + détail.
+
+    Purge les séquences du timeframe puis recrée les runs de succès par
+    (provider, model) dans l'ordre chronologique : succès ouvre/cumule, échec
+    clôture. On traite le détail archive (source longue) PUIS le détail courant
+    (model_call_log) pour ne rien perdre.
+    """
+    try:
+        rt.conn.execute("DELETE FROM model_success_runs WHERE status = 'closed'")
+        rt.conn.commit()
+    except Exception:
+        pass
+    # Source combinée : archive + model_call_log courant, ordre chronologique.
+    rows = []
+    try:
+        rows += cat.conn.execute("""
+            SELECT COALESCE(p.ref, '?') provider_ref, COALESCE(m.ref, '?') model_ref,
+                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms
+            FROM model_call_log_archive l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.created_at >= ? AND l.created_at < ?
+        """, (start_ts, end_ts)).fetchall()
+    except Exception:
+        pass
+    try:
+        rows += cat.conn.execute("""
+            SELECT COALESCE(p.ref, '?') provider_ref, COALESCE(m.ref, '?') model_ref,
+                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms
+            FROM model_call_log l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.created_at >= ? AND l.created_at < ?
+        """, (start_ts, end_ts)).fetchall()
+    except Exception:
+        pass
+    if not rows:
+        return 0
+
+    # Regrouper par (provider, model), trier par created_at.
+    by_model: Dict[str, List[dict]] = {}
+    for r in rows:
+        key = f"{r['provider_ref']}/{r['model_ref']}"
+        by_model.setdefault(key, []).append(dict(r))
+    n = 0
+    for key, calls in by_model.items():
+        prov, model = key.split("/", 1)
+        calls.sort(key=lambda c: c["created_at"])
+        run = None  # (id, seq_start, requests, tin, tout, lat_sum)
+        for c in calls:
+            if c["success"]:
+                if run is None:
+                    try:
+                        cur = rt.conn.execute("""
+                            INSERT INTO model_success_runs
+                                (provider_ref, model_ref, seq_start, requests,
+                                 tokens_in, tokens_out, avg_latency_ms, status)
+                            VALUES (?, ?, ?, 1, ?, ?, ?, 'open')
+                        """, (prov, model, c["created_at"], c["tokens_in"] or 0,
+                              c["tokens_out"] or 0, c["latency_ms"] or 0))
+                        run = {"id": cur.lastrowid if hasattr(cur, "lastrowid") else None,
+                               "requests": 1, "tin": c["tokens_in"] or 0,
+                               "tout": c["tokens_out"] or 0, "lat": c["latency_ms"] or 0}
+                        n += 1
+                    except Exception:
+                        run = None
+                else:
+                    run["requests"] += 1
+                    run["tin"] += c["tokens_in"] or 0
+                    run["tout"] += c["tokens_out"] or 0
+                    run["lat"] += c["latency_ms"] or 0
+                    if run["id"]:
+                        try:
+                            rt.conn.execute("""
+                                UPDATE model_success_runs SET
+                                    requests = ?, tokens_in = ?, tokens_out = ?,
+                                    avg_latency_ms = ?, updated_at = strftime('%s','now')
+                                WHERE id = ?
+                            """, (run["requests"], run["tin"], run["tout"],
+                                  run["lat"] / run["requests"], run["id"]))
+                        except Exception:
+                            pass
+            else:
+                # Échec : clôturer la séquence open.
+                if run is not None and run["id"]:
+                    try:
+                        rt.conn.execute("""
+                            UPDATE model_success_runs SET
+                                seq_end = ?, duration_s = ? - seq_start,
+                                status = 'closed', updated_at = strftime('%s','now')
+                            WHERE id = ?
+                        """, (c["created_at"], c["created_at"], run["id"]))
+                    except Exception:
+                        pass
+                run = None
+    try:
+        rt.conn.commit()
+    except Exception:
+        pass
+    return n
+
+
+def _auto_reconcile(cat, rt) -> int:
+    """Réconciliation automatique : 1×/heure (heure précédente) + 1×/jour (veille)."""
+    import time as _t
+    now = int(_t.time())
+    n = 0
+    # Heure précédente (créneau de 3600 s commençant au début de l'heure précédente).
+    cur_hour = (now // 3600) * 3600
+    prev_hour_start = cur_hour - 3600
+    try:
+        done = rt.conn.execute(
+            "SELECT COUNT(*) c FROM archive_processing_report "
+            "WHERE start_ts = ? AND end_ts = ?", (prev_hour_start, cur_hour)).fetchone()
+        if not done or done["c"] == 0:
+            n += _reconcile_archive(cat, rt, prev_hour_start, cur_hour)["upserts"]
+    except Exception:
+        pass
+    # Jour précédent (créneau de 86400 s, début de la veille).
+    cur_day = (now // 86400) * 86400
+    prev_day_start = cur_day - 86400
+    try:
+        done = rt.conn.execute(
+            "SELECT COUNT(*) c FROM archive_processing_report "
+            "WHERE start_ts = ? AND end_ts = ?", (prev_day_start, cur_day)).fetchone()
+        if not done or done["c"] == 0:
+            n += _reconcile_archive(cat, rt, prev_day_start, cur_day)["upserts"]
+    except Exception:
+        pass
+    return n
+
+
 def run_once() -> Dict[str, Any]:
-    """Un cycle de batchage : retourne {batched, cascade, purged, frontier}."""
+    """Un cycle de batchage : retourne {batched, cascade, purged, frontier, reconcile}."""
     cat = _cat_conn()
     rt = _rt_conn()
     frontier = _data_frontier(cat)
@@ -305,8 +527,14 @@ def run_once() -> Dict[str, Any]:
     batched = _batch_1m(cat, rt)
     cascaded = _cascade(cat, rt, frontier)
     purged = _purge_expired(rt)
+    # Réconciliation automatique depuis l'archive : heure précédente + veille.
+    reconciled = 0
+    try:
+        reconciled = _auto_reconcile(cat, rt)
+    except Exception:
+        pass
     return {"batched": batched, "cascade": cascaded, "purged": purged,
-            "frontier": frontier}
+            "frontier": frontier, "reconciled": reconciled}
 
 
 def _acquire_singleton() -> Optional[object]:

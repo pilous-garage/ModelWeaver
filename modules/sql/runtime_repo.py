@@ -299,6 +299,19 @@ class RuntimeDB:
                 CREATE INDEX IF NOT EXISTS idx_msr_model ON model_success_runs(provider_ref, model_ref);
                 CREATE INDEX IF NOT EXISTS idx_msr_status ON model_success_runs(status);
                 CREATE INDEX IF NOT EXISTS idx_msr_seqend ON model_success_runs(seq_end);
+
+                -- Rapport de traitement d'archive (réconciliation). Le batcheur
+                -- note chaque lecture d'archive (frame + timestamp + warnings),
+                -- sans jamais supprimer l'archive.
+                CREATE TABLE IF NOT EXISTS archive_processing_report (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    start_ts        INTEGER NOT NULL,
+                    end_ts          INTEGER NOT NULL,
+                    processed_at    INTEGER DEFAULT (strftime('%s','now')),
+                    lines_read      INTEGER DEFAULT 0,
+                    warnings        TEXT DEFAULT '[]'
+                );
+                CREATE INDEX IF NOT EXISTS idx_apr_time ON archive_processing_report(processed_at);
             """)
         except Exception as e:
             self.conn.rollback()

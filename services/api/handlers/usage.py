@@ -307,15 +307,34 @@ def _op_tarif_sync(url=None):
 
 # ── Batchage manuel ─────────────────────────────────────────────
 
-def op_usage_batch_run(_params=None):
+def op_usage_batch_run(params=None):
     """Déclenche un cycle manuel du ticker de batchage (usage_batcher).
 
     Agrège model_call_log → usage_history_1m (buckets 1 min) puis cascade
     vers 15m/3h/1d/1w/1mo pour les buckets figés, et purge les TTL.
+
+    params optionnels :
+      - reconcile: true → fait aussi la réconciliation depuis l'archive.
+      - start / end : timeframe de réconciliation (timestamps). Sans start/end,
+        on réconcilie l'heure précédente + la veille (auto).
     """
     try:
-        from modules.usage.usage_batcher import run_once
+        from modules.usage.usage_batcher import run_once, _reconcile_archive, _cat_conn, _rt_conn
         r = run_once()
+        if params and params.get("reconcile"):
+            cat = _cat_conn()
+            rt = _rt_conn()
+            import time as _t
+            now = int(_t.time())
+            start = int(params.get("start") or 0)
+            end = int(params.get("end") or 0)
+            if not (start and end):
+                # défaut : heure précédente + veille (comme auto).
+                cur_hour = (now // 3600) * 3600
+                start = cur_hour - 3600
+                end = cur_hour
+            rec = _reconcile_archive(cat, rt, start, end)
+            r["reconcile"] = rec
         return {"status": "ok", **r}
     except Exception as e:
         return {"status": "error", "error": str(e)}
