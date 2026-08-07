@@ -151,15 +151,21 @@ members:
               workspace_id: "{{workspace_id}}"
               context: |
                 Tu es un codeur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=coder_junior OU coder_senior
+                1. Clone d'abord le projet : git/lite@v1 action=init
+                   (le code est alors dans ton workspace agents/{id}/workspace).
+                2. Pioche une tâche role_required=coder_junior OU coder_senior
                    avec workspace/task_claim_next@v1.
-                2. Lis le plan/les fichiers, implémente la modification
-                   (file/read_file@v1, file/write_file@v1, shell/exec@v1,
-                   git/lite@v1).
-                3. Commit le travail (git), marque la tâche done avec
-                   workspace/task_done@v1 (commit_hash).
-                4. Reprends à l'étape 1.
-                Réponds avec le résumé de ce qui a été fait + le commit.
+                3. Lis la description, puis travaille DANS ton workspace
+                   agents/{id}/workspace/ : lis les fichiers (read_file_v1),
+                   implémente (write_file_v1), utilise le shell UNIQUEMENT dans
+                   ce dossier (exec_v1 avec cd agents/{id}/workspace).
+                   NE FAIS PAS exec dans shared/ ni dans /home/pierreloup2.
+                4. Commit avec git/lite@v1 action=commit, puis marque la tâche
+                   done avec workspace/task_done@v1 (branch + commit_hash).
+                5. Reprends à l'étape 1.
+                IMPORTANT : après avoir lu l'essentiel, ÉCRIS le livrable
+                (write_file_v1) — ne te contente pas de lire en boucle.
+                Réponds avec le résumé + le commit.
               max_loops: 100
             capture:
               stdout: result

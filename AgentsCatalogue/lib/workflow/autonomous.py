@@ -488,7 +488,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     _write_tools_ok = 0
     _READ_TOOLS = ("read_file", "list_dir", "glob", "grep", "search",
                    "task_list", "task_get", "chat_recent", "get_env",
-                   "workspace_task_list", "workspace_task_get", "list_files")
+                   "workspace_task_list", "workspace_task_get", "list_files",
+                   "exec")
     _WRITE_TOOLS = ("write_file", "git_commit", "git_push", "task_done",
                     "workspace_task_done", "git_lite", "memory_write",
                     "workspace_task_create", "task_create")
@@ -804,8 +805,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 if any(w in fn_name for w in _WRITE_TOOLS):
                     _write_tools_ok += 1
                 elif any(r in fn_name for r in _READ_TOOLS):
-                    if (_tool_rounds >= 5 and _write_tools_ok == 0
-                            and not _conclusion_pushed):
+                    if _write_tools_ok == 0 and not _conclusion_pushed \
+                            and (_tool_rounds >= 5 or consecutive_failures >= 3):
                         _conclusion_pushed = True
                         messages.append({
                             "role": "system",
