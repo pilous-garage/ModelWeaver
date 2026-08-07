@@ -41,6 +41,16 @@ function TeamLightPanel({ ctx, params }: { ctx: any; params: Record<string, any>
     ctx.api.post, 'workspace/tasks/list', { workspace_id: 'mw-dev-chat', all: true }, 10000,
     (res) => unwrapResult(res).tasks ?? [], true,
   );
+  const metrics = usePoll<any>(
+    ctx.api.post, 'agent/metrics', {}, 10000,
+    (res) => {
+      const r = unwrapResult(res);
+      const list = r.metrics ?? r.agents ?? [];
+      const m: Record<string, any> = {};
+      for (const x of list) if (x.agent_id != null) m[String(x.agent_id)] = x;
+      return m;
+    }, true,
+  );
 
   const loadConv = async (a: any) => {
     const id = String(a.agent_id);
@@ -61,7 +71,7 @@ function TeamLightPanel({ ctx, params }: { ctx: any; params: Record<string, any>
     const name = (a.name ?? '').replace(`team:${teamName}/`, '');
     const myTasks = (tasks.data ?? []).filter((tk: any) =>
       String(tk.assigned_to ?? '').includes(name) && tk.status !== 'done');
-    return { ...a, id, name, task: myTasks[0]?.title ?? null, taskStatus: myTasks[0]?.status ?? null };
+    return { ...a, id, name, task: myTasks[0]?.title ?? null, taskStatus: myTasks[0]?.status ?? null, met: metrics.data?.[id] ?? null };
   });
 
   const statusColor = (a: any) => {
@@ -86,6 +96,12 @@ function TeamLightPanel({ ctx, params }: { ctx: any; params: Record<string, any>
         <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {a.current_step ? `step: ${a.current_step}` : '—'}
         </div>
+        {a.met && (
+          <div style={{ fontSize: 9, color: '#64748b', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {a.met.total_tasks ?? 0} tâches · {a.met.total_tokens ?? 0} tok
+            {a.met.failed_tasks ? ` · ${a.met.failed_tasks} éch` : ''}
+          </div>
+        )}
         {a.task && (
           <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.task}>
             {a.task}
