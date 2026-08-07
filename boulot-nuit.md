@@ -171,6 +171,14 @@ avec la section précise (inspiré de <repo> pour <feature>).
   produisait des stubs vides ('Contenu du fichier' dans agents/123/...) →
   livrables écrits manuellement (audit_divers 62 l, audit_workspace 37 l,
   audit_projet 20 l) et validés.
+- 18h20 : COORDINATEUR (commit 539db4a) — le surveillant devient un vrai
+  coordinateur dans l'équipe : explore le taskflow (task_list/task_get/git),
+  analyse avec LLM ce que font les autres (tâches bloquées, done sans
+  livrable, stubs), vérifie la complétion chat → swarm → chat, écrit
+  rapport_supervision. Réveillé périodiquement (90s) par agent_manager
+  (_wake_coordinator) même sans tâche à piocher.
+  Résultat : le coordinateur a produit un rapport de supervision réel
+  (work/rapport_supervision_mw-dev-chat.md) et validé la complétion.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
