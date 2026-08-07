@@ -209,6 +209,22 @@ avec la section précise (inspiré de <repo> pour <feature>).
   layout persisté remplacé par le bon JSON (9 panels dont agents-team-members).
   GUI relancée (pid 200024). Les routes team/get et agent/list-by-team
   retournaient déjà les 9 membres — c'était purement un problème de layout.
+  PUIS : agents-team-members lisait .team (route retourne l'objet direct) →
+  fix (commit ae591cc).
+- 20h20 : COMPTAGE + BATCHAGE (commits 60c86ee, fb8d534, 51f4605, c8f34bc,
+  ae591cc) :
+  - agent/metrics + usage/monitor agrègent model_call_log (source de vérité)
+    → tokens/requêtes réels (le comptage était à 0 pour les greedy).
+  - les greedy sans tâche s'endorment (wait_for) au lieu de boucler le LLM
+    (agent 414 faisait 3967 req/h).
+  - SYSTÈME DE BATCHAGE EN CASCADE (usage_batcher, service supervisé, 60s) :
+    ticker DATA-DRIVEN (frontier = MAX(created_at), on batch ≥ 5 min plus
+    vieux que la plus récente → jamais un call en écriture).
+    model_call_log → usage_history_1m → 15m → 3h → 1d → 1w → 1mo (cascade
+    par buckets figés + purge TTL). Streaming loggé 1 ligne/appel → COUNT ok.
+    Limite 10k inline retirée (le batcheur fait le ménage).
+  - usage/monitor lit les tables de cascade (UNION des granularités ≤ fenêtre).
+  - service usage-batcher supervisé (pid 320074) + route usage/batch/run.
 - Corrections restantes (issues des audits) : panels avec données mockées,
   gestion d'erreurs/loading non uniforme, typage React manquant.
 
