@@ -99,6 +99,7 @@ def done(inputs: dict, home: str) -> dict:
     task_id = inputs.get("task_id")
     branch = inputs.get("branch", "")
     commit_hash = inputs.get("commit_hash", "")
+    approve = bool(inputs.get("approve", False))
     if not workspace_id or task_id is None:
         return {"ok": False, "error": "workspace_id et task_id requis"}
     try:
@@ -117,7 +118,21 @@ def done(inputs: dict, home: str) -> dict:
             return {"ok": False,
                     "error": "tâche de codage : commit_hash/branch requis "
                              "(travail non livré — commit d'abord via git)"}
-        task = scope.tasks.done(int(task_id), branch, commit_hash)
+        # Flux de review : une tâche de codage livrée passe en `review` (pas
+        # directement done) — le reviewer la valide ensuite en `done` avec
+        # approve=true. Sans ça, « une tâche n'est done que si reviewée » est
+        # violée (le coder se marque done lui-même sans validation).
+        if role.startswith("coder") and not approve:
+            task = scope.tasks.set_status(int(task_id), "review",
+                                          branch=branch,
+                                          commit_hash=commit_hash)
+            db.close()
+            return {"ok": True, "task": task, "review": True,
+                    "note": "tâche livrée en review — le reviewer doit la "
+                            "valider (task_done approve=true)"}
+        task = scope.tasks.set_status(int(task_id), "done",
+                                      branch=branch,
+                                      commit_hash=commit_hash)
         db.close()
         if not task:
             return {"ok": False, "error": "tâche introuvable"}
@@ -129,17 +144,20 @@ def done(inputs: dict, home: str) -> dict:
 def claim_next(inputs: dict, home: str) -> dict:
     """Pioche la prochaine tâche dispo pour le rôle de l'agent (greedy).
 
-    La tâche 'pending' la plus prioritaire correspondant à role_required
-    passe en 'running'. Retourne la tâche (ou ok=False si aucune).
+    La tâche au statut cible la plus prioritaire correspondant à role_required
+    passe en 'running'. Par défaut pioche les 'pending' ; le reviewer passe
+    status='review' pour piocher les tâches livrées à valider.
     """
     workspace_id = inputs.get("workspace_id", "")
     role_required = inputs.get("role_required", "")
     team_id = int(inputs.get("team_id", -1))
+    status = inputs.get("status", "pending")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
     try:
         db, scope = _scope(workspace_id)
-        task = scope.tasks.claim_next(role_required=role_required, team_id=team_id)
+        task = scope.tasks.claim_next(role_required=role_required,
+                                      team_id=team_id, status=status)
         db.close()
         if not task:
             return {"ok": False, "error": "aucune tâche dispo pour ce rôle"}

@@ -226,11 +226,13 @@ members:
               workspace_id: "{{workspace_id}}"
               context: |
                 Tu es le relecteur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=reviewer avec
-                   workspace/task_claim_next@v1.
+                1. Pioche une tâche role_required=reviewer en attente de review
+                   avec workspace/task_claim_next@v1 (workspace {{workspace_id}},
+                   status='review').
                 2. Relis les changements (git diff, file/read_file@v1).
-                3. Marque la tâche done avec workspace/task_done@v1
-                   (REVIEW: OK ou REVIEW: issues + liste).
+                3. Si OK : marque la tâche done avec workspace/task_done@v1
+                   (approve=true, branch + commit_hash de la tâche).
+                   Si problèmes : crée une tâche corrective (task_create).
                 4. Reprends à l'étape 1.
                 Réponds avec ta relecture.
               max_loops: 80
@@ -241,7 +243,116 @@ members:
             type: end
             status: SUCCESS
 
+  # ── ANALYST : analyse les missions (avis indépendants, découpe des tâches) ──
+  - agent_name: analyst
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'analyse (role analyst)"
+              bundles: ["dev"]
+              workspace_id: "{{workspace_id}}"
+              context: |
+                Tu es l'analyste du chat de dev. Boucle gloutonne :
+                1. Pioche une tâche role_required=analyst avec
+                   workspace/task_claim_next@v1 (workspace {{workspace_id}}).
+                2. Lis la description de la tâche et les livrables liés.
+                3. DÉCOUPE la mission en sous-tâches maximale (chaque sous-tâche
+                   doit être petite, actionnable, indépendante — plus c'est
+                   découpé, plus le swarm est fiable). Crée-les avec
+                   workspace/task_create@v1 (role adapté).
+                4. Produis ton analyse/livrable dans ton home (write_file_v1),
+                   commit avec git/lite@v1, puis marque la tâche done avec
+                   workspace/task_done@v1 (commit_hash).
+                5. Reprends à l'étape 1.
+                Réponds avec ton analyse + les sous-tâches créées.
+              max_loops: 80
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+  # ── MERGER : regroupe les livrables des membres dans le home ──
+  - agent_name: merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "Surveille le workspace {{workspace_id}} et fusionne les livrables (role merger)"
+              bundles: ["dev"]
+              workspace_id: "{{workspace_id}}"
+              context: |
+                Tu es le mergeur du chat de dev. Boucle gloutonne :
+                1. Pioche une tâche role_required=merger avec
+                   workspace/task_claim_next@v1 (workspace {{workspace_id}}).
+                2. Récupère les livrables des membres (read_file dans leurs
+                   homes : agent_home/*/…, ou git/lite@v1 pull + read).
+                3. Fusionne/regroupe tout dans un dossier consolidé de ton home
+                   (ex. livrables_fusion.md), avec les sources par agent.
+                4. Commit avec git/lite@v1, marque la tâche done avec
+                   workspace/task_done@v1 (commit_hash).
+                5. Reprends à l'étape 1.
+                Réponds avec le chemin du livrable fusionné.
+              max_loops: 80
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
+  # ── SURVEILLANT : supervise l'avancement global du workspace ──
+  - agent_name: surveillant
+    role: planificateur
+    occupation: continue
+    resources:
+      llm: true
+    config:
+      workflow:
+        steps:
+          - id: start
+            type: call
+            fn: workflow/autonomous@v1
+            inputs:
+              request: "Surveille le workspace {{workspace_id}} et supervise l'avancement (role surveillant)"
+              bundles: ["dev"]
+              workspace_id: "{{workspace_id}}"
+              context: |
+                Tu es le surveillant du chat de dev. Boucle gloutonne :
+                1. Liste les tâches (workspace/task_list@v1, all=true) du
+                   workspace {{workspace_id}}.
+                2. Identifie les tâches bloquées (pending depuis longtemps,
+                   running sans agent, done sans livrable) et les faux positifs.
+                3. Pour les blocages : relance une tâche corrective
+                   (workspace/task_create@v1) ou notifie (workspace/chat_post@v1).
+                4. Écris un rapport d'avancement dans ton home
+                   (write_file_v1), puis reprends à l'étape 1.
+                Réponds avec le résumé de l'avancement + les blocages.
+              max_loops: 80
+            capture:
+              stdout: result
+            next: end
+          - id: end
+            type: end
+            status: SUCCESS
+
 resources:
   budget_per_hour: 100
-  max_concurrent: 6
-  llm_quota_per_day: 500
+  max_concurrent: 9
+  llm_quota_per_day: 800

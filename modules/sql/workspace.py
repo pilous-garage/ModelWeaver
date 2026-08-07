@@ -172,18 +172,21 @@ class TaskRepository:
 
     def claim_next(self, role_required: str = "",
                    exclude_assigned: tuple = (),
-                   team_id: int = -1) -> Optional[Dict[str, Any]]:
+                   team_id: int = -1,
+                   status: str = "pending") -> Optional[Dict[str, Any]]:
         """Pioche la prochaine tâche dispo pour un rôle (greedy).
 
         Hiérarchie de capabilité : un rôle `X_senior` peut piocher les tâches
         X_senior, X_mid et X_junior ; X_mid pioche X_mid + X_junior ; X_junior
         ne pioche que X_junior. Ne pioche que les tâches de la team (ou -1 =
-        espace projet partagé). Retourne la tâche 'pending' la plus prioritaire
-        compatible, la passe en 'running'. Atomique.
+        espace projet partagé). Retourne la tâche au statut cible (`pending`
+        par défaut, `review` pour le reviewer) la plus prioritaire compatible,
+        la passe en 'running'. Atomique.
         """
         roles = _compatible_roles(role_required)
         sel_args = [self.wid]
-        sel = "SELECT * FROM tasks WHERE workspace_id = ? AND status = 'pending'"
+        sel = f"SELECT * FROM tasks WHERE workspace_id = ? AND status = ?"
+        sel_args.append(status)
         # team_id : -1 (projet) OU la team de l'agent
         sel += " AND (team_id = ? OR team_id = -1)"
         sel_args.append(team_id)
@@ -201,8 +204,8 @@ class TaskRepository:
             return None
         cur = self.conn.execute(
             "UPDATE tasks SET status = 'running', updated_at = ? "
-            "WHERE task_id = ? AND workspace_id = ? AND status = 'pending'",
-            (datetime.utcnow().isoformat(), row["task_id"], self.wid))
+            "WHERE task_id = ? AND workspace_id = ? AND status = ?",
+            (datetime.utcnow().isoformat(), row["task_id"], self.wid, status))
         self.conn.commit()
         return self.get(row["task_id"]) if cur.rowcount else None
 
@@ -239,6 +242,33 @@ class TaskRepository:
             WHERE task_id = ? AND workspace_id = ?
         """, (branch, commit_hash, datetime.utcnow().isoformat(),
               task_id, self.wid))
+        self.conn.commit()
+        return self.get(task_id)
+
+    def set_status(self, task_id: int, status: str,
+                   branch: str = "", commit_hash: str = "",
+                   assigned_to: str = "") -> Optional[Dict[str, Any]]:
+        """Passe une tâche à un statut arbitraire (pending/running/review/done).
+
+        Utilisé pour le flux de review : un coder livre en `review`, le
+        reviewer valide en `done`. `assigned_to` (si fourni) marque qui traite
+        la tâche (transparence du pipeline).
+        """
+        sets = ["status = ?", "updated_at = ?"]
+        vals = [status, datetime.utcnow().isoformat()]
+        if branch:
+            sets.append("branch = ?")
+            vals.append(branch)
+        if commit_hash:
+            sets.append("commit_hash = ?")
+            vals.append(commit_hash)
+        if assigned_to:
+            sets.append("assigned_to = ?")
+            vals.append(assigned_to)
+        vals.extend([task_id, self.wid])
+        self.conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            "WHERE task_id = ? AND workspace_id = ?", vals)
         self.conn.commit()
         return self.get(task_id)
 
