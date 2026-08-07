@@ -37,6 +37,14 @@ DEFAULTS: Dict[str, Any] = {
  "http.request_timeout_seconds": 30, # timeout par défaut des requêtes HTTP (probes, sync)
     # Général
     "general.heartbeat_timeout_seconds": 3600,         # (réservé, futur sweep)
+    # Score latence (calcul du score_final dans score_blocks) :
+    #   score_latence = exp( -(max(penalise, lat_s) - penalise)/regule )
+    # lat_s = latence moyenne en secondes. Sous penalise → 1.0 (parfait),
+    # au-dessus décroît exponentiellement à l'échelle regule. Les tâches
+    # tolérantes à la latence peuvent surcharger ces valeurs (ex. penalise=60,
+    # regule=300) pour que les LLM lents restent compétitifs.
+    "score.latence_penalise": 1.0,                     # secondes — seuil sans pénalité
+    "score.latence_regule": 60.0,                      # secondes — échelle de pénalité
 }
 
 

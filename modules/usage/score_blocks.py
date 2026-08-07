@@ -188,20 +188,35 @@ def _win_rows(rt, table: str, n: int) -> List[dict]:
     """, (n,)).fetchall()
 
 
-def update_scores(rt) -> int:
+def update_scores(rt, latence_penalise: Optional[float] = None,
+                  latence_regule: Optional[float] = None) -> int:
     """Recompose score_batch (4 fenêtres) depuis les blocs stockés, tout modèle.
 
     score_final = score_etire × score_latence × (1 - score_fail_rate)
       - score_etire : benchmark étiré (score_benchmark_etire) croisé par model_ref,
         baseline 0.1 si absent (modèle jamais benchmarké).
       - score_latence : décroissance exponentielle de la latence moyenne
-        (référence absolue) : exp( -(max(1s, lat_s) - 1)/60 ), lat_s en
-        secondes. Latence ≤ 1s → 1.0 (parfait) ; 1min1s (61s) → e⁻¹ ≈ 0.37.
+        (référence absolue) :
+            score_latence = exp( -(max(penalise, lat_s) - penalise)/regule )
+        lat_s = latence moyenne en secondes. Sous `penalise` → 1.0 (parfait) ;
+        1min1s (61s) avec défauts (1s/60s) → e⁻¹ ≈ 0.37.
+        Paramètres configurables (défauts : config score.latence_penalise /
+        score.latence_regule, eux-mêmes 1s/60s). Une tâche tolérante peut
+        passer penalise élevé + regule élevé pour que les LLM lents restent
+        compétitifs.
       - score_fail_rate : composite pondéré (0.4/0.3/0.2/0.1), déjà dans 0-1.
 
     Retourne le nombre de lignes score_batch mises à jour.
     """
     import math
+    if latence_penalise is None or latence_regule is None:
+        try:
+            from modules.config.config_manager import config
+            latence_penalise = float(config.get("score.latence_penalise", 1.0))
+            latence_regule = float(config.get("score.latence_regule", 60.0))
+        except Exception:
+            latence_penalise = 1.0
+            latence_regule = 60.0
     try:
         rows5 = {f"{r['provider_ref']}/{r['model_ref']}": dict(r)
                  for r in _win_rows(rt, "score_batch_blocks_5m", 1)}
@@ -248,13 +263,14 @@ def update_scores(rt) -> int:
             tot_lat = sum(a for a in lat_w)
             tot_req = sum(a for a in req_w)
             lat_ms = (tot_lat / tot_req) if tot_req else 0.0
-            # Score latence : exp( -(max(1s, lat_s) - 1)/60 ), lat_s en secondes.
-            # ≤ 1s → 1.0 (parfait) ; 1min1s (61s) → e⁻¹ ≈ 0.37.
+            # Score latence : exp( -(max(penalise, lat_s) - penalise)/regule ),
+            # lat_s en secondes. Sous penalise → 1.0 (parfait) ; 1min1s (61s)
+            # avec défauts (1s/60s) → e⁻¹ ≈ 0.37.
             if tot_req == 0:
                 score_latence = 1.0
             else:
-                lat_s = max(1.0, lat_ms / 1000.0)
-                score_latence = math.exp(-(lat_s - 1.0) / 60.0)
+                lat_s = max(latence_penalise, lat_ms / 1000.0)
+                score_latence = math.exp(-(lat_s - latence_penalise) / latence_regule)
             score_etire = bench.get(model, 0.1)
             score_final = score_etire * score_latence * (1.0 - score_fail_rate)
             rt.conn.execute("""
