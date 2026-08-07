@@ -190,7 +190,9 @@ class TaskRepository:
         # team_id : -1 (projet) OU la team de l'agent
         sel += " AND (team_id = ? OR team_id = -1)"
         sel_args.append(team_id)
-        if roles:
+        # Pour les tâches en `review` : le reviewer valide TOUTES les tâches
+        # livrées (peu importe leur rôle d'origine coder_junior/analyst/…).
+        if roles and status != "review":
             ph = ",".join("?" for _ in roles)
             sel += f" AND role_required IN ({ph})"
             sel_args.extend(roles)

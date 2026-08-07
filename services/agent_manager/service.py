@@ -1201,7 +1201,14 @@ class AgentManager:
                 (t["workspace_id"], t["team_id"], t["role_required"])
                 for t in wdb.conn.execute(
                     "SELECT workspace_id, team_id, role_required FROM tasks "
-                    "WHERE status='pending' AND role_required != ''"
+                    "WHERE status IN ('pending','review') AND role_required != ''"
+                ).fetchall()}
+            # Tâches en `review` : le reviewer doit être réveillé pour les
+            # valider (une tâche livrée n'est done que si reviewée).
+            review_tasks = {
+                (t["workspace_id"], t["team_id"])
+                for t in wdb.conn.execute(
+                    "SELECT workspace_id, team_id FROM tasks WHERE status='review'"
                 ).fetchall()}
             # Workspaces "terminés" : au moins 1 tâche ET toutes done → le
             # manager peut faire le push de fin sur auto_code_<team_id>.
@@ -1358,7 +1365,11 @@ class AgentManager:
                     # niveau inférieur (coder_senior → coder_junior/mid), donc
                     # on teste si _r (rôle tâche) ∈ _compatible_roles(rt) où rt
                     # est le rôle greedy de l'agent.
-                    if not any(
+                    # Le reviewer (relecteur) est réveillé si des tâches sont
+                    # livrées en `review` (à valider), peu importe leur rôle.
+                    if rt == "reviewer" and review_tasks:
+                        pass  # réveiller le reviewer
+                    elif not any(
                         _r in _compatible_roles(rt) or _r == rt
                         for _w, _t, _r in pending_tasks):
                         continue
