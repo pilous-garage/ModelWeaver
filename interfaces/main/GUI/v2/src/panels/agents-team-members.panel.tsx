@@ -73,7 +73,9 @@ function TeamMembersPanel({ ctx, params }: { ctx: any; params: Record<string, an
 
   const team = usePoll<any>(
     ctx.api.post, 'team/get', { name: teamName }, 8000,
-    (res) => unwrapResult(res).team ?? null, true,
+    // La route team/get retourne l'objet team DIRECTEMENT (status_info()),
+    // pas {team: ...}. On prend le résultat brut.
+    (res) => unwrapResult(res) ?? null, true,
   );
   const byTeam = usePoll<any>(
     ctx.api.post, 'agent/list-by-team', {}, 8000,
