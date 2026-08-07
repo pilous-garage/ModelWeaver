@@ -1,0 +1,1 @@
+Analyse du projet : failles, optimisations, dette technique, points de risque (sécurité des tokens, lock SQLite, fiabilité des fallbacks LLM, architecture des services)
