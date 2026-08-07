@@ -95,6 +95,10 @@ _TRUSTED_AGENTIC = [
     "nvidia/stepfun-ai/step-3.7-flash",
     "deepseek/deepseek-v3", "deepseek/deepseek-chat",
     "openrouter/openai/gpt-5-mini", "openrouter/anthropic/claude-sonnet-4",
+    # Éprouvés en runtime (probes) : rapides + tool calling fiable.
+    "nvidia/meta/llama-3.2-11b-vision-instruct", "nvidia/meta/llama-3.3-70b-instruct",
+    # Éprouvé en runtime cette nuit (kilo) : 286 appels, 0 erreur. Agentic OK.
+    "kilo/poolside/laguna-s-2.1:free", "poolside/laguna-s-2.1:free",
 ]
 
 # Modèles dont la fenêtre de contexte RÉELLE est trop petite (< ~16k) pour un

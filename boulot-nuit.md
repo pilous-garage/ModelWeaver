@@ -86,10 +86,16 @@ avec la section précise (inspiré de <repo> pour <feature>).
   reviewer pour done, relancer les tâches 330-333.
 
 ## Modèles utiles (probes réussis cette nuit)
-- kilo / poolside/laguna-s-2.1:free : OK, 0 erreur sur 286 requêtes
-- nvidia / meta/llama-3.2-11b-vision-instruct : OK (lent)
-- nvidia / nvidia/nemotron-4-340b-instruct : 404 (hors service)
-- google / gemini-3.5-flash-lite : 401 auth (à revoir)
+- kilo / poolside/laguna-s-2.1:free : OK (2.1s, tools) — 286 req 0 err
+- nvidia / meta/llama-3.2-11b-vision-instruct : OK (0.7s, tools) — rapide fiable
+- nvidia / meta/llama-3.3-70b-instruct : OK tools mais 74s (très lent → pénalisé)
+- groq / llama-3.3-70b-versatile : OK (0.2s, tools) — très rapide fiable
+- groq / llama-3.1-8b-instant : OK (0.2s, tools) — rapide
+- google / gemini-3.5-flash-lite : OK (1.2s, tools) — auth intermittent
+- opencode-zen / deepseek-v4-flash-free : OK (2.3s) mais NO-TOOLS (faux appel)
+- dead : nvidia/nemotron-4-340b (404), deepseek-chat (auth), google/gemini-3.5-flash,
+  cohere/command-r7b
+- Script : scripts/probe_providers.py (probe espacé + journalise model_call_log)
 
 ## Fichiers swarm modifiés cette nuit
 - AgentsCatalogue/lib/shell/builtins/ls.py
