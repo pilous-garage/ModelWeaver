@@ -1079,7 +1079,12 @@ class AgentManager:
                             workspace_id: str = "") -> None:
         agent = None
         try:
-            agent = Agent.hydrate(agent_id, db=self.db)
+            # Connexion DÉDIÉE au thread : la connexion partagée self.db.conn
+            # n'est pas thread-safe (sqlite3) → "bad parameter or API misuse"
+            # quand plusieurs réveils greedy hydratent des agents en parallèle.
+            from modules.sql.db import AgentsDB
+            thread_db = AgentsDB()
+            agent = Agent.hydrate(agent_id, db=thread_db)
             if workspace_id:
                 # Injecte le workspace + le rôle greedy + team_id dans les
                 # variables : l'agent sait où piocher, avec quel rôle, et dans
