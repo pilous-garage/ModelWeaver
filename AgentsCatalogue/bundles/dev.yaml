@@ -49,6 +49,7 @@ skills:
   - git/git_status@v1
   - git/lite@v1
   - shell/exec@v1
+  - workspace/wait_for@v1
   - coding/analyse@v1
   - coding/code_gen@v1
   - coding/test_runner@v1

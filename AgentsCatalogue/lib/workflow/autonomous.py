@@ -799,6 +799,30 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                            or tool_result.get("status") in ("error", "failed")
                            or tool_result.get("exit_code") not in (None, 0)))
             consecutive_failures = consecutive_failures + 1 if failed else 0
+            # PAS DE TÂCHE À PIOCHER : au lieu de re-boucler le LLM sans fin
+            # (gaspi massif — les greedy « occupation continue » faisaient des
+            # milliers de requêtes/h), l'agent s'ENDORT via wait_for et termine
+            # proprement. Le waker le réveillera quand une tâche dispo arrive.
+            if (not failed and fn_name in ("task_claim_next_v1", "workspace_task_claim_next_v1")
+                    and "aucune tâche" in str(tool_result.get("error") or "").lower()):
+                try:
+                    from services.skill_manager import call_skill
+                    role_required = ""
+                    try:
+                        ra = json.loads(tc["function"].get("arguments", "{}"))
+                        role_required = ra.get("role_required", "") or ""
+                    except Exception:
+                        pass
+                    call_skill("workspace/wait_for@v1", {
+                        "workspace_id": "mw-dev-chat", "type": "task_for_role",
+                        "role": role_required, "team_id": -1,
+                        "agent_id": _aid_from_home or ""}, home=skill_home)
+                except Exception:
+                    pass
+                signals.append({"signal": "loop_end",
+                                "stdout": "aucune tâche dispo — agent endormi (wait_for)",
+                                "exit_code": 0})
+                return signals
             if not failed:
                 successful_tools += 1
                 # Un outil réussi = le membre avance → reset les échecs LLM

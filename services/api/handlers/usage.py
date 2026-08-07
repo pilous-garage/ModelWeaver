@@ -61,22 +61,37 @@ def op_usage_monitor(params):
         # Si l'historique est vide → agréger depuis model_call_log (réel).
         if not rows and cat is not None:
             try:
+                # Table courante (cap 10k) + ARCHIVE (au-delà du cap) : les
+                # fenêtres doivent refléter le VRAI volume, pas le plafond de
+                # la table. L'archivage déplace les anciennes lignes vers
+                # model_call_log_archive.
                 rows = cat.conn.execute("""
-                    SELECT p.ref AS provider_ref,
-                           COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
-                           l.agent_id,
-                           COUNT(*) AS req,
-                           SUM(l.tokens_in) AS tin,
-                           SUM(l.tokens_out) AS tout,
-                           SUM(l.tokens_thinking) AS tthink,
-                           0.0 AS cost
-                    FROM model_call_log l
-                    LEFT JOIN catalogue_providers p ON p.id = l.provider_id
-                    LEFT JOIN catalogue_models m ON m.id = l.model_id
-                    LEFT JOIN provider_models pm ON pm.id = l.provider_model_id
-                    WHERE l.created_at >= ?
-                    GROUP BY p.ref, m.ref, pm.provider_model_name, l.agent_id
-                """, (now - wsec,)).fetchall()
+                    SELECT provider_ref, model_ref, agent_id, req, tin, tout,
+                           tthink, cost FROM (
+                      SELECT p.ref AS provider_ref,
+                             COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
+                             l.agent_id, COUNT(*) AS req,
+                             SUM(l.tokens_in) AS tin, SUM(l.tokens_out) AS tout,
+                             SUM(l.tokens_thinking) AS tthink, 0.0 AS cost
+                      FROM model_call_log l
+                      LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+                      LEFT JOIN catalogue_models m ON m.id = l.model_id
+                      LEFT JOIN provider_models pm ON pm.id = l.provider_model_id
+                      WHERE l.created_at >= ?
+                      GROUP BY p.ref, m.ref, pm.provider_model_name, l.agent_id
+                      UNION ALL
+                      SELECT p.ref, COALESCE(m.ref, pm.provider_model_name, '?'),
+                             l.agent_id, COUNT(*), SUM(l.tokens_in), SUM(l.tokens_out),
+                             SUM(l.tokens_thinking), 0.0
+                      FROM model_call_log_archive l
+                      LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+                      LEFT JOIN catalogue_models m ON m.id = l.model_id
+                      LEFT JOIN provider_models pm ON pm.id = l.provider_model_id
+                      WHERE l.created_at >= ?
+                      GROUP BY p.ref, m.ref, pm.provider_model_name, l.agent_id
+                    )
+                    GROUP BY provider_ref, model_ref, agent_id
+                """, (now - wsec, now - wsec)).fetchall()
             except Exception:
                 rows = []
         global_sum = {"requests": 0, "tokens_in": 0, "tokens_out": 0,
