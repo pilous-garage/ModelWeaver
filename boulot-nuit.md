@@ -179,6 +179,15 @@ avec la section précise (inspiré de <repo> pour <feature>).
   (_wake_coordinator) même sans tâche à piocher.
   Résultat : le coordinateur a produit un rapport de supervision réel
   (work/rapport_supervision_mw-dev-chat.md) et validé la complétion.
+- 18h40 : TEST DOCKER VALIDÉ de bout en bout (préparateur→testeur/codeur) :
+  1. fork cache mw-cache/pytest-base → conteneur mw-tst-docker-e2e-e95202
+  2. status = running
+  3. run-tests `python3 -c "print('docker OK')"` → exit 0, "docker OK"
+  4. snapshot → image mw-image/...:latest sauvegardée (sha256)
+  5. release → conteneur libéré, 0 conteneur restant
+  Toute la chaîne docker fonctionne (fork/running/tests/snapshot/release).
+- Corrections à faire (issues des audits) : panels avec données mockées,
+  gestion d'erreurs/loading non uniforme, typage React manquant.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
