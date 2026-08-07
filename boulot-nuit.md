@@ -148,6 +148,17 @@ avec la section précise (inspiré de <repo> pour <feature>).
   llm7 4. openai/mistral/hf/cohere 0 agentic (auth/payant).
   Fix _build_model_id : retire les préfixes provider DOUBLÉS
   (kilo/kilo/meta-llama/... → meta-llama/...).
+- 06h30 : SWARM OPÉRATIONNEL — fixes réveil greedy (commits 171af6a, 8c5839e,
+  fcbdefb) :
+  - l'amorce ne réveillait que les configs 'pick' → nos greedy (claim_next)
+    jamais réveillés. Fix : + claim_next / 'Boucle gloutonne' / occupation continue.
+  - hiérarchie de rôles inversée → fix _r ∈ _compatible_roles(rt).
+  - connexion sqlite DÉDIÉE par thread (thread-safety du réveil greedy).
+- 06h45 : la mission d'audit (335-340) est EXÉCUTÉE par les membres :
+  2 done, 7 review, 1 running. Livrables réels produits (audit_agents.md
+  57 lignes avec id/version/bundle/attendu-vs-réel par panel, avis_analyste1/2,
+  audit_monitoring, audit_systeme). Le pilote (opencode-zen/deepseek) a découpé
+  la mission en 9 tâches. Prochaine étape : le reviewer valide les tâches review.
 
 ## Modèles utiles (probes réussis cette nuit)
 - openrouter : clé valide mais « Insufficient credits » (jamais acheté) → TOUS les
