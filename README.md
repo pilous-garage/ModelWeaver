@@ -1,0 +1,1 @@
+Write a summary report of the pause-resume-daemon documentation files.
