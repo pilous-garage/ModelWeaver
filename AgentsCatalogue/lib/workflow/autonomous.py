@@ -691,6 +691,24 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 excluded_models.add(m_ref)
                 if provider_wide:
                     excluded_providers.add(p_ref)
+
+                # ── REVENIR au provider PINÉ ──
+                # Si on est tombé sur un modèle du POOL (non pinné) qui échoue
+                # (ex. openai sans crédit), on ne doit PAS enchaîner les modèles
+                # morts du pool : on RETOURNE au provider demandé (opencode-zen).
+                # Le pin garde ses échecs cumulés pour ne pas re-tenter à l'infini
+                # si opencode-zen est vraiment down.
+                if (_pin_provider and p_ref != _pin_provider
+                        and _pin_provider not in excluded_providers
+                        and _pin_fail_streak < _PIN_RETRIES):
+                    if _fsm_log is not None:
+                        _fsm_log.log("warn", "llm/pin_return",
+                                     f"pool en échec, retour au provider piné "
+                                     f"{_pin_provider}/{_pin_model}")
+                    p_ref, m_ref = _pin_provider, _pin_model
+                    _time.sleep(2)
+                    continue  # re-tente le provider pinné
+
                 # Demander un autre LLM au gestionnaire (assign_llm) : c'est la
                 # seule source de vérité (respecte noretryuntil/unavailable et
                 # exclut les providers/modèles déjà essayés). Pas de liste
