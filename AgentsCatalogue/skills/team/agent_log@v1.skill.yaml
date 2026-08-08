@@ -4,10 +4,10 @@ description: |
   Dernières lignes du log FSM d'un agent (agent_home/{id}/log/fsm_*.log).
   Montre les appels d'outils et les réponses LLM récentes du membre.
 inputs:
-  agent_id:
+  target_id:
     type: string
     required: true
-    description: Identifiant numérique de l'agent
+    description: Identifiant numérique de l'agent CIBLÉ (ex. 443). Ne pas utiliser agent_id (forcé par le FSM)
   lines:
     type: integer
     required: false

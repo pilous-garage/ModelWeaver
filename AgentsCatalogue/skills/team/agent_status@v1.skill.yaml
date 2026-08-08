@@ -1,13 +1,13 @@
 name: team/agent_status@v1
 category: team
 description: |
-  Statut d'un agent précis (agent_id ou name) : occupation, running, heartbeat,
+  Statut d'un agent précis (target_id ou name) : occupation, running, heartbeat,
   step courant. Pour savoir ce qu'un membre est en train de faire.
 inputs:
-  agent_id:
+  target_id:
     type: string
     required: false
-    description: Identifiant numérique de l'agent
+    description: Identifiant numérique de l'agent CIBLÉ (ex. 443). Ne pas utiliser agent_id (forcé par le FSM)
   name:
     type: string
     required: false

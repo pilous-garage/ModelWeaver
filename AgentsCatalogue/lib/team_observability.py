@@ -52,11 +52,16 @@ def team_members(inputs: dict, home: str) -> dict:
 
 
 def agent_status(inputs: dict, home: str) -> dict:
-    """Statut d'un agent : occupation, running, step courant, dernière activité."""
-    agent_id = inputs.get("agent_id")
+    """Statut d'un agent : occupation, running, step courant, dernière activité.
+
+    ``target_id`` : identifiant numérique de l'agent CIBLÉ (ex. 443). Ne PAS
+    utiliser ``agent_id`` : le FSM le force à l'agent appelant (injecté).
+    ``name`` : nom complet de l'agent ciblé (ex. team:dev-chat/coder-a).
+    """
+    agent_id = inputs.get("target_id")
     name = inputs.get("name", "")
     if not agent_id and not name:
-        return {"ok": False, "error": "agent_id ou name requis"}
+        return {"ok": False, "error": "target_id ou name requis"}
     db = _agent_db()
     try:
         if agent_id:
@@ -84,11 +89,15 @@ def agent_status(inputs: dict, home: str) -> dict:
 
 
 def agent_log(inputs: dict, home: str) -> dict:
-    """Dernières lignes du log FSM d'un agent (agent_home/{id}/log/fsm_*.log)."""
-    agent_id = inputs.get("agent_id", "")
+    """Dernières lignes du log FSM d'un agent (agent_home/{id}/log/fsm_*.log).
+
+    ``target_id`` : identifiant numérique de l'agent CIBLÉ (ex. 443). Ne PAS
+    utiliser ``agent_id`` : le FSM le force à l'agent appelant (injecté).
+    """
+    agent_id = inputs.get("target_id", "")
     n = min(int(inputs.get("lines", 40)), 200)
     if not agent_id:
-        return {"ok": False, "error": "agent_id requis"}
+        return {"ok": False, "error": "target_id requis (agent ciblé, ex. 443)"}
     agent_home = mw_home() / "agent_home" / str(agent_id) / "log"
     if not agent_home.is_dir():
         return {"ok": False, "error": f"pas de log pour l'agent {agent_id}"}
