@@ -537,7 +537,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
         except Exception as e:
             _llm_fail_rounds += 1
             _consec_llm_fails += 1
-            err_str = str(e)[:200]
+            err_str = str(e)[:500]
             # Journal de conversation : tracer l'erreur aussi.
             try:
                 from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
@@ -546,7 +546,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 pass
             if _fsm_log is not None:
                 _fsm_log.log("warn", "llm/error",
-                             f"provider={p_ref} model={m_ref} err={err_str[:100]}")
+                             f"provider={p_ref} model={m_ref} err={err_str[:200]}")
             # NE PAS ajouter un message tool orphelin (_api_error) à l'historique :
             # litellm rejette "Missing corresponding tool call for tool response
             # message" au tour suivant, ce qui casse le fallback provider.

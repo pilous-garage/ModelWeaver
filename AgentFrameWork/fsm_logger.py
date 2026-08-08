@@ -31,8 +31,9 @@ LEVELS = {"debug": 10, "info": 20, "warn": 30, "error": 40}
 DEFAULT_LEVEL = "debug"
 
 
-def _trunc(s: str, max_len: int = 120) -> str:
-    """Tronque une valeur pour garder le log lisible."""
+def _trunc(s: str, max_len: int = 500) -> str:
+    """Tronque une valeur pour garder le log lisible (500 chars par défaut
+    pour ne pas perdre le détail des erreurs API)."""
     s = str(s).replace("\n", " ").replace("|", "/").strip()
     if len(s) > max_len:
         s = s[: max_len - 3] + "..."
