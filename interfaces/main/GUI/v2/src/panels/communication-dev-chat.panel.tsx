@@ -49,8 +49,13 @@ panels:
 `;
 
 interface Seg {
-  kind: 'thinking' | 'content';
+  kind: 'thinking' | 'content' | 'tool';
   text: string;
+  // Timer de la section : début (ms epoch) + durée mesurée en live.
+  startTs?: number;
+  endTs?: number;   // figé à la fin de la section (corrige le timer)
+  live?: boolean;   // la section est en cours (timer qui tourne)
+  toolOk?: boolean; // pour kind 'tool' : succès ou échec
 }
 
 interface LlmLine {
@@ -63,16 +68,18 @@ interface Msg {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;  // bloc de raisonnement du modèle (modèles raisonneurs)
-  segments?: Seg[];   // ordre d'arrivée réel du flux (thinking/content entremêlés)
+  segments?: Seg[];   // ordre d'arrivée réel du flux (thinking/content/tool entremêlés)
   llmLines?: LlmLine[]; // journal des changements de modèle (fall-back / retour)
   mode?: string;
   ts?: number;        // heure d'envoi (user) / heure de fin (assistant)
+  sentTs?: number;    // heure d'envoi de la requête (début du time_elapsed)
   provider?: string;  // qui répond
   model?: string;
   durationMs?: number;
   streamed?: boolean; // la réponse a été affichée en temps réel
   finished?: boolean; // la réponse est terminée (plus d'échange en cours)
   error?: boolean;    // la réponse s'est terminée sur une erreur
+  queued?: boolean;   // message en file d'attente (pas encore envoyé)
 }
 
 function fmtTime(ts?: number): string {
@@ -96,6 +103,26 @@ function fmtDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+// Durée d'une section : live (timer) ou figée (endTs-startTs).
+function fmtSection(seg: Seg, now: number): string {
+  const start = seg.startTs ?? seg.endTs;
+  if (!start) return '';
+  const end = seg.endTs ?? (seg.live ? now : start);
+  return fmtDuration(Math.max(0, end - start));
+}
+
+// Hooks timer : un tick toutes les 250ms tant qu'une réponse est en cours
+// (segments live ou message non finished) → les durées se mettent à jour.
+function useNow(live: boolean): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [live]);
+  return now;
+}
+
 function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
   const workspaceId = params.workspace_id ?? 'mw-dev-chat';
   const [session] = useState(() => params.session ?? `devchat_${Date.now().toString(36)}`);
@@ -108,7 +135,20 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
   const [provider, setProvider] = useState('');   // '' = auto
   const [model, setModel] = useState('');
   const [activeModel, setActiveModel] = useState(''); // modèle réellement branché (après fallback)
+  const [queue, setQueue] = useState<string[]>([]);   // messages en attente (busy)
+  const abortRef = useRef<{ abort: () => void } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Timer global : tick tant qu'un message est en cours (sections live ou
+  // réponse non finie) → les time_elapsed se mettent à jour en continu.
+  const anyLive = messages.some((m) => !m.finished && m.role === 'assistant');
+  const now = useNow(anyLive || busy);
+
+  // Badge du modèle branché : par défaut = modèle choisi dans les menus,
+  // mis à jour par les événements 'llm' (fallback / retour) du flux.
+  useEffect(() => {
+    if (provider && model) setActiveModel(fmtWho(provider, model));
+  }, [provider, model]);
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -123,25 +163,41 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
     document.head.appendChild(st);
   }, []);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (textOverride?: string) => {
+    const text = (textOverride ?? input).trim();
     if (!text || busy) return;
+    if (textOverride) {
+      // Départ depuis la file d'attente : on retire le message traité.
+      setQueue((q) => q.filter((m) => m !== text));
+    }
     setInput('');
     setBusy(true);
     setError(null);
     const sentTs = Date.now();
-    // Index stable de la réponse assistant : messages.length = index du message
-    // user qu'on ajoute maintenant, +1 = l'assistant (append en un seul set).
-    const userIdx = messages.length;
+    // Si le message était en file d'attente (queued), on remplace ce cadre par
+    // le vrai message user (même contenu) — sinon on l'ajoute.
+    const wasQueued = messages.some((x) => x.queued && x.content === text);
+    setMessages((prev) => {
+      if (wasQueued) {
+        return prev.map((x) => x.queued && x.content === text
+          ? { role: 'user', content: text, mode, ts: sentTs, sentTs }
+          : x);
+      }
+      return [...prev, { role: 'user', content: text, mode, ts: sentTs, sentTs }];
+    });
+    // L'assistant est TOUJOURS le dernier message après l'ajout.
+    const userIdx = wasQueued ? messages.length - 1 : messages.length;
     const liveIdx = userIdx + 1;
-    const liveMsg: Msg = { role: 'assistant', content: '', mode, provider, model };
-    setMessages((prev) => [...prev, { role: 'user', content: text, mode, ts: sentTs }, liveMsg]);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', mode, provider, model, sentTs }]);
 
     try {
       if (ctx.api?.stream) {
         // Streaming réel : event delta (thinking/content) puis event result.
         await new Promise<void>((resolve) => {
-          ctx.api.stream('dev-chat/stream', {
+          let doAbort: (() => void) | null = null;
+          const abort = () => { if (doAbort) doAbort(); };
+          abortRef.current = { abort };
+          const ret = ctx.api.stream('dev-chat/stream', {
             message: text, mode, session, workspace_id: workspaceId,
             provider_ref: provider, model_ref: model,
           }, (ev: any) => {
@@ -164,6 +220,29 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 }));
                 return;
               }
+              // Tool call / résultat : section 'tool'.
+              if (kind === 'tool' && chunk) {
+                const sp = chunk.indexOf(' ');
+                const tkind = sp > 0 ? chunk.slice(0, sp) : 'call'; // call|ok|err
+                const rest = sp > 0 ? chunk.slice(sp + 1) : chunk;
+                setMessages((prev) => prev.map((m, i) => {
+                  if (i !== liveIdx) return m;
+                  const segs = m.segments ? [...m.segments] : [];
+                  const isResult = tkind === 'ok' || tkind === 'err';
+                  // Une ligne de résultat 'ok/err' termine la section 'call'.
+                  if (isResult && segs.length > 0 && segs[segs.length - 1].kind === 'tool' && segs[segs.length - 1].live) {
+                    segs[segs.length - 1] = {
+                      ...segs[segs.length - 1],
+                      text: segs[segs.length - 1].text + '\n' + (tkind === 'ok' ? '✓ ' : '✕ ') + rest,
+                      endTs: Date.now(), live: false, toolOk: tkind === 'ok',
+                    };
+                  } else {
+                    segs.push({ kind: 'tool', text: (tkind === 'call' ? '⚙ ' : '') + rest, startTs: Date.now(), live: true, toolOk: tkind === 'ok' });
+                  }
+                  return { ...m, segments: segs, streamed: true };
+                }));
+                return;
+              }
               setMessages((prev) => prev.map((m, i) => {
                 if (i !== liveIdx) return m;
                 const segs = m.segments ? [...m.segments] : [];
@@ -174,7 +253,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 if (chunk && lastIdx >= 0 && segs[lastIdx].kind === kind) {
                   segs[lastIdx] = { ...segs[lastIdx], text: segs[lastIdx].text + chunk };
                 } else if (chunk) {
-                  segs.push({ kind, text: chunk });
+                  segs.push({ kind, text: chunk, startTs: Date.now(), live: true });
                 }
                 if (kind === 'thinking') {
                   return { ...m, thinking: (m.thinking ?? '') + chunk, segments: segs };
@@ -194,17 +273,46 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 ts: doneTs,
                 finished: true,
                 content: (m.content?.trim() || undefined) ? m.content : (data.reply ?? data.content ?? (data.error ?? '')),
+                // Figer les sections encore live (correction du timer).
+                segments: (m.segments || []).map((s) => s.live ? { ...s, endTs: doneTs, live: false } : s),
               } : m));
               if (data.error) setError(String(data.error));
+              abortRef.current = null;
+              resolve();
             } else if (event === 'done') {
+              abortRef.current = null;
               resolve();
             } else if (event === 'error') {
               const msg = data?.error ?? 'erreur de flux';
-              setMessages((prev) => prev.map((m, i) => i === liveIdx ? { ...m, finished: true, error: true, ts: Date.now() } : m));
+              const doneTs = Date.now();
+              setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
+                ...m, finished: true, error: true, ts: doneTs,
+                segments: (m.segments || []).map((s) => s.live ? { ...s, endTs: doneTs, live: false } : s),
+              } : m));
               if (!data?.done) setError(String(msg));
+              abortRef.current = null;
               resolve();
             }
           });
+          // Capture le handle d'abort retourné par daemonPostStream.
+          if (ret && typeof ret.then === 'function') {
+            ret.then((abortFn: any) => { if (abortFn) doAbort = abortFn; });
+          } else if (typeof ret === 'function') {
+            doAbort = ret;
+          }
+          // Interruption par l'utilisateur (bouton / poubelle).
+          abortRef.current = {
+            abort: () => {
+              if (doAbort) doAbort();
+              setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
+                ...m, finished: true, ts: Date.now(),
+                content: (m.content?.trim() || undefined) ? m.content : (m.content || '⏹ Interrompu'),
+                segments: (m.segments || []).map((s) => s.live ? { ...s, endTs: Date.now(), live: false } : s),
+              } : m));
+              abortRef.current = null;
+              resolve();
+            },
+          };
         });
       } else {
         // Repli : dev-chat/send synchrone (pas de streaming).
@@ -230,6 +338,36 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
       } : m));
     } finally {
       setBusy(false);
+      // Lancer le message suivant de la file d'attente s'il y en a un.
+      if (queue.length > 0) {
+        const next = queue[0];
+        setQueue((q) => q.slice(1));
+        setTimeout(() => send(next), 50);
+      }
+    }
+  };
+
+  // Bouton d'envoi : si busy → mettre en file d'attente (message queued).
+  const submit = () => {
+    const text = input.trim();
+    if (!text) return;
+    if (busy) {
+      setQueue((q) => [...q, text]);
+      // Affiche un message « queued » sous la réponse en cours.
+      setMessages((prev) => [...prev, {
+        role: 'assistant', content: text, mode, provider, model,
+        queued: true, ts: Date.now(), sentTs: Date.now(),
+      }]);
+      setInput('');
+    } else {
+      send();
+    }
+  };
+
+  const interrupt = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
     }
   };
 
@@ -287,30 +425,44 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 </>
               )}
             </div>
-            {/* Contenu + thinking dans l'ORDRE d'arrivée du flux (entremêlés) */}
+            {/* Contenu + thinking + tool dans l'ORDRE d'arrivée du flux (entremêlés) */}
             {m.role === 'assistant' && m.segments && m.segments.length > 0 && (
               <div style={{ marginTop: 2 }}>
-                {m.segments.map((seg, si) => (
-                  seg.kind === 'thinking' ? (
-                    <div key={si} style={{ marginBottom: 2 }}>
-                      <div
-                        onClick={() => toggleThinking(i)}
-                        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: '#818cf8', userSelect: 'none' }}>
-                        <span style={{ display: 'inline-block', transition: 'transform .15s', transform: showThinking[i] ? 'rotate(90deg)' : 'none' }}>▸</span>
-                        <span>{showThinking[i] ? 'Pensé' : 'Penser…'}</span>
-                      </div>
-                      {showThinking[i] && (
-                        <div style={{ marginTop: 2, padding: '6px 8px', background: 'var(--mw-bg-dim, rgba(129,140,248,.06))', borderLeft: '2px solid #818cf8', color: '#a5b4fc', whiteSpace: 'pre-wrap', fontSize: 11, borderRadius: 4 }}>
-                          {seg.text}
+                {m.segments.map((seg, si) => {
+                  const segDur = fmtSection(seg, now);
+                  const durLabel = segDur ? <span style={{ fontSize: 9, color: '#475569', marginLeft: 6 }}>{segDur}</span> : null;
+                  if (seg.kind === 'thinking') {
+                    return (
+                      <div key={si} style={{ marginBottom: 2 }}>
+                        <div
+                          onClick={() => toggleThinking(i)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: '#818cf8', userSelect: 'none' }}>
+                          <span style={{ display: 'inline-block', transition: 'transform .15s', transform: showThinking[i] ? 'rotate(90deg)' : 'none' }}>▸</span>
+                          <span>{showThinking[i] ? 'Pensé' : 'Penser…'}</span>
+                          {durLabel}
                         </div>
-                      )}
-                    </div>
-                  ) : (
+                        {showThinking[i] && (
+                          <div style={{ marginTop: 2, padding: '6px 8px', background: 'var(--mw-bg-dim, rgba(129,140,248,.06))', borderLeft: '2px solid #818cf8', color: '#a5b4fc', whiteSpace: 'pre-wrap', fontSize: 11, borderRadius: 4 }}>
+                            {seg.text}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                  if (seg.kind === 'tool') {
+                    const ok = seg.toolOk !== false;
+                    return (
+                      <div key={si} style={{ marginBottom: 2, fontSize: 11, fontFamily: 'monospace', color: ok ? '#7dd3fc' : '#f87171', background: 'rgba(125,211,252,.05)', border: '1px solid rgba(125,211,252,.15)', borderRadius: 4, padding: '2px 6px', whiteSpace: 'pre-wrap' }}>
+                        {seg.text}{durLabel}
+                      </div>
+                    );
+                  }
+                  return (
                     <div key={si} style={{ color: 'var(--mw-fg-dim, #cbd5e1)', whiteSpace: 'pre-wrap', fontSize: 12 }}>
                       {seg.text}
                     </div>
-                  )
-                ))}
+                  );
+                })}
                 {busy && i === messages.length - 1 && (
                   <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}></span>
                 )}
@@ -355,18 +507,44 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
               </>
             )}
             <div style={{ clear: 'both' }} />
-            {/* Fin de réponse : marqueur explicite « réponse terminée » */}
-            {m.role === 'assistant' && m.finished && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontSize: 10 }}>
-                <span style={{ color: m.error ? '#f87171' : '#34d399', fontWeight: 600 }}>
-                  {m.error ? '✕' : '✓'}
+            {/* Fin de réponse : marqueur explicite « réponse terminée » + time_elapsed */}
+            {m.role === 'assistant' && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4, fontSize: 10 }}>
+                {m.finished ? (
+                  <>
+                    <span style={{ color: m.error ? '#f87171' : '#34d399', fontWeight: 600 }}>
+                      {m.error ? '✕' : '✓'}
+                    </span>
+                    <span style={{ color: m.error ? '#f87171' : '#34d399' }}>
+                      {m.error
+                        ? (ctx.t('panels.communication-dev-chat.erreur') ?? 'Erreur')
+                        : (ctx.t('panels.communication-dev-chat.termine') ?? 'Terminé')}
+                      {m.ts ? ` · ${fmtTime(m.ts)}` : ''}
+                    </span>
+                  </>
+                ) : busy && i === messages.length - 1 ? (
+                  <button onClick={interrupt}
+                    style={{ fontSize: 10, cursor: 'pointer', padding: '1px 8px', borderRadius: 4, border: '1px solid #f87171', color: '#f87171', background: 'transparent' }}>
+                    ⏹ Interrompre
+                  </button>
+                ) : null}
+                {/* time_elapsed : depuis l'envoi de la requête */}
+                <span style={{ color: '#64748b', fontFamily: 'monospace' }}>
+                  ⏱ {(m.finished ? (m.durationMs ?? (m.sentTs ? Date.now() - m.sentTs : 0)) : (m.sentTs ? now - m.sentTs : 0))}ms
                 </span>
-                <span style={{ color: m.error ? '#f87171' : '#34d399' }}>
-                  {m.error
-                    ? (ctx.t('panels.communication-dev-chat.erreur') ?? 'Erreur')
-                    : (ctx.t('panels.communication-dev-chat.termine') ?? 'Terminé')}
-                  {m.ts ? ` · ${fmtTime(m.ts)}` : ''}
-                </span>
+              </div>
+            )}
+            {/* Messages QUEUED (en attente derrière la réponse en cours) */}
+            {m.role === 'assistant' && m.queued && (
+              <div style={{ marginTop: 4, padding: '3px 8px', border: '1px dashed #fbbf24', borderRadius: 4, fontSize: 11, color: '#fbbf24', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>⏳ {m.content}</span>
+                <button
+                  onClick={() => {
+                    setQueue((q) => q.filter((t) => t !== m.content));
+                    setMessages((prev) => prev.filter((x) => !(x.queued && x.content === m.content)));
+                  }}
+                  title="Retirer de la file"
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#f87171', fontSize: 13 }}>🗑</button>
               </div>
             )}
           </div>
@@ -381,13 +559,14 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           data-testid="dev-chat-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) send(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) submit(); }}
           placeholder={ctx.t('panels.communication-dev.chat.placeholder') ?? 'Décrivez une tâche…'}
           style={{ flex: 1, fontSize: 12, padding: '5px 8px', background: 'var(--mw-bg, #0f172a)', color: 'var(--mw-fg, #e2e8f0)', border: '1px solid var(--mw-border, #334155)', borderRadius: 6 }}
         />
-        <button data-testid="dev-chat-send" onClick={send} disabled={busy || !input.trim()}
-          style={{ padding: '5px 14px', fontSize: 12, cursor: 'pointer', background: 'var(--mw-accent, #3b82f6)', color: '#fff', border: 'none', borderRadius: 6 }}>
-          {ctx.t('panels.communication-dev-chat.envoyer') ?? 'Envoyer'}
+        <button data-testid="dev-chat-send" onClick={submit} disabled={!input.trim()}
+          style={{ padding: '5px 14px', fontSize: 12, cursor: 'pointer', background: busy ? '#7c3aed' : 'var(--mw-accent, #3b82f6)', color: '#fff', border: 'none', borderRadius: 6 }}
+          title={busy ? 'Met le message en file d’attente' : 'Envoyer'}>
+          {busy ? '⏳ File' : (ctx.t('panels.communication-dev-chat.envoyer') ?? 'Envoyer')}
         </button>
       </div>
     </div>

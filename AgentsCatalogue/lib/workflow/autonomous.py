@@ -796,6 +796,11 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             if _fsm_log is not None:
                 _fsm_log.log("debug", "tool/call",
                              f"name={fn_name} args={raw_args}")
+            if on_event:
+                try:
+                    on_event("tool", f"call {fn_name} {json.dumps(raw_args, default=str)[:200]}")
+                except Exception:
+                    pass
 
             # Résolution du nom de skill : plusieurs candidats (le nom peut
             # être tronqué par le LLM, ex. git_clone_v1 pour git/git_clone@v1).
@@ -832,6 +837,17 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                            or tool_result.get("status") in ("error", "failed")
                            or tool_result.get("exit_code") not in (None, 0)))
             consecutive_failures = consecutive_failures + 1 if failed else 0
+            # Diffusion du résultat de l'outil dans le flux (affichage chat).
+            if on_event:
+                try:
+                    _out = _err = ""
+                    if isinstance(tool_result, dict):
+                        _out = tool_result.get("stdout") or ""
+                        _err = tool_result.get("error") or tool_result.get("stderr") or ""
+                    _status = "ok" if not failed else "err"
+                    on_event("tool", f"{_status} {fn_name} {str(_out or _err)[:200]}")
+                except Exception:
+                    pass
             # PAS DE TÂCHE À PIOCHER : au lieu de re-boucler le LLM sans fin
             # (gaspi massif — les greedy « occupation continue » faisaient des
             # milliers de requêtes/h), l'agent s'ENDORT via wait_for et termine
