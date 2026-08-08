@@ -974,7 +974,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 _fsm_log.log("warn" if failed else "debug", "tool/" + ("error" if failed else "ok"),
                              f"name={fn_name} exit={tool_result.get('exit_code')} "
                              f"err={str(tool_result.get('error') or tool_result.get('stderr') or '')[:80]}")
-            if consecutive_failures >= 4:
+            if consecutive_failures >= 10:
                 signals.append({"signal": "tool_loop_break",
                                 "stdout": f"{consecutive_failures} échecs d'outil consécutifs sur {fn_name}: {tool_result.get('stderr') or tool_result.get('error') or tool_result.get('stdout', '')}",
                                 "exit_code": 1})

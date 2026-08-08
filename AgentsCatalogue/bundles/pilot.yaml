@@ -30,6 +30,7 @@ skills:
   - workspace/task_done@v1
   - workspace/chat_post@v1
   - workspace/chat_recent@v1
+  - comm/ask_authorisation@v1
   # Team (visibilité)
   - team/team_members@v1
   - team/agent_status@v1

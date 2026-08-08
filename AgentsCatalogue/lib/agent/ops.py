@@ -93,6 +93,66 @@ def ask_user(inputs: dict, home: str) -> dict:
     return {"question_id": qid, "answered": False, "agent_id": agent_id}
 
 
+def ask_authorisation(inputs: dict, home: str) -> dict:
+    """Demande une autorisation (path read/write ou commande whitelistée).
+
+    Le skill soumet une AuthorizationRequest (pending_user) via le
+    request_handler partagé — l'utilisateur la verra et pourra approuver/
+    refuser. L'agent doit continuer sans (continue_anyway=True).
+
+    types d'action :
+      - path_read  : autoriser la LECTURE d'un chemin (target {path})
+      - path_write : autoriser l'ÉCRITURE sur un chemin (target {path})
+      - command    : autoriser une commande shell (target {command})
+    """
+    agent_id = _agent_id_from_home(home, inputs)
+    action = inputs.get("action", "")
+    target = {}
+    if action in ("path_read", "path_write"):
+        p = inputs.get("path", "")
+        if not p:
+            return {"ok": False, "error": "path requis pour path_read/path_write"}
+        target = {"path": p, "mode": "read" if action == "path_read" else "write"}
+    elif action == "command":
+        c = inputs.get("command", "")
+        if not c:
+            return {"ok": False, "error": "command requis pour command"}
+        target = {"command": c}
+    else:
+        return {"ok": False,
+                "error": "action doit être path_read | path_write | command"}
+    reason = inputs.get("reason", "")
+    try:
+        from AgentsCatalogue.lib.shell.auth_request import (
+            AuthorizationRequest, RequestType, request_handler)
+        req = AuthorizationRequest(
+            agent_id=agent_id,
+            team_id=inputs.get("team_id"),
+            action=action,
+            target=target,
+            reason=reason,
+            request_type=RequestType.PENDING_USER,
+        )
+        submitted = request_handler.submit(req)
+        # Tracer dans le home pour l'agent (référence).
+        store = os.path.join(os.path.abspath(home), "ctx", "auth")
+        os.makedirs(store, exist_ok=True)
+        Path(os.path.join(store, f"{submitted.request_id}.json")).write_text(
+            json.dumps(submitted.to_dict(), ensure_ascii=False),
+            encoding="utf-8")
+        return {
+            "ok": True,
+            "request_id": submitted.request_id,
+            "action": action,
+            "target": target,
+            "status": "pending",
+            "continue_anyway": True,
+            "note": "Demande envoyée à l'utilisateur — continue sans attendre.",
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"soumission autorisation: {e}"}
+
+
 def message_send(inputs: dict, home: str) -> dict:
     to = inputs.get("to_agent_id", "")
     sender = inputs.get("from_agent_id", inputs.get("agent_id", ""))
@@ -161,6 +221,6 @@ def chatroom_read(inputs: dict, home: str) -> dict:
 
 
 __skills__ = [
-    "call_agent", "ask_user", "emit_event", "get_budget",
+    "call_agent", "ask_user", "ask_authorisation", "emit_event", "get_budget",
     "message_send", "message_recv", "chatroom_post", "chatroom_read",
 ]

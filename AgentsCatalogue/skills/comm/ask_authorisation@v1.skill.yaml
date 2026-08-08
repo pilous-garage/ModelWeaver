@@ -1,0 +1,46 @@
+name: comm/ask_authorisation@v1
+category: comm
+description: |
+  Demande une autorisation à l'utilisateur quand un outil/chemin/commande est
+  refusé (whitelist, VFS, path). Soumet une AuthorizationRequest en attente —
+  l'utilisateur la verra et pourra approuver/refuser. L'agent continue SANS
+  attendre (continue_anyway).
+
+  action :
+    - path_read  : autoriser la LECTURE d'un chemin (path)
+    - path_write : autoriser l'ÉCRITURE sur un chemin (path)
+    - command    : autoriser une commande shell (command)
+inputs:
+  action:
+    type: string
+    required: true
+    description: path_read | path_write | command
+  path:
+    type: string
+    required: false
+    description: Chemin concerné (pour path_read / path_write)
+  command:
+    type: string
+    required: false
+    description: Commande concernée (pour command)
+  reason:
+    type: string
+    required: false
+    description: Justification de la demande
+outputs:
+  ok:
+    type: boolean
+  request_id:
+    type: string
+    description: Identifiant de la demande d'autorisation
+  action:
+    type: string
+  status:
+    type: string
+    description: pending
+  continue_anyway:
+    type: boolean
+    description: true — l'agent continue sans attendre
+implementation:
+  type: python
+  function: agent.ops.ask_authorisation
