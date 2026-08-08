@@ -24,6 +24,10 @@ skills:
   - workspace/task_file_add@v1
   - workspace/chat_post@v1
   - workspace/chat_recent@v1
+  - team/team_members@v1
+  - team/agent_status@v1
+  - team/agent_log@v1
+  - team/process_list@v1
   - system/log@v1
   - system/home/read@v1
   - system/home/ls@v1

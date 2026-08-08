@@ -1,0 +1,19 @@
+name: team/process_list@v1
+category: team
+description: |
+  Liste les process supervisés du système (superviseur, daemon, usage_batcher,
+  model_sync, llm_manager…) : nom, pid, socket, alive. Pour voir l'état
+  d'infrastructure global.
+inputs: {}
+outputs:
+  ok:
+    type: boolean
+  processes:
+    type: array
+    items:
+      type: object
+  count:
+    type: integer
+implementation:
+  type: python
+  function: team_observability.process_list

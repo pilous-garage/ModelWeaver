@@ -1,0 +1,25 @@
+name: team/team_members@v1
+category: team
+description: |
+  Liste les membres d'une team (par nom, ex. 'team:dev-chat') : rôle,
+  occupation, statut running/idle, heartbeat et step courant. Pour observer
+  qui compose la team et qui est actif.
+inputs:
+  team:
+    type: string
+    required: true
+    description: Nom de la team (ex. team:dev-chat)
+outputs:
+  ok:
+    type: boolean
+  team:
+    type: string
+  members:
+    type: array
+    items:
+      type: object
+  count:
+    type: integer
+implementation:
+  type: python
+  function: team_observability.team_members

@@ -1,0 +1,22 @@
+name: team/agent_status@v1
+category: team
+description: |
+  Statut d'un agent précis (agent_id ou name) : occupation, running, heartbeat,
+  step courant. Pour savoir ce qu'un membre est en train de faire.
+inputs:
+  agent_id:
+    type: string
+    required: false
+    description: Identifiant numérique de l'agent
+  name:
+    type: string
+    required: false
+    description: Nom de l'agent (ex. team:dev-chat/coder-a)
+outputs:
+  ok:
+    type: boolean
+  agent:
+    type: object
+implementation:
+  type: python
+  function: team_observability.agent_status

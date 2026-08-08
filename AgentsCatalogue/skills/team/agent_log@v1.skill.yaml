@@ -1,0 +1,25 @@
+name: team/agent_log@v1
+category: team
+description: |
+  Dernières lignes du log FSM d'un agent (agent_home/{id}/log/fsm_*.log).
+  Montre les appels d'outils et les réponses LLM récentes du membre.
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant numérique de l'agent
+  lines:
+    type: integer
+    required: false
+    default: 40
+    description: Nombre de lignes par log (max 200)
+outputs:
+  ok:
+    type: boolean
+  agent_id:
+    type: string
+  log:
+    type: string
+implementation:
+  type: python
+  function: team_observability.agent_log
