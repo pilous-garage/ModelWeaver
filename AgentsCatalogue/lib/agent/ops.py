@@ -122,16 +122,31 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
         return {"ok": False,
                 "error": "action doit être path_read | path_write | command"}
     reason = inputs.get("reason", "")
+    scope = inputs.get("scope", "once")
     try:
         from AgentsCatalogue.lib.shell.auth_request import (
-            AuthorizationRequest, RequestType, request_handler)
+            AuthorizationRequest, AuthScope, RequestType, request_handler)
+        try:
+            scope_enum = AuthScope(scope)
+        except ValueError:
+            scope_enum = AuthScope.ONCE
+        # Par défaut la demande va au LEADER (approver_level='leader').
+        # Si l'agent demande directement un humain, escalate d'emblée.
+        if str(inputs.get("to", "leader")).lower() == "human":
+            req_type = RequestType.PENDING_USER
+            level = "human"
+        else:
+            req_type = RequestType.PENDING_LEADER
+            level = "leader"
         req = AuthorizationRequest(
             agent_id=agent_id,
             team_id=inputs.get("team_id"),
             action=action,
             target=target,
             reason=reason,
-            request_type=RequestType.PENDING_USER,
+            request_type=req_type,
+            scope=scope_enum,
+            approver_level=level,
         )
         submitted = request_handler.submit(req)
         # Tracer dans le home pour l'agent (référence).
@@ -146,8 +161,12 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
             "action": action,
             "target": target,
             "status": "pending",
+            "approver_level": level,
+            "scope": scope,
             "continue_anyway": True,
-            "note": "Demande envoyée à l'utilisateur — continue sans attendre.",
+            "note": ("Demande envoyée au leader de la team — continue sans "
+                     "attendre (le leader l'examinera et pourra l'autoriser, "
+                     "la refuser ou la transmettre à un humain)."),
         }
     except Exception as e:
         return {"ok": False, "error": f"soumission autorisation: {e}"}
@@ -220,7 +239,53 @@ def chatroom_read(inputs: dict, home: str) -> dict:
     return {"messages": msgs, "count": len(msgs)}
 
 
+def auth_review(inputs: dict, home: str) -> dict:
+    """Le leader liste les demandes d'autorisation en attente de SA team.
+
+    Vérifie le rôle leader (ou humain pour voir les escalades).
+    """
+    agent_id = _agent_id_from_home(home, inputs)
+    from AgentsCatalogue.lib.shell.auth_request import request_handler
+    team_id = inputs.get("team_id", "")
+    level = inputs.get("level", "leader")  # leader | human
+    if level == "human":
+        pend = request_handler.get_pending_user_authorizations()
+    else:
+        pend = request_handler.get_pending_leader_authorizations(team_id or None)
+    return {
+        "ok": True,
+        "level": level,
+        "team_id": team_id,
+        "count": len(pend),
+        "requests": [r.to_dict() for r in pend],
+    }
+
+
+def auth_decide(inputs: dict, home: str) -> dict:
+    """Le leader/humain décide sur une demande d'autorisation.
+
+    decision : allow | deny | escalate | ask_reason
+    scope    : once | run | day | forever (pour allow/deny)
+    """
+    from AgentsCatalogue.lib.shell.auth_request import (
+        AuthScope, request_handler)
+    request_id = inputs.get("request_id", "")
+    decision = inputs.get("decision", "")
+    scope = inputs.get("scope", "once")
+    reason = inputs.get("reason", "")
+    approver = inputs.get("approver_id") or _agent_id_from_home(home, inputs)
+    try:
+        scope_enum = AuthScope(scope)
+    except ValueError:
+        scope_enum = AuthScope.ONCE
+    if not request_id:
+        return {"ok": False, "error": "request_id requis"}
+    return request_handler.decide(
+        request_id, str(approver), decision, scope=scope_enum, reason=reason)
+
+
 __skills__ = [
     "call_agent", "ask_user", "ask_authorisation", "emit_event", "get_budget",
     "message_send", "message_recv", "chatroom_post", "chatroom_read",
+    "auth_review", "auth_decide",
 ]

@@ -36,6 +36,8 @@ skills:
   - team/agent_status@v1
   - team/agent_log@v1
   - team/process_list@v1
+  - team/auth_review@v1
+  - team/auth_decide@v1
   # Shell + util (pour analyser/exécuter)
   - shell/exec@v1
   - util/get_env@v1

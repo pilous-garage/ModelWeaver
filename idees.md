@@ -87,3 +87,36 @@ Pistes d'architecture (à décider) :
   reçues (appels LLM + tools) — plus léger mais agent non isolé pour le LLM.
 - Pool de subprocess partagés vs 1 process/agent.
 
+## Améliorer le parser shell (idée 2026-08-08)
+
+Le mini-shell (AgentsCatalogue/lib/shell/) ne parse que des commandes SIMPLES.
+Les mots-clés shell (`for`, `while`, `if`, `;`, `&&`, `||`, pipes multiples,
+substitution) ne sont pas supportés → exec_v1 refuse `for d in ...` etc.
+L'agent ne peut pas faire de boucles/scripts.
+
+À faire (plus tard) :
+- Étendre le tokenizer/parser pour `for/while/if` + opérateurs de contrôle.
+- OU exposer un exécuteur de scripts (bash restreint) en lecture seule pour
+  le pilote.
+- Règles de sécurité : boucles bornées, pas d'évasion du VFS, timeouts.
+
+## Autorisations hiérarchiques leader → humain (2026-08-08)
+
+Le système AuthorizationRequest existe (auth_request.py) mais n'a qu'un
+niveau : pending_user (humain). Design voulu :
+- Les MEMBRES demandent au LEADER (pas directement à l'humain).
+- Le LEADER peut, en analysant la demande (« agent xxx a besoin de
+  l'autorisation yyy pour faire zzz ») :
+  - AUTORISER ce qui est de SA juridiction (tout ce qu'il a le droit de faire
+    lui-même : role leader + allowed_roots),
+  - REFUSER,
+  - DEMANDER pourquoi (retour à l'agent),
+  - TRANSMETTRE à l'humain (escalade).
+- L'HUMAIN a les mêmes options SAUF transmettre (c'est le dernier niveau) :
+  autoriser / refuser / demander pourquoi.
+- Skills à créer : leader voit les demandes en attente (auth_review),
+  leader décide (auth_decide allow/deny/escalate/ask_reason).
+- Juridiction : le leader ne peut autoriser que ce qu'il pourrait faire
+  lui-même (check commande dans sa whitelist / path dans ses allowed_roots).
+
+

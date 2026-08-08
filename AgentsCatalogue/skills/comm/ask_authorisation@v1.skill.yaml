@@ -1,15 +1,21 @@
 name: comm/ask_authorisation@v1
 category: comm
 description: |
-  Demande une autorisation à l'utilisateur quand un outil/chemin/commande est
-  refusé (whitelist, VFS, path). Soumet une AuthorizationRequest en attente —
-  l'utilisateur la verra et pourra approuver/refuser. L'agent continue SANS
-  attendre (continue_anyway).
+  Demande une autorisation (path read/write ou commande whitelistée). Par
+  défaut la demande va au LEADER de la team (approver_level=leader) qui peut
+  l'autoriser (si de sa juridiction), la refuser, demander pourquoi, ou la
+  transmettre à un humain (to=human). L'agent continue SANS attendre.
 
   action :
     - path_read  : autoriser la LECTURE d'un chemin (path)
     - path_write : autoriser l'ÉCRITURE sur un chemin (path)
     - command    : autoriser une commande shell (command)
+  scope (portée de l'autorisation demandée) :
+    - once    : une seule exécution (défaut)
+    - run     : pour le run courant de l'agent
+    - day     : jusqu'à la fin de la journée
+    - forever : toujours
+  to : leader (défaut) | human
 inputs:
   action:
     type: string
@@ -27,6 +33,16 @@ inputs:
     type: string
     required: false
     description: Justification de la demande
+  scope:
+    type: string
+    required: false
+    default: once
+    description: once | run | day | forever
+  to:
+    type: string
+    required: false
+    default: leader
+    description: leader (défaut) | human
 outputs:
   ok:
     type: boolean
@@ -38,6 +54,9 @@ outputs:
   status:
     type: string
     description: pending
+  approver_level:
+    type: string
+    description: leader | human
   continue_anyway:
     type: boolean
     description: true — l'agent continue sans attendre

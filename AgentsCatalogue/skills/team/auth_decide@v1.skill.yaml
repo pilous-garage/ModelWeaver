@@ -1,0 +1,47 @@
+name: team/auth_decide@v1
+category: team
+description: |
+  Le LEADER (ou humain) décide sur une demande d'autorisation en attente.
+
+  decision :
+    - allow      : autorise (respecte la portée scope)
+    - deny       : refuse (mémorise le refus avec portée)
+    - escalate   : transmet à l'humain (niveau supérieur)
+    - ask_reason : demander à l'agent pourquoi il a besoin de cette autorisation
+
+  scope (pour allow/deny) :
+    - once    : une seule exécution (défaut)
+    - run     : pour le run courant
+    - day     : jusqu'à la fin de la journée
+    - forever : toujours
+
+  Juridiction : le leader ne devrait autoriser que ce qu'il pourrait faire
+  lui-même (commande dans sa whitelist / chemin dans ses roots).
+inputs:
+  request_id:
+    type: string
+    required: true
+    description: Identifiant de la demande (de auth_review)
+  decision:
+    type: string
+    required: true
+    description: allow | deny | escalate | ask_reason
+  scope:
+    type: string
+    required: false
+    default: once
+    description: once | run | day | forever (pour allow/deny)
+  reason:
+    type: string
+    required: false
+    description: Justification (surtout pour deny)
+outputs:
+  ok:
+    type: boolean
+  decision:
+    type: string
+  request_id:
+    type: string
+implementation:
+  type: python
+  function: agent.ops.auth_decide

@@ -174,7 +174,22 @@ class ShellAuth:
         This is the primary permission-checking method.  It delegates
         to :meth:`PermissionEngine.is_allowed` with the resolved
         permission role.
+
+        Les GRANTS mémorisés (authorisations accordées/refusées avec portée)
+        passent en priorité : un grant accordé autorise même si la commande
+        n'est pas dans la whitelist ; un refus mémorisé bloque sans re-demander.
         """
+        # Refus mémorisé ? (ne pas re-demander sans fin)
+        try:
+            from .auth_request import request_handler
+            cmd_key = command.strip()
+            if request_handler.is_denied(self.agent_id, "command", {"command": cmd_key}):
+                return False
+            # Grant accordé ?
+            if request_handler.is_granted(self.agent_id, "command", {"command": cmd_key}):
+                return True
+        except Exception:
+            pass
         return self._permission_engine.is_allowed(
             self._resolve_permission_role(), command
         )
@@ -271,14 +286,33 @@ class ShellAuth:
     def check_path(self, target: Path) -> Path:
         """Valide que target est dans un répertoire VFS autorisé.
 
-        Lève VFSPathError si la cible est hors bornes."""
+        Lève VFSPathError si la cible est hors bornes. Un grant d'autorisation
+        path accordé à l'agent (is_granted) lève cette restriction pour le
+        chemin concerné ; un refus mémorisé la bloque."""
         resolved = target.resolve()
+        # Refus mémorisé pour ce chemin ? (bloque)
+        try:
+            from .auth_request import request_handler
+            mode = "read"  # par défaut lecture
+            if request_handler.is_denied(self.agent_id, "path_read", {"path": str(resolved)}):
+                raise VFSPathError(f"chemin '{resolved}' refusé (mémorisé)")
+        except VFSPathError:
+            raise
+        except Exception:
+            pass
         for root in self.allowed_roots:
             try:
                 resolved.relative_to(root)
                 return resolved
             except ValueError:
                 continue
+        # Hors VFS : un grant accordé peut lever la restriction.
+        try:
+            from .auth_request import request_handler
+            if request_handler.is_granted(self.agent_id, "path_read", {"path": str(resolved)}):
+                return resolved
+        except Exception:
+            pass
         raise VFSPathError(
             f"chemin '{resolved}' hors du VFS autorisé : {self.allowed_roots}"
         )

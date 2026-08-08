@@ -1,0 +1,30 @@
+name: team/auth_review@v1
+category: team
+description: |
+  Le LEADER (ou humain) liste les demandes d'autorisation en attente de sa
+  team : agent demandeur, action, cible, raison, scope souhaité. Pour
+  examiner ce que les membres veulent faire avant de décider.
+inputs:
+  team_id:
+    type: string
+    required: false
+    description: Filtre par team (ex. team:dev-chat)
+  level:
+    type: string
+    required: false
+    default: leader
+    description: leader (en attente du leader) | human (escalades en attente)
+outputs:
+  ok:
+    type: boolean
+  level:
+    type: string
+  count:
+    type: integer
+  requests:
+    type: array
+    items:
+      type: object
+implementation:
+  type: python
+  function: agent.ops.auth_review
