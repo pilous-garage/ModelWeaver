@@ -37,6 +37,7 @@ import { Panel as AgentsActivity } from './agents-activity.panel.tsx';
 import { Panel as CommunicationDevChat } from './communication-dev-chat.panel.tsx';
 import { Panel as AgentsEquipeLeger } from './agents-equipe-leger.panel.tsx';
 import { Panel as MonitoringLlmAvance } from './monitoring-llm-avance.panel.tsx';
+import { Panel as Autorisations } from './autorisations.panel.tsx';
 
 /** Enregistre tous les panels + charge leurs lang. */
 export async function initPanels(): Promise<void> {
@@ -87,6 +88,8 @@ export async function initPanels(): Promise<void> {
   registerPanel(CommunicationDevChat);
   // Monitoring léger de la team (3 colonnes de carrés)
   registerPanel(AgentsEquipeLeger);
+  // Demandes d'autorisation (membres → leader → humain)
+  registerPanel(Autorisations);
   // Monitoring LLM avancé (graphes token/min, req/min par dim)
   registerPanel(MonitoringLlmAvance);
   await loadAllPanelLangs();
