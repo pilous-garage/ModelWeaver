@@ -319,10 +319,11 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           abortRef.current = {
             abort: () => {
               if (doAbort) doAbort();
+              const endTs = Date.now();
               setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
-                ...m, finished: true, ts: Date.now(),
+                ...m, finished: true, ts: endTs, durationMs: endTs - sentTs,
                 content: (m.content?.trim() || undefined) ? m.content : (m.content || '⏹ Interrompu'),
-                segments: (m.segments || []).map((s) => s.live ? { ...s, endTs: Date.now(), live: false } : s),
+                segments: (m.segments || []).map((s) => s.live ? { ...s, endTs, live: false } : s),
               } : m));
               abortRef.current = null;
               resolve();
