@@ -62,3 +62,28 @@ Pour CHAQUE source :
 Tâches transverse : réconciliation par provider ; recherche doublon/manquant
 dans catalogue_models (via noms provider). Le tout SANS brancher sur
 l'allocation tant que non validé.
+
+## Isolation des agents en subprocess (idée 2026-08-08)
+
+État actuel : les agents s'exécutent en THREADS du process agent_manager (le
+code kill() le dit : « agents INLINE dans le processus du daemon »). Isolation
+en process séparé = « architecture prévue » mais PAS implémentée.
+
+Conséquences : redémarrer agent_manager tue tous les threads des agents en
+cours ; un agent qui plante (segfault/OOM) peut faire tomber les autres ; le
+GIL limite le vrai parallélisme CPU.
+
+Question résolue : un subprocess doit-il recharger le résolveur FSM ?
+- Le FSM interpreter (fsm_interpreter.py, ~1200 lignes) est MONOLITHIQUE :
+  résolution du workflow et boucle d'exécution entrelacées dans run() →
+  pas séparable sans refactor → chaque subprocess devrait le charger.
+- MAIS le résolveur est LÉGER (code pur). Le vrai surcoût du subprocess =
+  imports LLM Manager + bridges (~1-2s + RAM), qui sont DÉJÀ chargés par
+  chaque agent aujourd'hui (en thread). Donc isolation faisable sans explosion.
+
+Pistes d'architecture (à décider) :
+- Subprocess « fat » par agent : autonome, charge tout (isolation totale).
+- Subprocess « thin » : parent garde le FSM, le subprocess exécute les steps
+  reçues (appels LLM + tools) — plus léger mais agent non isolé pour le LLM.
+- Pool de subprocess partagés vs 1 process/agent.
+
