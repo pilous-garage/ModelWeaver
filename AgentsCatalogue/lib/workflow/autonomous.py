@@ -506,6 +506,29 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     # fallback mort après avoir déjà (ou pas) fini leur travail.
     _consec_llm_fails = 0
 
+    # Suivi du modèle actif pour le chat : on émet un événement 'llm' à chaque
+    # CHANGEMENT (fallback ou retour au modèle voulu). Le GUI affiche la ligne
+    # « fall-back <provider>/<model> » et le modèle actuellement branché.
+    _emitted_llm_key = ""
+    _wanted_llm_key = f"{provider_ref}/{model_ref}" if (provider_ref and model_ref) else ""
+
+    def _emit_llm_event(tag: str, prov: str, mod: str) -> None:
+        nonlocal _emitted_llm_key
+        try:
+            key = f"{prov}/{mod}"
+            if key == _emitted_llm_key:
+                return
+            # Retour au modèle voulu (menus déroulants) après un fallback.
+            if _emitted_llm_key and _wanted_llm_key and key == _wanted_llm_key:
+                tag = "retour"
+            if on_event:
+                on_event("llm", f"{tag} {key}")
+            _emitted_llm_key = key
+        except Exception:
+            pass
+
+    _emit_llm_event("branché", p_ref, m_ref)
+
     for _round in range(max_loops):
         if global_timeout is not None and (_time.time() - loop_start) >= global_timeout:
             signals.append({"signal": "global_timeout", "stdout": f"Limite de {global_timeout}s atteinte", "exit_code": 124})
@@ -516,6 +539,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 _fsm_log.log("debug", "llm/call",
                              f"provider={p_ref} model={m_ref} "
                              f"round={_round} tools={len(tools)}")
+            # Marque le modèle actif (fallback ou retour) dans le chat.
+            _emit_llm_event("branché", p_ref, m_ref)
             if stream_events:
                 response = _stream_llm_round(
                     bridge, p_ref, m_ref, messages, tools, _aid_from_home,
@@ -662,6 +687,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                             # mort), _mark_call_failed le met en repos et le
                             # fallback re-basculera — sans requête gaspillée.
                             p_ref, m_ref = np_, nm_
+                            _emit_llm_event("fall-back", p_ref, m_ref)
                             switched = True
                             break
                         except Exception:

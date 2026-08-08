@@ -53,11 +53,18 @@ interface Seg {
   text: string;
 }
 
+interface LlmLine {
+  tag: string;    // 'branché' | 'fall-back' | 'retour'
+  model: string;  // provider/modèle
+  ts: number;
+}
+
 interface Msg {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;  // bloc de raisonnement du modèle (modèles raisonneurs)
   segments?: Seg[];   // ordre d'arrivée réel du flux (thinking/content entremêlés)
+  llmLines?: LlmLine[]; // journal des changements de modèle (fall-back / retour)
   mode?: string;
   ts?: number;        // heure d'envoi (user) / heure de fin (assistant)
   provider?: string;  // qui répond
@@ -100,6 +107,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
   const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
   const [provider, setProvider] = useState('');   // '' = auto
   const [model, setModel] = useState('');
+  const [activeModel, setActiveModel] = useState(''); // modèle réellement branché (après fallback)
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -141,6 +149,21 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
             if (event === 'delta' && data) {
               const kind = data.kind ?? 'content';
               const chunk = data.chunk ?? '';
+              if (kind === 'llm' && chunk) {
+                // Ligne console : branchement / fall-back / retour du modèle.
+                // Format : "<tag> <provider>/<model>".
+                const sp = chunk.indexOf(' ');
+                const tag = sp > 0 ? chunk.slice(0, sp) : 'branché';
+                const mdl = sp > 0 ? chunk.slice(sp + 1) : chunk;
+                setActiveModel(mdl);
+                setMessages((prev) => prev.map((m, i) => {
+                  if (i !== liveIdx) return m;
+                  const lines = m.llmLines ? [...m.llmLines] : [];
+                  lines.push({ tag, model: mdl, ts: Date.now() });
+                  return { ...m, llmLines: lines };
+                }));
+                return;
+              }
               setMessages((prev) => prev.map((m, i) => {
                 if (i !== liveIdx) return m;
                 const segs = m.segments ? [...m.segments] : [];
@@ -160,6 +183,9 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
               }));
             } else if (event === 'result' && data) {
               const doneTs = Date.now();
+              if (data.provider_ref && data.model_ref) {
+                setActiveModel(fmtWho(data.provider_ref, data.model_ref));
+              }
               setMessages((prev) => prev.map((m, i) => i === liveIdx ? {
                 ...m,
                 provider: m.provider || data.provider_ref,
@@ -228,6 +254,13 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           {ctx.t?.('panels.communication-dev-chat.mode_build') ?? 'Build'}
         </button>
         <ModelPicker provider={provider} model={model} onProvider={setProvider} onModel={setModel} api={ctx.api} t={ctx.t} />
+        {/* Modèle actuellement branché (peut différer des menus après fallback) */}
+        {activeModel && (
+          <span title="Modèle actuellement branché"
+            style={{ fontSize: 10, fontFamily: 'monospace', color: '#38bdf8', background: 'rgba(56,189,248,.12)', padding: '2px 6px', borderRadius: 4, border: '1px solid rgba(56,189,248,.3)' }}>
+            ● {activeModel}
+          </span>
+        )}
         <span style={{ color: '#64748b', fontSize: 11 }}>{workspaceId}</span>
       </div>
 
@@ -281,6 +314,16 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 {busy && i === messages.length - 1 && (
                   <span style={{ display: 'inline-block', width: 7, height: 12, marginLeft: 2, background: '#38bdf8', verticalAlign: 'text-bottom', animation: 'mw-blink 1s steps(2,start) infinite' }}></span>
                 )}
+              </div>
+            )}
+            {/* Journal des changements de modèle (fall-back / retour) */}
+            {m.role === 'assistant' && m.llmLines && m.llmLines.length > 0 && (
+              <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {m.llmLines.map((ll, li) => (
+                  <div key={li} style={{ fontSize: 10, fontFamily: 'monospace', color: ll.tag === 'fall-back' ? '#fbbf24' : ll.tag === 'retour' ? '#34d399' : '#38bdf8' }}>
+                    {ll.tag === 'fall-back' ? '↷' : ll.tag === 'retour' ? '↺' : '●'} {ll.tag} <b>{ll.model}</b> {fmtTime(ll.ts)}
+                  </div>
+                ))}
               </div>
             )}
             {/* Repli : pas de segments (réponse sync/init) → thinking puis contenu */}
