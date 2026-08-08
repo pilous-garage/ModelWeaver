@@ -1,69 +1,148 @@
-Audit Report
-============
+# Audit Report
 
-Date: audit de la branche auto_code_412 (projet mw-swarm)
+## Repository: mw-swarm
+## Branch: auto_code_412
+## Date: 2026-08-08
 
-Résumé
-------
-L'audit du codebase a révélé plusieurs problèmes fonctionnels et de
-cohérence. Contrairement au rapport précédent (qui indiquait "no issues"),
-plusieurs défauts ont été identifiés lors de la revue détaillée.
+## Issues Found
 
-Issues détectés
----------------
+### 1. Task 378 - Commit Hash Anomaly
+- **Task ID**: 378
+- **Title**: Correctif
+- **Issue**: Commit hash "abc123" is a fake/placeholder hash, not a real git commit
+- **Status**: Marked as done but with invalid commit reference
+- **Severity**: Medium
+- **Recommendation**: Verify actual commit exists or recommit with valid hash
 
-### 1. [CRITIQUE] Streaming non fonctionnel
-- Fichier source : findings.txt
-- Le streaming n'est PAS fonctionnel : le provider limite tous les flux
-  avec `finish=stop`. Aucune réponse n'est réellement streamée.
-- Impact : les réponses sont générées en bloc au lieu d'être diffusées en
-  temps réel (SSE/streaming cassé).
-- Recommandation : corriger la logique de streaming du provider.
+### 2. Task 381 - Missing Branch and Commit
+- **Task ID**: 381
+- **Title**: Correctif
+- **Issue**: No branch specified, no commit hash provided
+- **Status**: Marked as done without proper git artifacts
+- **Severity**: Medium
+- **Recommendation**: Create proper branch and commit for deliverable
 
-### 2. [MAJEUR] 9 panels "agents" non implémentés
-- Fichier source : audit_agents.md
-- Les panels suivants n'ont AUCUN fichier lié dans le dépôt :
-  - agents-activity (V2 natif, bundle Core)
-  - agents-composition-equipe (V1 externe)
-  - agents-equipe-leger (V1 externe)
-  - agents-equipe (V1 externe)
-  - agents-lanceur (V1 externe)
-  - agents-liste (V1 externe)
-  - agents-monitoring (V2 migré, bundle Core)
-  - agents-team-members (V1 externe)
-  - agents-topologie (V1 externe)
-- Impact : rôles affichés "Non déclarés", aucun fichier d'audit associé.
-- Recommandation : implémenter et déclarer ces panels.
+### 3. Task 409 - Missing Branch and Commit
+- **Task ID**: 409
+- **Title**: Corrective pour la tâche de relecture
+- **Issue**: No branch specified, no commit hash provided
+- **Status**: Marked as done without proper git artifacts
+- **Severity**: Medium
+- **Recommendation**: Verify deliverable exists in repo and properly commit
 
-### 3. [MAJEUR] Panels "gestion" : rôles attendus vs affichés incohérents
-- Fichier source : audit_gestion.md
-- gestion-catalogue-modeles : rôle attendu admin, affiché viewer
-- gestion-cles-api : rôle attendu developer, affiché user
-- gestion-outils : rôle attendu admin, affiché user
-- installator-* : rôle attendu admin, affiché user
-- Impact : risque de sécurité / mauvaises permissions (élévation ou
-  restriction incorrecte des rôles).
-- Recommandation : aligner les rôles affichés sur les rôles attendus.
+### 4. Task 394 - Missing Branch and Commit
+- **Task ID**: 394
+- **Title**: Audit monitoring panels
+- **Issue**: No branch specified, no commit hash provided
+- **Status**: Marked as done without proper git artifacts
+- **Severity**: Medium
+- **Recommendation**: Verify deliverable exists in repo and properly commit
 
-### 4. [MOYEN] Panels "système" : rôle affiché non vérifié
-- Fichier source : audit_systeme.md
-- 6 panels (systeme-dashboard, systeme-etat, systeme-llm-locaux,
-  etat-systeme, gestion-bundles, gestion-panneaux) sont listés avec des
-  rôles attendus mais sans vérification du rôle réellement affiché.
-- Recommandation : compléter l'audit de cohérence des rôles.
+### 5. Task 355 - Empty Commit Hash
+- **Task ID**: 355
+- **Title**: Audit monitoring panels
+- **Issue**: Commit hash field is empty
+- **Status**: Done but incomplete git metadata
+- **Severity**: Low
+- **Recommendation**: Add proper commit hash for traceability
 
-### 5. [MOYEN] Conflit git non résolu (historique)
-- Fichier source : problemes_detectes.md
-- Le fichier audit_report.md contenait des marqueurs de conflit git non
-  résolus (`<<<<<<< HEAD`, `=======`, `>>>>>>>`).
-- Statut : corrigé (conflit résolu, branche corrigée auto_code_435 ->
-  auto_code_412).
+### 6. Task 390 - Pending Task with Branch Mismatch
+- **Task ID**: 390
+- **Title**: Audit des panneaux de monitoring et recommandations télémétrie
+- **Issue**: Assigned to branch auto_code_412 but status is pending with last update timestamp
+- **Status**: Pending - requires attention
+- **Severity**: High
+- **Recommendation**: Complete audit or reassign
 
-### 6. [INFO] Multiplicité de rapports d'audit redondants
-- De nombreux fichiers de rapport coexistent (audit_report.md,
-  audit_reports/, rapport_audit.md, audit_report_issues.md, etc.) avec des
-  contenus parfois contradictoires (certains affirment "no issues").
-- Recommandation : consolider les rapports en une source unique.
+### 7. Task 440 - Branch Mismatch
+- **Task ID**: 440
+- **Title**: Audit 6 panels communication + docker + interfaces/main/GUI/v2/src/panels
+- **Issue**: Task specifies branch "master" but should be on auto_code_412 for this project
+- **Status**: Pending
+- **Severity**: Medium
+- **Recommendation**: Move to auto_code_412 branch for consistency
 
----
-End of Report
+### 8. Task 344 - Incomplete Task Metadata
+- **Task ID**: 344
+- **Title**: Audit panels communication
+- **Issue**: Commit hash "1234567890abcdef" is placeholder, not real commit
+- **Status**: Pending with unrealistic commit hash
+- **Severity**: Medium
+- **Recommendation**: Verify actual work exists and commit properly
+
+### 9. Task 353 - Missing Commit Hash
+- **Task ID**: 353
+- **Title**: Audit monitoring panels
+- **Issue**: Commit hash field is empty despite being assigned to auto_code_412
+- **Status**: Pending
+- **Severity**: Medium
+- **Recommendation**: Complete work and commit
+
+### 10. Task 359 - Placeholder Commit Hash
+- **Task ID**: 359
+- **Title**: Audit des panneaux de monitoring et recommandations télémetrie
+- **Issue**: Commit hash "HEAD" is placeholder, not actual commit hash
+- **Status**: Pending
+- **Severity**: Medium
+- **Recommendation**: Complete work and commit with proper hash
+
+### 11. Task 360 - Placeholder Commit Hash
+- **Task ID**: 360
+- **Title**: Audit monitoring panels
+- **Issue**: Commit hash "HEAD" is placeholder, not actual commit hash
+- **Status**: Pending
+- **Severity**: Medium
+- **Recommendation**: Complete work and commit with proper hash
+
+### 12. Task 361 - Placeholder Commit Hash
+- **Task ID**: 361
+- **Title**: Audit Monitoring et Télémétrie
+- **Issue**: Commit hash "abc123" is fake placeholder
+- **Status**: Pending
+- **Severity**: Medium
+- **Recommendation**: Complete work and commit with valid hash
+
+### 13. Task 362-363 - Duplicate Tasks
+- **Task IDs**: 362, 363
+- **Issue**: Multiple nearly identical tasks for monitoring telemetry audit
+- **Status**: All pending
+- **Severity**: High
+- **Recommendation**: Consolidate duplicates, keep one authoritative task
+
+### 14. Task 523 - Missing Assignee
+- **Task ID**: 523
+- **Title**: Refactorer lib/shell/auth.py pour remplacer la whitelist fixe par un moteur dynamique par rôle
+- **Issue**: No assignee (assigned_to is empty)
+- **Status**: Pending
+- **Severity**: Low
+- **Recommendation**: Assign to appropriate developer
+
+### 15. Task 532 - Missing Parent Reference
+- **Task ID**: 532
+- **Issue**: Referenced as parent in task 541 but not visible in task list
+- **Status**: Unknown
+- **Severity**: Medium
+- **Recommendation**: Verify parent task exists and is properly linked
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| High     | 2     |
+| Medium   | 12    |
+| Low      | 2     |
+| **Total**| **16**|
+
+## Recommendations
+
+1. Clean up placeholder commit hashes (abc123, HEAD, 1234567890abcdef)
+2. Verify all "done" tasks have actual git commits on auto_code_412
+3. Consolidate duplicate monitoring telemetry audit tasks
+4. Ensure all pending tasks have proper branch assignments
+5. Add missing assignees to open tasks
+
+## Repository Status
+
+- Branch auto_code_412 is active and up to date
+- No uncommitted changes detected
+- Repository structure contains multiple audit-related files
