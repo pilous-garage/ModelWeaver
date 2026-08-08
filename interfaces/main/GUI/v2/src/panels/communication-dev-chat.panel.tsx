@@ -70,6 +70,7 @@ interface Msg {
   thinking?: string;  // bloc de raisonnement du modèle (modèles raisonneurs)
   segments?: Seg[];   // ordre d'arrivée réel du flux (thinking/content/tool entremêlés)
   llmLines?: LlmLine[]; // journal des changements de modèle (fall-back / retour)
+  status?: string;    // état en cours : 'contact' | 'pense' | 'outil' | 'erreur'
   mode?: string;
   ts?: number;        // heure d'envoi (user) / heure de fin (assistant)
   sentTs?: number;    // heure d'envoi de la requête (début du time_elapsed)
@@ -143,10 +144,10 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
   const abortRef = useRef<{ abort: () => void } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Timer global : tick tant qu'un message est en cours (sections live ou
-  // réponse non finie) → les time_elapsed se mettent à jour en continu.
+  // Timer global : tick UNIQUEMENT tant qu'un message assistant est EN COURS
+  // (pas fini) — quand la réponse se termine, le ⏱ est figé sur durationMs.
   const anyLive = messages.some((m) => !m.finished && m.role === 'assistant');
-  const now = useNow(anyLive || busy);
+  const now = useNow(anyLive);
 
   // Badge du modèle branché : par défaut = modèle choisi dans les menus,
   // mis à jour par les événements 'llm' (fallback / retour) du flux.
@@ -192,7 +193,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
     // L'assistant est TOUJOURS le dernier message après l'ajout.
     const userIdx = wasQueued ? messages.length - 1 : messages.length;
     const liveIdx = userIdx + 1;
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', mode, provider, model, sentTs }]);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', mode, provider, model, sentTs, status: 'contact' }]);
 
     try {
       if (ctx.api?.stream) {
@@ -210,17 +211,27 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
               const kind = data.kind ?? 'content';
               const chunk = data.chunk ?? '';
               if (kind === 'llm' && chunk) {
-                // Ligne console : branchement / fall-back / retour du modèle.
-                // Format : "<tag> <provider>/<model>".
+                // Ligne console : branché / fall-back / retour / err (erreur).
+                // Format : "<tag> <provider>/<model> [catégorie] [message]".
                 const sp = chunk.indexOf(' ');
                 const tag = sp > 0 ? chunk.slice(0, sp) : 'branché';
-                const mdl = sp > 0 ? chunk.slice(sp + 1) : chunk;
-                setActiveModel(mdl);
+                const rest = sp > 0 ? chunk.slice(sp + 1) : chunk;
+                if (tag === 'err') {
+                  // Erreur LLM avant fall-back : on l'affiche en rouge.
+                  setMessages((prev) => prev.map((m, i) => {
+                    if (i !== liveIdx) return m;
+                    const lines = m.llmLines ? [...m.llmLines] : [];
+                    lines.push({ tag: 'err', model: rest, ts: Date.now() });
+                    return { ...m, llmLines: lines, status: 'erreur' };
+                  }));
+                  return;
+                }
+                setActiveModel(rest);
                 setMessages((prev) => prev.map((m, i) => {
                   if (i !== liveIdx) return m;
                   const lines = m.llmLines ? [...m.llmLines] : [];
-                  lines.push({ tag, model: mdl, ts: Date.now() });
-                  return { ...m, llmLines: lines };
+                  lines.push({ tag, model: rest, ts: Date.now() });
+                  return { ...m, llmLines: lines, status: tag === 'fall-back' ? 'erreur' : (m.status || 'contact') };
                 }));
                 return;
               }
@@ -243,7 +254,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                   } else {
                     segs.push({ kind: 'tool', text: (tkind === 'call' ? '⚙ ' : '') + rest, startTs: Date.now(), live: true, toolOk: tkind === 'ok' });
                   }
-                  return { ...m, segments: segs, streamed: true };
+                  return { ...m, segments: segs, streamed: true, status: 'outil' };
                 }));
                 return;
               }
@@ -260,9 +271,9 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                   segs.push({ kind, text: chunk, startTs: Date.now(), live: true });
                 }
                 if (kind === 'thinking') {
-                  return { ...m, thinking: (m.thinking ?? '') + chunk, segments: segs };
+                  return { ...m, thinking: (m.thinking ?? '') + chunk, segments: segs, status: 'pense' };
                 }
-                return { ...m, content: (m.content ?? '') + chunk, streamed: true, segments: segs };
+                return { ...m, content: (m.content ?? '') + chunk, streamed: true, segments: segs, status: 'génère' };
               }));
             } else if (event === 'result' && data) {
               const doneTs = Date.now();
@@ -426,6 +437,17 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                   <span style={{ color: '#64748b' }}>▣ {m.mode} · {fmtWho(m.provider, m.model)}</span>
                   <span style={{ color: '#64748b' }}>· {fmtTime(m.ts)} · {fmtDuration(m.durationMs)}</span>
                   {m.streamed && <span style={{ color: '#38bdf8', fontSize: 10 }}>⚡</span>}
+                  {/* Status en cours : contact / pense / outil / génère / erreur */}
+                  {m.status && !m.finished && (
+                    <span style={{
+                      fontSize: 10, padding: '1px 6px', borderRadius: 3,
+                      background: m.status === 'erreur' ? 'rgba(248,113,113,.15)' : 'rgba(56,189,248,.12)',
+                      color: m.status === 'erreur' ? '#f87171' : '#38bdf8',
+                      border: `1px solid ${m.status === 'erreur' ? 'rgba(248,113,113,.3)' : 'rgba(56,189,248,.3)'}`,
+                    }}>
+                      {m.status === 'contact' ? '📞 contact…' : m.status === 'pense' ? '🧠 pense…' : m.status === 'outil' ? '⚙ outil…' : m.status === 'génère' ? '✍ génère…' : m.status}
+                    </span>
+                  )}
                 </>
               )}
             </div>
@@ -472,12 +494,15 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 )}
               </div>
             )}
-            {/* Journal des changements de modèle (fall-back / retour) */}
+            {/* Journal des changements de modèle (fall-back / retour / erreur) */}
             {m.role === 'assistant' && m.llmLines && m.llmLines.length > 0 && (
               <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {m.llmLines.map((ll, li) => (
-                  <div key={li} style={{ fontSize: 10, fontFamily: 'monospace', color: ll.tag === 'fall-back' ? '#fbbf24' : ll.tag === 'retour' ? '#34d399' : '#38bdf8' }}>
-                    {ll.tag === 'fall-back' ? '↷' : ll.tag === 'retour' ? '↺' : '●'} {ll.tag} <b>{ll.model}</b> {fmtTime(ll.ts)}
+                  <div key={li} style={{
+                    fontSize: 10, fontFamily: 'monospace',
+                    color: ll.tag === 'fall-back' ? '#fbbf24' : ll.tag === 'retour' ? '#34d399' : ll.tag === 'err' ? '#f87171' : '#38bdf8',
+                  }}>
+                    {ll.tag === 'fall-back' ? '↷' : ll.tag === 'retour' ? '↺' : ll.tag === 'err' ? '✕' : '●'} {ll.tag} <b>{ll.model}</b> {fmtTime(ll.ts)}
                   </div>
                 ))}
               </div>
@@ -534,7 +559,9 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
                 ) : null}
                 {/* time_elapsed : depuis l'envoi de la requête */}
                 <span style={{ color: '#64748b', fontFamily: 'monospace' }}>
-                  ⏱ {(m.finished ? (m.durationMs ?? (m.sentTs ? Date.now() - m.sentTs : 0)) : (m.sentTs ? now - m.sentTs : 0))}ms
+                  ⏱ {m.finished
+                    ? fmtDuration(m.durationMs ?? (m.sentTs ? Date.now() - m.sentTs : 0))
+                    : (m.sentTs ? fmtDuration(now - m.sentTs) : '…')}
                 </span>
               </div>
             )}
