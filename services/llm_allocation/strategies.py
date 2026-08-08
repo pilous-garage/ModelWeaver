@@ -50,6 +50,12 @@ class ModelOption:
     runtime_success_count: int = 0
     runtime_calls: int = 0
     runtime_latency_ms: float = 0.0
+    # Scores batch (runtime.db) — fail_rate + latence des fenêtres 5m/1h/1j/1w.
+    batch_fail_rate: float = 0.0
+    batch_latency_ms: float = 0.0
+    # Score benchmark étiré (score_benchmark_etire) : dans [0.1, 0.9],
+    # benchmark croisé par model_key, fallback global si spécialité absente.
+    score_etire: float = 0.0
 
     @property
     def ref(self) -> str:
@@ -127,37 +133,52 @@ _SMALL_CONTEXT = [
 def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     """Score composite orienté par type de tâche.
 
-    Utilise le score spécifique à la tâche quand disponible (issu du
-    benchmark), sinon le score qualité global. Pondère aussi le coût,
-    la fenêtre de contexte et la compatibilité vision.
+    Utilise le NOUVEAU scoring (validé utilisateur) :
+        score_final = score_etire × score_latence × (1 - score_fail_rate)
+      - score_etire : benchmark étiré (score_benchmark_etire), croisé par
+        model_key, dans [0.1, 0.9]. Baseline 0.1 si jamais benchmarké.
+      - score_latence : exp( -(max(penalise, lat_s) - penalise)/regule ),
+        lat_s = latence moyenne en secondes (score_batch). Sous penalise →
+        1.0 (parfait). Paramètres réglables par requête
+        (latence_penalise / latence_regule, défauts 1.0/60.0) : une tâche
+        tolérante passe penalise/regule élevés pour garder les LLM lents.
+      - score_fail_rate : composite pondéré (0.4/0.3/0.2/0.1 des fenêtres
+        5m/1h/1j/1w) depuis score_batch. 0 si aucun appel (pas d'échec).
+
+    Quand les scores batch sont absents (modèle jamais appelé), on retombe sur
+    les pénalités runtime classiques (fail_rate lissé Laplace + latence
+    linéaire) pour ne pas laisser un inconnu à score plein.
     """
-    TASK_SCORE_MAP = {
-        "chat": "score_chat",
-        "knowledge": "score_knowledge",
-        "coding": "score_coding",
-        "reasoning": "score_reasoning",
-        "agentic": "score_agentic",
-        "analysis": "score_reasoning",
-        "writing": "score_chat",
-    }
+    import math
 
-    score = 0.5  # baseline
+    # ── Composante benchmark étiré (0.1-0.9) ──
+    score = option.score_etire if option.score_etire > 0 else 0.1
 
-    # Score par tâche (prioritaire) ou fallback global
-    task_key = TASK_SCORE_MAP.get(request.task_type, "score_chat")
-    task_score = getattr(option, task_key, 0.0)
-    if task_score > 0:
-        score = task_score / 100.0
-        # Un modèle connu fiable (listé _TRUSTED_AGENTIC) garde un plancher :
-        # les scores benchmark partiels/bas d'un modèle récent (ex.
-        # google/gemini-3.5-flash avec score_coding=5.56) ne doivent pas le
-        # reléguer derrière des inconnus à 0.5 aléatoire.
-        if option.ref in _TRUSTED_AGENTIC:
-            score = max(score, 0.5 + 0.25)
-    elif option.ref in _TRUSTED_AGENTIC:
-        # Pas de benchmark : favoriser les modèles connus fiables en agentic
-        score += 0.25
+    # Bonus fiabilité éprouvée : un modèle benchmarké ET fiable (batch)
+    # conserve un avantage — le benchmark étiré est déjà relatif.
+    # (Le fallback global est déjà intégré par score_benchmark_etire.)
 
+    # ── Composante latence (exponentielle paramétrable) ──
+    if option.batch_latency_ms > 0 and option.runtime_calls > 0:
+        lat_s = max(request.latence_penalise, option.batch_latency_ms / 1000.0)
+        score_latence = math.exp(
+            -(lat_s - request.latence_penalise) / request.latence_regule)
+    else:
+        score_latence = 1.0
+    score *= score_latence
+
+    # ── Composante fail_rate ──
+    # Score batch (composite fenêtres) si dispo. Sinon fallback runtime lissé
+    # Laplace : p = (1 + succès)/(1 + total) → fail = 1 - p. Un seul succès
+    # (1/1) → fail=0 ; un seul échec (0/1) → fail=0.5 (pas 1.0 qui éliminerait
+    # à tort un modèle sur un aléa). 0 si aucun appel (pas d'échec → parfait).
+    if option.batch_fail_rate > 0:
+        score *= (1.0 - option.batch_fail_rate)
+    elif option.runtime_calls >= 1:
+        smoothed = (1.0 + option.runtime_success_count) / (1.0 + option.runtime_calls)
+        score *= smoothed
+
+    # ── Ajustements par tâche / contexte / coût (additifs) ──
     # Pénalité si pas assez de window
     if request.min_window > 0 and option.context_window > 0:
         ratio = min(option.context_window / request.min_window, 2.0)
@@ -192,42 +213,7 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     if option.is_synthetic and option.ref not in _TRUSTED_AGENTIC:
         score *= 0.8
 
-    # ── Métriques runtime (fenêtre glissante model_call_log) ──
-    # Calcul DÉTERMINISTE et continu (pas de paliers) :
-    #   score -= fail_rate                      (0→1 : 0 échec → 1 tout échoue)
-    #   score -= latence_secondes / 100         (latence_ms / 100000)
-    # Pénalité dès le 1er appel : un modèle qui échoue même UNE fois (404,
-    # auth, quota) est à déprioritiser — le laisser à score plein = il est
-    # re-testé à chaque run (repos court expiré → round-robin le re-choisit).
-    # Un appel réussi seul ne pénalise pas (fail_rate = 0).
-    # Taux de succès LISSÉ (Laplace) pour éviter les extrêmes 0/1 et 1/1 :
-    #   p = (1 + succès) / (1 + total)
-    # Un seul succès (1/1) → p=1, fail=0 ; un seul échec (0/1) → p=0.5,
-    # fail=0.5 (au lieu de 1.0 brut qui éliminerait à tort un modèle qui
-    # a échoué une seule fois sur un aléa).
-    if option.runtime_calls >= 1:
-        smoothed = (1.0 + option.runtime_success_count) / (1.0 + option.runtime_calls)
-        fail_rate = 1.0 - smoothed
-        score -= fail_rate
-        # Pénalité latence : linéaire, règle utilisateur — 1 minute de latence
-        # = -0.3 pt (score max = 1). Donc latency_ms / 60000 × 0.3 = /200000.
-        #   0.5s → -0.0025 ; 1s → -0.005 ; 2s → -0.01 ; 5s → -0.025
-        #   10s → -0.05 ; 30s → -0.15 ; 60s → -0.30
-        score -= option.runtime_latency_ms / 200000.0
-        # Bonus de FIABILITÉ éprouvée : un modèle testé avec un bon taux de
-        # succès passe DEVANT un modèle jamais testé (inconnu = risque de
-        # modèle mort, deprecated, 404…). Sans ça, les non-testés à score
-        # benchmark 0.75 (souvent morts) passent devant le champion 46/48.
-        if smoothed >= 0.8 and option.runtime_calls >= 3:
-            score += 0.2
-    else:
-        # Modèle JAMAIS testé : inconnu = risqué (404, deprecated, pas de
-        # crédit). On le pénalise légèrement pour que les modèles éprouvés
-        # (ex. nvidia 88% sur 300+ appels) soient choisis avant en fallback.
-        # Ce n'est pas un blocage : si tout est mort, il reste allouable.
-        score -= 0.05
-
-    return min(1.0, score)
+    return max(0.0, min(1.0, score))
 
 
 def _best_fallback_allocate(request: AllocationRequest, available: List[ModelOption]) -> Optional[ModelOption]:

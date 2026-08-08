@@ -27,6 +27,60 @@ def _get_catalogue() -> Any:
     return _get_cat()
 
 
+def _load_runtime_scores() -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Charge les scores runtime (fail_rate + latence + benchmark étiré).
+
+    Deux dicts clés sur la ref de MODÈLE (model_key, la même pour toutes les
+    variantes provider d'un modèle) :
+      - batch  : {model_key: {fail_rate, latency_ms}}  depuis score_batch
+      - etire  : {model_key: score_etire}              depuis score_benchmark_etire
+
+    score_batch est indexé par (provider_ref, model_ref) où model_ref = cm.ref ;
+    on regroupe par model_key via catalogue_models pour ne garder QUE la
+    variante de référence (model_ref == model_key). Retourne (batch, etire).
+    """
+    import os
+    try:
+        from modules.sql.schema import _default_runtime_db
+        rt_path = _default_runtime_db()
+        import sqlite3
+        conn = sqlite3.connect(str(rt_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=3000")
+        cat = _get_catalogue()
+        # map cm.ref → model_key (toutes les variantes)
+        ref_to_key = {}
+        for r in cat.conn.execute(
+                "SELECT ref, model_key FROM catalogue_models").fetchall():
+            ref_to_key[r["ref"]] = r["model_key"] or r["ref"]
+        batch: Dict[str, Dict[str, Any]] = {}
+        for r in conn.execute(
+                "SELECT model_ref, score_fail_rate, score_latency "
+                "FROM score_batch").fetchall():
+            key = ref_to_key.get(r["model_ref"]) or r["model_ref"]
+            # Cumul : on garde la moyenne (un même model_key peut avoir des
+            # variantes ; le batch est par provider/model réel).
+            prev = batch.get(key)
+            if prev is None:
+                batch[key] = {"fail_rate": r["score_fail_rate"] or 0.0,
+                              "latency_ms": r["score_latency"] or 0.0}
+            else:
+                n = 2
+                prev["fail_rate"] = (prev["fail_rate"] + (r["score_fail_rate"] or 0.0)) / n
+                prev["latency_ms"] = (prev["latency_ms"] + (r["score_latency"] or 0.0)) / n
+        etire: Dict[str, float] = {}
+        for r in conn.execute(
+                "SELECT model_ref, score_etire FROM score_benchmark_etire").fetchall():
+            etire[r["model_ref"]] = r["score_etire"] or 0.0
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return batch, etire
+    except Exception:
+        return {}, {}
+
+
 def _query_candidates() -> List[Dict[str, Any]]:
     """Liste les modèles disponibles (available=1, declared=1) depuis le catalogue.
 
@@ -41,6 +95,7 @@ def _query_candidates() -> List[Dict[str, Any]]:
             SELECT
                 cp.ref AS provider_ref,
                 cm.ref AS model_ref,
+                COALESCE(cm.model_key, cm.ref) AS model_key,
                 kem.provider_model_name,
                 CAST(COALESCE(pm.context_window_effective, pm.context_window_tokens, 0) AS INTEGER) AS context_window,
                 COALESCE(CAST(pm.cost_per_input_token AS REAL), 0.0) AS cost_per_input,
@@ -169,8 +224,16 @@ def _has_vision(modality: str) -> bool:
 
 def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
                       exclude_providers: Optional[list] = None,
-                      exclude_models: Optional[list] = None) -> List[ModelOption]:
-    """Filtre les lignes brutes du catalogue en ModelOption prêtes pour la stratégie."""
+                      exclude_models: Optional[list] = None,
+                      batch_scores: Optional[Dict] = None,
+                      etire_scores: Optional[Dict] = None) -> List[ModelOption]:
+    """Filtre les lignes brutes du catalogue en ModelOption prêtes pour la stratégie.
+
+    ``batch_scores`` (model_key → {fail_rate, latency_ms}) et ``etire_scores``
+    (model_key → score_etire) attachent les scores runtime au candidat.
+    """
+    batch_scores = batch_scores or {}
+    etire_scores = etire_scores or {}
     candidates: List[ModelOption] = []
     exclude_set = set(request.exclude or [])
     excl_p = set(exclude_providers or [])
@@ -238,6 +301,13 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
             runtime_success_count=int(row.get("runtime_success_count") or 0),
             runtime_calls=int(row.get("runtime_calls") or 0),
             runtime_latency_ms=float(row.get("runtime_latency_ms") or 0.0),
+            # Scores batch (fail_rate + latence) et benchmark étiré, croisés
+            # par model_key (même score pour toutes les variantes du modèle).
+            batch_fail_rate=float(
+                (batch_scores.get(row.get("model_key"), {}) or {}).get("fail_rate", 0.0)),
+            batch_latency_ms=float(
+                (batch_scores.get(row.get("model_key"), {}) or {}).get("latency_ms", 0.0)),
+            score_etire=float(etire_scores.get(row.get("model_key"), 0.0) or 0.0),
         ))
 
     # Déduplication par ref NORMALISÉ : le même modèle réel peut exister sous
@@ -333,9 +403,12 @@ def allocate_llm(params: dict) -> dict:
         }
 
     # 2. Filtrer (clé, budget, window, vision, coût)
+    batch_scores, etire_scores = _load_runtime_scores()
     candidates = _build_candidates(raw_rows, request,
                                    exclude_providers=params.get("exclude_providers"),
-                                   exclude_models=params.get("exclude_models"))
+                                   exclude_models=params.get("exclude_models"),
+                                   batch_scores=batch_scores,
+                                   etire_scores=etire_scores)
     if not candidates:
         return {
             "status": "error",
