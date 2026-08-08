@@ -404,7 +404,26 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     agent_shell_manager.init()
     _agent_id = _Path(skill_home).name
     if agent_shell_manager.get(_agent_id) is None:
-        agent_shell_manager.get_or_create(agent_id=_agent_id, home_root=_Path(skill_home))
+        # Le pilote de dev-chat (rôle 'chat') a les autorités MANAGER : rôle
+        # leader + accès en lecture aux homes des AUTRES agents (pour analyser
+        # l'activité de sa team). Les membres greedy gardent le rôle member.
+        _shell_role = "member"
+        _allowed_roots = None
+        try:
+            _cat = CatalogueDB()
+            _arow = _cat.conn.execute(
+                "SELECT role_type FROM agents WHERE agent_id = ?", (int(_agent_id),)
+            ).fetchone()
+            if _arow and _arow["role_type"] == "chat":
+                from services._common import mw_home as _mwh
+                _allowed_roots = [(_mwh() / "agent_home").resolve()]
+                _shell_role = "leader"
+        except Exception:
+            pass
+        agent_shell_manager.get_or_create(agent_id=_agent_id,
+                                          home_root=_Path(skill_home),
+                                          role=_shell_role,
+                                          allowed_roots=_allowed_roots)
 
     # agent_id du home (agent_home/{agent_id}/…) — injecté dans chaque tool
     # call : les skills git/workspace en ont besoin (git_clone project_id+agent_id)

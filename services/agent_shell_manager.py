@@ -43,12 +43,14 @@ class AgentShell:
         role: str = "member",
         home_root: Optional[Path] = None,
         allowed_commands: Optional[set] = None,
+        allowed_roots: Optional[list] = None,
     ):
         self.agent_id = agent_id
         self.team_id = team_id
         self.role = role
         self.home_root = (home_root or Path.home() / ".modelweaver").resolve()
         self.allowed_commands = allowed_commands
+        self.allowed_roots = allowed_roots
         self.status = "stopped"
         self._shell: Optional[Shell] = None
         self._created_at: Optional[float] = None
@@ -61,6 +63,7 @@ class AgentShell:
 
         auth = ShellAuth(
             home_root=self.home_root,
+            allowed_roots=self.allowed_roots,
             agent_id=self.agent_id,
             team_id=self.team_id,
             role=self.role,
@@ -160,6 +163,7 @@ class AgentShellManager:
         role: str = "member",
         home_root: Optional[Path] = None,
         allowed_commands: Optional[set] = None,
+        allowed_roots: Optional[list] = None,
     ) -> AgentShell:
         existing = self._shells.get(agent_id)
         if existing is not None:
@@ -173,6 +177,7 @@ class AgentShellManager:
             role=role,
             home_root=home_root,
             allowed_commands=allowed_commands,
+            allowed_roots=allowed_roots,
         )
         ag_sh.start()
         self._shells[agent_id] = ag_sh

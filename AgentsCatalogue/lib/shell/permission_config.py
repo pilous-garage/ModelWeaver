@@ -72,6 +72,9 @@ DEFAULT_COMMANDS: Set[str] = {
     "exit", "help", "alias", "source", "export", "unset",
     "cut", "tr", "paste", "join", "split", "xargs",
     "git", "python3", "python", "pytest",
+    # Lister/inspecter l'arborescence (manquait — les agents ne pouvaient
+    # pas ls sans être bloqués par la whitelist).
+    "ls", "stat", "tree", "file",
 }
 
 
