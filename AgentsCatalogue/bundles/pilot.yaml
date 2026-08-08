@@ -1,0 +1,43 @@
+name: pilot
+description: "Bundle léger du pilote dev-chat : outils essentiels pour analyser/orchestrer (fichiers, git, workspace, team, exec). Volontairement RÉDUIT (~25 tools) — 68 tools font exploser la latence LLM (le modèle met ~1 min à parser les définitions à chaque round)."
+permissions:
+  - tool: "*"
+    action: allow
+skills:
+  # Lecture / écriture fichiers (5 au lieu de 8+)
+  - file/read_file@v1
+  - file/write_file@v1
+  - file/append_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/list_dir@v1
+  # Git (12 → garde l'essentiel)
+  - git/repo_list@v1
+  - git/repo_init@v1
+  - git/git_clone@v1
+  - git/git_status@v1
+  - git/git_add@v1
+  - git/git_commit@v1
+  - git/git_push@v1
+  - git/git_log@v1
+  - git/git_branch@v1
+  - git/git_pull@v1
+  # Workspace (tâches + chat)
+  - workspace/task_list@v1
+  - workspace/task_get@v1
+  - workspace/task_create@v1
+  - workspace/task_claim_next@v1
+  - workspace/task_done@v1
+  - workspace/chat_post@v1
+  - workspace/chat_recent@v1
+  # Team (visibilité)
+  - team/team_members@v1
+  - team/agent_status@v1
+  - team/agent_log@v1
+  - team/process_list@v1
+  # Shell + util (pour analyser/exécuter)
+  - shell/exec@v1
+  - util/get_env@v1
+  - util/timestamp@v1
+  - util/json_query@v1
+  - util/uuid@v1

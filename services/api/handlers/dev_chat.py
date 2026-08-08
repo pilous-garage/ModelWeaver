@@ -63,7 +63,10 @@ def _pilot_workflow(mode: str, workspace_id: str, home: str,
             {"id": "start", "type": "call", "fn": "workflow/autonomous@v1",
              "inputs": {
                  "request": "{{request}}",
-                 "bundles": ["manager", "dev"],
+                 # Bundle PILOTE léger (~32 tools) : 68 tools (manager+dev)
+                 # font exploser la latence LLM (le modèle parse les définitions
+                 # ~1 min/round). Le pilote orchestre, pas besoin de tout.
+                 "bundles": ["pilot"],
                  "workspace_id": workspace_id,
                  "context": ctx,
                  "max_loops": 120,
