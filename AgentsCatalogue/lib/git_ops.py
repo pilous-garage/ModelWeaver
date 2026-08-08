@@ -19,6 +19,62 @@ def _central_repo(project_id: str) -> Path:
     return mw_home() / "repos" / f"{project_id}.git"
 
 
+# ── Aide des outils (seedée dans le repo central par repo_init) ──
+# Détaillé aux agents : les tools dispo, leur rôle, et l'ordre d'utilisation.
+_TOOLS_HELP_MD = """# Outils disponibles (aide)
+
+Ce dépôt a été initialisé par ModelWeaver. Voici les outils que tu peux
+utiliser pour travailler, et dans quel ordre.
+
+## Git (dépôt central)
+
+Le dépôt central est un repo BARE local (`~/.modelweaver/repos/{id}.git`).
+Chaque agent travaille dans un CLONE personnel (son workspace).
+
+Séquence normale d'un agent :
+1. `git/repo_list@v1` (project_id) — vérifier que le dépôt central existe
+   (champ `present`). S'il n'existe pas :
+2. `git/repo_init@v1` (project_id) — crée le dépôt central + commit initial
+   (README.md, .gitignore, tools_help.md). Idempotent.
+3. `git/git_clone@v1` (project_id, agent_id) — clone le dépôt dans ton
+   workspace perso. Idempotent (fetch si déjà cloné).
+4. `git/git_status@v1` — voir l'état de tes changements.
+5. `git/git_add@v1` (path) — stage un fichier (ou tout).
+6. `git/git_commit@v1` (message) — committe.
+7. `git/git_push@v1` (branch) — pousse vers le dépôt central. Fait un
+   pull --rebase avant (les autres membres peuvent avoir avancé).
+
+Autres outils git : git_branch (créer/lister), git_checkout (changer de
+branche), git_log (historique), git_diff (diff), git_pull (rebase depuis
+central), git_merge (fusionner une branche), git_resolve_conflict
+(résoudre un conflit de merge, side=ours/theirs), git_fetch,
+git_push_remote (push vers un remote distant, leader).
+
+## Fichiers (ton workspace = clone git)
+
+- `file/read_file@v1`, `file/write_file@v1`, `file/append_file@v1`
+- `file/list_dir@v1`, `file/glob@v1`, `file/grep@v1`
+- `system/home/*` : les mêmes opérations sur ton home agent (hors git).
+
+## Shell
+
+- `shell/exec@v1` : exécute une commande (si autorisé).
+
+## Workspace / tâches
+
+- `workspace/task_list@v1`, `workspace/task_get@v1`
+- `workspace/task_claim_next@v1` : piocher la tâche suivante de ton rôle.
+- `workspace/task_done@v1` : marquer ta tâche terminée (avec livrable).
+- `workspace/task_create@v1` : créer une sous-tâche.
+
+## Règles d'or
+
+- Ne génère jamais de code dans ta réponse : appelle directement les outils.
+- Vérifie toujours `repo_list` avant de cloner (si le repo manque → `repo_init`).
+- Committe PUIS pousse. Le merge final est fait par l'intégrateur.
+"""
+
+
 def _agent_clone(agent_id: str, project_id: str) -> Path:
     return (mw_home() / "agent_home" / str(agent_id)
             / "workspace" / str(project_id))
@@ -96,6 +152,7 @@ def repo_init(inputs: dict, home: str) -> dict:
             (tmp / "README.md").write_text(f"# Projet {pid}\n", encoding="utf-8")
             (tmp / ".gitignore").write_text("__pycache__/\n*.pyc\n",
                                             encoding="utf-8")
+            (tmp / "tools_help.md").write_text(_TOOLS_HELP_MD, encoding="utf-8")
             _git_run(tmp, ["add", "-A"])
             _git_run(tmp, ["commit", "-q", "-m", "init"])
             _git_run(tmp, ["branch", "-M", "master"])
@@ -108,6 +165,44 @@ def repo_init(inputs: dict, home: str) -> dict:
     except SandboxError as ex:
         return {"ok": False, "error": str(ex)}
     return {"ok": True, "path": str(bare)}
+
+
+def repo_list(inputs: dict, home: str) -> dict:
+    """Liste les dépôts centraux BARE locaux (~/.modelweaver/repos/*.git).
+
+    Sans paramètre : liste tous les repos centraux existants.
+    Avec `project_id` : vérifie qu'un repo précis existe (ok=True si présent).
+    Retourne repos = [{id, path, size_mb, last_commit}] triés par activité.
+    """
+    repos_dir = mw_home() / "repos"
+    if not repos_dir.is_dir():
+        return {"ok": True, "repos": [], "count": 0}
+    pid = inputs.get("project_id", "")
+    out = []
+    for bare in sorted(repos_dir.glob("*.git")):
+        rid = bare.name[:-4]
+        if pid and rid != pid:
+            continue
+        entry = {"id": rid, "path": str(bare)}
+        try:
+            size = sum(f.stat().st_size for f in bare.rglob("*") if f.is_file())
+            entry["size_mb"] = round(size / (1024 * 1024), 1)
+        except Exception:
+            entry["size_mb"] = 0.0
+        # Dernier commit (HEAD) — best-effort sur le bare.
+        try:
+            o, e, rc = Sandbox().run(
+                ["git", "--git-dir", str(bare), "log", "-1",
+                 "--format=%h %ad %s", "--date=short"],
+                shell=False, timeout=30)
+            entry["last_commit"] = o.strip() if rc == 0 and o.strip() else ""
+        except Exception:
+            entry["last_commit"] = ""
+        out.append(entry)
+    if pid:
+        present = any(e["id"] == pid for e in out)
+        return {"ok": True, "present": present, "repos": out, "count": len(out)}
+    return {"ok": True, "repos": out, "count": len(out)}
 
 
 def git_clone(inputs: dict, home: str) -> dict:
@@ -382,8 +477,8 @@ def git_push_remote(inputs: dict, home: str) -> dict:
 
 
 __skills__ = [
-    "repo_init", "git_clone", "git_branch", "git_checkout", "git_commit",
-    "git_diff", "git_log", "git_status", "git_merge", "git_add",
+    "repo_init", "repo_list", "git_clone", "git_branch", "git_checkout",
+    "git_commit", "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
     "git_push_remote",
 ]

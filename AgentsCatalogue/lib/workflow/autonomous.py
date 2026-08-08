@@ -441,6 +441,13 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     role = "Tu exécutes les tâches UNIQUEMENT via les outils. Ne génère JAMAIS de code dans ta réponse. Appelle directement l'outil shell_exec_v1 pour écrire les fichiers."
     if context:
         role = f"Tu exécutes les tâches UNIQUEMENT via les outils. Contexte : {context}"
+    # Aide des outils : si le repo central est cloné, le fichier tools_help.md
+    # décrit les outils dispo et l'ordre d'usage (repo_list → repo_init →
+    # git_clone → …). Sinon, rappel des bases.
+    tools_hint = ("Après git_clone_v1, lis tools_help.md à la racine du clone "
+                  "pour connaître les outils disponibles et leur ordre d'usage "
+                  "(repo_list_v1, repo_init_v1, git_clone_v1, …).")
+    role = f"{role} {tools_hint}"
     system_msg = f"{role} {hint}" if hint else role
     messages = [
         {"role": "system", "content": system_msg},

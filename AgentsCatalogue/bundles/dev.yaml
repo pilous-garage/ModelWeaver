@@ -47,6 +47,8 @@ skills:
   - git/git_push_remote@v1
   - git/git_resolve_conflict@v1
   - git/git_status@v1
+  - git/repo_init@v1
+  - git/repo_list@v1
   - git/lite@v1
   - shell/exec@v1
   - workspace/wait_for@v1

@@ -1,0 +1,30 @@
+name: git/repo_list@v1
+category: git
+description: |
+  Liste les dépôts centraux BARE locaux (~/.modelweaver/repos/*.git) : id,
+  chemin, taille et dernier commit. Sans project_id → tous les repos ;
+  avec project_id → vérifie qu'il existe (champ `present`). Utile pour
+  savoir quel dépôt initialiser (repo_init) avant de cloner (git_clone).
+inputs:
+  project_id:
+    type: string
+    required: false
+    description: Identifiant du projet à vérifier (optionnel)
+outputs:
+  ok:
+    type: boolean
+    description: True ssi la liste a pu être lue
+  present:
+    type: boolean
+    description: True si project_id fourni et le repo central existe
+  count:
+    type: integer
+    description: Nombre de repos listés
+  repos:
+    type: array
+    items:
+      type: object
+    description: Liste [{id, path, size_mb, last_commit}]
+implementation:
+  type: python
+  function: git.repo_list
