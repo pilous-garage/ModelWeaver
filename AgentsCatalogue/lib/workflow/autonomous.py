@@ -476,6 +476,15 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     excluded_providers: set = set()
     excluded_models: set = set()
     _original_retried = False  # re-try du provider original limité à 1 fois/membre
+    # PIN du provider demandé (menus déroulants) : si l'utilisateur a choisi
+    # un provider explicite (ex. opencode-zen), une erreur TEMPORAIRE
+    # (upstream/timeout/rate-limit passager) ne doit pas le faire fuir vers le
+    # pool de fallback (souvent des modèles morts sans crédit). On re-tente le
+    # provider original jusqu'à PIN_RETRIES échecs consécutifs avant de basculer.
+    _pin_provider = provider_ref or ""
+    _pin_model = model_ref or ""
+    _pin_fail_streak = 0
+    _PIN_RETRIES = 3
     # Compteurs séparés : tours d'outils réels vs tours d'échec/fallback LLM.
     # Un tour d'échec = l'appel LLM a raté (rate-limit, modèle mort, fallback)
     # sans exécuter d'outil. max_loops borne les DEUX ; on trace séparément
@@ -625,6 +634,28 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             is_quota = (limit_type in ("quota", "daily_quota")
                         or "per-day" in err_low or "per day" in err_low
                         or ("quota" in err_low and "rate limit" not in err_low))
+
+            # ── PIN du provider demandé ──
+            # Si un provider explicite est fixé (menus déroulants) et que l'on
+            # est dessus, une erreur passagère (upstream/timeout/rate-limit
+            # transitoire) ne justifie pas de fuir vers le pool de fallback
+            # (souvent des modèles morts sans crédit — openai no credits,
+            # huggingface Not Found…). On re-tente le provider piné jusqu'à
+            # PIN_RETRIES échecs consécutifs, puis on bascule.
+            if (_pin_provider and p_ref == _pin_provider
+                    and m_ref == _pin_model
+                    and _pin_fail_streak < _PIN_RETRIES
+                    and not is_quota):
+                _pin_fail_streak += 1
+                if _fsm_log is not None:
+                    _fsm_log.log("warn", "llm/pin_retry",
+                                 f"provider piné {p_ref}/{m_ref} échec "
+                                 f"{_pin_fail_streak}/{_PIN_RETRIES}: {err_str[:150]}")
+                if _fsm_log is not None and _pin_fail_streak > 1:
+                    pass
+                _time.sleep(3)
+                continue  # re-tente le provider piné (même p_ref/m_ref)
+
             # Backoff : un seul retry court (1s) avant de basculer. On ne veut
             # PAS s'attarder sur un modèle rate-limité (les retries 0/5/5s
             # faisaient perdre 10s × 50 tours = boucles interminables). On
