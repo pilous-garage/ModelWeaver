@@ -596,7 +596,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             if on_event:
                 try:
                     _cat = getattr(getattr(e, "category", None), "value", "")
-                    on_event("llm", f"err {p_ref}/{m_ref} {_cat} {err_str[:200]}")
+                    on_event("llm", f"err {p_ref}/{m_ref} {_cat} {err_str[:500]}")
                 except Exception:
                     pass
             # Journal de conversation : tracer l'erreur aussi.
