@@ -23,6 +23,22 @@ from services.api.router import register, register_streaming
 PILOT_AGENT = "team:dev-chat/chat-pilot"
 DEFAULT_WORKSPACE = "mw-dev-chat"
 
+# Verrou par agent pilote : empêche 2 runs du MÊME agent de tourner en
+# parallèle (sinon 2 threads hydratent le même agent, polluent le même
+# StreamBus, et le chat mélange les fall-backs/événements des 2 runs).
+# Le 2e message ATTEND la fin du 1er (sérialisation).
+_PILOT_LOCKS: Dict[int, threading.Lock] = {}
+_PILOT_LOCKS_GUARD = threading.Lock()
+
+
+def _pilot_lock(aid: int) -> threading.Lock:
+    with _PILOT_LOCKS_GUARD:
+        lock = _PILOT_LOCKS.get(aid)
+        if lock is None:
+            lock = threading.Lock()
+            _PILOT_LOCKS[aid] = lock
+        return lock
+
 # System prompts des deux modes (injectés dans le contexte du pilote).
 PLAN_PROMPT = """Tu es le pilote du chat de développement (mode PLAN). READ-ONLY.
 Tu ne PEUX PAS modifier le code du projet. Tu peux LIRE le code
@@ -119,10 +135,20 @@ def _resolve_pilot(mgr, session: str, params: dict) -> tuple:
 
 def _run_pilot(aid: int, mode: str, message: str, workspace_id: str, home: str,
                provider_ref: str = "", model_ref: str = "", db=None) -> Dict[str, Any]:
-    """Exécute le pilote de dev-chat (workflow autonomous bundles manager+dev)."""
+    """Exécute le pilote de dev-chat (workflow autonomous bundles pilot).
+
+    Sérialisé par un verrou PAR AGENT : si le pilote est déjà en cours
+    (run précédent), ce message ATTEND sa fin — pas de double exécution
+    parallèle (Agent.hydrate lève RuntimeError si déjà hydraté).
+    """
     from services.agent_manager.service import Agent, AgentManager
 
     t0 = _time.time()
+    lock = _pilot_lock(aid)
+    acquired = lock.acquire(timeout=900)  # attend au max 15 min le run précédent
+    if not acquired:
+        return {"status": "error", "error": "pilote déjà en cours (timeout 15 min)",
+                "mode": mode, "agent_id": aid}
     try:
         if db is None:
             db = AgentManager().db
@@ -144,8 +170,14 @@ def _run_pilot(aid: int, mode: str, message: str, workspace_id: str, home: str,
             "model_ref": res.get("model_ref") or model_ref,
             **res,
         }
+    except RuntimeError as e:
+        # Agent déjà hydraté (double exécution) — on ne devrait pas y arriver
+        # grâce au verrou, mais par sécurité on le signale proprement.
+        return {"status": "error", "error": str(e), "mode": mode, "agent_id": aid}
     except Exception as e:
         return {"status": "error", "error": str(e), "mode": mode, "agent_id": aid}
+    finally:
+        lock.release()
 
 
 def op_dev_chat_send(params: dict) -> Dict[str, Any]:

@@ -173,6 +173,11 @@ class Agent:
 
         Charge les données, vérifie l'existence, crée une entrée runtime
         et initialise le shell interne de l'agent.
+
+        GARDE-FOU : un agent DÉJÀ hydraté (présent dans agent_runtime) ne peut
+        pas être hydraté à nouveau — sinon 2 threads exécutent le même agent
+        en parallèle (pollution du StreamBus, fall-backs mélangés dans le chat,
+        state LLM corrompu). Lève une RuntimeError dans ce cas.
         """
         db = db or AgentsDB()
         row = db.conn.execute(
@@ -180,6 +185,17 @@ class Agent:
         ).fetchone()
         if not row:
             raise ValueError(f"Agent {agent_id} introuvable")
+
+        # Déjà actif ? Refuser la double hydratation (le waker et dev-chat
+        # doivent vérifier AVANT d'appeler hydrate).
+        already = db.conn.execute(
+            "SELECT agent_id FROM agent_runtime WHERE agent_id = ?",
+            (agent_id,)
+        ).fetchone()
+        if already:
+            raise RuntimeError(
+                f"Agent {agent_id} déjà hydraté/en exécution — attendre la fin "
+                f"du run avant de le relancer (agent_runtime présent)")
 
         self = cls(db, dict(row))
 
@@ -192,7 +208,7 @@ class Agent:
         # Créer l'entrée runtime (thread actif)
         thread_id = f"agent:{self.name}:{int(time.time())}"
         db.conn.execute("""
-            INSERT OR REPLACE INTO agent_runtime
+            INSERT INTO agent_runtime
                 (agent_id, thread_id, pid, heartbeat_at, started_at, current_step)
             VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated')
         """, (agent_id, thread_id, os.getpid()))
