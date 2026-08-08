@@ -273,6 +273,44 @@ def _build_messages(messages: List[Dict[str, str]],
     return result
 
 
+def _extract_tokens(usage: Optional[dict]) -> dict:
+    """Normalise le comptage de tokens depuis un dict usage (tous formats).
+
+    Gère les variantes de providers :
+      - OpenAI / OpenRouter / la plupart : usage.prompt_tokens,
+        usage.completion_tokens, usage.completion_tokens_details.reasoning_tokens
+      - DeepSeek / reasoner : usage.reasoning_tokens (les reasoning tokens sont
+        SÉPARÉS de completion_tokens chez certains providers)
+      - Gemini : usageMetadata.promptTokenCount / candidatesTokenCount /
+        thoughtsTokenCount
+      - Some providers : completion_tokens_details.thinking_tokens
+
+    Retourne {prompt, completion, thinking} — le total = prompt + completion
+    (le thinking est INCLUS dans completion quand le provider ne le sépare pas,
+    sinon on le met dans thinking et completion reste sans eux ; le champ
+    `thinking` est TOUJOURS le nombre de tokens de raisonnement, déduit le cas
+    échéant pour que le total soit complet sans double comptage).
+    """
+    u = usage or {}
+    prompt = int(u.get("prompt_tokens") or u.get("promptTokenCount") or 0)
+    completion = int(u.get("completion_tokens") or u.get("candidatesTokenCount") or 0)
+    thinking = 0
+
+    # Reasoning séparé (OpenAI / OpenRouter / DeepSeek).
+    details = u.get("completion_tokens_details") or {}
+    if details:
+        thinking = int(details.get("reasoning_tokens") or details.get("thinking_tokens") or 0)
+    if not thinking:
+        thinking = int(u.get("reasoning_tokens") or 0)
+    if not thinking:
+        thinking = int(u.get("thoughtsTokenCount") or 0)
+    # Certains providers mettent les reasoning à part SANS les retirer de
+    # completion_tokens (double comptage) ; d'autres les retirent. On ne peut
+    # pas le savoir — on garde thinking comme une INFO, le total reste
+    # prompt + completion (le provider est la référence).
+    return {"prompt": prompt, "completion": completion, "thinking": thinking}
+
+
 def _build_tools_param(tools: Optional[List[Dict]] = None) -> Optional[List[dict]]:
     """Formate les outils au format OpenAI function calling."""
     if not tools:
@@ -564,6 +602,9 @@ class DirectBridge(BaseBridge):
             return
         try:
             u = usage or {}
+            # Comptage normalisé (tous formats) : thinking déduit des champs
+            # reasoning/thoughts des providers.
+            toks = _extract_tokens(u)
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, agent_id, success,
@@ -578,8 +619,8 @@ class DirectBridge(BaseBridge):
                     ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, model_ref, provider_ref, model_ref,
                   (str(agent_id)[:80] if agent_id else None),
-                  int(success), int(u.get("prompt_tokens") or 0),
-                  int(u.get("completion_tokens") or 0), int(tokens_thinking or 0),
+                  int(success), toks["prompt"], toks["completion"],
+                  toks["thinking"] or int(tokens_thinking or 0),
                   float(latency_ms or 0), (error_code or "")[:100],
                   (error_msg or "")[:200], (call_type or "chat")[:30]))
             self.cat.conn.commit()
@@ -971,6 +1012,9 @@ class DirectBridge(BaseBridge):
             "messages": msgs,
             "temperature": temperature,
             "stream": True,
+            # Demande le usage en fin de flux (OpenAI/OpenRouter/etc.) pour
+            # comptabiliser les tokens des appels en streaming (sinon 0).
+            "stream_options": {"include_usage": True},
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
@@ -989,6 +1033,7 @@ class DirectBridge(BaseBridge):
         _t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                usage_meta = None
                 for line in resp:
                     line = line.strip()
                     if not line or not line.startswith(b"data:"):
@@ -1000,6 +1045,10 @@ class DirectBridge(BaseBridge):
                         chunk = json.loads(payload.decode("utf-8", "replace"))
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
+                    # Dernier chunk (stream_options.include_usage) : porte le
+                    # usage final — on le garde pour le log.
+                    if chunk.get("usage"):
+                        usage_meta = chunk["usage"]
                     choice = (chunk.get("choices") or [{}])[0]
                     delta = choice.get("delta", {}) or {}
                     d_content = delta.get("content") or ""
@@ -1012,6 +1061,7 @@ class DirectBridge(BaseBridge):
                         yield {"type": "tool_calls", "delta": tcf}
             self._log_call(provider_ref, model_ref, True,
                            (time.time() - _t0) * 1000.0,
+                           usage=usage_meta,
                            agent_id=params.get("agent_id"),
                            call_type="chat_stream")
         except Exception as exc:
@@ -1102,6 +1152,7 @@ class DirectBridge(BaseBridge):
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                 buf = ""
+                usage_meta = None
                 for raw in resp:
                     buf += raw.decode("utf-8", "replace")
                     while "\n\n" in buf:
@@ -1116,6 +1167,9 @@ class DirectBridge(BaseBridge):
                             data = json.loads(data_line)
                         except json.JSONDecodeError:
                             continue
+                        # usageMetadata porté par le dernier chunk.
+                        if data.get("usageMetadata"):
+                            usage_meta = data["usageMetadata"]
                         for cand in data.get("candidates", []):
                             for part in (cand.get("content") or {}).get("parts", []) or []:
                                 if "text" in part:
@@ -1124,6 +1178,7 @@ class DirectBridge(BaseBridge):
                                     yield {"type": "thinking", "delta": part.get("thought", "")}
             self._log_call(provider_ref, model_ref, True,
                            (time.time() - _t0) * 1000.0,
+                           usage=usage_meta,
                            agent_id=params.get("agent_id"),
                            call_type="chat_stream")
         except Exception as exc:
