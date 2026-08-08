@@ -136,6 +136,32 @@ class AgentsDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_wait_for_status "
             "ON wait_for(status, agent_id)")
+        # Autorisations : demandes d'autorisation persistées (membres→leader→
+        # humain). Le request_handler (en mémoire) écrit ici pour que le GUI
+        # puisse lister/gérer les demandes. Tous les statuts sont conservés.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_requests (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id      TEXT NOT NULL UNIQUE,
+                agent_id        TEXT NOT NULL,
+                team_id         TEXT,
+                action          TEXT NOT NULL,   -- path_read | path_write | command
+                target          TEXT,            -- JSON {path|command}
+                reason          TEXT DEFAULT '',
+                scope           TEXT DEFAULT 'once',
+                approver_level  TEXT DEFAULT 'leader',  -- leader | human
+                request_type    TEXT DEFAULT 'pending_leader',
+                status          TEXT DEFAULT 'pending',
+                approver_id     TEXT,
+                rejection_reason TEXT,
+                resolved_scope  TEXT,
+                created_at      REAL,
+                resolved_at     REAL
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_status "
+            "ON auth_requests(status, approver_level)")
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)

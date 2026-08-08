@@ -240,6 +240,38 @@ class AuthRequestHandler:
 
     # ── soumission ────────────────────────────────────
 
+    def _persist(self, req: 'AuthorizationRequest') -> None:
+        """Persiste la demande dans la BDD agents (table auth_requests).
+
+        Le request_handler est en mémoire ; cette table permet au GUI (panneau
+        autorisations) de lister/gérer les demandes. Best-effort : un échec
+        de persistance ne casse pas le flux.
+        """
+        try:
+            from modules.sql.agents_repo import AgentsDB
+            import json as _json
+            db = AgentsDB()
+            try:
+                db.conn.execute("""
+                    INSERT OR REPLACE INTO auth_requests
+                        (request_id, agent_id, team_id, action, target, reason,
+                         scope, approver_level, request_type, status,
+                         approver_id, rejection_reason, resolved_scope,
+                         created_at, resolved_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    req.request_id, req.agent_id, req.team_id, req.action,
+                    _json.dumps(req.target, ensure_ascii=False), req.reason,
+                    req.scope.value, req.approver_level, req.request_type.value,
+                    req.status.value, req.approver_id, req.rejection_reason,
+                    req.resolved_scope.value if req.resolved_scope else None,
+                    req.created_at, req.resolved_at,
+                ))
+            finally:
+                db.close()
+        except Exception:
+            pass
+
     def submit(self, request: AuthorizationRequest) -> AuthorizationRequest:
         self._requests[request.request_id] = request
 
@@ -248,6 +280,7 @@ class AuthRequestHandler:
         elif request.request_type == RequestType.PENDING_LEADER:
             self._pending_leader_list.append(request.request_id)
 
+        self._persist(request)
         for handler in self._handlers:
             handler(request)
 
@@ -291,6 +324,7 @@ class AuthRequestHandler:
         req.resolved_scope = scope or req.scope
         req.approve(approver_id)
         self._remove_from_lists(request_id)
+        self._persist(req)
         # Grant pour le DEMANDEUR.
         self._add_grant(req.agent_id, req, True, approver_id,
                         source="leader" if req.approver_level == "leader" else "human")
@@ -309,6 +343,7 @@ class AuthRequestHandler:
         req.resolved_scope = scope or req.scope
         req.deny(approver_id, reason)
         self._remove_from_lists(request_id)
+        self._persist(req)
         # Refus mémorisé pour le DEMANDEUR.
         self._add_grant(req.agent_id, req, False, approver_id,
                         source="leader" if req.approver_level == "leader" else "human")
@@ -327,6 +362,7 @@ class AuthRequestHandler:
         self._pending_leader_list = [r for r in self._pending_leader_list
                                      if r != request_id]
         self._pending_user_list.append(request_id)
+        self._persist(req)
         return True
 
     def cancel(self, request_id: str) -> bool:
