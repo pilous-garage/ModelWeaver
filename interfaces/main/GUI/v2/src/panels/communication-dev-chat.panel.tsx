@@ -134,7 +134,11 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
   const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
   const [provider, setProvider] = useState('');   // '' = auto
   const [model, setModel] = useState('');
-  const [activeModel, setActiveModel] = useState(''); // modèle réellement branché (après fallback)
+  const [activeModel, setActiveModel] = useState(() => {
+    // Initialisé au modèle choisi dans les menus (au premier rendu), mis à
+    // jour ensuite par les événements 'llm' du flux (fallback / retour).
+    return (provider && model) ? fmtWho(provider, model) : '';
+  });
   const [queue, setQueue] = useState<string[]>([]);   // messages en attente (busy)
   const abortRef = useRef<{ abort: () => void } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
