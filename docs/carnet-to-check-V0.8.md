@@ -4,6 +4,9 @@
 de côté, et les prochains chantiers. Les n° de commit pointent vers
 `test-npm-dev`.
 
+> **Idées futures (non implémentées)** : voir `docs/carnet-d-idees.md`
+> (ex. budgets tri-dimensionnels thinking_power/money/token_volume).
+
 ## 1. Ce qui a été fait (par thème)
 
 ### 1.1 Le refactor graphe → modèle token (le tournant)
