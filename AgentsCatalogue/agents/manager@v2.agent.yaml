@@ -23,7 +23,7 @@ personality:
 bundles:
   - manager
 entrypoints:
-  start:
+  main:
     steps:
       - id: execute
         type: call

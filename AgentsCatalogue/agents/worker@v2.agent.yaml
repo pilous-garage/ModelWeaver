@@ -23,7 +23,7 @@ bundles:
   - dev
   - manager
 entrypoints:
-  start:
+  main:
     steps:
       - id: init
         type: set_variable
