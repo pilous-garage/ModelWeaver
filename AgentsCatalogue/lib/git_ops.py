@@ -249,7 +249,16 @@ def git_checkout(inputs: dict, home: str) -> dict:
     name = inputs.get("name", "")
     if not name:
         return {"stdout": "", "stderr": "name requis", "exit_code": -1}
-    return _git_run(root, ["checkout", name])
+    # Nom vide → master (branche par défaut du clone). Accepte branche, branche
+    # distante (origin/x) et SHA de commit (detached HEAD).
+    r = _git_run(root, ["checkout", name])
+    if r["exit_code"] != 0:
+        # Branche absente localement → tenter depuis la distante (si le repo
+        # distant est disponible), sinon laisser l'erreur remonter.
+        r2 = _git_run(root, ["checkout", "-B", name, f"origin/{name}"])
+        if r2["exit_code"] == 0:
+            return r2
+    return r
 
 
 def git_commit(inputs: dict, home: str) -> dict:
@@ -476,9 +485,135 @@ def git_push_remote(inputs: dict, home: str) -> dict:
     return _bare("push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
 
 
+def end_exec(inputs: dict, home: str) -> dict:
+    """TERMINE l'exécution d'une tâche de code : vérifie que le travail est
+    réel et non-destructif, committe, pousse sur le repo central local, et
+    marque la tâche done. Appelé par le LLM quand il estime avoir fini (tool
+    end_exec) — TOUTE la mécanique est automatique, le LLM n'a rien à coder.
+
+    Gardes :
+      1. Diff NON VIDE : refus si aucun changement vs le commit de base
+         (base_commit de la tâche, sinon HEAD d'entrée, sinon master).
+      2. Diff NON DESTRUCTIF : refus si trop de fichiers supprimés/renommés
+         (seuil ~30% des fichiers modifiés) — un LLM qui "supprime la moitié
+         des fichiers" ne doit PAS pouvoir livrer.
+
+    inputs :
+      - project_id : repo central local
+      - agent_id   : agent propriétaire du clone
+      - task_id / workspace_id : pour marquer la tâche done
+      - base_commit : point de départ du diff (vide → HEAD d'entrée)
+      - branch      : branche cible (vide → branche courante du clone)
+    """
+    pid = inputs.get("project_id", "")
+    aid = inputs.get("agent_id", "")
+    if not pid or not aid:
+        return {"ok": False, "error": "project_id et agent_id requis"}
+    root, err = _clone_or_err({"project_id": pid, "agent_id": aid})
+    if err:
+        return err
+
+    # 0) Déterminer la branche cible (courante si non précisée)
+    branch = inputs.get("branch", "")
+    cur = _git_run(root, ["branch", "--show-current"])
+    branch = branch or (cur.get("stdout", "").strip() or "master")
+
+    # 1) Point de départ du diff : base_commit, sinon HEAD d'entrée (enregistré
+    #    par le FSM dans une variable), sinon HEAD courant.
+    base = (inputs.get("base_commit") or "").strip()
+    if not base:
+        head0 = (inputs.get("head_at_start") or "").strip()
+        if head0:
+            base = head0
+    if not base:
+        r = _git_run(root, ["rev-parse", "-q", "HEAD"])
+        base = r.get("stdout", "").strip() or ""
+
+    # 2) Stage + diff vs base
+    _git_identity(root, aid)
+    _git_add_safe(root)
+    diff = _git_run(root, ["diff", "--cached", "--stat", base] if base
+                    else ["diff", "--cached", "--stat"])
+    if diff.get("exit_code") != 0:
+        return {"ok": False, "error": f"diff vs base impossible: {diff.get('stderr','')[:200]}"}
+    stat = diff.get("stdout", "")
+    if not stat.strip():
+        return {"ok": False,
+                "error": "aucun changement vs base — travail non livré "
+                         "(écris réellement le code avant end_exec)"}
+
+    # 3) Garde NON-DESTRUCTIF : ratio fichiers supprimés / fichiers modifiés
+    del_stat = _git_run(root, ["diff", "--cached", "--name-status", base] if base
+                        else ["diff", "--cached", "--name-status"])
+    del_names = []
+    mod_names = []
+    for line in (del_stat.get("stdout", "") or "").splitlines():
+        parts = line.split("\t")
+        status = (parts[0] or "").strip() if parts else ""
+        fname = parts[-1].strip() if parts else ""
+        if status.startswith("D"):
+            del_names.append(fname)
+        elif fname and status not in ("A",):
+            mod_names.append(fname)
+    total = len(del_names) + len(mod_names)
+    if total > 0 and len(del_names) / total >= 0.30:
+        return {"ok": False,
+                "error": (f"diff DESTRUCTIF refusé : {len(del_names)}/{total} "
+                          f"fichiers supprimés ({', '.join(del_names[:8])}…). "
+                          f"Restaure les fichiers avant end_exec.")}
+
+    # 4) Commit + push sur le repo central LOCAL (jamais de distant ici : les
+    #    échanges avec le remote réel sont gérés par le team leader).
+    commit_msg = inputs.get("commit_message", "") or "task done"
+    cr = _git_run(root, ["commit", "-q", "-m", commit_msg])
+    if cr.get("exit_code") != 0:
+        # Rien à committer ? la garde diff vide l'aurait déjà refusé.
+        return {"ok": False, "error": f"commit échoué: {cr.get('stderr','')[:200]}"}
+    commit_hash = (cr.get("stdout") or "").strip()
+    try:
+        r = _git_run(root, ["rev-parse", "HEAD"])
+        commit_hash = r.get("stdout", "").strip() or commit_hash
+    except Exception:
+        pass
+    # Push sur le bare local (origin). Pull --rebase best-effort d'abord.
+    try:
+        _git_run(root, ["pull", "-q", "--rebase", "origin"])
+    except Exception:
+        pass
+    pr = _git_run(root, ["push", "-u", "origin", branch])
+    if pr.get("exit_code") != 0:
+        return {"ok": True, "partial": True, "commit_hash": commit_hash,
+                "warning": f"commit fait mais push central échoué: {pr.get('stderr','')[:200]}",
+                "branch": branch}
+
+    # 5) Marquer la tâche done (branch + commit_hash) — la mécanique de la
+    #    lib workspace le fait ; on propage le résultat.
+    out = {"ok": True, "commit_hash": commit_hash, "branch": branch,
+           "files_modified": mod_names, "files_deleted": del_names,
+           "stdout": f"committed {commit_hash} on {branch}"}
+    try:
+        from AgentsCatalogue.lib.workspacedb.task import done as _task_done
+        task_id = inputs.get("task_id")
+        if task_id is not None:
+            d = _task_done({
+                "workspace_id": inputs.get("workspace_id", ""),
+                "task_id": task_id,
+                "branch": branch,
+                "commit_hash": commit_hash,
+            }, home)
+            if d.get("review"):
+                out["review"] = True
+                out["note"] = d.get("note", "")
+            elif not d.get("ok"):
+                out["warning"] = d.get("error", "task_done a échoué")
+    except Exception as e:
+        out["warning"] = f"task_done échoué: {e}"
+    return out
+
+
 __skills__ = [
     "repo_init", "repo_list", "git_clone", "git_branch", "git_checkout",
     "git_commit", "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
-    "git_push_remote",
+    "git_push_remote", "end_exec",
 ]

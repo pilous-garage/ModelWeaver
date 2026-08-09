@@ -1,0 +1,34 @@
+name: workflow/check_error_type@v1
+category: workflow
+description: Classifie une erreur LLM (message brut du FSM) via LLMManager.classify_error.
+  Expose category (auth/rate_limit/context/server/timeout/unknown) + limit_type
+  (daily_quota/rpm/tokens/quota) + une action recommandée (retry_short/retry_long/
+  blacklist_provider/switch_model/context_reduce/abort) pour que le FSM branche.
+inputs:
+  error:
+    type: string
+    required: false
+    default: ""
+    description: "Message d'erreur brut (ex. résolution de {{_last_call_error}})."
+  provider_ref:
+    type: string
+    required: false
+    default: ""
+  model_ref:
+    type: string
+    required: false
+    default: ""
+outputs:
+  ok:
+    type: boolean
+  category:
+    type: string
+  limit_type:
+    type: string
+  action:
+    type: string
+  message:
+    type: string
+implementation:
+  type: python
+  function: workflow.check_error_type.exec

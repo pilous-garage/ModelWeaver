@@ -1,0 +1,10 @@
+name: workspace_verdict
+description: "Outils du verdict greedy : décider done/continue/error/to_difficult après une tentative d'exécution à max_loops."
+permissions:
+  - tool: "*"
+    action: allow
+skills:
+  - workspace/task_verdict@v1
+  - workspace/task_get@v1
+  - workspace/task_done@v1
+  - git/end_exec@v1

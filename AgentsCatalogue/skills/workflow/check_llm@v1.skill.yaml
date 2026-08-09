@@ -1,0 +1,28 @@
+name: workflow/check_llm@v1
+category: workflow
+description: Vérifie si un LLM est déjà assigné à l'agent (variables _llm_provider/_llm_model).
+  Retourne ok=True + provider_ref/model_ref si disponible, ok=False sinon (le FSM
+  branche alors vers ask_llm). Ne fait AUCUN appel LLM ni allocation.
+inputs:
+  provider_ref:
+    type: string
+    required: false
+    default: ""
+    description: "Résolution de {{_llm_provider}} — vide/placeholder = pas de LLM assigné."
+  model_ref:
+    type: string
+    required: false
+    default: ""
+    description: "Résolution de {{_llm_model}}."
+outputs:
+  ok:
+    type: boolean
+  has_llm:
+    type: boolean
+  provider_ref:
+    type: string
+  model_ref:
+    type: string
+implementation:
+  type: python
+  function: workflow.check_llm.exec

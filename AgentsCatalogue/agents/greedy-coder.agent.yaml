@@ -1,13 +1,20 @@
 name: greedy-coder
 role: codeur
-description: Codeur glouton — pioche les tâches de codage du workspace
-  (role_required=coder_junior|coder_senior), les implémente dans son workspace,
-  commit et marque done.
+description: "Codeur glouton intelligent — FSM: pick (pioche la tâche) → clone (repo
+  de la tâche) → checkout (branche/commit) → allocation LLM (check_llm/ask_llm) →
+  boucle de travail (llm_call avec tools, end_exec quand fini) → task done. La
+  mécanique (pick/clone/checkout/commit/done) est automatique, le LLM ne fait que
+  le travail intellectuel."
 personality:
   tone: ''
-  system_prompt: 'Tu es un codeur glouton dans un swarm parallèle. Boucle : pioche
-    une tâche de code, clone le projet, implémente la description dans ton
-    workspace, commit avec git/lite, marque la tâche done. Réponds en français.'
+  system_prompt: "Tu es un codeur dans un swarm parallèle. Tu implémentes la
+    description de ta tâche dans le clone git de ton workspace. Règles :
+    1. Lis la description de la tâche et les fichiers du projet.
+    2. Écris réellement le code (file_write_file_v1), vérifie la syntaxe.
+    3. Quand tu estimes avoir fini, appelle le tool end_exec — TOUTE la
+       mécanique (git add, commit, push, marquer done) est automatique.
+    4. Ne supprime jamais de fichiers existants sans raison.
+    Réponds en français, code en anglais."
 bundles:
   - dev
 model_requirements:
@@ -23,35 +30,219 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
+    max_iterations: 60
     steps:
-    - id: start
+    # ── 1. PICK : pioche une tâche (AUTO, pas de LLM) ──
+    - id: pick
       type: call
-      fn: workflow/autonomous@v1
+      fn: workspace/task_claim_next@v1
       inputs:
-        request: "Surveille le workspace {{workspace_id}} et exécute les tâches de code"
-        bundles: ["dev"]
         workspace_id: "{{workspace_id}}"
-        context: |
-          Tu es un codeur du chat de dev. Boucle gloutonne :
-          1. Clone d'abord le projet : git/lite@v1 action=init
-             (le code est alors dans ton workspace agents/{id}/workspace).
-          2. Pioche une tâche role_required=coder_junior OU coder_senior
-             avec workspace/task_claim_next@v1.
-          3. Lis la description, puis travaille DANS ton workspace
-             agents/{id}/workspace/ : lis les fichiers (read_file_v1),
-             implémente (write_file_v1), utilise le shell UNIQUEMENT dans
-             ce dossier (exec_v1 avec cd agents/{id}/workspace).
-             NE FAIS PAS exec dans shared/ ni dans /home/pierreloup2.
-          4. Commit avec git/lite@v1 action=commit, puis marque la tâche
-             done avec workspace/task_done@v1 (branch + commit_hash).
-          5. Reprends à l'étape 1.
-          IMPORTANT : après avoir lu l'essentiel, ÉCRIS le livrable
-          (write_file_v1) — ne te contente pas de lire en boucle.
-          Réponds avec le résumé + le commit.
-        max_loops: 100
+        role_required: "{{role_required}}"
       capture:
-        stdout: result
-      next: end
+        task: task
+      on_error: sleep
+      next: clone
+
+    # ── 2. CLONE : le repo de la tâche (AUTO) ──
+    - id: clone
+      type: call
+      fn: git/git_clone@v1
+      inputs:
+        project_id: "{{task.repo}}"
+        agent_id: "{{agent_id}}"
+      on_error: fail
+      next: checkout
+
+    # ── 3. CHECKOUT : branche/commit de la tâche (AUTO) ──
+    - id: checkout
+      type: call
+      fn: git/git_checkout@v1
+      inputs:
+        project_id: "{{task.repo}}"
+        agent_id: "{{agent_id}}"
+        name: "{{task.branch}}"
+      next: check_llm
+
+    # ── 4. CHECK_LLM : LLM déjà assigné ? (AUTO) ──
+    - id: check_llm
+      type: call
+      fn: workflow/check_llm@v1
+      inputs:
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        has_llm: has_llm
+      on_error: ask_llm
+      next: exec_loop
+
+    # ── 5. ASK_LLM : allocation (AUTO) ──
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: coding_high
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: llm_error
+      next: exec_loop
+
+    # ── 5b. LLM_ERROR : classifier et brancher (AUTO) ──
+    - id: llm_error
+      type: call
+      fn: workflow/check_error_type@v1
+      inputs:
+        error: "{{_last_call_error}}"
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        action: err_action
+      next: err_branch
+    - id: err_branch
+      type: switch
+      variable: "{{err_action}}"
+      conditions:
+      - operator: EQUALS
+        value: "blacklist_provider"
+        next: fail
+      - operator: EQUALS
+        value: "context_reduce"
+        next: ask_llm
+      - operator: EQUALS
+        value: "switch_model"
+        next: ask_llm
+      default: sleep
+
+    # ── 6. EXEC_LOOP : boucle de travail (LE SEUL LLM) ──
+    - id: exec_loop
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        # Le LLM code ; il appelle end_exec (tool des bundles dev) quand fini.
+        - id: do_work
+          type: llm_call
+          skill_prompt: |
+            Tâche à implémenter :
+            {{task.description}}
+
+            Projet : {{task.repo}} (clone dans ton workspace agents/{{agent_id}}/workspace/{{task.repo}})
+            Branche cible : {{task.branch}}
+
+            Implémente la tâche. Quand tu as fini (code écrit, syntaxe vérifiée),
+            appelle IMMÉDIATEMENT le tool end_exec avec task_id={{task.task_id}},
+            workspace_id={{workspace_id}}, project_id={{task.repo}},
+            agent_id={{agent_id}}.
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["dev"]
+          max_tokens: 4096
+          temperature: 0.3
+          output_capture: work_out
+          next: check_done
+        # Vérifier l'état réel de la tâche (AUTO)
+        - id: check_done
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide
+        # done/review → sortir de la boucle ; sinon → verdict
+        - id: decide
+          type: switch
+          variable: "{{task_now.status}}"
+          conditions:
+          - operator: EQUALS
+            value: "done"
+            next: break_loop
+          - operator: EQUALS
+            value: "review"
+            next: break_loop
+          - operator: EQUALS
+            value: "running"
+            next: ask_verdict
+          default: ask_verdict
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        # Verdict du LLM : done | continue | error | to_difficult (tool)
+        - id: ask_verdict
+          type: llm_call
+          skill_prompt: |
+            Tu as travaillé sur la tâche {{task.task_id}} sans pouvoir la marquer
+            done (end_exec a refusé, ou l'état n'est pas done/review).
+            Raison de l'échec éventuelle : {{work_out}}
+
+            Décide le verdict en appelant le tool task_verdict avec :
+            verdict=done | continue | error | to_difficult
+            task_id={{task.task_id}}, workspace_id={{workspace_id}},
+            role_required={{role_required}}.
+            - done : la tâche est réellement faite (utilise end_exec d'abord).
+            - continue : continue à travailler, je relance la boucle.
+            - error : impossible, signale l'erreur.
+            - to_difficult : trop dur — bump de difficulté automatique (ou
+              re-découpe si déjà au plafond).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["workspace_verdict"]
+          max_tokens: 1024
+          temperature: 0.2
+          output_capture: verdict_out
+          next: check_after_verdict
+        - id: check_after_verdict
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_verdict
+        - id: decide_after_verdict
+          type: switch
+          variable: "{{task_now.status}}"
+          conditions:
+          - operator: EQUALS
+            value: "done"
+            next: break_loop
+          - operator: EQUALS
+            value: "review"
+            next: break_loop
+          - operator: EQUALS
+            value: "pending"
+            next: break_loop
+          default: continue_loop
+        - id: continue_loop
+          type: continue
+
+    # ── 7. FIN : la tâche est done → terminer ──
     - id: end
       type: end
       status: SUCCESS
+
+    # ── 8. SLEEP : rien à piocher (AUTO) ──
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+      next: end
+
+    # ── 9. FAIL ──
+    - id: fail
+      type: end
+      status: FAILED

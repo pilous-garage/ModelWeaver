@@ -1,0 +1,40 @@
+name: workflow/ask_llm@v1
+category: workflow
+description: Alloue un LLM à l'agent via LLMManager.assign_llm (use_case coding par
+  défaut → exige function_calling, donc agentic). Retourne ok=True + provider_ref/
+  model_ref, ou ok=False si aucun LLM dispo (le FSM branche vers check_error_type).
+inputs:
+  use_case:
+    type: string
+    required: false
+    default: coding
+    description: "coding (agentic), coding_high (agentic + score élevé), chat, writing…"
+  agent_id:
+    type: string
+    required: false
+    default: ""
+    description: "Agent propriétaire (pour le scoring / historique)."
+  min_window:
+    type: integer
+    required: false
+    default: 0
+    description: "Taille minimale de fenêtre de contexte (tokens)."
+  min_score:
+    type: number
+    required: false
+    default: 0
+    description: "Score benchmark minimum exigé (0 = pas de contrainte)."
+outputs:
+  ok:
+    type: boolean
+  provider_ref:
+    type: string
+  model_ref:
+    type: string
+  use_case:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: workflow.ask_llm.exec

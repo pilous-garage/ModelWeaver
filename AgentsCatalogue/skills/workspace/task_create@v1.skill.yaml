@@ -29,6 +29,21 @@ inputs:
     required: false
     default: ""
     description: "coder_senior / coder_mid / coder_junior / tester / reviewer / merger"
+  repo:
+    type: string
+    required: false
+    default: ""
+    description: "Dépôt local ciblé par la tâche (project_id git). Vide = repo par défaut de la team."
+  branch:
+    type: string
+    required: false
+    default: ""
+    description: "Branche ciblée par la tâche. Vide = branche par défaut du repo."
+  base_commit:
+    type: string
+    required: false
+    default: ""
+    description: "Commit de base (optionnel) — point de départ du diff non-destructif."
 outputs:
   ok:
     type: boolean

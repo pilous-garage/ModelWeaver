@@ -27,8 +27,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     status       TEXT DEFAULT 'pending',
     priority     INTEGER DEFAULT 0,
     assigned_to  TEXT DEFAULT '',
+    -- Dépôt + branche ciblés par la tâche (composition : une tâche pointe sur
+    -- un repo local + une branche (ou un commit). Vide = repo/HEAD par défaut.
+    repo         TEXT DEFAULT '',
     branch       TEXT DEFAULT '',
     commit_hash  TEXT DEFAULT '',
+    base_commit  TEXT DEFAULT '',
     parent_id    INTEGER,
     -- Swarm glouton : difficulté de la tâche et rôle requis pour la traiter.
     difficulty   TEXT DEFAULT 'medium',   -- easy / medium / hard / expert

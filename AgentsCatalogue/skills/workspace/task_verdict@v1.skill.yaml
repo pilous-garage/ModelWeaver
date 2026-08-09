@@ -1,0 +1,51 @@
+name: workspace/task_verdict@v1
+category: workspace
+description: >
+  VERDICT du LLM après une tentative d'exécution à max_loops. Décide si la tâche
+  est faite, à continuer, en erreur, ou trop difficile.
+    - done          : marque la tâche done (via task_done, mécanique standard)
+    - continue      : à continuer (le FSM relance la boucle)
+    - error         : la tâche reste en cours, signal d'erreur pour l'équipe
+    - to_difficult  : bump de difficulté (easy→medium→hard→expert) si le niveau
+                      max de la team le permet, sinon demande une re-découpe
+                      (ask_analysis_and_split).
+inputs:
+  verdict:
+    type: string
+    required: true
+    description: "done | continue | error | to_difficult"
+  reason:
+    type: string
+    required: false
+    default: ""
+    description: "Justification du verdict (traçabilité)."
+  task_id:
+    type: integer
+    required: false
+  workspace_id:
+    type: string
+    required: false
+  role_required:
+    type: string
+    required: false
+    description: "Rôle de la tâche (pour le plafond de difficulté, ex. coder_senior)."
+  branch:
+    type: string
+    required: false
+  commit_hash:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  verdict:
+    type: string
+  difficulty_bumped:
+    type: boolean
+  ask_analysis:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.verdict

@@ -159,14 +159,17 @@ class TaskRepository:
     def create(self, title: str, description: str = "",
                priority: int = 0, parent_id: int = None,
                difficulty: str = "medium", role_required: str = "",
-               team_id: int = -1) -> Dict[str, Any]:
+               team_id: int = -1, repo: str = "",
+               branch: str = "", base_commit: str = "") -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
-                               parent_id, difficulty, role_required, team_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               parent_id, difficulty, role_required, team_id,
+                               repo, branch, base_commit, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, title, description, priority, parent_id,
-              difficulty, role_required, team_id, now, now))
+              difficulty, role_required, team_id, repo, branch, base_commit,
+              now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -490,6 +493,9 @@ class WorkspaceDB:
             _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
             _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
+            # V0.9.x : une tâche pointe sur un repo local + branche (ou commit).
+            _add_column_if_missing(self.conn, "tasks", "repo", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "base_commit", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
             # V0.8.9 : lien issue → workspace d'analyse (le workspace où les
             # tasks de découpage vivent). Permet de marquer l'issue 'done'

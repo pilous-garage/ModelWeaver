@@ -72,6 +72,8 @@ skills:
   - workspace/task_done@v1
   - workspace/task_list@v1
   - workspace/task_create@v1
+  - workspace/task_verdict@v1
+  - git/end_exec@v1
   - comm/ask_authorisation@v1
   - team/team_members@v1
   - team/agent_status@v1

@@ -17,13 +17,17 @@ def create(inputs: dict, home: str) -> dict:
     difficulty = inputs.get("difficulty", "medium")
     role_required = inputs.get("role_required", "")
     team_id = int(inputs.get("team_id", -1))
+    repo = inputs.get("repo", "")
+    branch = inputs.get("branch", "")
+    base_commit = inputs.get("base_commit", "")
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
     try:
         db, scope = _scope(workspace_id)
         task = scope.tasks.create(title, description, priority, parent_id,
                                   difficulty=difficulty, role_required=role_required,
-                                  team_id=team_id)
+                                  team_id=team_id, repo=repo, branch=branch,
+                                  base_commit=base_commit)
         db.close()
         return {"ok": True, "task": task}
     except Exception as e:
@@ -202,6 +206,75 @@ def claim_next(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def verdict(inputs: dict, home: str) -> dict:
+    """VERDICT du LLM après une tentative : done | continue | error | to_difficult.
+
+    - done          → task_done (branch/commit si fournis).
+    - continue      → rien, le FSM relance la boucle.
+    - error         → tâche reste en cours, signal pour l'équipe.
+    - to_difficult  → bump difficulty (easy→medium→hard→expert) si le niveau
+                      max de la team le permet ; sinon ask_analysis_and_split.
+    """
+    verdict = (inputs.get("verdict") or "").strip().lower()
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    reason = (inputs.get("reason") or "").strip()
+    if verdict not in ("done", "continue", "error", "to_difficult"):
+        return {"ok": False, "error": "verdict invalide (done|continue|error|to_difficult)"}
+    if verdict == "continue":
+        return {"ok": True, "verdict": verdict, "reason": reason}
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis pour ce verdict"}
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if verdict == "done":
+            result = done(inputs, home)
+            db.close()
+            if not result.get("ok"):
+                return result
+            result["verdict"] = "done"
+            result["reason"] = reason
+            return result
+        if verdict == "error":
+            # Signal d'erreur pour l'équipe : la tâche reste en cours (pas
+            # abandonnée, un membre plus compétent peut la reprendre).
+            db.close()
+            return {"ok": True, "verdict": "error", "reason": reason,
+                    "note": "tâche laissée en cours — signal pour l'équipe"}
+        # to_difficult : bump de difficulté, plafonné au niveau max du rôle.
+        difficulty = (task.get("difficulty") or "medium") if task else "medium"
+        role = (task.get("role_required") or inputs.get("role_required") or "")
+        _DIFF = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}
+        cur_rank = _DIFF.get(difficulty, 1)
+        max_rank = 3
+        # Plafond : le niveau max de la team pour ce rôle (senior > mid > junior).
+        if role and "_" in role:
+            _lvl = {"junior": 0, "mid": 1, "senior": 2}
+            level = role.rsplit("_", 1)[-1]
+            lvl_rank = _lvl.get(level)
+            if lvl_rank is not None:
+                # senior → max_rank expert (niveau le plus haut gérable)
+                max_rank = min(3, 1 + lvl_rank)
+        if cur_rank >= max_rank:
+            db.close()
+            return {"ok": True, "verdict": "to_difficult", "difficulty_bumped": False,
+                    "ask_analysis": True,
+                    "reason": reason,
+                    "note": (f"difficulté déjà au plafond ({difficulty}, max {role}) "
+                             "→ re-découpe demandée (ask_analysis_and_split)")}
+        next_diff = [k for k, r in sorted(_DIFF.items(), key=lambda x: x[1])
+                     if r > cur_rank]
+        new_diff = next_diff[0] if next_diff else difficulty
+        scope.tasks.update(int(task_id), difficulty=new_diff)
+        db.close()
+        return {"ok": True, "verdict": "to_difficult", "difficulty_bumped": True,
+                "ask_analysis": False, "new_difficulty": new_diff,
+                "reason": reason}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def add_file(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
@@ -248,4 +321,4 @@ def list_tasks(inputs: dict, home: str) -> dict:
 
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
-              "get_files"]
+              "get_files", "verdict"]

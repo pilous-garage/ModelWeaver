@@ -1,0 +1,52 @@
+name: git/end_exec@v1
+category: git
+description: >
+  TERMINE l'exécution d'une tâche de code — appelé par le LLM quand il estime
+  avoir fini. Vérifie que le travail est RÉEL (diff non vide vs le commit de
+  base) et NON-DESTRUCTIF (pas de suppression massive), committe, pousse sur le
+  repo central local, puis marque la tâche done (branch + commit_hash).
+  Toute la mécanique est automatique.
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: "Dépôt central local ciblé (project_id git)."
+  agent_id:
+    type: string
+    required: false
+    description: "Agent propriétaire du clone (injecté automatiquement)."
+  task_id:
+    type: integer
+    required: false
+    description: "Tâche à marquer done une fois le travail commité."
+  workspace_id:
+    type: string
+    required: false
+  branch:
+    type: string
+    required: false
+    description: "Branche cible (vide = branche courante du clone)."
+  base_commit:
+    type: string
+    required: false
+    description: "Commit de départ du diff (vide = HEAD d'entrée / master)."
+  commit_message:
+    type: string
+    required: false
+    default: task done
+outputs:
+  ok:
+    type: boolean
+  commit_hash:
+    type: string
+  branch:
+    type: string
+  review:
+    type: boolean
+  note:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: git.end_exec
