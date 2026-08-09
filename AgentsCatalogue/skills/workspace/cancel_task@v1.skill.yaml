@@ -1,0 +1,42 @@
+name: workspace/cancel_task@v1
+category: workspace
+description: >
+  ANNULE une tâche + son groupe (doux, ne supprime RIEN). Arrête les agents du
+  groupe, protège le travail sur une branche canceled_<task_id> du repo central
+  local, reset le clone au commit_start, et pose le flag cancelled (pas un
+  statut — le code reste, on peut revenir). Les tâches primordiales racines ne
+  sont pas annulées.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  project_id:
+    type: string
+    required: false
+    description: "Repo central local (pour la branche canceled_<id>)."
+  agent_id:
+    type: string
+    required: false
+    description: "Agent dont le clone est à reseter au commit_start."
+  reason:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  cancelled:
+    type: array
+  count:
+    type: integer
+  branch:
+    type: string
+  stopped_agents:
+    type: array
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.cancel_task

@@ -1,4 +1,4 @@
-"""Task management — create, list, claim, complete."""
+"""Task management — create, list, claim, complete, lifecycle (clear/cancel)."""
 
 from modules.sql.workspace import WorkspaceDB
 
@@ -6,6 +6,17 @@ from modules.sql.workspace import WorkspaceDB
 def _scope(workspace_id: str):
     db = WorkspaceDB()
     return db, db.for_workspace(workspace_id)
+
+
+def _git_quiet(clone: str, args) -> str:
+    """Exécute git dans le clone, retourne la sortie stdout (best-effort)."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", clone] + list(args),
+                           capture_output=True, text=True, timeout=15)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def create(inputs: dict, home: str) -> dict:
@@ -19,6 +30,9 @@ def create(inputs: dict, home: str) -> dict:
     repo = inputs.get("repo", "")
     branch = inputs.get("branch", "")
     base_commit = inputs.get("base_commit", "")
+    commit_start = inputs.get("commit_start", "")
+    branch_start = inputs.get("branch_start", "")
+    primordial = 1 if inputs.get("primordial") else 0
     parents = inputs.get("parents", [])  # [{task_id, required_state}]
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
@@ -27,7 +41,10 @@ def create(inputs: dict, home: str) -> dict:
         task = scope.tasks.create(title, description, priority,
                                   difficulty=difficulty, task_type=task_type,
                                   team_id=team_id, repo=repo, branch=branch,
-                                  base_commit=base_commit)
+                                  base_commit=base_commit,
+                                  commit_start=commit_start,
+                                  branch_start=branch_start,
+                                  primordial=primordial)
         for dep in parents or []:
             pid = dep.get("task_id") if isinstance(dep, dict) else dep
             rs = dep.get("required_state", "done") if isinstance(dep, dict) else "done"
@@ -44,7 +61,7 @@ def create_token(inputs: dict, home: str) -> dict:
 
     inputs :
       - task : {title, description, task_type, difficulty, priority, repo,
-                branch, base_commit}
+                branch, base_commit, commit_start, branch_start, primordial}
       - parents : [{task_id, required_state}] (l'enfant n'est piochable que
         si tous ses parents sont à l'état requis)
       - workspace_id, team_id
@@ -65,6 +82,9 @@ def create_token(inputs: dict, home: str) -> dict:
         "repo": task.get("repo", ""),
         "branch": task.get("branch", ""),
         "base_commit": task.get("base_commit", ""),
+        "commit_start": task.get("commit_start", ""),
+        "branch_start": task.get("branch_start", ""),
+        "primordial": task.get("primordial", inputs.get("primordial", 0)),
         "parents": inputs.get("parents", []),
     }, home)
 
@@ -107,6 +127,23 @@ def pick_token(inputs: dict, home: str) -> dict:
         db, scope = _scope(workspace_id)
         task = scope.tasks.claim_next(task_types, max_diff, team_id=team_id,
                                       assigned_to=agent_id)
+        if task:
+            # 1er picker : déduire commit_start/branch_start depuis le clone si
+            # la tâche ne les avait pas (elle pointe un repo/branche cibles).
+            if not task.get("commit_start") or not task.get("branch_start"):
+                _repo = task.get("repo") or ""
+                _clone = str(home) + "/workspace/" + str(_repo) if _repo else ""
+                _cs, _bs = task.get("commit_start"), task.get("branch_start")
+                if _clone:
+                    import os
+                    if os.path.isdir(_clone + "/.git"):
+                        _cs = _cs or _git_quiet(_clone, ["rev-parse", "HEAD"])
+                        _bs = _bs or _git_quiet(_clone, ["branch", "--show-current"])
+                if _cs != task.get("commit_start") or _bs != task.get("branch_start"):
+                    scope.tasks.modify(task["task_id"],
+                                       commit_start=_cs or task.get("commit_start"),
+                                       branch_start=_bs or task.get("branch_start"))
+                    task = scope.tasks.get(task["task_id"])
         db.close()
         if not task:
             return {"ok": False,
@@ -158,7 +195,172 @@ def modify_token(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def list_pending(inputs: dict, home: str) -> dict:
+def _group_of(scope, task_id: int, include_self_primordial: bool = True):
+    """Groupe de la tâche pour clear/cancel = la tâche + ses ANCÊTRES
+    secondaires (les travaux splittés B,C dont un merge_split dépend).
+    Les primordiales (racines) ne sont jamais incluses sauf si
+    include_self_primordial et que la tâche ciblée est elle-même la racine."""
+    task = scope.tasks.get(task_id)
+    group = []
+    # Ancêtres (travaux splittés) — remontée récursive, racine d'abord.
+    for anc in scope.tasks.get_ancestors(task_id):
+        row = scope.tasks.get(anc)
+        if row and not row.get("primordial"):
+            group.append(anc)
+    # La tâche elle-même : incluse si secondaire, ou si c'est la racine ciblée.
+    if task and (not task.get("primordial") or include_self_primordial):
+        if task_id not in group:
+            group.append(task_id)
+    return group
+
+
+def clear_task(inputs: dict, home: str) -> dict:
+    """clear_task — supprime une tâche + son groupe (filiation).
+
+    GROUPE = la tâche + ses ANCÊTRES secondaires (les travaux splittés dont
+    un merge_split dépend). GARDE-FOUS :
+      1. Chaque membre du groupe doit être `done` (ou `cancelled`) ET tous
+         ses parents à l'état requis.
+      2. Ne pas clear si un membre est parent (ancêtre) d'une autre tâche
+         PRIMORDIALE (on ne détruit pas le travail d'autres groupes).
+      3. Les primordiales racines ne sont supprimées que si c'est la tâche
+         ciblée (le chat qui clôt sa mission).
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if not task:
+            db.close()
+            return {"ok": False, "error": "tâche introuvable"}
+        group = _group_of(scope, int(task_id))
+        # 1) Chaque membre done (ou cancelled) + parents à l'état requis.
+        for tid in group:
+            row = scope.tasks.get(tid)
+            if not row:
+                continue
+            if row.get("status") != "done" and not row.get("cancelled"):
+                db.close()
+                return {"ok": False,
+                        "error": f"tâche {tid} non terminée (status="
+                                 f"{row.get('status')}) — clear refusé"}
+            for p in scope.tasks.get_parents(tid):
+                if p.get("status") != p.get("required_state"):
+                    db.close()
+                    return {"ok": False,
+                            "error": f"parent de {tid} non à l'état requis — "
+                                     "clear refusé"}
+        # 2) Ne pas supprimer un membre qui est parent d'une AUTRE primordiale
+        #    hors du groupe.
+        group_set = set(group)
+        for tid in group:
+            for child in scope.tasks.get_children(tid):
+                cid = child["task_id"]
+                if cid not in group_set and child.get("primordial"):
+                    db.close()
+                    return {"ok": False,
+                            "error": f"tâche {tid} parent de la primordiale "
+                                     f"{cid} — clear refusé"}
+        # 3) Supprimer le groupe (dépendances, fichiers, tâches).
+        ph = ",".join("?" for _ in group)
+        for tid in group:
+            db.conn.execute("DELETE FROM task_dependencies WHERE task_id = ? "
+                            "OR parent_id = ?", (tid, tid))
+            db.conn.execute("DELETE FROM task_files WHERE task_id = ?", (tid,))
+        db.conn.execute(f"DELETE FROM tasks WHERE task_id IN ({ph})", group)
+        db.conn.commit()
+        db.close()
+        return {"ok": True, "deleted": group, "count": len(group)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def cancel_task(inputs: dict, home: str) -> dict:
+    """cancel_task — annule une tâche + son groupe (doux, ne supprime rien).
+
+    GROUPE = la tâche + ses ANCÊTRES secondaires (travaux splittés). Les
+    primordiales racines ne sont pas annulées (sauf la tâche ciblée si elle
+    est secondaire). Protège :
+      - branche `canceled_<task_id>` sur le repo central local (position
+        courante) pour ne pas perdre le code,
+      - reset du clone au commit_start,
+      - flag `cancelled` (pas un statut) sur le groupe — on peut revenir.
+
+    inputs : task_id, workspace_id, project_id (repo), agent_id (clone), reason
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    project_id = inputs.get("project_id", "")
+    agent_id = str(inputs.get("agent_id", "") or "")
+    reason = inputs.get("reason", "")
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    try:
+        import subprocess
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if not task:
+            db.close()
+            return {"ok": False, "error": "tâche introuvable"}
+        group = _group_of(scope, int(task_id))
+        if not group:
+            db.close()
+            return {"ok": False,
+                    "error": "aucune tâche secondaire à annuler — ciblez une "
+                             "tâche du groupe"}
+        # Arrêter les agents travaillant sur ces tâches (kill best-effort).
+        stopped = []
+        for tid in group:
+            t = scope.tasks.get(tid)
+            a = (t.get("assigned_to") or "") if t else ""
+            if a:
+                try:
+                    from services.api.afd_client import get_afd_client
+                    get_afd_client().call(a, "signal", type="kill")
+                    stopped.append(a)
+                except Exception:
+                    pass
+        # Protéger le travail : branche canceled_<id> sur le repo central.
+        _branch = f"canceled_{task_id}"
+        git_ok = False
+        if project_id:
+            try:
+                from AgentsCatalogue.lib.git_ops import _central_repo, Sandbox
+                bare = _central_repo(project_id)
+                _sb = Sandbox()
+                o, e, rc = _sb.run(
+                    ["git", "--git-dir", str(bare), "rev-parse", "HEAD"],
+                    shell=False, timeout=30)
+                if rc == 0:
+                    _sb.run(["git", "--git-dir", str(bare), "branch", "-f",
+                             _branch, o.strip()], shell=False, timeout=30)
+                    git_ok = True
+            except Exception:
+                git_ok = False
+        # Reset du clone au commit_start (retirer les changements du groupe).
+        clone = f"{home}/workspace/{project_id}" if project_id else ""
+        if clone and task.get("commit_start"):
+            try:
+                import os
+                if os.path.isdir(clone + "/.git"):
+                    subprocess.run(["git", "-C", clone, "reset", "-q", "--hard",
+                                    task.get("commit_start")],
+                                   capture_output=True, timeout=30)
+            except Exception:
+                pass
+        # Flag cancelled sur le groupe (le code reste, on peut revenir).
+        for tid in group:
+            scope.tasks.modify(tid, status="todo",
+                               clear_assigned=True, cancelled=1)
+        db.close()
+        return {"ok": True, "cancelled": group, "count": len(group),
+                "branch": _branch if git_ok else None,
+                "stopped_agents": stopped, "reason": reason}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
     workspace_id = inputs.get("workspace_id", "")
     if not workspace_id:
         return {"ok": False, "error": "workspace_id requis"}
@@ -446,4 +648,4 @@ def list_tasks(inputs: dict, home: str) -> dict:
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
               "get_files", "verdict", "create_token", "pick_token",
-              "modify_token"]
+              "modify_token", "clear_task", "cancel_task"]

@@ -211,16 +211,24 @@ class TaskRepository:
                priority: int = 0,
                difficulty: str = "medium", task_type: str = "",
                team_id: int = -1, repo: str = "",
-               branch: str = "", base_commit: str = "") -> Dict[str, Any]:
+               branch: str = "", base_commit: str = "",
+               commit_start: str = "", branch_start: str = "",
+               primordial: int = 0) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
+        # commit_start/branch_start : créés avec la tâche (le chat-pilot ou le
+        # 1er picker les déduisent du repo). Ils bornent le cancel (reset ici).
+        cs = commit_start or base_commit or ""
+        bs = branch_start or branch or ""
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
                                status, difficulty, task_type, team_id,
-                               repo, branch, base_commit, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)
+                               repo, branch, base_commit,
+                               commit_start, branch_start, primordial,
+                               created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, title, description, priority,
               difficulty, task_type, team_id, repo, branch, base_commit,
-              now, now))
+              cs, bs, primordial, now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -242,6 +250,54 @@ class TaskRepository:
             "SELECT d.parent_id, d.required_state, p.status, p.task_type, p.title "
             "FROM task_dependencies d JOIN tasks p ON p.task_id = d.parent_id "
             "WHERE d.task_id = ?", (task_id,)).fetchall())
+
+    def get_children(self, task_id: int) -> List[Dict[str, Any]]:
+        """Enfants de la tâche (ceux qui dépendent d'elle) — la filiation."""
+        return _rows(self.conn.execute(
+            "SELECT d.task_id, d.required_state, t.status, t.task_type, "
+            "t.title, t.primordial FROM task_dependencies d "
+            "JOIN tasks t ON t.task_id = d.task_id "
+            "WHERE d.parent_id = ?", (task_id,)).fetchall())
+
+    def get_descendants(self, task_id: int) -> List[int]:
+        """Tous les descendants (filiation récursive) de la tâche, ordre feuille
+        d'abord. La tâche elle-même n'est pas incluse."""
+        out: List[int] = []
+        seen = set()
+        stack = [child["task_id"] for child in self.get_children(task_id)]
+        while stack:
+            cid = stack.pop()
+            if cid in seen:
+                continue
+            seen.add(cid)
+            out.append(cid)
+            stack.extend(ch["task_id"] for ch in self.get_children(cid))
+        return out
+
+    def get_ancestors(self, task_id: int) -> List[int]:
+        """Tous les ANCÊTRES (parents, et leurs parents, récursivement) d'une
+        tâche. Pour un merge_split, ce sont les travaux splittés (B,C) dont il
+        dépend. Racine d'abord, la tâche elle-même n'est pas incluse."""
+        out: List[int] = []
+        seen = set()
+        stack = [p["parent_id"] for p in self.get_parents(task_id)]
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(pid)
+            stack.extend(p["parent_id"] for p in self.get_parents(pid))
+        return out
+
+    def get_ancestors_with_state(self, task_id: int) -> List[Dict[str, Any]]:
+        """Ancêtres de la tâche avec leur état + nature (primordiale ?)."""
+        out: List[Dict[str, Any]] = []
+        for pid in self.get_ancestors(task_id):
+            row = self.get(pid)
+            if row:
+                out.append(row)
+        return out
 
     def _parents_blocked_sql(self) -> str:
         """Sous-requête : la tâche t est BLOQUÉE si un de ses parents n'est pas
@@ -375,7 +431,9 @@ class TaskRepository:
     def modify(self, task_id: int, new_task_type: str = None,
                status: str = None, branch: str = "",
                commit_hash: str = "", assigned_to: str = None,
-               clear_assigned: bool = False) -> Optional[Dict[str, Any]]:
+               clear_assigned: bool = False,
+               commit_start: str = None, branch_start: str = None,
+               cancelled: int = None) -> Optional[Dict[str, Any]]:
         """Transition de token vers l'étape suivante du pipeline.
 
         Conceptuellement DÉTRUIT le token courant et CRÉE le token suivant
@@ -385,6 +443,8 @@ class TaskRepository:
 
         `assigned_to=None` : ne touche pas l'assignation. `clear_assigned=True` :
         libère le token (fin de traitement → nouveau token à piocher).
+        `commit_start`/`branch_start` : fixés par le 1er picker (déduits du
+        clone). `cancelled` : flag d'annulation (cancel doux).
         """
         sets = []
         vals = []
@@ -400,6 +460,22 @@ class TaskRepository:
         if commit_hash:
             sets.append("commit_hash = ?")
             vals.append(commit_hash)
+        # Tracking git : la transition met à jour la position courante.
+        if commit_hash:
+            sets.append("commit_current = ?")
+            vals.append(commit_hash)
+        if branch:
+            sets.append("branch_current = ?")
+            vals.append(branch)
+        if commit_start is not None:
+            sets.append("commit_start = ?")
+            vals.append(commit_start)
+        if branch_start is not None:
+            sets.append("branch_start = ?")
+            vals.append(branch_start)
+        if cancelled is not None:
+            sets.append("cancelled = ?")
+            vals.append(cancelled)
         if clear_assigned:
             sets.append("assigned_to = ''")
         elif assigned_to is not None:
@@ -627,6 +703,13 @@ class WorkspaceDB:
             # V0.9.x : une tâche pointe sur un repo local + branche (ou commit).
             _add_column_if_missing(self.conn, "tasks", "repo", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "base_commit", "TEXT DEFAULT ''")
+            # V0.11 : tracking git du cycle de vie (cancel/clear) + nature.
+            _add_column_if_missing(self.conn, "tasks", "commit_start", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "branch_start", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "commit_current", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "branch_current", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "primordial", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "tasks", "cancelled", "INTEGER DEFAULT 0")
             # V0.10 : rôle requis → type de tâche (étape du pipeline). Une
             # tâche 'coder_senior' devient task_type 'coding' (le niveau de
             # l'agent borne la difficulté piochable). Clean des données (rien

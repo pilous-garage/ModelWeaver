@@ -71,6 +71,8 @@ skills:
   - workspace/token_task_pick@v1
   - workspace/token_task_create@v1
   - workspace/token_task_modify@v1
+  - workspace/clear_task@v1
+  - workspace/cancel_task@v1
   - workspace/task_get@v1
   - workspace/task_done@v1
   - workspace/task_list@v1

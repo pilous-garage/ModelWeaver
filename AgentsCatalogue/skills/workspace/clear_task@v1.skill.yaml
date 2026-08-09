@@ -1,0 +1,27 @@
+name: workspace/clear_task@v1
+category: workspace
+description: >
+  SUPPRIME une tâche + son groupe (la tâche et ses ancêtres secondaires =
+  travaux splittés). GARDE-FOUS : chaque membre du groupe doit être done (ou
+  cancelled) et tous ses parents à l'état requis ; aucun membre ne doit être
+  parent d'une autre tâche primordiale. Utilisé par le chat-pilot pour libérer
+  l'espace quand sa mission est terminée.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  deleted:
+    type: array
+  count:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.clear_task

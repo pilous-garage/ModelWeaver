@@ -33,6 +33,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch       TEXT DEFAULT '',
     commit_hash  TEXT DEFAULT '',
     base_commit  TEXT DEFAULT '',
+    -- Tracking git du cycle de vie : commit_start/branch_start = point de
+    -- départ (créés avec la tâche, ou déduits par le 1er picker) ;
+    -- commit_current/branch_current = position git courante (mise à jour à
+    -- chaque étape du pipeline). Permet le cancel (reset au commit_start) et
+    -- le clear (vérifier le travail livré).
+    commit_start  TEXT DEFAULT '',
+    branch_start  TEXT DEFAULT '',
+    commit_current TEXT DEFAULT '',
+    branch_current TEXT DEFAULT '',
+    -- Primordiale : tâche créée directement par le chat/une issue (racine).
+    -- Secondaire : tout split/découpe par les agents. clear/cancel ne s'étend
+    -- JAMAIS au-delà des secondaires (un parent dans un autre groupe survive).
+    primordial   INTEGER DEFAULT 0,
+    -- Annulée : flag séparé (pas un statut). Une tâche cancelled peut rester
+    -- done (canceled done) — on ne supprime pas le code, on protège sur une
+    -- branche canceled_<id> et on reset au commit_start.
+    cancelled    INTEGER DEFAULT 0,
     -- Type de la tâche = étape du pipeline (coding, code_review, merger_code,
     -- testing_code, analysis, split, …). Un agent pioche les task_type qu'il
     -- sait traiter (liste passée au token_task_pick), avec un niveau max de

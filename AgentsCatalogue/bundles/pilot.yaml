@@ -28,6 +28,12 @@ skills:
   - workspace/task_create@v1
   - workspace/task_claim_next@v1
   - workspace/task_done@v1
+  # Tokens : le pilote crée des token_task primordiales, surveille son groupe
+  # et libère l'espace quand la mission est terminée.
+  - workspace/token_task_create@v1
+  - workspace/token_task_modify@v1
+  - workspace/clear_task@v1
+  - workspace/cancel_task@v1
   - workspace/chat_post@v1
   - workspace/chat_recent@v1
   - comm/ask_authorisation@v1

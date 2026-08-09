@@ -11,6 +11,15 @@ bundles:
   - pilot
   - manager
   - dev
+# Le pilote crée des TOKENS de tâches (token_task_create) pour déléguer au
+# swarm : il ne consomme aucun token (il orchestre, ne pioche pas), mais il
+# PRODUIT les tokens du pipeline (exploration, coding, testing, review, merge).
+generates:
+  - exploration
+  - coding
+  - testing_code
+  - code_review
+  - merger_code
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -61,14 +70,14 @@ entrypoints:
              (fichiers concernés, routes, patterns).
           2. Si ambigu : pose des questions (agent/ask_user@v1).
           3. Écris plan.md dans ton home ({{home}}/plan.md) : objectif,
-             fichiers à modifier, tâches à déléguer (explore_task pour
-             exploration, coding_task pour le code, test_task pour les
-             tests, review_task pour la relecture).
-          4. Découpe le plan en TÂCHES workspace avec
-             workspace/task_create@v1 (workspace {{workspace_id}},
-             role_required : explore|coder_junior|coder_senior|tester|
-             reviewer).
-          5. Réponds avec un résumé du plan + la liste des tâches créées.
+             fichiers à modifier, tokens à créer (exploration, coding,
+             testing_code, code_review, merger_code).
+          4. Découpe le plan en TOKENS primordiaux avec
+             workspace/token_task_create@v1 (workspace {{workspace_id}},
+             task_type : exploration|coding|testing_code|code_review|
+             merger_code, primordial=true). Les tokens sont indépendants
+             (pas de parents) — les agents gloutons les piocheront.
+          5. Réponds avec un résumé du plan + la liste des tokens créés.
           Le mode build (exécution) sera activé quand l'utilisateur
           approuvera le plan.
         max_loops: 100
@@ -84,18 +93,22 @@ entrypoints:
         workspace_id: "{{workspace_id}}"
         context: |
           Tu es le pilote du chat de développement (mode BUILD).
-          Le plan est approuvé. Tu ORCHESTRES l'exécution via les tâches
+          Le plan est approuvé. Tu ORCHESTRES l'exécution via les tokens
           du workspace {{workspace_id}} (les membres gloutons les
-          exécutent) :
-          1. Crée/lance les tâches restantes (workspace/task_create@v1)
-             avec role_required adapté (coder_junior/senior, tester,
-             reviewer).
-          2. Surveille l'avancement : workspace/task_list@v1 +
-             workspace/task_get@v1 (status pending/running/done).
-          3. Vérifie la COMPLÉTION : une tâche doit être done avec
-             résultat/commit ; sinon relance une tâche corrective.
+          piochent) :
+          1. Crée/lance les tokens restants (workspace/token_task_create@v1,
+             task_type adapté : exploration|coding|testing_code|code_review|
+             merger_code, primordial=true).
+          2. SURVEILLE l'avancement : workspace/task_list@v1 +
+             workspace/task_get@v1 (status todo/doing/done).
+          3. Vérifie la COMPLÉTION : un token doit être done avec
+             résultat/commit ; sinon relance (token_task_create corrective).
           4. Lis ton plan.md ({{home}}/plan.md) si besoin pour suivre.
-          5. Quand tout est done, fais une synthèse et réponds.
+          5. Quand tout est done, fais une synthèse ET libère l'espace :
+             workspace/clear_task@v1 sur chacun des tokens primordiaux de ta
+             mission (il vérifie que le groupe est done avant de supprimer).
+          6. Si une partie est annulée : workspace/cancel_task@v1 (protège le
+             travail sur une branche canceled_<id>, ne supprime rien).
           Utilise workspace/chat_post@v1 pour communiquer avec les
           membres si nécessaire.
         max_loops: 150
