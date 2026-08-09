@@ -161,10 +161,23 @@ export function agentYamlToTaskflow(data: any, name: string): any {
     return last;
   };
   const final = walk(steps, 'main', null);
-  // Terminaison : step end → token-out done
-  if (final) {
+  // Terminaison : le token `done` est produit par le step `end` (SUCCESS),
+  // PAS par `fail` (fin en erreur, pas de token produit). On cherche le step
+  // end SUCCESS ; sinon on ne crée pas de done (le flux s'arrête en erreur).
+  let successEnd: string | null = null;
+  const scan = (stepList: any[], parent: string) => {
+    for (const s of stepList) {
+      const id = stepId(s, parent);
+      if (s.type === 'end' && (s.status === 'SUCCESS' || !s.status)) {
+        successEnd = successEnd ?? id;
+      }
+      if (s.type === 'while' && s.body?.steps) scan(s.body.steps, id);
+    }
+  };
+  scan(steps, 'main');
+  if (successEnd) {
     ensureToken('done', 'token-out', 'done');
-    edges.push({ from: final, to: 'done', label: 'done', type: 'success' });
+    edges.push({ from: successEnd, to: 'done', label: 'done', type: 'success' });
   }
   return { id: `taskflow-${name}`, title: `${name} — taskflow`, nodes, edges };
 }

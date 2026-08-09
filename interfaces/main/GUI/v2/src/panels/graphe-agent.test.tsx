@@ -113,4 +113,19 @@ describe('agentYamlToTaskflow', () => {
     const g = agentYamlToTaskflow(data, 'explore');
     expect(g.nodes.map((n: any) => n.id)).toContain('exploration');
   });
+
+  it('relie done au step end SUCCESS, pas au fail (greedy-coder)', () => {
+    const data = { role: 'codeur', entrypoints: { main: { steps: [
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
+        inputs: { task_types: '[{type: coding, max_difficulty: expert}]' } },
+      { id: 'end', type: 'end', status: 'SUCCESS' },
+      { id: 'fail', type: 'end', status: 'FAILED' },
+    ] } } };
+    const g = agentYamlToTaskflow(data, 'greedy-coder');
+    // token-out done existe
+    expect(g.nodes.map((n: any) => n.id)).toContain('done');
+    // l'arête done part du step end (SUCCESS), PAS de fail
+    const doneEdge = g.edges.find((e: any) => e.to === 'done');
+    expect(doneEdge.from).toBe('main_end');
+  });
 });
