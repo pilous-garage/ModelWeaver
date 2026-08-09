@@ -156,7 +156,7 @@ function SvgRenderer({ g, theme, algo, dir }: { g: GraphDoc; theme: ThemeGraphe;
   const width = 800;
   const height = Math.max(300, g.nodes.length * 70 + 40);
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ background: '#0f172a' }} data-testid="graphe-svg">
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ background: theme.color_scheme === 'light' ? '#f8fafc' : '#0f172a' }} data-testid="graphe-svg">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
@@ -344,7 +344,7 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           </button>
         )}
       </div>
-      <div style={{ flex: 1, minHeight: 0, border: '1px solid var(--mw-border, #1e293b)', borderRadius: 6, overflow: 'hidden', position: 'relative' }}>
+      <div style={{ flex: 1, minHeight: 0, border: '1px solid var(--mw-border, #1e293b)', borderRadius: 6, overflow: 'hidden', position: 'relative', background: parsedTheme.color_scheme === 'light' ? '#f8fafc' : '#0f172a' }}>
         {useRF ? (
           <ReactFlow
             nodes={nodes}
@@ -357,7 +357,7 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
             fitView
             minZoom={0.2}
           >
-            <Background gap={20} color="#1e293b" />
+            <Background gap={20} color={parsedTheme.color_scheme === 'light' ? '#cbd5e1' : '#1e293b'} />
             <Controls />
           </ReactFlow>
         ) : (

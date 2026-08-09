@@ -1,0 +1,187 @@
+# theme_graphe clair — même charte que "basique" mais adaptée au fond clair.
+# Rendu : fond clair (#f8fafc), couleurs de nœuds pastel avec bordures
+# saturées, textes foncés lisibles.
+id: clair
+name: "Clair"
+color_scheme: light
+
+nodes:
+  # ── CHARTE GRAPHIQUE (catégories de nœuds FSM) ──
+  entrypoint:
+    shape: pill
+    icon: "▶"
+    color: "#bbf7d0"
+    border: "#16a34a"
+    thick: true
+  exitpoint:
+    shape: diamond
+    icon: "⏹"
+    color: "#fef08a"
+    border: "#ca8a04"
+    thick: true
+  error:
+    shape: diamond
+    icon: "✖"
+    color: "#fecaca"
+    border: "#dc2626"
+    thick: true
+  exit_error:
+    shape: diamond
+    icon: "✖"
+    color: "#fed7aa"
+    border: "#ea580c"
+    thick: true
+  skill:
+    shape: rounded
+    icon: "🛠️"
+    color: "#bfdbfe"
+    border: "#2563eb"
+  agent:
+    shape: rounded
+    icon: "🤖"
+    color: "#e9d5ff"
+    border: "#9333ea"
+  flow:
+    shape: diamond
+    icon: "🔀"
+    color: "#a5f3fc"
+    border: "#0891b2"
+  condition:
+    shape: diamond
+    icon: "❓"
+    color: "#a5f3fc"
+    border: "#0891b2"
+  condition_out:
+    shape: diamond
+    icon: "→"
+    color: "#a5f3fc"
+    border: "#0891b2"
+  fonction:
+    shape: rounded
+    icon: "ƒ"
+    color: "#e2e8f0"
+    border: "#64748b"
+  llm:
+    shape: rect
+    icon: "🧠"
+    color: "#bfdbfe"
+    border: "#2563eb"
+  sandbox:
+    shape: rounded
+    icon: "🏖️"
+    color: "#fef9c3"
+    border: "#ca8a04"
+  heavy_tool:
+    shape: rounded
+    icon: "🏭"
+    color: "#fed7aa"
+    border: "#ea580c"
+  sleep:
+    shape: rounded
+    icon: "💤"
+    color: "#e2e8f0"
+    border: "#94a3b8"
+  handoff:
+    shape: rounded
+    icon: "🤝"
+    color: "#fbcfe8"
+    border: "#db2777"
+  spawn:
+    shape: rounded
+    icon: "🐣"
+    color: "#fed7aa"
+    border: "#f97316"
+  # ── Tokens de TÂCHES (taskflow) ──
+  token-in:
+    shape: circle
+    icon: "🪙"
+    color: "#e2e8f0"
+    border: "#64748b"
+    thick: true
+  token-out:
+    shape: circle
+    icon: "🥇"
+    color: "#fde047"
+    border: "#a16207"
+    thick: true
+  token:
+    shape: circle
+    icon: "●"
+    color: "#fde68a"
+    border: "#a16207"
+  # Rétro-compat (anciens types)
+  entry:
+    shape: pill
+    icon: "▶"
+    color: "#bbf7d0"
+    border: "#16a34a"
+    thick: true
+  exit:
+    shape: diamond
+    icon: "⏹"
+    color: "#fecaca"
+    border: "#dc2626"
+  end:
+    shape: diamond
+    icon: "⏹"
+    color: "#fecaca"
+    border: "#dc2626"
+  call:
+    shape: rounded
+    icon: "🧩"
+    color: "#bbf7d0"
+    border: "#16a34a"
+  tool:
+    shape: rounded
+    icon: "🔧"
+    color: "#a5f3fc"
+    border: "#0891b2"
+  if:
+    shape: diamond
+    icon: "🔀"
+    color: "#a5f3fc"
+    border: "#0891b2"
+  group:
+    shape: rect
+    icon: "📁"
+    color: "#cbd5e1"
+    border: "#64748b"
+  default:
+    shape: rounded
+    icon: "●"
+    color: "#e2e8f0"
+    border: "#64748b"
+
+edges:
+  flow:
+    style: solid
+    color: "#475569"
+    arrow: true
+  next:
+    style: solid
+    color: "#64748b"
+    arrow: true
+  loop:
+    style: dotted
+    color: "#0891b2"
+    arrow: true
+  success:
+    style: solid
+    color: "#16a34a"
+    arrow: true
+  error:
+    style: dashed
+    color: "#dc2626"
+    arrow: true
+  handoff:
+    style: dashed
+    color: "#db2777"
+    arrow: true
+  token:
+    style: dotted
+    color: "#ca8a04"
+    arrow: true
+  default:
+    style: solid
+    color: "#475569"
+    arrow: true
