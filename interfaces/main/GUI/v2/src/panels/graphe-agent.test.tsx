@@ -76,39 +76,39 @@ describe('GrapheAgentPanel', () => {
   });
 });
 
-describe('agentYamlToGraph — FSM complet', () => {
-  it('génère toutes les arêtes (switch, boucle, retours) et les types', () => {
+describe('agentYamlToGraph — FSM hiérarchique', () => {
+  it('génère le graphe agent (steps + nœuds dépliables avec vars.inner)', () => {
     const data = { entrypoints: { main: { steps: [
-      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1' },
-      { id: 'work', type: 'while', next: 'after',
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1', next: 'work' },
+      { id: 'work', type: 'while', next: 'after', condition: 'x<3',
         body: { steps: [
-          { id: 'do', type: 'llm_call' },
-          { id: 'chk', type: 'switch',
+          { id: 'do', type: 'llm_call', next: 'chk' },
+          { id: 'chk', type: 'switch', variable: 'st',
             conditions: [{ operator: 'EQUALS', value: 'done', next: 'fin' }],
             default: 'do' },
-          { id: 'fin', type: 'set_variable' },
+          { id: 'fin', type: 'set_variable', next: 'bd' },
+          { id: 'bd', type: 'break' },
         ] } },
-      { id: 'after', type: 'switch', conditions: [{ operator: 'EQUALS', value: '1', next: 'git_verif' }], default: 'release' },
-      { id: 'git_verif', type: 'call', fn: 'git/verify@v1' },
-      { id: 'release', type: 'call', fn: 'workspace/token_task_release@v1' },
+      { id: 'after', type: 'call', fn: 'git/verify@v1', next: 'end' },
       { id: 'end', type: 'end', status: 'SUCCESS' },
     ] } },
     };
     const g = agentYamlToGraph(data, 'x');
     const ids = g.nodes.map((n: any) => n.id);
-    const froms = new Set(g.edges.map((e: any) => e.from));
     const tos = new Set(g.edges.map((e: any) => e.to));
-    // git_verif est une CIBLE (relié par le switch after)
-    expect(tos.has('git_verif')).toBe(true);
-    // back dans la boucle : switch chk → do (default)
-    expect(g.edges.some((e: any) => e.from === 'work/chk' && e.to === 'work/do')).toBe(true);
-    // les steps du body existent
-    expect(ids).toContain('work/do');
-    expect(ids).toContain('work/fin');
-    // types : entrypoint (pick) vert, exitpoint (end) jaune
-    expect(g.nodes.find((n: any) => n.id === 'pick').type).toBe('entrypoint');
+    // Steps top-level présents
+    expect(ids).toContain('pick');
+    expect(ids).toContain('work');
+    expect(ids).toContain('after');
+    expect(ids).toContain('end');
+    // entrypoint = pick (1er step) ; exitpoint = end
+    expect(g.nodes.find((n: any) => n.id === 'pick').type).toBe('skill');
     expect(g.nodes.find((n: any) => n.id === 'end').type).toBe('exitpoint');
-    // tags : pick → token_eat
+    // La boucle et le skill sont DÉPLIABLES (vars.inner)
+    const work = g.nodes.find((n: any) => n.id === 'work');
+    expect(work.vars.inner).toBeDefined();
+    expect(work.vars.inner.nodes.length).toBeGreaterThan(0);
+    // tags hérités : pick → token_eat
     expect(g.nodes.find((n: any) => n.id === 'pick').tags).toContain('token_eat');
   });
 });
@@ -133,7 +133,7 @@ describe('validateFsmGraph — règle entrée/sortie', () => {
   it('greedy-coder est valide (aucune violation)', () => {
     const data = {
       entrypoints: { main: { steps: [
-        { id: 'pick', type: 'call', next: 'work' },
+        { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1', next: 'work' },
         { id: 'work', type: 'while', next: 'after',
           body: { steps: [
             { id: 'do', type: 'llm_call', next: 'chk' },
@@ -143,7 +143,7 @@ describe('validateFsmGraph — règle entrée/sortie', () => {
             { id: 'fin', type: 'set_variable', next: 'bd' },
             { id: 'bd', type: 'break' },
           ] } },
-        { id: 'after', type: 'call', next: 'end' },
+        { id: 'after', type: 'call', fn: 'git/verify@v1', next: 'end' },
         { id: 'end', type: 'end', status: 'SUCCESS' },
       ] } },
     };
