@@ -21,6 +21,11 @@ inputs:
     type: string
     required: false
     description: "Agent qui pioche (injecté automatiquement → assigned_to)."
+  accept_external_work:
+    type: boolean
+    required: false
+    default: true
+    description: "Si false, l'agent ne pioche que les tâches de SA team (jamais les tâches projet partagé -1)."
 outputs:
   ok:
     type: boolean

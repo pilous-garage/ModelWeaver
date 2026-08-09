@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- done (canceled done) — on ne supprime pas le code, on protège sur une
     -- branche canceled_<id> et on reset au commit_start.
     cancelled    INTEGER DEFAULT 0,
+    -- Ordonnancement : échéance (deadline) et durée estimée. La priorité de
+    -- pioche est un score = base_priority + W_DEADLINE*urgence (temps estimé
+    -- long + deadline courte → urgent ; en retard → max) + W_AGE*âge.
+    deadline         TEXT DEFAULT '',
+    estimated_minutes INTEGER DEFAULT 0,
     -- Type de la tâche = étape du pipeline (coding, code_review, merger_code,
     -- testing_code, analysis, split, …). Un agent pioche les task_type qu'il
     -- sait traiter (liste passée au token_task_pick), avec un niveau max de

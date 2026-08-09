@@ -13,7 +13,7 @@ inputs:
   task:
     type: object
     required: true
-    description: "{title, description, task_type, difficulty, priority, repo, branch, base_commit}"
+    description: "{title, description, task_type, difficulty, priority, repo, branch, base_commit, deadline, estimated_minutes, created_at}"
   parents:
     type: array
     required: false
@@ -22,6 +22,10 @@ inputs:
     type: integer
     required: false
     default: -1
+  accept_external_work:
+    type: boolean
+    required: false
+    default: true
 outputs:
   ok:
     type: boolean

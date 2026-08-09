@@ -87,8 +87,11 @@ entrypoints:
         Découpe la mission en sous-tokens de codage :
         - workspace/token_task_create pour CHAQUE sous-token, SANS parents :
           { workspace_id: {{workspace_id}},
-            task: {title, description, task_type: coding, difficulty, priority} }
-          (les sous-tokens coding sont indépendants, piochés par les codeurs)
+            task: {title, description, task_type: coding, difficulty, priority,
+                   created_at: {{task.created_at}}} }
+          (les sous-tokens coding sont indépendants, piochés par les codeurs ;
+          IMPORTANT : propage created_at={{task.created_at}} — l'anti-famine
+          de priorité part de la mission primordiale, pas de la sous-tâche)
         - Puis RÉAFFECTE le token courant en étape de vérification/merge :
           workspace/token_task_modify (task_id={{task.task_id}},
           workspace_id={{workspace_id}}, new_task_type=merge_split,

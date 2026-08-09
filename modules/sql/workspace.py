@@ -213,10 +213,15 @@ class TaskRepository:
                team_id: int = -1, repo: str = "",
                branch: str = "", base_commit: str = "",
                commit_start: str = "", branch_start: str = "",
-               primordial: int = 0) -> Dict[str, Any]:
+               primordial: int = 0,
+               deadline: str = "", estimated_minutes: int = 0,
+               created_at_iso: str = None) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
-        # commit_start/branch_start : créés avec la tâche (le chat-pilot ou le
-        # 1er picker les déduisent du repo). Ils bornent le cancel (reset ici).
+        # created_at au format SQLite (YYYY-MM-DD HH:MM:SS) pour que
+        # strftime('%s') du score de priorité le parse (le format iso avec T
+        # + microsecondes renvoie NULL). Une sous-tâche (split) hérite du
+        # created_at de sa primordiale (anti-famine depuis la mission).
+        created = created_at_iso or now.replace("T", " ").split(".")[0]
         cs = commit_start or base_commit or ""
         bs = branch_start or branch or ""
         cur = self.conn.execute("""
@@ -224,11 +229,13 @@ class TaskRepository:
                                status, difficulty, task_type, team_id,
                                repo, branch, base_commit,
                                commit_start, branch_start, primordial,
+                               deadline, estimated_minutes,
                                created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, title, description, priority,
               difficulty, task_type, team_id, repo, branch, base_commit,
-              cs, bs, primordial, now, now))
+              cs, bs, primordial, deadline, estimated_minutes,
+              created, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -315,7 +322,9 @@ class TaskRepository:
                    max_difficulty: Dict[str, str] = None,
                    exclude_assigned: tuple = (),
                    team_id: int = -1,
-                   assigned_to: str = "") -> Optional[Dict[str, Any]]:
+                   assigned_to: str = "",
+                   accept_external_work: bool = True,
+                   now_minutes: float = None) -> Optional[Dict[str, Any]]:
         """Pioche le prochain token piochable (greedy) pour les task_types donnés.
 
         Un agent pioche les tokens dont le task_type est dans `task_types` et
@@ -323,12 +332,26 @@ class TaskRepository:
         l'agent borne la difficulté piochable par type). Dépendance totale :
         un token n'est piochable que si TOUS ses parents sont dans l'état
         requis (task_dependencies). Statut cible : 'todo' → 'doing'.
+
+        SCOPE : si `accept_external_work` est False, l'agent ne pioche QUE les
+        tâches de SA team (team_id exact) — jamais les tâches projet partagé
+        (-1). Si True (défaut), il pioche sa team ET les tâches -1, en
+        priorité SA team d'abord.
+
+        PRIORITÉ : score à la volée (calculé dans l'ORDER BY) =
+          base_priority
+          + W_DEADLINE * urgence (0..10)  # temps long + deadline courte → 10
+          + W_AGE * age_minutes           # anti-famine (depuis la primordiale)
+        Une tâche EN RETARD (remaining <= 0) a urgence = 10 immédiatement.
         Atomique.
         """
         task_types = [t for t in (task_types or []) if t]
         if not task_types:
             return None
         max_diff = max_difficulty or {}
+        if now_minutes is None:
+            import time
+            now_minutes = time.time() / 60.0
         sel_args = [self.wid]
         ph = ",".join("?" for _ in task_types)
         sel = ("SELECT t.* FROM tasks t WHERE t.workspace_id = ? "
@@ -346,8 +369,12 @@ class TaskRepository:
                 sel_args.append(tt)
         if diff_conds:
             sel += " AND (" + " OR ".join(diff_conds) + ")"
-        # team_id : -1 (projet) OU la team de l'agent
-        sel += " AND (t.team_id = ? OR t.team_id = -1)"
+        # Scope : SA team (+ -1 si accept_external_work). Une tâche sans team
+        # (-1) n'est jamais appropriée par une team (team_id inchangé).
+        if accept_external_work:
+            sel += " AND (t.team_id = ? OR t.team_id = -1)"
+        else:
+            sel += " AND t.team_id = ?"
         sel_args.append(team_id)
         # Dépendance totale : tous les parents à l'état requis.
         sel += " AND " + self._parents_blocked_sql()
@@ -355,10 +382,23 @@ class TaskRepository:
             ph2 = ",".join("?" for _ in exclude_assigned)
             sel += f" AND COALESCE(t.assigned_to,'') NOT IN ({ph2})"
             sel_args.extend(exclude_assigned)
-        # Prioriser les tâches de la TEAM de l'agent avant le projet partagé.
-        sel += (" ORDER BY CASE WHEN t.team_id = ? THEN 0 ELSE 1 END, "
-                "t.priority DESC, t.created_at LIMIT 1")
-        sel_args.append(team_id)
+        # ── Score de priorité (à la volée, en minutes) ──
+        # remaining = deadline_minutes - now ; urgence : retard → 10, sinon
+        # clamp(estimated / max(remaining,1), 0, 10). W_DEADLINE=100, W_AGE=0.1.
+        # L'âge part de created_at (la primordiale : les sous-tâches héritent
+        # du created_at de leur mission, pas de leur propre création).
+        sel += (
+            " ORDER BY CASE WHEN t.team_id = ? THEN 0 ELSE 1 END, "
+            "(t.priority"
+            "  + 100 * (CASE"
+            "      WHEN t.deadline IS NULL OR t.deadline = '' THEN 0"
+            "      WHEN (strftime('%s', t.deadline) / 60.0) - ? <= 0 THEN 10"
+            "      ELSE MIN(10, (COALESCE(t.estimated_minutes, 0) * 1.0)"
+            "                  / MAX((strftime('%s', t.deadline) / 60.0) - ?, 1))"
+            "    END)"
+            "  + MIN(100, 0.1 * MAX((? - (strftime('%s', t.created_at) / 60.0)), 0))"
+            ") DESC, t.created_at ASC LIMIT 1")
+        sel_args.extend([team_id, now_minutes, now_minutes, now_minutes])
         row = _row(self.conn.execute(sel, sel_args).fetchone())
         if not row:
             return None
@@ -710,6 +750,9 @@ class WorkspaceDB:
             _add_column_if_missing(self.conn, "tasks", "branch_current", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "primordial", "INTEGER DEFAULT 0")
             _add_column_if_missing(self.conn, "tasks", "cancelled", "INTEGER DEFAULT 0")
+            # V0.12 : ordonnancement (deadline + durée estimée).
+            _add_column_if_missing(self.conn, "tasks", "deadline", "TEXT DEFAULT ''")
+            _add_column_if_missing(self.conn, "tasks", "estimated_minutes", "INTEGER DEFAULT 0")
             # V0.10 : rôle requis → type de tâche (étape du pipeline). Une
             # tâche 'coder_senior' devient task_type 'coding' (le niveau de
             # l'agent borne la difficulté piochable). Clean des données (rien

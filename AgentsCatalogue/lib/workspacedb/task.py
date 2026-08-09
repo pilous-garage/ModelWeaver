@@ -33,6 +33,10 @@ def create(inputs: dict, home: str) -> dict:
     commit_start = inputs.get("commit_start", "")
     branch_start = inputs.get("branch_start", "")
     primordial = 1 if inputs.get("primordial") else 0
+    deadline = inputs.get("deadline", "")
+    estimated_minutes = int(inputs.get("estimated_minutes", 0) or 0)
+    # created_at hérité (split) : l'anti-famine part de la primordiale.
+    created_at_iso = inputs.get("created_at", "") or None
     parents = inputs.get("parents", [])  # [{task_id, required_state}]
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
@@ -44,7 +48,10 @@ def create(inputs: dict, home: str) -> dict:
                                   base_commit=base_commit,
                                   commit_start=commit_start,
                                   branch_start=branch_start,
-                                  primordial=primordial)
+                                  primordial=primordial,
+                                  deadline=deadline,
+                                  estimated_minutes=estimated_minutes,
+                                  created_at_iso=created_at_iso)
         for dep in parents or []:
             pid = dep.get("task_id") if isinstance(dep, dict) else dep
             rs = dep.get("required_state", "done") if isinstance(dep, dict) else "done"
@@ -61,7 +68,8 @@ def create_token(inputs: dict, home: str) -> dict:
 
     inputs :
       - task : {title, description, task_type, difficulty, priority, repo,
-                branch, base_commit, commit_start, branch_start, primordial}
+                branch, base_commit, commit_start, branch_start, primordial,
+                deadline, estimated_minutes, created_at}
       - parents : [{task_id, required_state}] (l'enfant n'est piochable que
         si tous ses parents sont à l'état requis)
       - workspace_id, team_id
@@ -85,6 +93,9 @@ def create_token(inputs: dict, home: str) -> dict:
         "commit_start": task.get("commit_start", ""),
         "branch_start": task.get("branch_start", ""),
         "primordial": task.get("primordial", inputs.get("primordial", 0)),
+        "deadline": task.get("deadline", ""),
+        "estimated_minutes": task.get("estimated_minutes", 0),
+        "created_at": task.get("created_at", ""),
         "parents": inputs.get("parents", []),
     }, home)
 
@@ -103,6 +114,7 @@ def pick_token(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     team_id = int(inputs.get("team_id", -1))
     agent_id = str(inputs.get("agent_id", "") or "")
+    accept_external = bool(inputs.get("accept_external_work", True))
     types_in = inputs.get("task_types") or []
     if isinstance(types_in, str):  # JSON passé par le FSM (ex. "[{type: coding, max_difficulty: expert}]")
         try:
@@ -126,7 +138,8 @@ def pick_token(inputs: dict, home: str) -> dict:
     try:
         db, scope = _scope(workspace_id)
         task = scope.tasks.claim_next(task_types, max_diff, team_id=team_id,
-                                      assigned_to=agent_id)
+                                      assigned_to=agent_id,
+                                      accept_external_work=accept_external)
         if task:
             # 1er picker : déduire commit_start/branch_start depuis le clone si
             # la tâche ne les avait pas (elle pointe un repo/branche cibles).
