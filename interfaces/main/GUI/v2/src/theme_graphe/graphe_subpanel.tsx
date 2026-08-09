@@ -228,6 +228,23 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     else setExpanded(new Set()); // replier tout
   }, [graph, onGraphChange]);
 
+  // Collecte récursive des ids de nœuds dépliables (ayant vars.inner).
+  const collectExpandable = useCallback((g: GraphDoc, acc: Set<string> = new Set()): Set<string> => {
+    for (const n of g.nodes) {
+      if (n.vars?.inner) acc.add(n.id);
+    }
+    return acc;
+  }, []);
+
+  const unfoldAll = useCallback(() => {
+    const all = collectExpandable(graph);
+    if (all.size) setExpanded(new Set(all));
+  }, [graph, collectExpandable]);
+
+  const foldAll = useCallback(() => {
+    setExpanded(new Set());
+  }, []);
+
   if (!doc) return <div style={{ color: '#475569', padding: 8 }}>Aucun graphe</div>;
 
   // Moteur SVG (export/fallback) — le host est TOUJOURS rendu (invisible en
@@ -278,6 +295,12 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           ))}
         </div>
         <span style={{ flex: 1 }} />
+        <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={unfoldAll} title="Tout déplier">
+          ⊕ Tout déplier
+        </button>
+        <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={foldAll} title="Tout replier">
+          ⊖ Tout replier
+        </button>
         <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={reLayout}>
           ⟳ Re-layout
         </button>
