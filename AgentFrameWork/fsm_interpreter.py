@@ -308,12 +308,14 @@ class FSMInterpreter:
 
     # ── Steps ──────────────────────────────────────────
 
-    def _build_llm_tools(self, bundles: Optional[List[str]] = None) -> List[Dict]:
+    def _build_llm_tools(self, bundles: Optional[List[str]] = None,
+                         skills: Optional[List[str]] = None) -> List[Dict]:
         """Construit la liste des outils (OpenAI function calling) depuis les skills YAML.
 
-        `bundles` (optionnel) : expose les tools des bundles nommés (ex. ["dev"])
-        en plus des outils de base. C'est le mécanisme qui permet à un step
-        `llm_call` de donner accès au LLM à end_exec, task_verdict, git, etc.
+        `bundles` (optionnel) : expose les tools des bundles nommés (ex. ["dev"]).
+        `skills` (optionnel)  : expose des refs de skills DIRECTES définies dans
+        le .yaml de l'agent (ex. ["workspace/token_task_pick@v1"]) — chargées
+        depuis le catalogue des skills, sans passer par un bundle.
         """
         try:
             import yaml as _yaml
@@ -335,6 +337,9 @@ class FSMInterpreter:
                 tool_skills += [s.get("name", "") for s in _resolve_bundles(bundles)]
             except Exception:
                 pass
+        # Tools additionnels depuis les skills DIRECTES du .yaml de l'agent.
+        if skills:
+            tool_skills += list(skills)
         tools = []
         seen = set()
         for ref in tool_skills:
@@ -439,7 +444,7 @@ class FSMInterpreter:
                 result.variables["_llm_fallbacks"] = 0
             else:
                 # Tools : convertir les skills disponibles au format OpenAI
-                tools = self._build_llm_tools(step.get("bundles"))
+                tools = self._build_llm_tools(step.get("bundles"), step.get("skills"))
                 tool_kwargs = {"tools": tools} if tools else {}
 
                 timeout = step.get("timeout")

@@ -117,13 +117,27 @@ def _normalize_type(raw: str, spec: dict) -> dict:
     return {"type": mapping.get(t, "string")}
 
 
-def resolve(bundle_names: List[str]) -> List[Dict]:
-    """Résout une liste de noms de bundle en outils OpenAI.
+def resolve(bundle_names: List[str], skills: Optional[List[str]] = None) -> List[Dict]:
+    """Résout une liste de noms de bundle + skills explicites en outils OpenAI.
 
-    Retourne une liste de dicts au format OpenAI tool.
+    `skills` : liste de refs de skills (ex. ["workspace/token_task_pick@v1"])
+    définies DANS le .yaml de l'agent. Quand elles sont fournies, elles sont
+    chargées EN PLUS des bundles (l'agent peut surcharger/étendre son arsenal
+    sans créer de bundle). Retourne une liste de dicts au format OpenAI tool.
     """
     tools = []
     seen = set()
+    for sref in (skills or []):
+        skill = _load_skill(sref)
+        if skill is None:
+            continue
+        sname = skill.get("name", "")
+        if not sname or sname in seen:
+            continue
+        seen.add(sname)
+        tool = _skill_to_tool(skill)
+        if tool:
+            tools.append(tool)
     for bname in bundle_names:
         bundle = _load_bundle(bname)
         if bundle is None:

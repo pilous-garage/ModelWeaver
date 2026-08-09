@@ -19,6 +19,20 @@ personality:
     Réponds en français, code en anglais."
 bundles:
   - dev
+# Skills DIRECTES de l'agent (définies inline, chargées depuis le catalogue des
+# skills sans bundle) — utilisées par les steps llm_call via `skills:`.
+skills:
+  - file/read_file@v1
+  - file/write_file@v1
+  - file/append_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/list_dir@v1
+  - system/check_syntax@v1
+  - shell/exec@v1
+  - workflow/it_is_done@v1
+  - workflow/exit_loop_too_hard@v1
+  - workflow/making_progress@v1
 generates:
   - code_review
 model_requirements:
@@ -139,7 +153,7 @@ entrypoints:
             difficile, appelle exit_loop_too_hard.
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
-          bundles: ["coding_work"]
+          skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1", "shell/exec@v1", "workflow/it_is_done@v1", "workflow/exit_loop_too_hard@v1", "workflow/making_progress@v1"]
           max_tokens: 4096
           temperature: 0.3
           output_capture: work_out
@@ -221,7 +235,7 @@ entrypoints:
         (making_progress answer=too_hard).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
-      bundles: ["coding_work"]
+      skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1", "shell/exec@v1", "workflow/it_is_done@v1", "workflow/exit_loop_too_hard@v1", "workflow/making_progress@v1"]
       max_tokens: 1024
       temperature: 0.2
       output_capture: check_out
