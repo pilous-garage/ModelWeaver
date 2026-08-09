@@ -3,10 +3,10 @@
 // Sources : catalogue/agents/list + catalogue/agents/get.
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { parse as parseYaml } from 'yaml';
 import type { PanelDef } from './contract.ts';
 import { usePoll } from './panel-utils.ts';
 import { GrapheSubPanel } from '../theme_graphe/graphe_subpanel.tsx';
+import { useGraphThemeControl } from '../graphThemeStore.ts';
 
 const LANG_FR = `
 panels:
@@ -316,30 +316,10 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
   const shownGraph = view === 'taskflow' ? graphTaskflow : graphFsm;
   const violations = view === 'fsm' && graphFsm ? validateFsmGraph(graphFsm) : [];
 
-  // ── Thème graphe : liste des thèmes (kind=graphe) + sélection ──
-  const [graphThemes, setGraphThemes] = useState<string[]>([]);
-  const [themeName, setThemeName] = useState<string>('basique');
-  const [themeObj, setThemeObj] = useState<any>(null);
-
-  useEffect(() => {
-    ctx.api.post('theme/list', { kind: 'graphe' }).then((res: any) => {
-      const r = res?.result ?? res ?? {};
-      const names = (r.themes ?? []).map((t: any) => t.name);
-      if (names.length) setGraphThemes(names);
-    }).catch(() => {});
-  }, [ctx.api.post]);
-
-  useEffect(() => {
-    if (!themeName) return;
-    ctx.api.post('theme/get', { name: themeName, kind: 'graphe' }).then((res: any) => {
-      const r = res?.result ?? res ?? {};
-      if (r.yaml) {
-        try { setThemeObj(parseYaml(r.yaml)); } catch { setThemeObj(null); }
-      }
-    }).catch(() => setThemeObj(null));
-  }, [themeName, ctx.api.post]);
-
-  const selectTheme = (e: any) => setThemeName(e.target.value);
+  // ── Thème graphe : depuis le store global (contrôlé par le menu
+  //    « Affichage → Thème graphe »). Le store charge liste + contenu. ──
+  const gTheme = useGraphThemeControl(ctx.api.post);
+  useEffect(() => { gTheme.ensureLoaded(); }, [gTheme]);
 
   return (
     <div style={{ height: '100%', display: 'flex', boxSizing: 'border-box', fontSize: 12 }}>
@@ -395,18 +375,8 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
                 {violations.map((v: any) => `${v.id} (${v.kind === 'no_in' ? 'sans entrée' : 'sans sortie'})`).join(', ')}
               </div>
             )}
-            {/* Sélecteur de thème graphe */}
-            {graphThemes.length > 1 && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: 10, color: '#94a3b8' }}>{ctx.t?.('panels.graphe-agent.theme') ?? 'Thème'}:</span>
-                <select className="mw-btn" value={themeName} onChange={selectTheme}
-                  style={{ fontSize: 10, padding: '1px 6px' }}>
-                  {graphThemes.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-            )}
             {view !== 'yaml' ? (
-              <GrapheSubPanel doc={shownGraph} theme={themeObj} editable={false} engine="reactflow" height="100%" />
+              <GrapheSubPanel doc={shownGraph} theme={gTheme.obj} editable={false} engine="reactflow" height="100%" />
             ) : (
               <pre style={{ flex: 1, minHeight: 0, overflow: 'auto', margin: 0, fontSize: 10,
                            background: 'rgba(15,23,42,.5)', padding: 8, borderRadius: 6,
@@ -430,6 +400,11 @@ export const Panel: PanelDef = {
   bundles: ['graphe'],
   paramsSchema: {},
   defaultParams: {},
+  // Insertion de menu : « Affichage → Thème graphe » (rempli dynamiquement
+  // avec les thèmes graphe du daemon par App.tsx, action theme-graphe:set).
+  menu: [
+    { labelKey: 'menu.themeGraphe', action: 'theme-graphe:set', path: ['menu.affichage'] },
+  ],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[graphe-agent] Catalogue agents + FSM / Taskflow / YAML',

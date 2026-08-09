@@ -21,6 +21,7 @@ import { daemonPost, daemonPostStream } from './bridge.ts';
 import { startGuiInspectorPoll } from './guiInspector.ts';
 import { t, setLocale, persistLocale, useLocale } from './i18n.ts';
 import { applyTheme, listThemes, getCurrentTheme } from './theme.ts';
+import { setGraphThemeName, loadGraphThemeObj, loadGraphThemeList, useGraphTheme } from './graphThemeStore.ts';
 import type { ThemeDef } from './theme.ts';
 import {
   useWindowsStore, startWindows, pushCurrentWindowState,
@@ -49,7 +50,7 @@ function getLocaleAndApply(loc: string) {
  * Et ajoute « Ouverts dans une fenêtre » (panels des autres fenêtres).
  * Injecte aussi le sous-menu « Affichage → Thème » (dark/light/externes).
  */
-function injectWindowMenu(menu: MenuItem[], winState: ReturnType<typeof useWindowsStore>, windowId: string, themes: ThemeDef[], themeLocked = false, refreshCount = 0): MenuItem[] {
+function injectWindowMenu(menu: MenuItem[], winState: ReturnType<typeof useWindowsStore>, windowId: string, themes: ThemeDef[], themeLocked = false, refreshCount = 0, graphThemeList: string[] = [], graphThemeCurrent = 'basique'): MenuItem[] {
   const { profiles, liveLabels } = winState;
   const next = menu.map((m) => ({ ...m, items: m.items ? [...m.items] : m.items }));
 
@@ -123,6 +124,20 @@ function injectWindowMenu(menu: MenuItem[], winState: ReturnType<typeof useWindo
       }
       return it;
     });
+    // ── Thème GRAPHE : « Thème graphe » → sous-menu radio (basique, clair…) ──
+    aff.items = aff.items.map((it) => {
+      if (it.action === 'theme-graphe:set') {
+        return {
+          labelKey: 'menu.themeGraphe',
+          items: (graphThemeList.length ? graphThemeList : ['basique']).map((name) => ({
+            labelKey: name,
+            action: `theme-graphe:set:${name}`,
+            checked: name === graphThemeCurrent,
+          })),
+        };
+      }
+      return it;
+    });
   }
 
   return next;
@@ -161,6 +176,13 @@ export function App({ layout: initialLayout, windowId, onChange }: Props) {
   const themeLockedRef = React.useRef(false);
   const winState = useWindowsStore();
   const refreshCount = useRefreshCount();
+  const gTheme = useGraphTheme();
+
+  // Charge la liste + le thème graphe courant au boot.
+  useEffect(() => {
+    loadGraphThemeList(daemonPost);
+    loadGraphThemeObj(daemonPost);
+  }, []);
 
   // Surbrillance du CADRE de fenêtre : quand on a ciblé CETTE fenêtre depuis le
   // menu (highlightWindow == windowId), on affiche un outline pendant ~2,5s.
@@ -240,8 +262,8 @@ export function App({ layout: initialLayout, windowId, onChange }: Props) {
       liveLabels: winState.liveLabels ?? [],
     };
     const r = resolveLayout(layout, panelMenus, undefined, catalogue, windowMenu);
-    return { ...r, menu: injectWindowMenu(r.menu, winState, windowId, themes, themeLockedRef.current, refreshCount) };
-  }, [layout, winState, windowId, themes, refreshCount]);
+    return { ...r, menu: injectWindowMenu(r.menu, winState, windowId, themes, themeLockedRef.current, refreshCount, gTheme.list, gTheme.current) };
+  }, [layout, winState, windowId, themes, refreshCount, gTheme.list, gTheme.current]);
 
   // Persistance temps réel.
   const mutate = useCallback((fn: (l: Layout) => Layout) => {
@@ -491,6 +513,11 @@ export function App({ layout: initialLayout, windowId, onChange }: Props) {
         const locked = themeLockedRef.current;
         persistWindowThemeLock(windowId, locked, themeName).catch(() => {});
       }).catch(() => {});
+    } else if (action.startsWith('theme-graphe:set:')) {
+      // Thème GRAPHE : choisi dans Affichage → Thème graphe (radio).
+      const tName = action.slice('theme-graphe:set:'.length);
+      setGraphThemeName(tName);
+      loadGraphThemeObj(daemonPost);
     } else if (action.startsWith('theme:session:')) {
       // Thème de SESSION : s'applique à toutes les fenêtres (broadcast), sauf
       // celles verrouillées. Persisté dans le .session.yaml.
