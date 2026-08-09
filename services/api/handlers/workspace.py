@@ -109,14 +109,17 @@ def op_workspace_tasks_get(params):
 
 
 def op_workspace_tasks_claim_next(params):
-    """Pioche la prochaine tâche pending pour un rôle (greedy atomique)."""
+    """Pioche le prochain token todo pour les task_types donnés (greedy)."""
     workspace_id = params.get("workspace_id", "")
-    role_required = params.get("role_required", "")
-    if not workspace_id:
-        return {"status": "error", "error": "workspace_id requis"}
+    task_types = params.get("task_types", "") or params.get("role_required", "")
+    max_difficulty = params.get("max_difficulty", "")
+    if isinstance(task_types, str) and task_types and not str(task_types).startswith("["):
+        task_types = [task_types]
+    if not workspace_id or not task_types:
+        return {"status": "error", "error": "workspace_id + task_types requis"}
     try:
         db, scope = _tasks_scope(workspace_id)
-        task = scope.tasks.claim_next(role_required=role_required)
+        task = scope.tasks.claim_next(task_types, max_difficulty or {})
         db.close()
         if not task:
             return {"status": "ok", "task": None}

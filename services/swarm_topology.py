@@ -51,6 +51,25 @@ def _compatible_roles(role_required: str) -> List[str]:
         return [role_required] if role_required else []
 
 
+def _load_picked_task_types(cfg: Dict[str, Any]) -> List[str]:
+    """Task_types PIOCHÉS par l'agent : extraits du step `pick` du FSM
+    (token_task_pick task_types=[{type, max_difficulty}])."""
+    types = []
+    try:
+        steps = ((cfg.get("entrypoints") or {}).get("main") or {}).get("steps") or []
+        for s in steps:
+            if s.get("fn") == "workspace/token_task_pick@v1":
+                raw = ((s.get("inputs") or {}).get("task_types") or "")
+                import re
+                for m in re.finditer(r"type:\s*([\w]+)", raw):
+                    if m.group(1) not in types:
+                        types.append(m.group(1))
+                break
+    except Exception:
+        pass
+    return types
+
+
 def build_taskflow(team_name: str = "") -> Dict[str, Any]:
     """Graphe taskflow d'une team (ou toutes les teams).
 
@@ -85,15 +104,19 @@ def build_taskflow(team_name: str = "") -> Dict[str, Any]:
     seen_roles: Dict[str, str] = {}
     for a in agents:
         role_type = a["role_type"] or "worker"
-        # Consommation : role_type → rôle greedy (ROLE_TO_TASK)
-        from services.agent_manager.service import ROLE_TO_TASK
-        consume_role = ROLE_TO_TASK.get(role_type, role_type)
-        consumes = _compatible_roles(consume_role) if consume_role else []
 
         # Génération : champ `generates` du .agent.yaml (via la ref du membre
         # de team si présent, sinon par rôle).
         cfg = _load_role_config(role_type, a["name"])
         generates = list(cfg.get("generates") or [])
+        # Consommation : les task_types PIOCHÉS par le FSM (step pick du
+        # .agent.yaml, token_task_pick). Un agent sans pick (ex. chat-pilot
+        # non-greedy) ne consomme aucun token.
+        consumes = _load_picked_task_types(cfg) or []
+        # Un agent qui ne pioche NI ne génère de token (chat-pilot orchestrateur,
+        # tmp-member…) n'appartient pas au taskflow : on le saute.
+        if not consumes and not generates:
+            continue
 
         # Un nœud par type de rôle (fusionner les agents du même type)
         if role_type not in seen_roles:

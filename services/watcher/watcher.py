@@ -81,7 +81,7 @@ def _collect_state() -> Dict[str, Any]:
         watched = team_ws | linked
         ph = ",".join("?" for _ in watched)
         st["tasks"] = _rows(wdb.conn.execute(
-            f"SELECT task_id, workspace_id, title, status, role_required, "
+            f"SELECT task_id, workspace_id, title, status, task_type, "
             f"updated_at, assigned_to FROM tasks WHERE workspace_id IN ({ph})",
             tuple(watched)).fetchall())
         st["issues"] = _rows(wdb.conn.execute(
@@ -347,14 +347,15 @@ def detect_idle_with_pending(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Couvre AUSSI les agents sans wait_for (jamais réveillés — ex. les testers
     bloqués par des reliquats runtime INIT), pas seulement ceux en attente."""
-    # rôle de task attendu par chaque rôle d'agent (même mapping que le waker)
+    # task_type attendu par chaque rôle d'agent (même mapping que le waker).
     ROLE_TO_TASK = {
-        "architecte": "analyst", "planificateur": "analyst",
-        "codeur": "coder_senior", "test_runner": "tester",
-        "relecteur": "reviewer", "orchestrateur": "merger",
+        "architecte": "analysis", "planificateur": "analysis",
+        "codeur": "coding", "test_runner": "testing_code",
+        "relecteur": "code_review", "orchestrateur": "merger_code",
+        "explore": "exploration",
     }
-    pending_roles = {t["role_required"] for t in st["tasks"]
-                     if t["status"] == "pending" and t["role_required"]}
+    pending_roles = {t["task_type"] for t in st["tasks"]
+                     if t["status"] == "todo" and t["task_type"]}
     active_ids = {r["agent_id"] for r in st["runtime"]}
     out = []
     for a in st["agents"]:
@@ -411,13 +412,13 @@ def detect_stuck_analysing_issues(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def detect_multi_role_tasks(st: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """P7 — task role_required multi-valeurs (virgule) → impocable."""
+    """P7 — task task_type multi-valeurs (virgule) → impocable."""
     out = []
     for t in st["tasks"]:
-        r = t.get("role_required") or ""
+        r = t.get("task_type") or ""
         if "," in r:
             out.append({"type": "P7_multi_role_task",
-                        "details": f"task {t['task_id']} role='{r}'",
+                        "details": f"task {t['task_id']} task_type='{r}'",
                         "refs": {"task": t}})
     return out
 
@@ -478,12 +479,12 @@ def _apply(st: Dict[str, Any], problem: Dict[str, Any],
 
         if ptype == "P7_multi_role_task":
             tid = problem["refs"]["task"]["task_id"]
-            role = (problem["refs"]["task"].get("role_required") or "").split(",")[0]
+            role = (problem["refs"]["task"].get("task_type") or "").split(",")[0]
             wdb.conn.execute(
-                "UPDATE tasks SET role_required = ? WHERE task_id = ?",
+                "UPDATE tasks SET task_type = ? WHERE task_id = ?",
                 (role.strip(), tid))
             wdb.conn.commit()
-            return f"task {tid} rôle normalisé → {role.strip()}"
+            return f"task {tid} task_type normalisé → {role.strip()}"
 
         if ptype == "P8_stalled_agent":
             # kill l'agent bloqué + libérer sa task running (il est probablement

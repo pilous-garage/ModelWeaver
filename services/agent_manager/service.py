@@ -166,19 +166,18 @@ def _live_agent_thread_ids() -> List[int]:
 
 
 # Mapping role_type d'agent → rôle requis par une tâche (workspace greedy).
-# Une tâche avec role_required='coder_senior' réveille les agents 'codeur'.
-# Pour l'instant TOUS les rôles sont "senior" (pas de junior) : on ajustera
-# quand on connaîtra mieux le catalogue (les juniors prendraient les modèles
-# peu coûteux comme gemma-4, qui bouclent sur les tâches complexes).
+# Task_type PIOCHÉ par chaque rôle d'agent (waker + wait_for). Un agent
+# codeur pioche les tokens coding, un relecteur les code_review, un
+# test_runner les testing_code, un orchestrateur les merger_code.
 ROLE_TO_TASK = {
-    "architecte": "analyst",
-    "planificateur": "analyst",
-    "explorateur": "explore",
-    "explore": "explore",
-    "codeur": "coder_senior",
-    "test_runner": "tester",
-    "relecteur": "reviewer",
-    "orchestrateur": "merger",
+    "architecte": "analysis",
+    "planificateur": "analysis",
+    "explorateur": "exploration",
+    "explore": "exploration",
+    "codeur": "coding",
+    "test_runner": "testing_code",
+    "relecteur": "code_review",
+    "orchestrateur": "merger_code",
 }
 
 
@@ -1515,17 +1514,19 @@ class AgentManager:
                     "SELECT workspace_id, team_id FROM issues WHERE status='open'"
                 ).fetchall()}
             pending_tasks = {
-                (t["workspace_id"], t["team_id"], t["role_required"])
+                (t["workspace_id"], t["team_id"], t["task_type"])
                 for t in wdb.conn.execute(
-                    "SELECT workspace_id, team_id, role_required FROM tasks "
-                    "WHERE status IN ('pending','review') AND role_required != ''"
+                    "SELECT workspace_id, team_id, task_type FROM tasks "
+                    "WHERE status = 'todo' AND task_type != ''"
                 ).fetchall()}
-            # Tâches en `review` : le reviewer doit être réveillé pour les
-            # valider (une tâche livrée n'est done que si reviewée).
-            review_tasks = {
+            # Tokens à l'étape suivante (code_review, merger_code...) : les
+            # agents capables du task_type doivent être réveillés.
+            next_tokens = {
                 (t["workspace_id"], t["team_id"])
                 for t in wdb.conn.execute(
-                    "SELECT workspace_id, team_id FROM tasks WHERE status='review'"
+                    "SELECT workspace_id, team_id FROM tasks "
+                    "WHERE status = 'todo' AND task_type IN "
+                    "('code_review','merger_code','testing_code','merge_split')"
                 ).fetchall()}
             # Workspaces "terminés" : au moins 1 tâche ET toutes done → le
             # manager peut faire le push de fin sur auto_code_<team_id>.
@@ -1539,6 +1540,7 @@ class AgentManager:
         except Exception:
             open_issues = set()
             pending_tasks = set()
+            next_tokens = set()
             all_done = set()
         finally:
             try:
@@ -1562,14 +1564,11 @@ class AgentManager:
                 return any(t == team or t == -1 for w, t in open_issues)
             if ctype == "task_for_role":
                 role = cond.get("role", "")
-                # Le REVIEWER est réveillé par les tâches EN REVIEW (peu importe
-                # leur rôle d'origine coder_junior/analyst/… : une tâche livrée
-                # n'est done que si reviewée). On matche les tâches 'review'
-                # (team/projet), pas les pending du rôle reviewer (il n'y en a
-                # jamais).
+                # Le REVIEWER est réveillé par les tokens à relire (code_review) :
+                # un token coding transitionne en code_review quand livré.
                 if role == "reviewer":
                     return any(t == team or t == -1
-                               for w, t in review_tasks)
+                               for w, t in next_tokens)
                 # Match par rôle + team sur TOUS les workspaces : l'analyste crée
                 # les tasks dans son workspace (ex. audit_io_declarations), pas
                 # celui de la team (mw-swarm). L'agent doit être réveillé dès
@@ -1639,7 +1638,7 @@ class AgentManager:
             role = cond.get("role", "")
             team = int(cond.get("team_id", -1))
             if role == "reviewer":
-                for _w, _t in review_tasks:
+                for _w, _t in next_tokens:
                     if _t == team or _t == -1:
                         ws = _w
                         break
@@ -1698,8 +1697,9 @@ class AgentManager:
                 _role = cond.get("role", "")
                 _team = int(cond.get("team_id", -1))
                 if _role == "reviewer":
-                    # Reviewer : passer le workspace où il y a des tâches 'review'.
-                    for _w, _t in review_tasks:
+                    # Reviewer : passer le workspace où il y a des tokens à
+                    # relire (code_review).
+                    for _w, _t in next_tokens:
                         if _t == _team or _t == -1:
                             ws = _w
                             break
@@ -1724,11 +1724,11 @@ class AgentManager:
         # par condition, le swarm resterait à 1-3 agents). Tant que des tâches
         # du rôle sont dispo, on complète le pool d'actifs.
         if active + count < MIN_ACTIVE_TARGET and (open_issues or pending_tasks):
-            # PRIORITÉ REVIEWER : si des tâches attendent en review, les
+            # PRIORITÉ REVIEWER : si des tokens sont à relire (code_review), les
             # reviewers passent AVANT les codeurs — sinon le backlog review
             # grossit sans fin (les codeurs produisent plus vite que 2-3
             # reviewers ne valident). Les reviewers en premier, puis le reste.
-            _reviewer_first = "1" if review_tasks else "0"
+            _reviewer_first = "1" if next_tokens else "0"
             rows = self.db.conn.execute(f"""
                 SELECT agent_id, name, role_type FROM agents
                 WHERE (config_json LIKE '%"pick"%'
@@ -1746,7 +1746,7 @@ class AgentManager:
             # plafond au-delà de MIN_ACTIVE_TARGET pour que les reviewers aient
             # toujours des slots (les codeurs/autres greedy ne les évincent pas).
             _target = MIN_ACTIVE_TARGET
-            if review_tasks:
+            if next_tokens:
                 _rev_run = self.db.conn.execute(
                     "SELECT COUNT(*) n FROM agents WHERE role_type='relecteur' "
                     "AND status='RUNNING'").fetchone()
@@ -1792,9 +1792,9 @@ class AgentManager:
                     # niveau inférieur (coder_senior → coder_junior/mid), donc
                     # on teste si _r (rôle tâche) ∈ _compatible_roles(rt) où rt
                     # est le rôle greedy de l'agent.
-                    # Le reviewer (relecteur) est réveillé si des tâches sont
-                    # livrées en `review` (à valider), peu importe leur rôle.
-                    if rt == "reviewer" and review_tasks:
+                    # Le reviewer (relecteur) est réveillé si des tokens sont à
+                    # relire (code_review).
+                    if rt == "reviewer" and next_tokens:
                         pass  # réveiller le reviewer
                     elif not any(
                         _r in _compatible_roles(rt) or _r == rt
