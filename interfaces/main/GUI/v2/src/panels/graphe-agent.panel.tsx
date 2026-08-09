@@ -32,6 +32,29 @@ panels:
 `;
 
 
+// Valide le graphe FSM selon la règle :
+//   - un nœud doit avoir une arête ENTRANTE, OU être l'entrypoint (1er step)
+//   - un nœud doit avoir une arête SORTANTE, OU être un exitpoint (end)
+// Retourne la liste des violations {id, kind: 'no_in'|'no_out'}.
+export function validateFsmGraph(graph: any, isExit: (id: string) => boolean = () => false): any[] {
+  const nodes: any[] = graph?.nodes ?? [];
+  const edges: any[] = graph?.edges ?? [];
+  const incoming = new Set(edges.map((e: any) => e.to));
+  const outgoing = new Set(edges.map((e: any) => e.from));
+  const violations: any[] = [];
+  for (const n of nodes) {
+    const isEntry = n.type === 'entrypoint';
+    const isExit = n.type === 'exitpoint' || n.type === 'exit_error';
+    if (!isEntry && !incoming.has(n.id)) {
+      violations.push({ id: n.id, kind: 'no_in' });
+    }
+    if (!isExit && !outgoing.has(n.id)) {
+      violations.push({ id: n.id, kind: 'no_out' });
+    }
+  }
+  return violations;
+}
+
 // Convertit le YAML d'un agent (entrypoints.main.steps) en GraphDoc (vue FSM).
 // Parcours RÉCURSIF complet : top-level + corps de boucles (while) +
 // branchements switch (conditions/default). Génère TOUTES les arêtes
@@ -351,6 +374,7 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
   }, [agentData, sel]);
 
   const shownGraph = view === 'taskflow' ? graphTaskflow : graphFsm;
+  const violations = view === 'fsm' && graphFsm ? validateFsmGraph(graphFsm) : [];
 
   return (
     <div style={{ height: '100%', display: 'flex', boxSizing: 'border-box', fontSize: 12 }}>
@@ -395,6 +419,17 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
                 {ctx.t?.('panels.graphe-agent.yaml') ?? 'YAML'}
               </button>
             </div>
+            {/* Règle FSM : chaque nœud a une entrée (sauf entrypoint) et une
+                sortie (sauf exitpoint). */}
+            {violations.length > 0 && (
+              <div style={{
+                marginBottom: 6, padding: '4px 8px', borderRadius: 6, fontSize: 10,
+                background: 'rgba(239,68,68,.12)', border: '1px solid #ef4444', color: '#fca5a5',
+              }}>
+                ⚠ FSM incomplet :{' '}
+                {violations.map((v: any) => `${v.id} (${v.kind === 'no_in' ? 'sans entrée' : 'sans sortie'})`).join(', ')}
+              </div>
+            )}
             {view !== 'yaml' ? (
               <GrapheSubPanel doc={shownGraph} editable={false} engine="reactflow" height="100%" />
             ) : (

@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { GrapheAgentPanel, agentYamlToTaskflow, agentYamlToGraph } from '../panels/graphe-agent.panel.tsx';
+import { GrapheAgentPanel, agentYamlToTaskflow, agentYamlToGraph, validateFsmGraph } from '../panels/graphe-agent.panel.tsx';
 
 // Polyfill ResizeObserver (React Flow l'utilise, absent en jsdom).
 class ResizeObserverMock {
@@ -110,6 +110,46 @@ describe('agentYamlToGraph — FSM complet', () => {
     expect(g.nodes.find((n: any) => n.id === 'end').type).toBe('exitpoint');
     // tags : pick → token_eat
     expect(g.nodes.find((n: any) => n.id === 'pick').tags).toContain('token_eat');
+  });
+});
+
+describe('validateFsmGraph — règle entrée/sortie', () => {
+  it('signalement un nœud sans entrée (hors entrypoint) et sans sortie (hors exit)', () => {
+    const g = {
+      nodes: [
+        { id: 'A', type: 'entrypoint' },  // entrée ok (entrypoint)
+        { id: 'B', type: 'skill' },        // pas d'entrée ni sortie → 2 violations
+        { id: 'C', type: 'exitpoint' },    // sortie ok (exitpoint)
+      ],
+      edges: [{ from: 'A', to: 'C' }],
+    };
+    const v = validateFsmGraph(g);
+    expect(v.some((x: any) => x.id === 'B' && x.kind === 'no_in')).toBe(true);
+    expect(v.some((x: any) => x.id === 'B' && x.kind === 'no_out')).toBe(true);
+    // A et C ne doivent pas violer
+    expect(v.filter((x: any) => x.id !== 'B').length).toBe(0);
+  });
+
+  it('greedy-coder est valide (aucune violation)', () => {
+    const data = {
+      entrypoints: { main: { steps: [
+        { id: 'pick', type: 'call', next: 'work' },
+        { id: 'work', type: 'while', next: 'after',
+          body: { steps: [
+            { id: 'do', type: 'llm_call', next: 'chk' },
+            { id: 'chk', type: 'switch',
+              conditions: [{ operator: 'EQUALS', value: 'x', next: 'fin' }],
+              default: 'do' },
+            { id: 'fin', type: 'set_variable', next: 'bd' },
+            { id: 'bd', type: 'break' },
+          ] } },
+        { id: 'after', type: 'call', next: 'end' },
+        { id: 'end', type: 'end', status: 'SUCCESS' },
+      ] } },
+    };
+    const g = agentYamlToGraph(data, 'x');
+    const v = validateFsmGraph(g);
+    expect(v).toEqual([]);
   });
 });
 
