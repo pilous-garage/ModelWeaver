@@ -1,0 +1,23 @@
+name: workspace/conversation_switch_workspace@v1
+category: workspace
+description: Change le workspace de la conversation courante (ex. changer de projet).
+  Demande une autorisation si le nouveau workspace sort de la portée courante.
+inputs:
+  conversation_id:
+    type: integer
+    required: true
+    description: Identifiant de la conversation (injecté par le workflow)
+  workspace_id:
+    type: string
+    required: true
+    description: Nouveau workspace (ex. mw-dev-chat, mw-swarm, autre projet)
+outputs:
+  ok:
+    type: boolean
+  conversation_id:
+    type: integer
+  workspace_id:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.conversation.switch_workspace

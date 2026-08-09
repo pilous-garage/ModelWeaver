@@ -38,6 +38,12 @@ skills:
   - team/process_list@v1
   - team/auth_review@v1
   - team/auth_decide@v1
+  - team/is_asked_auth@v1
+  # Conversations (menu déroulant, renommage, switch workspace)
+  - workspace/conversation_list@v1
+  - workspace/conversation_rename@v1
+  - workspace/conversation_switch_workspace@v1
+  - workspace/conversation_context@v1
   # Shell + util (pour analyser/exécuter)
   - shell/exec@v1
   - util/get_env@v1

@@ -1,0 +1,26 @@
+name: team/is_asked_auth@v1
+category: team
+description: |
+  Entrypoint du LEADER (orchestrateur / security_clearance) : liste les
+  demandes d'autorisation que les membres de SA team lui ont retransmises
+  (inbox, type=auth_request). Le leader examine chaque demande et décide
+  via team/auth_decide@v1 (allow/deny/escalate). Si aucune demande, retourne
+  vide (l'agent continue son cycle normal).
+inputs:
+  include_resolved:
+    type: boolean
+    required: false
+    default: false
+    description: true pour garder aussi les demandes déjà traitées
+outputs:
+  ok:
+    type: boolean
+  count:
+    type: integer
+  requests:
+    type: array
+    items:
+      type: object
+implementation:
+  type: python
+  function: agent.ops.is_asked_auth

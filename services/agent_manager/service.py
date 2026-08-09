@@ -1145,6 +1145,73 @@ class AgentManager:
         except Exception:
             return -1
 
+    def get_team(self, agent_id: int) -> Dict[str, Any]:
+        """Retourne la team d'un agent (nom + team_id stable).
+
+        Résultat : {team_id, team_name, members:[{agent_id,name,role_type}]}.
+        team_id = MIN(agent_id) de la team (clé stable utilisée par le
+        workspace). Best-effort : team_id=-1 et liste vide si pas en team.
+        """
+        try:
+            row = self.db.conn.execute(
+                "SELECT name FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if not row or not row["name"].startswith("team:"):
+                return {"team_id": -1, "team_name": "", "members": []}
+            team = row["name"].split("/")[0]
+            team_id = self._agent_team_id(agent_id)
+            members = [dict(r) for r in self.db.conn.execute(
+                "SELECT agent_id, name, role_type FROM agents "
+                "WHERE name LIKE ? ORDER BY agent_id", (team + "/%",)).fetchall()]
+            return {"team_id": team_id, "team_name": team,
+                    "members": members}
+        except Exception:
+            return {"team_id": -1, "team_name": "", "members": []}
+
+    def get_leader(self, team_id: int) -> Optional[Dict[str, Any]]:
+        """Retourne le leader (orchestrateur) d'une team.
+
+        Le leader est l'agent `role_type='orchestrateur'` de la team (le
+        « security_clearance » : il valide/refuse les autorisations des
+        membres via un call LLM). Retourne {agent_id, name, role_type}.
+        """
+        try:
+            # team_id = MIN(agent_id) de la team → retrouver le nom de team.
+            row = self.db.conn.execute(
+                "SELECT name FROM agents WHERE agent_id = ?", (team_id,)
+            ).fetchone()
+            if not row or not row["name"].startswith("team:"):
+                return None
+            team = row["name"].split("/")[0]
+            leader = self.db.conn.execute(
+                "SELECT agent_id, name, role_type FROM agents "
+                "WHERE name LIKE ? AND role_type = 'orchestrateur' "
+                "ORDER BY agent_id LIMIT 1", (team + "/%",)).fetchone()
+            return dict(leader) if leader else None
+        except Exception:
+            return None
+
+    def _agent_paused(self, name: str) -> bool:
+        """Vrai si l'agent appartient à une équipe en PAUSE (level=team).
+
+        Une team mise en pause (ex. swarm-selfimprove-v2 suspendu) ne doit pas
+        réveiller ses greedy : sans ce garde, le waker relance les codeurs en
+        boucle (statut INIT/RUNNING) malgré la pause posée via pause/set.
+        Best-effort : False si le store est indisponible (on ne bloque pas la
+        supervision pour une erreur de lecture).
+        """
+        if not name or not name.startswith("team:"):
+            return False
+        try:
+            team = name.split("/")[0][len("team:"):]
+            if not team:
+                return False
+            from AgentFrameWork.pause_flag_store import get_paused
+            return get_paused("team", team)
+        except Exception:
+            pass
+        return False
+
     def _has_unpushed(self, team_id: int) -> bool:
         """Vrai si la branche auto_code_<team_id> du repo central a des commits
         non encore poussés vers github (origin).
@@ -1221,6 +1288,9 @@ class AgentManager:
             # Garde-fou mémoire : ne pas re-hydrater un agent dont un thread
             # tourne encore (même si agent_runtime a été purgé par P8).
             if _agent_thread_alive(agent_id):
+                continue
+            # Garde pause : une team en pause ne réveille pas ses agents.
+            if self._agent_paused(row["name"]):
                 continue
             threading.Thread(target=self._run_sleeping_agent, args=(agent_id,), daemon=True).start()
             count += 1
@@ -1553,6 +1623,15 @@ class AgentManager:
                 continue
             if not _cond_matches(cond):
                 continue
+            # Garde pause : une team en pause ne re-réveille pas ses greedy.
+            try:
+                _aname = self.db.conn.execute(
+                    "SELECT name FROM agents WHERE agent_id = ?",
+                    (r["agent_id"],)).fetchone()
+                if _aname and self._agent_paused(_aname["name"]):
+                    continue
+            except Exception:
+                pass
             # Re-réveiller : repasser en waiting pour que la boucle ci-dessous
             # le réveille (ou le réveiller directement via l'amorce).
             self.db.wait_for.mark_done(r["agent_id"])
@@ -1588,6 +1667,15 @@ class AgentManager:
             if not _cond_matches(cond):
                 continue
             # Condition remplie : réveiller l'agent (un à la fois), marquer ready
+            # ── Garde pause : une team en pause ne réveille pas ses greedy.
+            try:
+                _aname = self.db.conn.execute(
+                    "SELECT name FROM agents WHERE agent_id = ?",
+                    (w["agent_id"],)).fetchone()
+                if _aname and self._agent_paused(_aname["name"]):
+                    continue
+            except Exception:
+                pass
             ws = cond.get("workspace_id", "")
             req = ("wakeup: issue pending" if cond.get("type") == "issue_open"
                    else "wakeup: task pending")

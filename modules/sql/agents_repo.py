@@ -7,6 +7,7 @@ Contient : WaitForRepository, AgentsDB.
 
 import json
 import sqlite3
+import time
 import uuid
 import os
 import sys
@@ -162,6 +163,58 @@ class AgentsDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auth_status "
             "ON auth_requests(status, approver_level)")
+        # Autorisation SCOPÉE à une conversation (un agent chat peut avoir
+        # plusieurs conversations ; on autorise une CONVERSATION, pas l'agent).
+        _add_column_if_missing(self.conn, "auth_requests", "conversation_id",
+                               "TEXT")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_conv "
+            "ON auth_requests(conversation_id, status)")
+
+        # ── Conversations de chat (dev-chat) ──
+        # Une conversation = un agent pilote (role_type='chat') qui discute.
+        # Un agent peut avoir PLUSIEURS conversations (menu déroulant). Le nom
+        # est renommable (toolcall conversation/rename), le workspace affiché
+        # et changeable (conversation/switch_workspace).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id     INTEGER NOT NULL,
+                name         TEXT NOT NULL,
+                workspace_id TEXT,
+                created_at   INTEGER DEFAULT (strftime('%s','now')),
+                updated_at   INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent "
+            "ON conversations(agent_id, updated_at)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_ws "
+            "ON conversations(workspace_id)")
+
+        # ── Messages de conversation (journal des échanges) ──
+        # Chaque événement du chat : envoi humain, réponse texte, thinking,
+        # tool_call, tool_result, branchement/fallback LLM, erreur. Une ligne
+        # = un événement atomique (time_start==time_finish pour les instants).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id  INTEGER NOT NULL,
+                time_start       REAL NOT NULL,
+                time_finish      REAL,
+                type             TEXT NOT NULL,
+                payload_json     TEXT,
+                seq              INTEGER DEFAULT 0,
+                updated_at       INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_convmsg_conv "
+            "ON conversation_messages(conversation_id, seq)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_convmsg_type "
+            "ON conversation_messages(conversation_id, type)")
 
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)
@@ -171,6 +224,154 @@ class AgentsDB:
 
     def close(self):
         self.conn.close()
+
+
+class ConversationRepository:
+    """Conversations de chat (dev-chat) : CRUD + journal des messages.
+
+    Une conversation appartient à UN agent pilote (role_type='chat'), mais un
+    agent peut en avoir plusieurs (menu déroulant GUI). Les messages sont des
+    événements atomiques (type : human_message, llm_text, thinking, tool_call,
+    tool_result, llm_attach, llm_fallback, llm_reattach, error).
+    """
+
+    # Types d'événements de conversation.
+    T_HUMAN = "human_message"
+    T_LLM_TEXT = "llm_text"
+    T_THINKING = "thinking"
+    T_TOOL_CALL = "tool_call"
+    T_TOOL_RESULT = "tool_result"
+    T_LLM_ATTACH = "llm_attach"      # branchement initial d'un LLM
+    T_LLM_FALLBACK = "llm_fallback"  # bascule (rate_limit, erreur)
+    T_LLM_REATTACH = "llm_reattach"   # retour au modèle sélectionné
+    T_ERROR = "error"
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    # ── Conversations ──
+
+    def create(self, agent_id: int, name: str = "",
+               workspace_id: Optional[str] = None) -> int:
+        name = name or f"conversation_{int(time.time())}"
+        cur = self.conn.execute(
+            "INSERT INTO conversations (agent_id, name, workspace_id) "
+            "VALUES (?, ?, ?)", (agent_id, name, workspace_id))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_for_agent(self, agent_id: int) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM conversations WHERE agent_id = ? "
+            "ORDER BY updated_at DESC", (agent_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM conversations ORDER BY updated_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def get(self, conv_id: int) -> Optional[Dict[str, Any]]:
+        r = self.conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        return dict(r) if r else None
+
+    def rename(self, conv_id: int, name: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE conversations SET name = ?, updated_at = "
+            "strftime('%s','now') WHERE id = ?", (name, conv_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def set_workspace(self, conv_id: int, workspace_id: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE conversations SET workspace_id = ?, updated_at = "
+            "strftime('%s','now') WHERE id = ?", (workspace_id, conv_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete(self, conv_id: int) -> bool:
+        self.conn.execute(
+            "DELETE FROM conversation_messages WHERE conversation_id = ?",
+            (conv_id,))
+        cur = self.conn.execute(
+            "DELETE FROM conversations WHERE id = ?", (conv_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def touch(self, conv_id: int) -> None:
+        self.conn.execute(
+            "UPDATE conversations SET updated_at = strftime('%s','now') "
+            "WHERE id = ?", (conv_id,))
+        self.conn.commit()
+
+    # ── Messages ──
+
+    def append(self, conversation_id: int, msg_type: str,
+               time_start: float, time_finish: Optional[float] = None,
+               payload: Optional[Dict[str, Any]] = None) -> int:
+        seq = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_messages "
+            "WHERE conversation_id = ?", (conversation_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO conversation_messages "
+            "(conversation_id, time_start, time_finish, type, payload_json, seq) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (conversation_id, time_start, time_finish, msg_type,
+             json.dumps(payload or {}), seq))
+        self.conn.commit()
+        self.touch(conversation_id)
+        return cur.lastrowid
+
+    def list_messages(self, conversation_id: int,
+                      limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        sql = ("SELECT * FROM conversation_messages WHERE conversation_id = ? "
+               "ORDER BY seq")
+        args: tuple = (conversation_id,)
+        if limit:
+            # dernières `limit` lignes (mais ordre ascendant dans la sortie)
+            sql = ("SELECT * FROM ("
+                   "  SELECT * FROM conversation_messages "
+                   "  WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?"
+                   ") ORDER BY seq")
+            args = (conversation_id, limit)
+        rows = self.conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def text_context(self, conversation_id: int,
+                     max_chars: int = 10000) -> str:
+        """Contexte texte unique (utilisateur/LLM) pour re-injection au pilote.
+
+        Ne garde que les échanges de TEXTE (human_message + llm_text), ignore
+        thinking/tool_call/erreurs/fallback. Format :
+            utilisateur: "xxx"
+            llm (provider/model): "yyy"
+        Limité aux `max_chars` derniers caractères. Un seul string, pas de JSON.
+        """
+        rows = self.conn.execute(
+            "SELECT type, payload_json, time_start FROM conversation_messages "
+            "WHERE conversation_id = ? AND type IN (?, ?) ORDER BY seq",
+            (conversation_id, self.T_HUMAN, self.T_LLM_TEXT)).fetchall()
+        lines = []
+        for r in rows:
+            p = json.loads(r["payload_json"] or "{}")
+            text = (p.get("text") or p.get("content") or "").strip()
+            if not text:
+                continue
+            if r["type"] == self.T_HUMAN:
+                lines.append(f'utilisateur: "{text}"')
+            else:
+                model = p.get("model") or p.get("model_ref") or "?"
+                lines.append(f'llm ({model}): "{text}"')
+        if not lines:
+            return ""
+        # Construire depuis la fin pour garder les N derniers caractères.
+        out = ""
+        for line in reversed(lines):
+            if len(out) + len(line) + 1 > max_chars:
+                break
+            out = line + "\n" + out
+        return out.rstrip()
 
 
 # ──────────────────────────────────────────────

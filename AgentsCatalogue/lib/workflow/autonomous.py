@@ -1376,11 +1376,42 @@ def exec(inputs: dict, home: str) -> dict:
                 _aid = _Path(home).name
             if _aid:
                 agent_id_int = int(_aid)
+                _conv_id = None
+                try:
+                    _c = int(inputs.get("conversation_id") or 0) or None
+                    _conv_id = _c
+                except Exception:
+                    _conv_id = None
                 def on_event(kind: str, text: str) -> None:
                     try:
                         _sb.publish(agent_id_int, text, kind)
                     except Exception:
                         pass
+                    # ── Persistance conversation (dev-chat) ──
+                    # Chaque événement (thinking/content/tool/llm/err) est
+                    # écrit dans conversation_messages si une conversation est
+                    # active. Best-effort : n'interrompt pas le flux.
+                    if _conv_id is not None:
+                        try:
+                            from modules.sql.agents_repo import (
+                                AgentsDB, ConversationRepository)
+                            import time as _t
+                            _db = AgentsDB()
+                            _repo = ConversationRepository(_db.conn)
+                            _mtype = {
+                                "thinking": _repo.T_THINKING,
+                                "content": _repo.T_LLM_TEXT,
+                                "tool": _repo.T_TOOL_CALL,
+                                "llm": _repo.T_LLM_ATTACH,
+                            }.get(kind)
+                            if _mtype:
+                                _repo.append(
+                                    _conv_id, _mtype, _t.time(),
+                                    payload={"text": text[:2000],
+                                             "kind": kind})
+                            _db.close()
+                        except Exception:
+                            pass
         except Exception:
             on_event = None
             stream_events = False

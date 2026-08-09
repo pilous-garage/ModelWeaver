@@ -1,0 +1,23 @@
+name: workspace/conversation_context@v1
+category: workspace
+description: Retourne le contexte texte de la conversation (10k derniers chars,
+  envois/réponses uniquement) pour reprise de discussion.
+inputs:
+  conversation_id:
+    type: integer
+    required: true
+    description: Identifiant de la conversation (injecté par le workflow)
+  max_chars:
+    type: integer
+    required: false
+    default: 10000
+outputs:
+  ok:
+    type: boolean
+  context:
+    type: string
+  chars:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.conversation.conversation_context

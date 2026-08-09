@@ -123,13 +123,55 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
                 "error": "action doit être path_read | path_write | command"}
     reason = inputs.get("reason", "")
     scope = inputs.get("scope", "once")
+    from AgentsCatalogue.lib.shell.auth_request import (
+        AuthorizationRequest, AuthScope, RequestStatus, RequestType,
+        request_handler)
     try:
-        from AgentsCatalogue.lib.shell.auth_request import (
-            AuthorizationRequest, AuthScope, RequestType, request_handler)
+        scope_enum = AuthScope(scope)
+    except ValueError:
+        scope_enum = AuthScope.ONCE
+    try:
+
+        # ── AUTO-APPROVE du propre espace ──
+        # Un agent a TOUJOURS le droit de lire/écrire dans SON home et SON
+        # workspace (agent_home/{id}/…). Sans ça, chaque opération sur son
+        # propre espace déclenche une demande → backlog (853 pending observés).
+        # On auto-approuve via un grant 'auto' (source=auto) pour cette cible.
+        _own_ok = False
         try:
-            scope_enum = AuthScope(scope)
-        except ValueError:
-            scope_enum = AuthScope.ONCE
+            from services._common import mw_home as _mwh
+            _own_root = str(_mwh() / "agent_home" / str(agent_id))
+            if action in ("path_read", "path_write"):
+                p = target.get("path", "")
+                if p and (p.startswith(_own_root)
+                          or f"/agent_home/{agent_id}" in p):
+                    _own_ok = True
+            elif action == "command":
+                # Commandes sûres sur le propre espace (git, shell local).
+                c = target.get("command", "").lower()
+                _own_ok = c.startswith(("git ", "cd ", "ls ", "cat ", "mkdir ",
+                                        "pwd ", "echo ", "find "))
+        except Exception:
+            _own_ok = False
+        if _own_ok:
+            req_auto = AuthorizationRequest(
+                agent_id=agent_id, team_id=inputs.get("team_id"),
+                action=action, target=target, reason=reason,
+                request_type=RequestType.LIVE, scope=AuthScope.DAY,
+                approver_level="auto",
+                conversation_id=inputs.get("conversation_id"))
+            req_auto.status = RequestStatus.APPROVED
+            request_handler._add_grant(agent_id, req_auto, True,
+                                       approver_id="auto", source="auto")
+            request_handler._persist(req_auto)
+            return {
+                "ok": True, "request_id": req_auto.request_id,
+                "action": action, "target": target, "status": "approved",
+                "approver_level": "auto", "scope": "day",
+                "continue_anyway": True,
+                "note": "auto-approuvé : espace propre de l'agent",
+            }
+
         # Par défaut la demande va au LEADER (approver_level='leader').
         # Si l'agent demande directement un humain, escalate d'emblée.
         if str(inputs.get("to", "leader")).lower() == "human":
@@ -138,6 +180,7 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
         else:
             req_type = RequestType.PENDING_LEADER
             level = "leader"
+
         req = AuthorizationRequest(
             agent_id=agent_id,
             team_id=inputs.get("team_id"),
@@ -147,6 +190,7 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
             request_type=req_type,
             scope=scope_enum,
             approver_level=level,
+            conversation_id=inputs.get("conversation_id"),
         )
         submitted = request_handler.submit(req)
         # Tracer dans le home pour l'agent (référence).
@@ -155,6 +199,43 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
         Path(os.path.join(store, f"{submitted.request_id}.json")).write_text(
             json.dumps(submitted.to_dict(), ensure_ascii=False),
             encoding="utf-8")
+
+        # ── Retransmission automatique au LEADER de la team ──
+        # Le gestionnaire d'auth achemine la demande au leader (orchestrateur
+        # de la team) : message dans son inbox + signal wakeup. Le leader la
+        # voit via l'entrypoint is_asked_auth (ou auth_review), la valide par
+        # un call LLM, puis décide (auth_decide).
+        _notified = False
+        try:
+            from services.agent_manager.service import AgentManager
+            from modules.sql.db import AgentsDB
+            _mgr = AgentManager(db=AgentsDB())
+            _team = _mgr.get_team(int(agent_id))
+            _leader = _mgr.get_leader(_team.get("team_id", -1))
+            if _leader:
+                _box = _inbox_root(str(_leader.get("agent_id")))
+                _box.mkdir(parents=True, exist_ok=True)
+                _msg = {
+                    "from": agent_id,
+                    "type": "auth_request",
+                    "request_id": submitted.request_id,
+                    "content": (f"Autorisation demandée : {action} sur "
+                                f"{json.dumps(target, ensure_ascii=False)[:200]}"
+                                f" (raison: {reason[:200]})"),
+                    "ts": time.time(),
+                }
+                (_box / f"{submitted.request_id}.json").write_text(
+                    json.dumps(_msg, ensure_ascii=False), encoding="utf-8")
+                try:
+                    _mgr.send_signal(_leader["agent_id"], "wakeup",
+                                     {"kind": "auth", "request_id":
+                                      submitted.request_id})
+                except Exception:
+                    pass
+                _notified = True
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "request_id": submitted.request_id,
@@ -164,6 +245,7 @@ def ask_authorisation(inputs: dict, home: str) -> dict:
             "approver_level": level,
             "scope": scope,
             "continue_anyway": True,
+            "leader_notified": _notified,
             "note": ("Demande envoyée au leader de la team — continue sans "
                      "attendre (le leader l'examinera et pourra l'autoriser, "
                      "la refuser ou la transmettre à un humain)."),
@@ -284,8 +366,51 @@ def auth_decide(inputs: dict, home: str) -> dict:
         request_id, str(approver), decision, scope=scope_enum, reason=reason)
 
 
+def is_asked_auth(inputs: dict, home: str) -> dict:
+    """Entrypoint du LEADER : liste les demandes d'autorisation reçues.
+
+    Le gestionnaire d'auth retransmet chaque demande d'un membre dans l'inbox
+    du leader (type=auth_request). Ce skill lit l'inbox du leader et présente
+    les demandes en attente (avec leur contenu depuis request_handler si
+    encore en mémoire, sinon le message de l'inbox). Le leader décide ensuite
+    via team/auth_decide@v1.
+    """
+    agent_id = _agent_id_from_home(home, inputs)
+    include_resolved = bool(inputs.get("include_resolved", False))
+    requests = []
+    box = _inbox_root(str(agent_id))
+    if box.is_dir():
+        from AgentsCatalogue.lib.shell.auth_request import request_handler
+        for f in sorted(box.glob("*.json")):
+            try:
+                msg = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if msg.get("type") != "auth_request":
+                continue
+            req_id = msg.get("request_id", "")
+            detail = None
+            if req_id:
+                try:
+                    detail = request_handler.get(req_id)
+                except Exception:
+                    detail = None
+            if not include_resolved and detail is not None \
+                    and detail.is_resolved:
+                continue
+            requests.append({
+                "request_id": req_id,
+                "from": msg.get("from"),
+                "content": msg.get("content", ""),
+                "ts": msg.get("ts"),
+                "detail": detail.to_dict() if detail else None,
+            })
+    return {"ok": True, "agent_id": agent_id, "count": len(requests),
+            "requests": requests}
+
+
 __skills__ = [
     "call_agent", "ask_user", "ask_authorisation", "emit_event", "get_budget",
     "message_send", "message_recv", "chatroom_post", "chatroom_read",
-    "auth_review", "auth_decide",
+    "auth_review", "auth_decide", "is_asked_auth",
 ]

@@ -1,0 +1,22 @@
+name: workspace/conversation_rename@v1
+category: workspace
+description: Renomme la conversation de chat courante (proposer un nom court et descriptif).
+inputs:
+  conversation_id:
+    type: integer
+    required: true
+    description: Identifiant de la conversation (injecté par le workflow)
+  name:
+    type: string
+    required: true
+    description: Nouveau nom (max 120 chars)
+outputs:
+  ok:
+    type: boolean
+  conversation_id:
+    type: integer
+  name:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.conversation.rename_conversation

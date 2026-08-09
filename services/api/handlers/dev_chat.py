@@ -70,26 +70,27 @@ Utilise workspace/chat_post@v1 pour communiquer avec les membres."""
 
 
 def _pilot_workflow(mode: str, workspace_id: str, home: str,
-                    provider_ref: str = "", model_ref: str = "") -> Dict[str, Any]:
+                    provider_ref: str = "", model_ref: str = "",
+                    conversation_id: Optional[int] = None) -> Dict[str, Any]:
     """Workflow FSM du pilote : mode plan ou build via un step call."""
     ctx = (PLAN_PROMPT if mode == "plan" else BUILD_PROMPT) \
         .replace("{{home}}", home).replace("{{workspace_id}}", workspace_id)
+    conv_inputs: Dict[str, Any] = {
+        "request": "{{request}}",
+        "bundles": ["pilot"],
+        "workspace_id": workspace_id,
+        "context": ctx,
+        "max_loops": 120,
+        "stream_events": True,
+        "provider_ref": provider_ref,
+        "model_ref": model_ref,
+    }
+    if conversation_id is not None:
+        conv_inputs["conversation_id"] = conversation_id
     return {
         "steps": [
             {"id": "start", "type": "call", "fn": "workflow/autonomous@v1",
-             "inputs": {
-                 "request": "{{request}}",
-                 # Bundle PILOTE léger (~32 tools) : 68 tools (manager+dev)
-                 # font exploser la latence LLM (le modèle parse les définitions
-                 # ~1 min/round). Le pilote orchestre, pas besoin de tout.
-                 "bundles": ["pilot"],
-                 "workspace_id": workspace_id,
-                 "context": ctx,
-                 "max_loops": 120,
-                 "stream_events": True,
-                 "provider_ref": provider_ref,
-                 "model_ref": model_ref,
-             },
+             "inputs": conv_inputs,
              "capture": {"stdout": "result"},
              "next": "end"},
             {"id": "end", "type": "end", "status": "SUCCESS"},
@@ -99,7 +100,8 @@ def _pilot_workflow(mode: str, workspace_id: str, home: str,
 
 def _resolve_pilot(mgr, session: str, params: dict) -> tuple:
     """Recycle/crée l'agent pilote de la session, reconfigure le workflow du
-    mode (plan/build) + provider/model. Retourne (agent_id, home, workspace)."""
+    mode (plan/build) + provider/model. Retourne (agent_id, home, workspace,
+    conversation_id)."""
     from services._common import mw_home
 
     workspace_id = params.get("workspace_id") or DEFAULT_WORKSPACE
@@ -119,18 +121,39 @@ def _resolve_pilot(mgr, session: str, params: dict) -> tuple:
 
     home = str(mw_home() / "agent_home" / str(aid))
 
+    # ── Conversation courante du pilote ──
+    # Une session dev-chat = un agent pilote qui peut avoir plusieurs
+    # conversations (menu déroulant GUI). `params.conversation_id` explicite
+    # sinon on prend la plus récente du pilote, sinon on en crée une.
+    conversation_id = None
+    try:
+        from modules.sql.agents_repo import ConversationRepository
+        repo = ConversationRepository(mgr.db.conn)
+        if params.get("conversation_id"):
+            conversation_id = int(params["conversation_id"])
+        else:
+            convs = repo.list_for_agent(aid)
+            conversation_id = convs[0]["id"] if convs else None
+        if conversation_id is None:
+            conversation_id = repo.create(aid, name=f"session_{session}",
+                                          workspace_id=workspace_id)
+    except Exception:
+        conversation_id = None
+
     try:
         mgr.db.conn.execute(
             "UPDATE agents SET config_json=?, variables_json=? WHERE agent_id=?",
             (_json.dumps({"workflow": _pilot_workflow(mode, workspace_id, home,
-                                                      provider_ref, model_ref)}),
+                                                      provider_ref, model_ref,
+                                                      conversation_id)}),
              _json.dumps({"messages": [], "workspace_id": workspace_id,
-                          "mode": mode, "home": home}), aid))
+                          "mode": mode, "home": home,
+                          "conversation_id": conversation_id}), aid))
         mgr.db.conn.commit()
     except Exception as e:
         raise RuntimeError(f"reconfig pilote: {e}")
 
-    return aid, home, workspace_id
+    return aid, home, workspace_id, conversation_id
 
 
 def _run_pilot(aid: int, mode: str, message: str, workspace_id: str, home: str,
@@ -198,7 +221,7 @@ def op_dev_chat_send(params: dict) -> Dict[str, Any]:
 
     mgr = AgentManager()
     try:
-        aid, home, workspace_id = _resolve_pilot(mgr, session, params)
+        aid, home, workspace_id, conversation_id = _resolve_pilot(mgr, session, params)
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -246,7 +269,7 @@ def op_dev_chat_stream(params, wfile) -> None:
 
     mgr = AgentManager()
     try:
-        aid, home, workspace_id = _resolve_pilot(mgr, session, params)
+        aid, home, workspace_id, conversation_id = _resolve_pilot(mgr, session, params)
     except Exception as e:
         _op_writer_send(wfile, "error", {"error": str(e)})
         _write_done(wfile)
@@ -301,5 +324,98 @@ def _write_done(wfile) -> None:
     _stream_writer_send(wfile, "done", {"done": True})
 
 
+# ── Routes conversations (menu déroulant GUI) ─────────────────────
+
+def _conv_repo():
+    from modules.sql.agents_repo import ConversationRepository
+    from modules.sql.db import AgentsDB
+    db = AgentsDB()
+    return ConversationRepository(db.conn), db
+
+
+def op_dev_chat_conversations(params):
+    """Liste les conversations d'un agent pilote (menu déroulant).
+
+    params : { agent_id } (pilote de la session). Si absent, liste toutes.
+    """
+    agent_id = params.get("agent_id")
+    repo, db = _conv_repo()
+    try:
+        if agent_id:
+            convs = repo.list_for_agent(int(agent_id))
+        else:
+            convs = repo.list_all()
+        out = []
+        for c in convs:
+            out.append({**c, "message_count":
+                        len(repo.list_messages(c["id"]))})
+        return {"status": "ok", "conversations": out, "count": len(out)}
+    finally:
+        db.close()
+
+
+def op_dev_chat_conversation_get(params):
+    """Retourne une conversation + ses messages (chargement au switch)."""
+    conv_id = params.get("conversation_id")
+    if not conv_id:
+        return {"status": "error", "error": "conversation_id requis"}
+    repo, db = _conv_repo()
+    try:
+        conv = repo.get(int(conv_id))
+        if not conv:
+            return {"status": "error", "error": "conversation introuvable"}
+        messages = repo.list_messages(int(conv_id))
+        return {"status": "ok", "conversation": conv, "messages": messages}
+    finally:
+        db.close()
+
+
+def op_dev_chat_conversation_create(params):
+    """Crée une conversation pour un agent pilote."""
+    agent_id = params.get("agent_id")
+    if not agent_id:
+        return {"status": "error", "error": "agent_id requis"}
+    repo, db = _conv_repo()
+    try:
+        cid = repo.create(int(agent_id),
+                          name=params.get("name", ""),
+                          workspace_id=params.get("workspace_id"))
+        return {"status": "ok", "conversation_id": cid}
+    finally:
+        db.close()
+
+
+def op_dev_chat_conversation_delete(params):
+    """Supprime une conversation."""
+    conv_id = params.get("conversation_id")
+    if not conv_id:
+        return {"status": "error", "error": "conversation_id requis"}
+    repo, db = _conv_repo()
+    try:
+        ok = repo.delete(int(conv_id))
+        return {"status": "ok" if ok else "error", "deleted": ok}
+    finally:
+        db.close()
+
+
+def op_dev_chat_conversation_rename(params):
+    """Renomme une conversation (nommage automatique / manuel)."""
+    conv_id = params.get("conversation_id")
+    name = (params.get("name") or "").strip()
+    if not conv_id or not name:
+        return {"status": "error", "error": "conversation_id et name requis"}
+    repo, db = _conv_repo()
+    try:
+        ok = repo.rename(int(conv_id), name)
+        return {"status": "ok" if ok else "error", "renamed": ok}
+    finally:
+        db.close()
+
+
 register("dev-chat/send", op_dev_chat_send)
 register_streaming("dev-chat/stream", op_dev_chat_stream)
+register("dev-chat/conversations",      op_dev_chat_conversations)
+register("dev-chat/conversation/get",   op_dev_chat_conversation_get)
+register("dev-chat/conversation/create", op_dev_chat_conversation_create)
+register("dev-chat/conversation/delete", op_dev_chat_conversation_delete)
+register("dev-chat/conversation/rename", op_dev_chat_conversation_rename)

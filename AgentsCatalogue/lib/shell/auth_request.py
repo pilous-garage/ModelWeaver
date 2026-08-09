@@ -71,6 +71,7 @@ class AuthGrant:
         source: str = "leader",
         granted_by: Optional[str] = None,
         created_at: Optional[float] = None,
+        conversation_id: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self.action = action
@@ -80,6 +81,10 @@ class AuthGrant:
         self.source = source
         self.granted_by = granted_by
         self.created_at = created_at or time.time()
+        # Portée conversation : si définie, le grant ne vaut QUE pour cette
+        # conversation (un agent chat avec plusieurs conversations ne partage
+        # pas ses autorisations entre elles).
+        self.conversation_id = conversation_id
         self._consumed_once = False
 
     @property
@@ -111,6 +116,7 @@ class AuthGrant:
             "source": self.source,
             "granted_by": self.granted_by,
             "created_at": self.created_at,
+            "conversation_id": self.conversation_id,
             "consumed_once": self._consumed_once,
         }
 
@@ -129,6 +135,7 @@ class AuthorizationRequest:
         ttl: float = 300.0,
         scope: AuthScope = AuthScope.ONCE,
         approver_level: str = "leader",  # "leader" d'abord, puis "human"
+        conversation_id: Optional[str] = None,
     ):
         self.request_id = uuid.uuid4().hex[:12]
         self.agent_id = agent_id
@@ -145,6 +152,7 @@ class AuthorizationRequest:
         self.ttl = ttl
         self.scope = scope
         self.approver_level = approver_level  # leader → human (escalade)
+        self.conversation_id = conversation_id
         # Portée appliquée à la décision (fixée au moment de la résolution).
         self.resolved_scope: Optional[AuthScope] = None
 
@@ -199,6 +207,7 @@ class AuthorizationRequest:
             "scope": self.scope.value,
             "approver_level": self.approver_level,
             "resolved_scope": self.resolved_scope.value if self.resolved_scope else None,
+            "conversation_id": self.conversation_id,
         }
 
     def __repr__(self) -> str:
@@ -309,6 +318,7 @@ class AuthRequestHandler:
             scope=req.resolved_scope or req.scope,
             source=source,
             granted_by=approver_id,
+            conversation_id=req.conversation_id,
         )
         self._grants.setdefault(agent_id, []).append(g)
         # Nettoyer les grants expirés de cet agent (paresseux).
@@ -376,23 +386,37 @@ class AuthRequestHandler:
     # ── grants / denies mémorisés ─────────────────────
 
     def is_granted(self, agent_id: str, action: str, target: Dict[str, Any],
-                   consume_once: bool = True) -> bool:
-        """Un grant accordé (non expiré) existe pour cet agent/action/cible ?"""
+                   consume_once: bool = True,
+                   conversation_id: Optional[str] = None) -> bool:
+        """Un grant accordé (non expiré) existe pour cet agent/action/cible ?
+
+        Si `conversation_id` est fourni, un grant SCOPÉ à une AUTRE
+        conversation ne compte pas : les autorisations par conversation sont
+        isolées (un agent chat ne partage pas ses grants entre conversations).
+        """
         key = _target_key(action, target)
         for g in self._grants.get(agent_id, []):
             if g.granted and g.action == action and g.target_key == key \
                     and not g.is_expired:
+                if conversation_id is not None \
+                        and g.conversation_id is not None \
+                        and g.conversation_id != str(conversation_id):
+                    continue
                 if consume_once and g.scope == AuthScope.ONCE:
                     g.consume_once()
                 return True
         return False
 
-    def is_denied(self, agent_id: str, action: str, target: Dict[str, Any]) -> bool:
+    def is_denied(self, agent_id: str, action: str, target: Dict[str, Any],
+                  conversation_id: Optional[str] = None) -> bool:
         """Un refus mémorisé (non expiré) existe pour cet agent/action/cible ?"""
         key = _target_key(action, target)
         return any(
             not g.granted and g.action == action and g.target_key == key
             and not g.is_expired
+            and not (conversation_id is not None
+                     and g.conversation_id is not None
+                     and g.conversation_id != str(conversation_id))
             for g in self._grants.get(agent_id, [])
         )
 

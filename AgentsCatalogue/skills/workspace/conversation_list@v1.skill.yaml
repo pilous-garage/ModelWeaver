@@ -1,0 +1,18 @@
+name: workspace/conversation_list@v1
+category: workspace
+description: Liste les conversations de chat du pilote (session active + historique).
+inputs:
+  conversation_id:
+    type: integer
+    required: false
+    description: Optionnel — si fourni, détail + messages de cette conversation
+outputs:
+  ok:
+    type: boolean
+  conversations:
+    type: array
+  count:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.conversation.list_conversations
