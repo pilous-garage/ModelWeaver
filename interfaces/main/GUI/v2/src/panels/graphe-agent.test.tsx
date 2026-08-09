@@ -77,36 +77,40 @@ describe('GrapheAgentPanel', () => {
 });
 
 describe('agentYamlToTaskflow', () => {
-  it('déduit consommation + production d\'un greedy-coder (end_exec → code)', () => {
+  it('déduit les steps + tokens (pick coding → end_exec → code_review)', () => {
     const data = {
       role: 'codeur',
       entrypoints: { main: { steps: [
-        { id: 'pick', type: 'call', fn: 'workspace/task_claim_next@v1', inputs: { role_required: '{{role_required}}' } },
+        { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
+          inputs: { task_types: '[{type: coding, max_difficulty: expert}]' } },
         { id: 'clone', type: 'call', fn: 'git/git_clone@v1' },
         { id: 'exec_loop', type: 'while', body: { steps: [
           { id: 'do_work', type: 'llm_call' },
-          { id: 'post_check', type: 'call', fn: 'git/end_exec@v1' },
+          { id: 'post', type: 'call', fn: 'git/end_exec@v1' },
         ] } },
-        { id: 'sleep', type: 'call', fn: 'workspace/wait_for@v1' },
+        { id: 'end', type: 'end' },
       ] } },
     };
     const g = agentYamlToTaskflow(data, 'greedy-coder');
     const types = g.nodes.map((n: any) => n.type);
     const ids = g.nodes.map((n: any) => n.id);
-    // Token consommé : role_required résolu (codeur → coder_senior), PAS le placeholder
+    // Steps présents (y compris le corps de boucle)
+    expect(types).toContain('call');
+    expect(types).toContain('llm');
+    // Token-in : coding (type pioché, pas le placeholder)
     expect(types).toContain('token-in');
-    expect(ids).toContain('coder_senior');
-    expect(ids).not.toContain('{{role_required}}');
-    // Token produit : code (end_exec détecté dans le body de la boucle)
+    expect(ids.some((x: string) => x === 'coding')).toBe(true);
+    // Token-out : code_review (transition produite par end_exec)
     expect(types).toContain('token-out');
-    expect(ids).toContain('code');
+    expect(ids.some((x: string) => x.includes('code_review'))).toBe(true);
   });
 
-  it('résout le role_required par défaut quand le rôle est inconnu', () => {
+  it('résout le task_type par défaut quand le rôle est inconnu', () => {
     const data = { role: 'explore', entrypoints: { main: { steps: [
-      { id: 'pick', type: 'call', fn: 'workspace/task_claim_next@v1', inputs: { role_required: '{{role_required}}' } },
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
+        inputs: { task_types: '[{type: exploration, max_difficulty: expert}]' } },
     ] } } };
     const g = agentYamlToTaskflow(data, 'explore');
-    expect(g.nodes.map((n: any) => n.id)).toContain('explore');
+    expect(g.nodes.map((n: any) => n.id)).toContain('exploration');
   });
 });
