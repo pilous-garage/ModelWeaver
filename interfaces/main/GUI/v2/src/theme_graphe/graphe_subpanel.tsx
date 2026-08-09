@@ -15,7 +15,7 @@ import React, { useMemo, useCallback } from 'react';
 import { parse as yamlParse } from 'yaml';
 import {
   ReactFlow, Background, Controls, useNodesState, useEdgesState,
-  Position, type Node, type Edge, type NodeProps,
+  Handle, Position, type Node, type Edge, type NodeProps,
 } from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
@@ -59,6 +59,7 @@ function layoutNodes(
 function FlowNode({ data }: NodeProps & { data?: any }) {
   const n: any = data?.n;
   const st: any = data?.style;
+  const hs = { width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' };
   return (
     <div style={{
       width: '100%', height: '100%', background: st?.color, border: `1.5px solid ${st?.border}`,
@@ -67,6 +68,16 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
     }}>
       {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+      {/* Chaque côté expose un handle source ET un handle target (ids distincts)
+          → toute combinaison sourceSide/targetSide est connectable. */}
+      <Handle type="source" position={Position.Left} id="ws" style={hs} />
+      <Handle type="target" position={Position.Left} id="wt" style={hs} />
+      <Handle type="source" position={Position.Right} id="es" style={hs} />
+      <Handle type="target" position={Position.Right} id="et" style={hs} />
+      <Handle type="source" position={Position.Top} id="ns" style={hs} />
+      <Handle type="target" position={Position.Top} id="nt" style={hs} />
+      <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
+      <Handle type="target" position={Position.Bottom} id="st" style={hs} />
     </div>
   );
 }
@@ -106,17 +117,19 @@ function toFlowEdges(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: Lay
     const labelIn = e.vars?.label_in;
     const labelOut = e.vars?.label_out;
     const pt = byKey.get(`${e.from}|${e.to}`);
-    // Layout par côtés : sourcePosition/targetPosition (React Flow les place
-    // automatiquement au centre du côté choisi). Si un côté est inconnu, on
-    // laisse React Flow choisir (jamais d'arête perdue).
-    const sourcePosition = pt ? sideToPosition(pt.s) : undefined;
-    const targetPosition = pt ? sideToPosition(pt.t) : undefined;
+    // Layout par côtés : chaque arête référence le handle source/target du côté
+    // choisi (es/ws/ns/ss pour source, et/wt/nt/st pour target). Défaut : droite
+    // pour source, gauche pour target (toujours connectable).
+    const s = pt?.s ?? 'e';
+    const t = pt?.t ?? 'w';
+    const sourceHandle = `${s}s`;
+    const targetHandle = `${t}t`;
     return {
       id: `${e.from}->${e.to}-${i}`,
       source: e.from,
       target: e.to,
-      sourcePosition,
-      targetPosition,
+      sourceHandle,
+      targetHandle,
       label: e.label || (labelIn && labelOut ? `${labelIn} → ${labelOut}` : undefined),
       animated: e.type === 'token',
       style: { stroke: st.color, strokeDasharray: st.style === 'dashed' ? '5 4' : st.style === 'dotted' ? '2 3' : undefined },
