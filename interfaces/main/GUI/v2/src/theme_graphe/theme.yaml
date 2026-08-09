@@ -23,6 +23,20 @@ nodes:
     icon: "⏹"
     color: "#f38ba8"
     border: "#fb7185"
+  # Tokens de TÂCHES (vue taskflow) — colorimétrie DISTINCTE des entry/exit
+  # du FSM : entrées cyan (consommées), sorties violet (produites).
+  token-in:
+    shape: circle
+    icon: "◉"
+    color: "#22d3ee"
+    border: "#06b6d4"
+    thick: true
+  token-out:
+    shape: circle
+    icon: "◉"
+    color: "#c084fc"
+    border: "#a855f7"
+    thick: true
   call:
     shape: rounded
     icon: "🧩"

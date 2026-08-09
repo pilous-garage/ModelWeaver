@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { GrapheAgentPanel } from '../panels/graphe-agent.panel.tsx';
+import { GrapheAgentPanel, agentYamlToTaskflow } from '../panels/graphe-agent.panel.tsx';
 
 // Polyfill ResizeObserver (React Flow l'utilise, absent en jsdom).
 class ResizeObserverMock {
@@ -73,5 +73,40 @@ describe('GrapheAgentPanel', () => {
     await waitFor(() => screen.getByText(/codeur@v2/));
     fireEvent.click(screen.getByText('panels.graphe-agent.yaml'));
     await waitFor(() => expect(screen.getByText(/name: codeur@v2/)).toBeTruthy());
+  });
+});
+
+describe('agentYamlToTaskflow', () => {
+  it('déduit consommation + production d\'un greedy-coder (end_exec → code)', () => {
+    const data = {
+      role: 'codeur',
+      entrypoints: { main: { steps: [
+        { id: 'pick', type: 'call', fn: 'workspace/task_claim_next@v1', inputs: { role_required: '{{role_required}}' } },
+        { id: 'clone', type: 'call', fn: 'git/git_clone@v1' },
+        { id: 'exec_loop', type: 'while', body: { steps: [
+          { id: 'do_work', type: 'llm_call' },
+          { id: 'post_check', type: 'call', fn: 'git/end_exec@v1' },
+        ] } },
+        { id: 'sleep', type: 'call', fn: 'workspace/wait_for@v1' },
+      ] } },
+    };
+    const g = agentYamlToTaskflow(data, 'greedy-coder');
+    const types = g.nodes.map((n: any) => n.type);
+    const ids = g.nodes.map((n: any) => n.id);
+    // Token consommé : role_required résolu (codeur → coder_senior), PAS le placeholder
+    expect(types).toContain('token-in');
+    expect(ids).toContain('coder_senior');
+    expect(ids).not.toContain('{{role_required}}');
+    // Token produit : code (end_exec détecté dans le body de la boucle)
+    expect(types).toContain('token-out');
+    expect(ids).toContain('code');
+  });
+
+  it('résout le role_required par défaut quand le rôle est inconnu', () => {
+    const data = { role: 'explore', entrypoints: { main: { steps: [
+      { id: 'pick', type: 'call', fn: 'workspace/task_claim_next@v1', inputs: { role_required: '{{role_required}}' } },
+    ] } } };
+    const g = agentYamlToTaskflow(data, 'explore');
+    expect(g.nodes.map((n: any) => n.id)).toContain('explore');
   });
 });

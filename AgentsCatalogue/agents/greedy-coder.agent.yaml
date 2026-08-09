@@ -17,6 +17,11 @@ personality:
     Réponds en français, code en anglais."
 bundles:
   - dev
+# Types de tâches que ce rôle GÉNÈRE (graphe taskflow) : un coder qui termine
+# livre son travail → une tâche de review (le reviewer la valide). Il peut
+# aussi demander une re-découpe (ask_analysis) quand c'est trop difficile.
+generates:
+  - reviewer
 model_requirements:
   min_context_tokens: 32768
   capabilities:

@@ -16,10 +16,27 @@ from typing import Any, Dict, List
 
 
 def _load_role_config(role: str, agent_name: str = "") -> Dict[str, Any]:
-    """Charge le config .agent.yaml du rôle (generates) — best-effort."""
+    """Charge le config .agent.yaml du rôle (generates) — best-effort.
+
+    Si l'agent est un membre d'une team (nom `team:X/nom`), on cherche d'abord
+    la référence catalogue (`ref` du manifest) pour charger LE bon .agent.yaml
+    (ex. greedy-coder au lieu de codeur@v2). Sinon, chargement par rôle.
+    """
+    ref = ""
+    if "/" in agent_name and agent_name.startswith("team:"):
+        try:
+            from services.team_spec import TeamSpec
+            team = agent_name.split("/")[0][len("team:"):]
+            spec = TeamSpec.from_yaml(f"services/manifests/teams/{team}.team.yaml")
+            member = next((m for m in spec.members
+                           if m.agent_name == agent_name.split("/", 1)[1]), None)
+            if member and getattr(member, "ref", ""):
+                ref = member.ref
+        except Exception:
+            ref = ""
     try:
         from services.api.catalogue_agents import _load_agent_yaml_config
-        cfg = _load_agent_yaml_config(role, agent_name) or {}
+        cfg = _load_agent_yaml_config(role, agent_name, catalogue_ref=ref) or {}
         return cfg
     except Exception:
         return {}
@@ -73,8 +90,9 @@ def build_taskflow(team_name: str = "") -> Dict[str, Any]:
         consume_role = ROLE_TO_TASK.get(role_type, role_type)
         consumes = _compatible_roles(consume_role) if consume_role else []
 
-        # Génération : champ `generates` du .agent.yaml
-        cfg = _load_role_config(role_type, a["name"].split("/")[-1])
+        # Génération : champ `generates` du .agent.yaml (via la ref du membre
+        # de team si présent, sinon par rôle).
+        cfg = _load_role_config(role_type, a["name"])
         generates = list(cfg.get("generates") or [])
 
         # Un nœud par type de rôle (fusionner les agents du même type)

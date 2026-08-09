@@ -17,6 +17,13 @@ personality:
     Réponds en français."
 bundles:
   - dev
+# Un reviewer qui trouve des problèmes crée une tâche corrective (même rôle
+# d'origine) ; une validation propre n'en crée pas.
+generates:
+  - coder_senior
+  - coder_mid
+  - coder_junior
+  - tester
 model_requirements:
   min_context_tokens: 32768
   capabilities:

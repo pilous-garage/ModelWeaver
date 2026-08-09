@@ -14,6 +14,11 @@ personality:
 bundles:
   - test
   - dev
+# Un test qui échoue génère une tâche corrective de codage.
+generates:
+  - coder_senior
+  - coder_mid
+  - coder_junior
 model_requirements:
   min_context_tokens: 16384
   capabilities:

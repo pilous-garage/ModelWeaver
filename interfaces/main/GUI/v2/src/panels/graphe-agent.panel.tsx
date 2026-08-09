@@ -56,54 +56,84 @@ function agentYamlToGraph(data: any, name: string): any {
 
 // Vue TASKFLOW : le graphe des tokens consommés/produits.
 // Chaque step qui consomme (task_claim_next) → token ENTRÉE (ref du rôle).
-// Chaque step qui relâche (task_done, wait_for, git_push) → token SORTIE.
+// Chaque step qui relâche (task_done, wait_for, git_push, end_exec, task_verdict,
+// task_create) → token SORTIE.
 // C'est la « boîte noire » : l'agent au centre, les tokens entrent/sortent.
-function agentYamlToTaskflow(data: any, name: string): any {
+export function agentYamlToTaskflow(data: any, name: string): any {
   const steps: any[] = data?.entrypoints?.main?.steps ?? [];
   const nodes: any[] = [
     { id: 'agent', type: 'agent', label: name, ref: name, tags: ['self'], vars: {} },
   ];
   const edges: any[] = [];
 
+  // Résoudre le placeholder {{role_required}} → le rôle réel de l'agent
+  // (ex. greedy-coder → codeur). ROLE_TO_TASK local : codeur→coder_senior,
+  // relecteur→reviewer, test_runner→tester, etc.
+  const role = data?.role ?? '';
+  const roleToTask: Record<string, string> = {
+    codeur: 'coder_senior', relecteur: 'reviewer', test_runner: 'tester',
+    explore: 'explore', planificateur: 'analyst', architecte: 'analyst',
+    orchestrateur: 'merger',
+  };
+  const taskRole = roleToTask[role] ?? role;
+
+  const resolveRole = (v: any): string => {
+    const s = String(v ?? '');
+    if (s.includes('{{')) return taskRole || s.replace(/[{}]/g, '');
+    return s || 'task';
+  };
+
   // Déduire les tokens consommés (entrypoints) et produits (exit points).
   const consumed = new Set<string>();
   const produced = new Set<string>();
-  for (const s of steps) {
-    const fn: string = s.fn ?? '';
-    if (fn.includes('task_claim')) {
-      const role = s.inputs?.role_required || 'task';
-      consumed.add(role);
-      // arête : token → agent
-      edges.push({ from: role, to: 'agent', label: 'consomme', type: 'token' });
+  const walk = (stepList: any[]) => {
+    for (const s of stepList) {
+      const fn: string = s.fn ?? '';
+      if (fn.includes('task_claim')) {
+        const rr = resolveRole(s.inputs?.role_required ?? s.inputs?.role ?? '');
+        consumed.add(rr);
+        edges.push({ from: rr, to: 'agent', label: 'consomme', type: 'token' });
+      }
+      if (fn.includes('issue') && s.type === 'call') consumed.add('issue');
+      // Productions
+      if (fn.includes('task_done')) {
+        produced.add('done');
+        edges.push({ from: 'agent', to: 'done', label: 'done', type: 'success' });
+      }
+      if (fn.includes('wait_for')) {
+        produced.add('wait_for');
+        edges.push({ from: 'agent', to: 'wait_for', label: 'sleep', type: 'token' });
+      }
+      if (fn.includes('git_push') || fn.includes('git_commit')
+          || fn.includes('end_exec')) {
+        produced.add('code');
+        edges.push({ from: 'agent', to: 'code', label: 'code', type: 'success' });
+      }
+      if (fn.includes('task_create')) {
+        const rrc = resolveRole(s.inputs?.role_required ?? 'task');
+        produced.add(`task_${rrc}`);
+        edges.push({ from: 'agent', to: `task_${rrc}`, label: 'task', type: 'token' });
+      }
+      if (fn.includes('task_verdict')) {
+        produced.add('verdict');
+        edges.push({ from: 'agent', to: 'verdict', label: 'verdict', type: 'token' });
+      }
+      if (s.type === 'end' && s.status === 'FAILED') {
+        produced.add('fail');
+        edges.push({ from: 'agent', to: 'fail', label: 'fail', type: 'error' });
+      }
+      // Corps de boucle
+      if (s.type === 'while' && s.body?.steps) walk(s.body.steps);
     }
-    if (fn.includes('issue') && (s.type === 'call')) consumed.add('issue');
-    if (fn.includes('task_done')) {
-      produced.add('done');
-      edges.push({ from: 'agent', to: 'done', label: 'done', type: 'success' });
-    }
-    if (fn.includes('wait_for')) {
-      produced.add('wait_for');
-      edges.push({ from: 'agent', to: 'wait_for', label: 'sleep', type: 'token' });
-    }
-    if (fn.includes('git_push') || fn.includes('git_commit')) {
-      produced.add('code');
-      edges.push({ from: 'agent', to: 'code', label: 'code', type: 'success' });
-    }
-    if (fn.includes('task_create')) {
-      produced.add('task');
-      edges.push({ from: 'agent', to: 'task', label: 'task', type: 'token' });
-    }
-    if (s.type === 'end' && s.status === 'FAILED') {
-      produced.add('fail');
-      edges.push({ from: 'agent', to: 'fail', label: 'fail', type: 'error' });
-    }
-  }
-  // Nœuds tokens (entrées à gauche, sorties à droite).
+  };
+  walk(steps);
+
+  // Nœuds tokens : entrées à gauche (token-in), sorties à droite (token-out).
   for (const t of consumed) {
-    nodes.push({ id: t, type: 'entry', label: t, ref: t, tags: ['token-in'], vars: {} });
+    nodes.push({ id: t, type: 'token-in', label: t, ref: t, tags: ['token-in'], vars: {} });
   }
   for (const t of produced) {
-    nodes.push({ id: t, type: 'exit', label: t, ref: t, tags: ['token-out'], vars: {} });
+    nodes.push({ id: t, type: 'token-out', label: t, ref: t, tags: ['token-out'], vars: {} });
   }
   return { id: `taskflow-${name}`, title: `${name} — taskflow`, nodes, edges };
 }
