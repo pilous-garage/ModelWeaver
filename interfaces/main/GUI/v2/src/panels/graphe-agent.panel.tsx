@@ -54,7 +54,7 @@ function agentYamlToGraph(data: any, name: string): any {
 }
 
 
-function GrapheAgentPanel({ ctx }: { ctx: any }) {
+export function GrapheAgentPanel({ ctx }: { ctx: any }) {
   const { data } = usePoll<any>(
     ctx.api.post, 'catalogue/agents/list', {}, 10000,
     (res) => res?.result ?? {}, true,
