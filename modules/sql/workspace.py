@@ -532,6 +532,19 @@ class TaskRepository:
         self.conn.commit()
         return self.get(task_id)
 
+    def release(self, task_id: int, freedby: str = "") -> Optional[Dict[str, Any]]:
+        """Libère un token après échec d'un agent : repasse en todo, vide
+        l'assignation, et pose `freedby` (le dernier agent qui a échoué) pour
+        permettre la rotation (l'ordonnanceur peut exclure/pénaliser cet agent,
+        et un autre membre reprend le token)."""
+        self.conn.execute(
+            "UPDATE tasks SET status = 'todo', assigned_to = '', "
+            "freedby = ?, updated_at = ? "
+            "WHERE task_id = ? AND workspace_id = ?",
+            (freedby, datetime.utcnow().isoformat(), task_id, self.wid))
+        self.conn.commit()
+        return self.get(task_id)
+
     def add_file(self, task_id: int, path: str, role: str = "source") -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO task_files (task_id, path, role) VALUES (?, ?, ?)",
@@ -753,6 +766,8 @@ class WorkspaceDB:
             # V0.12 : ordonnancement (deadline + durée estimée).
             _add_column_if_missing(self.conn, "tasks", "deadline", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "estimated_minutes", "INTEGER DEFAULT 0")
+            # V0.13 : rotation des agents (dernier échec → un autre reprend).
+            _add_column_if_missing(self.conn, "tasks", "freedby", "TEXT DEFAULT ''")
             # V0.10 : rôle requis → type de tâche (étape du pipeline). Une
             # tâche 'coder_senior' devient task_type 'coding' (le niveau de
             # l'agent borne la difficulté piochable). Clean des données (rien

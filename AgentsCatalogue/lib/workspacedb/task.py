@@ -217,7 +217,52 @@ def modify_token(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _group_of(scope, task_id: int, include_self_primordial: bool = True):
+def release_token(inputs: dict, home: str) -> dict:
+    """token_task_release — libère un token après échec d'un agent.
+
+    Repasse le token en 'todo' (dans la pool), vide l'assignation, pose
+    `freedby` (le dernier agent qui a échoué → rotation) ET crée un token
+    `erreur_agent` (avec le descriptif) qu'un analyste_error piochera plus
+    tard pour comprendre l'échec (recodage agent, modification tâche,
+    réparation bridge, quota épuisé…).
+
+    inputs :
+      - workspace_id, task_id
+      - freedby : agent qui a échoué
+      - error : descriptif de l'erreur (pour le token erreur_agent)
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    freedby = inputs.get("freedby", "") or ""
+    error_desc = inputs.get("error", "") or ""
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if not task:
+            db.close()
+            return {"ok": False, "error": "tâche introuvable"}
+        # 1) Libérer le token : todo, plus d'assignation, freedby posé.
+        released = scope.tasks.release(int(task_id), freedby=freedby)
+        # 2) Produire le token erreur_agent (pour l'analyste_error futur).
+        err_task = scope.tasks.create(
+            title=f"erreur_agent: {task.get('title', '')}",
+            description=error_desc or "échec de l'agent (sans détail)",
+            task_type="erreur_agent",
+            difficulty="easy",
+            team_id=task.get("team_id", -1),
+            repo=task.get("repo", ""),
+            primordial=0)
+        # Le token erreur_agent référence le token échoué (lien de filiation).
+        scope.tasks.add_dependency(err_task["task_id"], int(task_id), "done")
+        db.close()
+        return {"ok": True, "task": released,
+                "released_task_id": int(task_id),
+                "error_task_id": err_task["task_id"],
+                "freedby": freedby}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
     """Groupe de la tâche pour clear/cancel = la tâche + ses ANCÊTRES
     secondaires (les travaux splittés B,C dont un merge_split dépend).
     Les primordiales (racines) ne sont jamais incluses sauf si
@@ -670,4 +715,4 @@ def list_tasks(inputs: dict, home: str) -> dict:
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
               "get_files", "verdict", "create_token", "pick_token",
-              "modify_token", "clear_task", "cancel_task"]
+              "modify_token", "clear_task", "cancel_task", "release_token"]

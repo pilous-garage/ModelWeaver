@@ -1,0 +1,33 @@
+name: workflow/exit_loop_too_hard@v1
+category: workflow
+description: >
+  Tool appelé par le LLM quand la tâche est TROP DIFFICILE pour lui. Bump de
+  difficulté (easy→medium→hard→expert, plafonné au niveau max de la team) si
+  possible ; sinon demande une re-découpe (analysis-split) — un token
+  `analysis` est créé pour qu'un analyste découpe le travail autrement.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  reason:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  bumped:
+    type: boolean
+  new_difficulty:
+    type: string
+  ask_analysis:
+    type: boolean
+  analysis_task_id:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: workflow.exit_loop_too_hard.exec

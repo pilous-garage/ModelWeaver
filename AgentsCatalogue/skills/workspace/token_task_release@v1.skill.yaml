@@ -1,0 +1,37 @@
+name: workspace/token_task_release@v1
+category: workspace
+description: >
+  LIBÈRE un token après échec d'un agent : repasse le token en todo (dans la
+  pool), vide l'assignation, pose freedby (le dernier agent qui a échoué →
+  rotation : un autre membre reprendra), ET produit un token `erreur_agent`
+  avec le descriptif de l'erreur (qu'un analyste_error analysera plus tard :
+  recodage agent, modification tâche, réparation bridge, quota épuisé…).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  freedby:
+    type: string
+    required: false
+    description: "Agent qui a échoué (rotation)."
+  error:
+    type: string
+    required: false
+    description: "Descriptif de l'erreur → token erreur_agent."
+outputs:
+  ok:
+    type: boolean
+  released_task_id:
+    type: integer
+  error_task_id:
+    type: integer
+  freedby:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.release_token

@@ -489,6 +489,60 @@ def git_push_remote(inputs: dict, home: str) -> dict:
     return _bare("push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
 
 
+def git_verify(inputs: dict, home: str) -> dict:
+    """VÉRIFIE le travail (AUTO, pas de LLM) : stage + diff vs base + garde
+    non-destructif. Retourne ok=True si le travail est réel et non-destructif,
+    ok=False sinon (le FSM décide : check_with_llm ou retour en boucle).
+
+    NE commit PAS, NE push PAS — c'est la vérif avant finalisation.
+    """
+    pid = inputs.get("project_id", "")
+    aid = inputs.get("agent_id", "")
+    if not pid or not aid:
+        return {"ok": False, "error": "project_id et agent_id requis"}
+    root, err = _clone_or_err({"project_id": pid, "agent_id": aid})
+    if err:
+        return err
+    # Point de départ du diff : base_commit, sinon HEAD.
+    base = (inputs.get("base_commit") or "").strip()
+    if not base:
+        r = _git_run(root, ["rev-parse", "-q", "HEAD"])
+        base = r.get("stdout", "").strip() or ""
+    # Stage + diff vs base
+    _git_identity(root, aid)
+    _git_add_safe(root)
+    diff = _git_run(root, ["diff", "--cached", "--stat", base] if base
+                    else ["diff", "--cached", "--stat"])
+    if diff.get("exit_code") != 0:
+        return {"ok": False, "error": f"diff vs base impossible: {diff.get('stderr','')[:200]}"}
+    stat = diff.get("stdout", "")
+    if not stat.strip():
+        return {"ok": False,
+                "error": "aucun changement vs base — travail non livré "
+                         "(écris réellement le code)"}
+    # Garde NON-DESTRUCTIF : ratio fichiers supprimés / modifiés.
+    del_stat = _git_run(root, ["diff", "--cached", "--name-status", base] if base
+                        else ["diff", "--cached", "--name-status"])
+    del_names = []
+    mod_names = []
+    for line in (del_stat.get("stdout", "") or "").splitlines():
+        parts = line.split("\t")
+        status = (parts[0] or "").strip() if parts else ""
+        fname = parts[-1].strip() if parts else ""
+        if status.startswith("D"):
+            del_names.append(fname)
+        elif fname and status not in ("A",):
+            mod_names.append(fname)
+    total = len(del_names) + len(mod_names)
+    if total > 0 and len(del_names) / total >= 0.30:
+        return {"ok": False,
+                "error": (f"diff DESTRUCTIF refusé : {len(del_names)}/{total} "
+                          f"fichiers supprimés ({', '.join(del_names[:8])}…). "
+                          f"Restaure les fichiers avant de continuer.")}
+    return {"ok": True, "files_modified": mod_names, "files_deleted": del_names,
+            "stdout": stat.strip(), "base": base}
+
+
 def end_exec(inputs: dict, home: str) -> dict:
     """TERMINE l'exécution d'une tâche de code : vérifie que le travail est
     réel et non-destructif, committe, pousse sur le repo central local, et
@@ -629,5 +683,5 @@ __skills__ = [
     "repo_init", "repo_list", "git_clone", "git_branch", "git_checkout",
     "git_commit", "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
-    "git_push_remote", "end_exec",
+    "git_push_remote", "end_exec", "git_verify",
 ]

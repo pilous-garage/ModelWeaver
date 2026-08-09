@@ -1,0 +1,9 @@
+name: work_loop
+description: "Tools de la boucle de travail du greedy : marquer la fin (it_is_done), trop difficile (exit_loop_too_hard), réponse au max_loop (making_progress). Le LLM ne reçoit QUE ces tools pendant la boucle."
+permissions:
+  - tool: "*"
+    action: allow
+skills:
+  - workflow/it_is_done@v1
+  - workflow/exit_loop_too_hard@v1
+  - workflow/making_progress@v1

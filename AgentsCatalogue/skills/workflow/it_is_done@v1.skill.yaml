@@ -1,0 +1,22 @@
+name: workflow/it_is_done@v1
+category: workflow
+description: >
+  Tool appelé par le LLM quand il a FINI de coder (le travail est écrit,
+  la syntaxe vérifiée). Signale au FSM de sortir de la boucle de travail et
+  de passer à la vérification git (git_verif) puis à la finalisation.
+  NE fait aucune action elle-même — c'est un marqueur de fin de boucle.
+inputs:
+  summary:
+    type: string
+    required: false
+    description: "Résumé court de ce qui a été fait."
+outputs:
+  ok:
+    type: boolean
+  it_is_done:
+    type: boolean
+  summary:
+    type: string
+implementation:
+  type: python
+  function: workflow.it_is_done.exec

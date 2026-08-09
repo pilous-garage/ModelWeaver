@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- long + deadline courte → urgent ; en retard → max) + W_AGE*âge.
     deadline         TEXT DEFAULT '',
     estimated_minutes INTEGER DEFAULT 0,
+    -- Rotation des agents : le dernier agent qui a tenté la tâche et a échoué
+    -- (token_task_release le pose). Permet à l'ordonnanceur d'exclure/pénaliser
+    -- cet agent et de laisser un autre membre la reprendre.
+    freedby          TEXT DEFAULT '',
     -- Type de la tâche = étape du pipeline (coding, code_review, merger_code,
     -- testing_code, analysis, split, …). Un agent pioche les task_type qu'il
     -- sait traiter (liste passée au token_task_pick), avec un niveau max de

@@ -1,0 +1,31 @@
+name: git/verify@v1
+category: git
+description: >
+  VÉRIFIE le travail (AUTO, pas de LLM) : stage + diff vs le commit de base +
+  garde non-destructif (refuse si >30% de fichiers supprimés). Retourne
+  ok=True si le travail est réel et non-destructif, ok=False sinon. Ne commit
+  PAS, ne push PAS — c'est la vérification AVANT finalisation.
+inputs:
+  project_id:
+    type: string
+    required: true
+  agent_id:
+    type: string
+    required: false
+  base_commit:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  files_modified:
+    type: array
+  files_deleted:
+    type: array
+  base:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: git.git_verify

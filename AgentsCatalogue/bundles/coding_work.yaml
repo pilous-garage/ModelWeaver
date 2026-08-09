@@ -1,0 +1,17 @@
+name: coding_work
+description: "Bundle LÉGER de la boucle de travail d'un codeur : édition de fichiers + shell + syntaxe + marqueurs de boucle. Volontairement réduit (~10 tools) — le bundle dev complet (69 tools) explose le contexte LLM à chaque round."
+permissions:
+  - tool: "*"
+    action: allow
+skills:
+  - file/read_file@v1
+  - file/write_file@v1
+  - file/append_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/list_dir@v1
+  - system/check_syntax@v1
+  - shell/exec@v1
+  - workflow/it_is_done@v1
+  - workflow/exit_loop_too_hard@v1
+  - workflow/making_progress@v1

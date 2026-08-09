@@ -1,0 +1,23 @@
+name: workflow/check_work_state@v1
+category: workflow
+description: >
+  Examine le dernier travail du LLM (le output_capture d'un step llm_call, qui
+  contient la trace des tools appelés : it_is_done / exit_loop_too_hard /
+  making_progress) et retourne l'état :
+    - done     : le LLM a dit it_is_done (ou making_progress answer=done)
+    - too_hard : le LLM a dit exit_loop_too_hard (ou making_progress too_hard)
+    - continue : le LLM n'a rien signalé (reste en boucle)
+inputs:
+  last_work:
+    type: string
+    required: false
+    default: ""
+    description: "Le output_capture du step llm_call (trace des tools appelés)."
+outputs:
+  ok:
+    type: boolean
+  state:
+    type: string
+implementation:
+  type: python
+  function: workflow.check_work_state.exec

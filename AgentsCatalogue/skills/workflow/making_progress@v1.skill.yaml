@@ -1,0 +1,27 @@
+name: workflow/making_progress@v1
+category: workflow
+description: >
+  Tool appelé par le LLM quand la boucle de travail atteint max_loop, pour
+  répondre à la question "too hard ? did you make progress ?".
+    - making_progress : tu avances, continue → le FSM relance la boucle.
+    - too_hard : tu es bloqué → le FSM sort et gère (bump/split).
+inputs:
+  answer:
+    type: string
+    required: true
+    description: "making_progress | too_hard"
+  reason:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  making_progress:
+    type: boolean
+  too_hard:
+    type: boolean
+  reason:
+    type: string
+implementation:
+  type: python
+  function: workflow.making_progress.exec

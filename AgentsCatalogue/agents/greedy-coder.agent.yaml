@@ -1,20 +1,20 @@
 name: greedy-coder
 role: codeur
 description: "Codeur glouton intelligent — FSM: pick (pioche un token coding via
-  token_task_pick) → clone (repo du token) → checkout (branche/commit) →
-  allocation LLM (check_llm/ask_llm) → boucle de travail (llm_call, end_exec
-  quand fini) → transition du token (coding → code_review). La mécanique
-  (pick/clone/checkout/commit/transition) est automatique, le LLM ne fait que
-  le travail intellectuel."
+  token_task_pick) → git_step (clone/checkout) → allocation LLM → working_loop
+  (do_work LLM, tools it_is_done/exit_loop_too_hard, max_loop → making_progress)
+  → git_verif (AUTO) → check_with_llm si échec → finalisation (commit/push +
+  transition coding→code_review). too_hard → bump/split ; erreur → release.
+  La mécanique est automatique, le LLM ne fait que coder."
 personality:
   tone: ''
   system_prompt: "Tu es un codeur dans un swarm parallèle. Tu implémentes la
     description de ton token dans le clone git de ton workspace. Règles :
     1. Lis la description du token et les fichiers du projet.
     2. Écris réellement le code (file_write_file_v1), vérifie la syntaxe.
-    3. Quand tu estimes avoir fini, appelle le tool end_exec — TOUTE la
-       mécanique (git add, commit, push, transition du token vers code_review)
-       est automatique.
+    3. Quand tu as fini : appelle le tool it_is_done (la vérification git et la
+       finalisation sont automatiques). Si c'est vraiment trop difficile :
+       exit_loop_too_hard.
     4. Ne supprime jamais de fichiers existants sans raison.
     Réponds en français, code en anglais."
 bundles:
@@ -34,9 +34,9 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
-    max_iterations: 60
+    max_iterations: 80
     steps:
-    # ── 1. PICK : pioche un token coding (AUTO, pas de LLM) ──
+    # ── 1. PICK : pioche un token coding (AUTO) ──
     - id: pick
       type: call
       fn: workspace/token_task_pick@v1
@@ -66,25 +66,23 @@ entrypoints:
       type: set_variable
       name: repo_eff
       value: "{{project_id}}"
-      next: clone
+      next: git_step
     - id: repo_task
       type: set_variable
       name: repo_eff
       value: "{{task.repo}}"
-      next: clone
+      next: git_step
 
-    # ── 2. CLONE : le repo du token (AUTO) ──
-    - id: clone
+    # ── 2. GIT_STEP : clone + checkout (AUTO) ──
+    - id: git_step
       type: call
       fn: git/git_clone@v1
       inputs:
         project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
       on_error: fail
-      next: checkout
-
-    # ── 3. CHECKOUT : branche/commit du token (AUTO) ──
-    - id: checkout
+      next: git_checkout
+    - id: git_checkout
       type: call
       fn: git/git_checkout@v1
       inputs:
@@ -93,7 +91,7 @@ entrypoints:
         name: "{{task.branch}}"
       next: check_llm
 
-    # ── 4. CHECK_LLM : LLM déjà assigné ? (AUTO) ──
+    # ── 3. ALLOCATION LLM (AUTO) ──
     - id: check_llm
       type: call
       fn: workflow/check_llm@v1
@@ -103,9 +101,7 @@ entrypoints:
       capture:
         has_llm: has_llm
       on_error: ask_llm
-      next: exec_loop
-
-    # ── 5. ASK_LLM : allocation (AUTO) ──
+      next: working_loop
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -115,45 +111,19 @@ entrypoints:
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: llm_error
-      next: exec_loop
+      on_error: release
+      next: working_loop
 
-    # ── 5b. LLM_ERROR : classifier et brancher (AUTO) ──
-    - id: llm_error
-      type: call
-      fn: workflow/check_error_type@v1
-      inputs:
-        error: "{{_last_call_error}}"
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        action: err_action
-      next: err_branch
-    - id: err_branch
-      type: switch
-      variable: "{{err_action}}"
-      conditions:
-      - operator: EQUALS
-        value: "blacklist_provider"
-        next: fail
-      - operator: EQUALS
-        value: "context_reduce"
-        next: ask_llm
-      - operator: EQUALS
-        value: "switch_model"
-        next: ask_llm
-      default: sleep
-
-    # ── 6. EXEC_LOOP : boucle de travail (LE SEUL LLM) ──
-    - id: exec_loop
+    # ── 4. WORKING_LOOP : le LLM code (LE SEUL LLM) ──
+    - id: working_loop
       type: while
       condition:
-        variable: task_state
+        variable: work_done
         operator: NOT_EQUALS
-        value: "done"
+        value: "1"
       body:
         steps:
-        # Le LLM code ; il appelle end_exec (tool des bundles dev) quand fini.
+        # Le LLM code ; il appelle it_is_done (fini) ou exit_loop_too_hard.
         - id: do_work
           type: llm_call
           skill_prompt: |
@@ -165,89 +135,163 @@ entrypoints:
             Branche cible : {{task.branch}}
 
             Implémente le token. Quand tu as fini (code écrit, syntaxe vérifiée),
-            appelle IMMÉDIATEMENT le tool end_exec avec task_id={{task.task_id}},
-            workspace_id={{workspace_id}}, project_id={{repo_eff}},
-            agent_id={{agent_id}} (la transition vers code_review est auto).
+            appelle IMMÉDIATEMENT le tool it_is_done. Si c'est réellement trop
+            difficile, appelle exit_loop_too_hard.
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
-          bundles: ["dev"]
+          bundles: ["coding_work"]
           max_tokens: 4096
           temperature: 0.3
           output_capture: work_out
           next: check_done
-        # Vérifier l'état réel du token (AUTO)
+        # Vérifier : le LLM a-t-il dit it_is_done / exit_loop_too_hard ?
         - id: check_done
           type: call
-          fn: workspace/task_get@v1
+          fn: workflow/check_work_state@v1
           inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
+            last_work: "{{work_out}}"
           capture:
-            task: task_now
-          next: decide
-        # Le token a transitionné (code_review) → sortir ; sinon → verdict
-        - id: decide
+            state: work_state
+          next: decide_work
+        - id: decide_work
           type: switch
-          variable: "{{task_now.task_type}}"
+          variable: "{{work_state}}"
           conditions:
-          - operator: NOT_EQUALS
-            value: "coding"
-            next: break_loop
-          default: ask_verdict
-        - id: break_loop
+          - operator: EQUALS
+            value: "done"
+            next: exit_done
+          - operator: EQUALS
+            value: "too_hard"
+            next: exit_too_hard
+          default: continue_work
+        - id: exit_done
           type: set_variable
-          name: task_state
-          value: "done"
-          next: break
-        # Verdict du LLM : done | continue | error | to_difficult (tool)
-        - id: ask_verdict
-          type: llm_call
-          skill_prompt: |
-            Tu as travaillé sur le token {{task.task_id}} sans pouvoir le
-            transitionner (end_exec a refusé). Raison : {{work_out}}
-
-            Décide le verdict en appelant le tool task_verdict avec :
-            verdict=done | continue | error | to_difficult
-            task_id={{task.task_id}}, workspace_id={{workspace_id}},
-            task_type=coding.
-            - done : le token est réellement fait (utilise end_exec d'abord).
-            - continue : continue à travailler, je relance la boucle.
-            - error : impossible, signale l'erreur.
-            - to_difficult : trop dur — bump de difficulté automatique (ou
-              re-découpe si déjà au plafond).
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["workspace_verdict"]
-          max_tokens: 1024
-          temperature: 0.2
-          output_capture: verdict_out
-          next: check_after_verdict
-        - id: check_after_verdict
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_verdict
-        - id: decide_after_verdict
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "coding"
-            next: break_loop
-          default: continue_loop
-        - id: continue_loop
+          name: work_done
+          value: "1"
+          next: break_done
+        - id: break_done
+          type: break
+        - id: exit_too_hard
+          type: set_variable
+          name: work_done
+          value: "2"
+          next: break_hard
+        - id: break_hard
+          type: break
+        - id: continue_work
           type: continue
+      next: after_loop
 
-    # ── 7. FIN : le token a transitionné → terminer ──
+    # ── 4b. APRÈS BOUCLE : done → verif ; too_hard → handling ; sinon abandon ──
+    - id: after_loop
+      type: switch
+      variable: "{{work_done}}"
+      conditions:
+      - operator: EQUALS
+        value: "1"
+        next: git_verif
+      - operator: EQUALS
+        value: "2"
+        next: too_hard
+      default: release
+
+    # ── 5. GIT_VERIF : vérification automatique (pas de LLM) ──
+    - id: git_verif
+      type: call
+      fn: git/verify@v1
+      inputs:
+        project_id: "{{repo_eff}}"
+        agent_id: "{{agent_id}}"
+        base_commit: "{{task.commit_start}}"
+      capture:
+        files_modified: verif_files
+      on_error: check_with_llm
+      next: finalisation
+
+    # ── 5b. CHECK_WITH_LLM : la vérif a échoué — le LLM décide ──
+    - id: check_with_llm
+      type: llm_call
+      skill_prompt: |
+        La vérification git a échoué sur le token {{task.task_id}} :
+        {{_last_call_error}}
+
+        Décide : soit le travail est en fait bon (appelle it_is_done → je
+        finalise), soit il faut retravailler (appelle making_progress avec
+        answer=making_progress → je relance la boucle), soit c'est trop dur
+        (making_progress answer=too_hard).
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      bundles: ["coding_work"]
+      max_tokens: 1024
+      temperature: 0.2
+      output_capture: check_out
+      next: redecide
+
+    - id: redecide
+      type: call
+      fn: workflow/check_work_state@v1
+      inputs:
+        last_work: "{{check_out}}"
+      capture:
+        state: work_state
+      next: decide_retry
+    - id: decide_retry
+      type: switch
+      variable: "{{work_state}}"
+      conditions:
+      - operator: EQUALS
+        value: "done"
+        next: finalisation
+      - operator: EQUALS
+        value: "too_hard"
+        next: too_hard
+      default: back_to_loop
+    - id: back_to_loop
+      type: set_variable
+      name: work_done
+      value: "0"
+      next: working_loop
+
+    # ── 6. FINALISATION : commit + push + transition coding→code_review ──
+    - id: finalisation
+      type: call
+      fn: git/end_exec@v1
+      inputs:
+        project_id: "{{repo_eff}}"
+        agent_id: "{{agent_id}}"
+        task_id: "{{task.task_id}}"
+        workspace_id: "{{workspace_id}}"
+        new_task_type: "code_review"
+      on_error: release
+      next: end
+
+    # ── 7. TOO_HARD : bump difficulty ou re-découpe (AUTO) ──
+    - id: too_hard
+      type: call
+      fn: workflow/exit_loop_too_hard@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+        reason: "{{work_out}}"
+      next: end
+
+    # ── 8. RELEASE : échec → libérer le token + token erreur_agent ──
+    - id: release
+      type: call
+      fn: workspace/token_task_release@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+        freedby: "{{agent_id}}"
+        error: "{{_last_call_error}}"
+      next: end
+
+    # ── 9. FIN ──
     - id: end
       type: end
       status: SUCCESS
 
-    # ── 8. SLEEP : rien à piocher (AUTO) ──
+    # ── 10. SLEEP : rien à piocher (AUTO) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
@@ -259,7 +303,7 @@ entrypoints:
         agent_id: "{{agent_id}}"
       next: end
 
-    # ── 9. FAIL ──
+    # ── 11. FAIL ──
     - id: fail
       type: end
       status: FAILED
