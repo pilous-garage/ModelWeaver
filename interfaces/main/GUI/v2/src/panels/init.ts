@@ -39,6 +39,8 @@ import { Panel as AgentsEquipeLeger } from './agents-equipe-leger.panel.tsx';
 import { Panel as MonitoringLlmAvance } from './monitoring-llm-avance.panel.tsx';
 import { Panel as Autorisations } from './autorisations.panel.tsx';
 import { Panel as ViewAgent } from './view-agent.panel.tsx';
+import { Panel as AgentTaskflow } from './agent-taskflow.panel.tsx';
+import { Panel as SwarmTaskflow } from './swarm-taskflow.panel.tsx';
 
 /** Enregistre tous les panels + charge leurs lang. */
 export async function initPanels(): Promise<void> {
@@ -92,6 +94,9 @@ export async function initPanels(): Promise<void> {
   // Demandes d'autorisation (membres → leader → humain)
   registerPanel(Autorisations);
   registerPanel(ViewAgent);
+  // Graphes : taskflow agent (dépliage) + swarmflow (toutes teams)
+  registerPanel(AgentTaskflow);
+  registerPanel(SwarmTaskflow);
   // Monitoring LLM avancé (graphes token/min, req/min par dim)
   registerPanel(MonitoringLlmAvance);
   await loadAllPanelLangs();

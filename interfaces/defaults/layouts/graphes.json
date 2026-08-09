@@ -1,0 +1,40 @@
+{
+  "$schema": "https://modelweaver.dev/schemas/layout.json",
+  "id": "graphes",
+  "label": "Graphes",
+  "icon": "git-branch",
+  "theme": "dark",
+  "tree": {
+    "type": "split",
+    "id": "sp-g-main",
+    "direction": "horizontal",
+    "sizes": [30, 40, 30],
+    "children": [
+      {
+        "type": "group",
+        "id": "pg-g-agents",
+        "tabs": [
+          { "panel": "agents-topologie", "occId": "occ-g-topo" },
+          { "panel": "agents-team-members", "occId": "occ-g-team" }
+        ],
+        "active": "occ-g-topo"
+      },
+      {
+        "type": "group",
+        "id": "pg-g-taskflow",
+        "tabs": [
+          { "panel": "agent-taskflow", "occId": "occ-g-taskflow" }
+        ],
+        "active": "occ-g-taskflow"
+      },
+      {
+        "type": "group",
+        "id": "pg-g-swarm",
+        "tabs": [
+          { "panel": "swarm-taskflow", "occId": "occ-g-swarm" }
+        ],
+        "active": "occ-g-swarm"
+      }
+    ]
+  }
+}

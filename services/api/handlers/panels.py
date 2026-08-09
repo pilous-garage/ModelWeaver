@@ -158,6 +158,14 @@ WINDOW_TEMPLATES = {
         "defaultSize": {"width": 1700, "height": 1000},
         "defaultPos": {"x": None, "y": None},
     },
+    "graphes": {
+        "label": "Graphes",
+        "icon": "git-branch",
+        "layout": "graphes",
+        "theme": "dark",
+        "defaultSize": {"width": 1600, "height": 900},
+        "defaultPos": {"x": None, "y": None},
+    },
 }
 
 WINDOWS_DIR = mw_home() / "windows"
