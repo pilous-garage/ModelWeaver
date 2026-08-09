@@ -33,24 +33,100 @@ panels:
 
 
 // Convertit le YAML d'un agent (entrypoints.main.steps) en GraphDoc (vue FSM).
-function agentYamlToGraph(data: any, name: string): any {
+// Parcours RÉCURSIF complet : top-level + corps de boucles (while) +
+// branchements switch (conditions/default). Génère TOUTES les arêtes
+// (next, on_error, retours dans la boucle, break/continue).
+//
+// Charte visuelle des nœuds :
+//   - entrypoint (1er step)  : vert (pill)
+//   - exitpoint (end SUCCESS): jaune (diamond)
+//   - error_step (end FAILED / on_error) : rouge (orange si exit+error)
+//   - autres                  : bleu clair
+// Tags : llm / token_create / token_eat (avec emoji), affichés sur le nœud.
+export function agentYamlToGraph(data: any, name: string): any {
   const steps: any[] = data?.entrypoints?.main?.steps ?? [];
   if (steps.length === 0) {
     return { id: `agent-${name}`, title: name, nodes: [], edges: [] };
   }
-  const nodes = steps.map((s: any) => ({
-    id: s.id,
-    type: s.type === 'end' ? (s.status === 'FAILED' ? 'exit' : 'end') : 'call',
-    label: s.id,
-    ref: s.fn ?? '',
-    tags: s.on_error ? ['error-branch'] : [],
-    vars: {},
-  }));
+  const nodes: any[] = [];
   const edges: any[] = [];
-  for (const s of steps) {
-    if (s.next) edges.push({ from: s.id, to: s.next, label: 'next', type: 'next' });
-    if (s.on_error) edges.push({ from: s.id, to: s.on_error, label: 'err', type: 'error' });
-  }
+  const entryId = steps[0]?.id;
+
+  const stepType = (s: any): string => {
+    const t = s.type ?? 'call';
+    if (t === 'end') return s.status === 'FAILED' ? 'exit_error' : 'exitpoint';
+    if (t === 'llm_call') return 'llm';
+    if (t === 'switch' || t === 'if') return 'switch';
+    if (t === 'set_variable') return 'step';
+    if (t === 'while' || t === 'for') return 'loop';
+    if (t === 'break' || t === 'continue') return 'step';
+    if (t === 'call') return 'skill';
+    return 'step';
+  };
+
+  // Tags par step (avec emoji).
+  const stepTags = (s: any): string[] => {
+    const tags: string[] = [];
+    const fn: string = s.fn ?? '';
+    if (s.type === 'llm_call') tags.push('llm');
+    if (fn.includes('token_task_create')) tags.push('token_create');
+    if (fn.includes('token_task_pick')) tags.push('token_eat');
+    return tags;
+  };
+
+  // Registre des ids créés pour éviter les doublons (body de boucle préfixé).
+  const created = new Set<string>();
+  const ensureNode = (id: string, s: any, isEntry: boolean, inLoop: boolean) => {
+    if (created.has(id)) return;
+    created.add(id);
+    const base = stepType(s);
+    // entrypoint : le 1er step top-level (vert). Une boucle garde son type.
+    const type = isEntry ? 'entrypoint' : base;
+    const ref = s.fn || s.type || '';
+    nodes.push({
+      id, type, label: id, ref,
+      tags: [...stepTags(s), ...(inLoop ? ['loop'] : [])],
+      vars: {},
+    });
+  };
+
+  const walk = (slist: any[], parent: string, inLoop: boolean) => {
+    let prev: string | null = null;
+    for (const s of slist) {
+      const id = `${parent}${s.id}`;
+      ensureNode(id, s, parent === '' && s.id === entryId, inLoop);
+      // Arête séquentielle (next / on_error).
+      if (s.next) edges.push({ from: id, to: `${parent}${s.next}`, label: 'next', type: 'next' });
+      if (s.on_error) {
+        edges.push({ from: id, to: `${parent}${s.on_error}`, label: 'err', type: 'error' });
+      }
+      // Branchments switch : conditions + default.
+      if (s.type === 'switch' || s.type === 'if') {
+        for (const c of s.conditions ?? []) {
+          if (c.next) edges.push({ from: id, to: `${parent}${c.next}`, label: String(c.value ?? ''), type: 'next' });
+        }
+        if (s.default) edges.push({ from: id, to: `${parent}${s.default}`, label: 'else', type: 'next' });
+      }
+      // Corps de boucle : préfixé par le step while.
+      if ((s.type === 'while' || s.type === 'for') && s.body?.steps) {
+        const bodySteps = s.body.steps;
+        walk(bodySteps, `${id}/`, true);
+        // Entrée dans la boucle : le while → premier step du body.
+        if (bodySteps[0]?.id) {
+          edges.push({ from: id, to: `${id}/${bodySteps[0].id}`, label: 'loop', type: 'loop' });
+        }
+        // Retour de fin de boucle → le step suivant du while.
+        // Le while lui-même a next=après_loop ; on relie le corps à ça.
+        if (s.next && bodySteps.length) {
+          edges.push({ from: `${id}/${bodySteps[bodySteps.length - 1]?.id ?? ''}`, to: `${parent}${s.next}`, label: 'loop', type: 'loop' });
+        }
+      }
+      prev = id;
+    }
+    return prev;
+  };
+  walk(steps, '', false);
+
   return { id: `agent-${name}`, title: name, nodes, edges };
 }
 

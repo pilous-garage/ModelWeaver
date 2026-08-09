@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { GrapheAgentPanel, agentYamlToTaskflow } from '../panels/graphe-agent.panel.tsx';
+import { GrapheAgentPanel, agentYamlToTaskflow, agentYamlToGraph } from '../panels/graphe-agent.panel.tsx';
 
 // Polyfill ResizeObserver (React Flow l'utilise, absent en jsdom).
 class ResizeObserverMock {
@@ -76,8 +76,44 @@ describe('GrapheAgentPanel', () => {
   });
 });
 
-describe('agentYamlToTaskflow', () => {
-  it('déduit les steps + tokens (pick coding → end_exec → code_review)', () => {
+describe('agentYamlToGraph — FSM complet', () => {
+  it('génère toutes les arêtes (switch, boucle, retours) et les types', () => {
+    const data = { entrypoints: { main: { steps: [
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1' },
+      { id: 'work', type: 'while', next: 'after',
+        body: { steps: [
+          { id: 'do', type: 'llm_call' },
+          { id: 'chk', type: 'switch',
+            conditions: [{ operator: 'EQUALS', value: 'done', next: 'fin' }],
+            default: 'do' },
+          { id: 'fin', type: 'set_variable' },
+        ] } },
+      { id: 'after', type: 'switch', conditions: [{ operator: 'EQUALS', value: '1', next: 'git_verif' }], default: 'release' },
+      { id: 'git_verif', type: 'call', fn: 'git/verify@v1' },
+      { id: 'release', type: 'call', fn: 'workspace/token_task_release@v1' },
+      { id: 'end', type: 'end', status: 'SUCCESS' },
+    ] } },
+    };
+    const g = agentYamlToGraph(data, 'x');
+    const ids = g.nodes.map((n: any) => n.id);
+    const froms = new Set(g.edges.map((e: any) => e.from));
+    const tos = new Set(g.edges.map((e: any) => e.to));
+    // git_verif est une CIBLE (relié par le switch after)
+    expect(tos.has('git_verif')).toBe(true);
+    // back dans la boucle : switch chk → do (default)
+    expect(g.edges.some((e: any) => e.from === 'work/chk' && e.to === 'work/do')).toBe(true);
+    // les steps du body existent
+    expect(ids).toContain('work/do');
+    expect(ids).toContain('work/fin');
+    // types : entrypoint (pick) vert, exitpoint (end) jaune
+    expect(g.nodes.find((n: any) => n.id === 'pick').type).toBe('entrypoint');
+    expect(g.nodes.find((n: any) => n.id === 'end').type).toBe('exitpoint');
+    // tags : pick → token_eat
+    expect(g.nodes.find((n: any) => n.id === 'pick').tags).toContain('token_eat');
+  });
+});
+
+describe('agentYamlToTaskflow', () => {  it('déduit les steps + tokens (pick coding → end_exec → code_review)', () => {
     const data = {
       role: 'codeur',
       entrypoints: { main: { steps: [

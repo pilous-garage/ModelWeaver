@@ -12,66 +12,73 @@ name: "Défaut"
 color_scheme: dark
 
 nodes:
-  entry:
+  # ── Chartes des nœuds d'ACTION (FSM) ──
+  # entrypoint : vert — où on RENTRE. exitpoint : jaune — où on SORT (done).
+  # error_step : rouge (orange si c'est aussi une fin). autres : bleu clair.
+  entrypoint:
     shape: pill
     icon: "▶"
-    color: "#a6e3a1"
-    border: "#4ade80"
+    color: "#4ade80"
+    border: "#22c55e"
     thick: true
-  exit:
+  exitpoint:
     shape: diamond
     icon: "⏹"
-    color: "#f38ba8"
-    border: "#fb7185"
-  # Tokens de TÂCHES (vue taskflow) — colorimétrie DISTINCTE des entry/exit
-  # du FSM : entrées cyan (consommées), sorties violet (produites).
-  token-in:
-    shape: circle
-    icon: "◉"
-    color: "#22d3ee"
-    border: "#06b6d4"
+    color: "#fde047"
+    border: "#eab308"
     thick: true
-  token-out:
-    shape: circle
-    icon: "◉"
-    color: "#c084fc"
-    border: "#a855f7"
+  error_step:
+    shape: diamond
+    icon: "✖"
+    color: "#f87171"
+    border: "#ef4444"
     thick: true
-  call:
-    shape: rounded
-    icon: "🧩"
-    color: "#a6e3a1"
-    border: "#4ade80"
-  tool:
-    shape: rounded
-    icon: "🔧"
-    color: "#94e2d5"
-    border: "#2dd4bf"
+  exit_error:
+    shape: diamond
+    icon: "✖"
+    color: "#fb923c"
+    border: "#f97316"
+    thick: true
   llm:
     shape: rect
     icon: "🧠"
-    color: "#89b4fa"
-    border: "#60a5fa"
-  sleep:
+    color: "#bae6fd"
+    border: "#38bdf8"
+  skill:
     shape: rounded
-    icon: "💤"
-    color: "#7f849c"
-    border: "#94a3b8"
+    icon: "🛠️"
+    color: "#bae6fd"
+    border: "#38bdf8"
+  step:
+    shape: rounded
+    icon: "▶️"
+    color: "#bae6fd"
+    border: "#38bdf8"
   switch:
     shape: diamond
     icon: "🔀"
     color: "#cba6f7"
     border: "#c084fc"
-  if:
-    shape: diamond
-    icon: "🔀"
-    color: "#cba6f7"
-    border: "#c084fc"
-  group:
-    shape: rect
-    icon: "📁"
-    color: "#6c7086"
-    border: "#475569"
+  loop:
+    shape: rounded
+    icon: "🔁"
+    color: "#a5b4fc"
+    border: "#818cf8"
+  sandbox:
+    shape: rounded
+    icon: "🏖️"
+    color: "#fde68a"
+    border: "#facc15"
+  heavy_tool:
+    shape: rounded
+    icon: "🏭"
+    color: "#fdba74"
+    border: "#fb923c"
+  sleep:
+    shape: rounded
+    icon: "💤"
+    color: "#7f849c"
+    border: "#94a3b8"
   agent:
     shape: rounded
     icon: "🤖"
@@ -87,16 +94,63 @@ nodes:
     icon: "🐣"
     color: "#fab387"
     border: "#fb923c"
-  end:
-    shape: diamond
-    icon: "⏹"
-    color: "#f38ba8"
-    border: "#fb7185"
+  # ── Tokens de TÂCHES (taskflow) — les JETONS ──
+  # eaten (entrée, consommé) : jeton argenté grignoté 🪙.
+  # created (sortie, livré)  : jeton d'or / médaille 🥇.
+  token-in:
+    shape: circle
+    icon: "🪙"
+    color: "#e2e8f0"
+    border: "#94a3b8"
+    thick: true
+  token-out:
+    shape: circle
+    icon: "🥇"
+    color: "#fde047"
+    border: "#eab308"
+    thick: true
   token:
     shape: circle
     icon: "●"
     color: "#f9e2af"
     border: "#fbbf24"
+  # Rétro-compat : anciens types FSM.
+  entry:
+    shape: pill
+    icon: "▶"
+    color: "#a6e3a1"
+    border: "#4ade80"
+    thick: true
+  exit:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  end:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  call:
+    shape: rounded
+    icon: "🧩"
+    color: "#a6e3a1"
+    border: "#4ade80"
+  tool:
+    shape: rounded
+    icon: "🔧"
+    color: "#94e2d5"
+    border: "#2dd4bf"
+  if:
+    shape: diamond
+    icon: "🔀"
+    color: "#cba6f7"
+    border: "#c084fc"
+  group:
+    shape: rect
+    icon: "📁"
+    color: "#6c7086"
+    border: "#475569"
   default:
     shape: rounded
     icon: "●"
@@ -111,6 +165,10 @@ edges:
   next:
     style: solid
     color: "#94a3b8"
+    arrow: true
+  loop:
+    style: dotted
+    color: "#a5b4fc"
     arrow: true
   success:
     style: solid
