@@ -90,7 +90,7 @@ export function agentYamlToGraph(data: any, name: string): any {
     });
   };
 
-  const walk = (slist: any[], parent: string, inLoop: boolean) => {
+  const walk = (slist: any[], parent: string, inLoop: boolean, loopNext: string | null = null) => {
     let prev: string | null = null;
     for (const s of slist) {
       const id = `${parent}${s.id}`;
@@ -107,10 +107,22 @@ export function agentYamlToGraph(data: any, name: string): any {
         }
         if (s.default) edges.push({ from: id, to: `${parent}${s.default}`, label: 'else', type: 'next' });
       }
-      // Corps de boucle : préfixé par le step while.
+      // break : sort de la boucle → le step qui suit le while (loopNext).
+      if (s.type === 'break' && loopNext) {
+        edges.push({ from: id, to: loopNext, label: 'break', type: 'loop' });
+      }
+      // continue : reprend la boucle → le while lui-même (ou le 1er step).
+      if (s.type === 'continue' && inLoop) {
+        // Le continue revient en tête de boucle ; on le relie au step parent
+        // (le while) pour la lisibilité.
+        const parentStep = parent.endsWith('/') ? parent.slice(0, -1) : parent;
+        if (parentStep) edges.push({ from: id, to: parentStep, label: 'loop', type: 'loop' });
+      }
+      // Corps de boucle : préfixé par le step while. `loopNext` = le step qui
+      // suit la boucle (cible des steps break).
       if ((s.type === 'while' || s.type === 'for') && s.body?.steps) {
         const bodySteps = s.body.steps;
-        walk(bodySteps, `${id}/`, true);
+        walk(bodySteps, `${id}/`, true, s.next ? `${parent}${s.next}` : null);
         // Entrée dans la boucle : le while → premier step du body.
         if (bodySteps[0]?.id) {
           edges.push({ from: id, to: `${id}/${bodySteps[0].id}`, label: 'loop', type: 'loop' });
