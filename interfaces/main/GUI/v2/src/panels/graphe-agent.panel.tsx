@@ -140,7 +140,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.graphe-agent.titre',
   version: '0.1.0',
   essential: false,
-  bundles: ['monitoring'],
+  bundles: ['graphe'],
   paramsSchema: {},
   defaultParams: {},
   langEmbedded: LANG_FR,

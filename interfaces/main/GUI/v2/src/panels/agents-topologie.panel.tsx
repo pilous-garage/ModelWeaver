@@ -70,7 +70,7 @@ export const Panel: PanelDef = {
   iconKey: 'panels.agents-topologie.titre',
   version: '1.0.0',
   essential: false,
-  bundles: ['agents'],
+  bundles: ['agents', 'graphe'],
   langEmbedded: LANG_FR,
   langEmbeddedEn: LANG_EN,
   declaration: () => '[agents-topologie] Topologie v1.0.0\n  routes: agent/topology',
