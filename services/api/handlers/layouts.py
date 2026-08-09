@@ -165,7 +165,9 @@ def op_theme_save(params: dict) -> Dict[str, Any]:
 
 # ── Panels ────────────────────────────────────────────────
 
-_PANELS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "main" / "GUI" / "official" / "gui" / "src" / "panels"
+# Scan le v2 (panels actuels) + le official (legacy) en fallback.
+_PANELS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "main" / "GUI" / "v2" / "src" / "panels"
+_PANELS_DIR_LEGACY = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "main" / "GUI" / "official" / "gui" / "src" / "panels"
 
 
 def op_panel_list(params: dict) -> Dict[str, Any]:
@@ -175,13 +177,20 @@ def op_panel_list(params: dict) -> Dict[str, Any]:
     Utilise la déclaration() de chaque panneau si disponible.
     """
     panels = []
-    for f in sorted(_PANELS_DIR.rglob("*.panel.tsx")):
-        rel = f.relative_to(_PANELS_DIR)
-        parts = str(rel.parent / rel.stem.replace(".panel", "")).replace("/", "-").lower()
-        panels.append({
-            "id": parts,
-            "file": str(rel),
-        })
+    seen = set()
+    for root in (_PANELS_DIR, _PANELS_DIR_LEGACY):
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*.panel.tsx")):
+            rel = f.relative_to(root)
+            parts = str(rel.parent / rel.stem.replace(".panel", "")).replace("/", "-").lower()
+            if parts in seen:
+                continue
+            seen.add(parts)
+            panels.append({
+                "id": parts,
+                "file": str(rel),
+            })
     return {"panels": panels, "count": len(panels)}
 
 
