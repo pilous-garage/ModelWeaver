@@ -64,11 +64,50 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
   const expanded = !!data?.expanded;
   const onToggle = data?.onToggle;
   const hs = { width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' };
+
+  // Déplié = container : header en haut (nom/tag + bouton fold), les sous-
+  // nœuds (rendus par React Flow via parentId) occupent le reste en dessous.
+  if (expanded) {
+    return (
+      <div style={{
+        width: '100%', height: '100%', boxSizing: 'border-box',
+        background: 'rgba(148,163,184,.06)',
+        border: `1.5px dashed ${st?.border ?? '#64748b'}`,
+        borderRadius: 6, position: 'relative', overflow: 'hidden',
+      }}>
+        {/* Header du container */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: HEADER_H,
+          display: 'flex', alignItems: 'center', gap: 4, padding: '0 6px',
+          background: st?.color ?? '#475569', color: '#0f172a',
+          fontWeight: 700, fontSize: 11, borderBottom: `1px solid ${st?.border ?? '#64748b'}`,
+          boxSizing: 'border-box',
+        }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+          </span>
+          {hasInner && (
+            <button
+              onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
+              style={{
+                width: 16, height: 16, lineHeight: '13px', padding: 0, fontSize: 12,
+                background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
+                borderRadius: 3, cursor: 'pointer',
+              }}
+              title="Replier"
+            >−</button>
+          )}
+        </div>
+        {/* Les sous-nœuds parentId sont rendus par React Flow en dessous */}
+      </div>
+    );
+  }
+
   return (
     <div style={{
       width: '100%', height: '100%',
-      background: expanded ? 'rgba(148,163,184,.08)' : st?.color,
-      border: expanded ? `1.5px dashed ${st?.border ?? '#64748b'}` : `1.5px solid ${st?.border ?? '#64748b'}`,
+      background: st?.color,
+      border: `1.5px solid ${st?.border ?? '#64748b'}`,
       borderRadius: st?.shape === 'pill' ? 999 : (st?.shape === 'rounded' || st?.shape === 'circle') ? 8 : 3,
       color: '#0f172a', fontWeight: 600, fontSize: 11,
       display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
@@ -77,7 +116,7 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
       <span style={{ lineHeight: 1.2, textAlign: 'center', padding: '0 18px' }}>
         {`${st?.icon ?? ''} ${n?.label ?? ''}`}
       </span>
-      {/* Bouton de dépliage : + / − (ou flèche) à droite */}
+      {/* Bouton de dépliage : + à droite */}
       {hasInner && (
         <button
           onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
@@ -87,27 +126,22 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
             background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
             borderRadius: 3, cursor: 'pointer',
           }}
-          title={expanded ? 'Replier' : 'Déplier'}
-        >
-          {expanded ? '−' : '+'}
-        </button>
+          title="Déplier"
+        >+</button>
       )}
-      {!expanded && (
-        <>
-          <Handle type="source" position={Position.Left} id="ws" style={hs} />
-          <Handle type="target" position={Position.Left} id="wt" style={hs} />
-          <Handle type="source" position={Position.Right} id="es" style={hs} />
-          <Handle type="target" position={Position.Right} id="et" style={hs} />
-          <Handle type="source" position={Position.Top} id="ns" style={hs} />
-          <Handle type="target" position={Position.Top} id="nt" style={hs} />
-          <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
-          <Handle type="target" position={Position.Bottom} id="st" style={hs} />
-        </>
-      )}
+      <Handle type="source" position={Position.Left} id="ws" style={hs} />
+      <Handle type="target" position={Position.Left} id="wt" style={hs} />
+      <Handle type="source" position={Position.Right} id="es" style={hs} />
+      <Handle type="target" position={Position.Right} id="et" style={hs} />
+      <Handle type="source" position={Position.Top} id="ns" style={hs} />
+      <Handle type="target" position={Position.Top} id="nt" style={hs} />
+      <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
+      <Handle type="target" position={Position.Bottom} id="st" style={hs} />
     </div>
   );
 }
 
+const HEADER_H = 22;
 const nodeTypes = { flow: FlowNode };
 
 // ── Moteur SVG/DOM maison (export, fallback) — layout par côtés ─────

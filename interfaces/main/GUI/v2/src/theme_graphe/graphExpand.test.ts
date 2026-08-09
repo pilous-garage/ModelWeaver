@@ -58,4 +58,35 @@ describe('buildExpandedGraph — dépliage hiérarchique', () => {
     // Arête externe A→loop ré-routée vers l'entrypoint interne (condition)
     expect(r.edges.some((e: any) => e.target === 'loop/condition')).toBe(true);
   });
+
+  it('les containers dépliés ne se superposent pas (dagre taille réelle)', () => {
+    // Deux containers dépliés en parallèle : A(→loop1), A(→loop2).
+    const g = {
+      nodes: [
+        { id: 'A', type: 'skill', label: 'A' },
+        { id: 'loop1', type: 'loop', vars: { inner: {
+          nodes: [{ id: 'loop1/x', type: 'llm' }], edges: [],
+          entrypoint: 'loop1/x', exitpoints: ['loop1/x'],
+        } } },
+        { id: 'loop2', type: 'loop', vars: { inner: {
+          nodes: [{ id: 'loop2/x', type: 'llm' }], edges: [],
+          entrypoint: 'loop2/x', exitpoints: ['loop2/x'],
+        } } },
+      ],
+      edges: [
+        { from: 'A', to: 'loop1' }, { from: 'A', to: 'loop2' },
+      ],
+    };
+    const r = buildExpandedGraph(g as any, {
+      theme, expanded: new Set(['loop1', 'loop2']), onToggle: () => {},
+    });
+    const get = (id: string) => {
+      const n = r.nodes.find((x: any) => x.id === id)!;
+      return { x: n.position.x, y: n.position.y, w: (n.style as any)?.width, h: (n.style as any)?.height };
+    };
+    const a = get('loop1'), b = get('loop2');
+    // Intersection de rectangles : pas de chevauchement.
+    const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    expect(overlap).toBe(false);
+  });
 });

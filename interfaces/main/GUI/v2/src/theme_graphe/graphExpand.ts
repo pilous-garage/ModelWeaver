@@ -20,7 +20,8 @@ import type { GraphDoc, GraphNode, GraphEdge } from './grapheTypes.ts';
 
 const NODE_W = 150;
 const NODE_H = 44;
-const PAD = 40;   // padding intérieur du container (box underlay)
+const PAD = 40;      // padding intérieur du container (box underlay)
+const HEADER_H = 22; // hauteur du header du container (barre nom/tag + fold)
 const BOX_W = 220;
 const BOX_H = 60;
 
@@ -42,10 +43,12 @@ interface LaidNode {
 }
 
 // Layout dagre d'un ensemble de nœuds/arêtes (positions absolues).
+// `sizeOf` : taille de chaque nœud (ex. container déplié = sa box réelle).
 function dagreLayout(
   ids: string[],
   edges: { from: string; to: string }[],
   algo: string, dir: string,
+  sizeOf: (id: string) => { w: number; h: number } = () => ({ w: NODE_W, h: NODE_H }),
 ): Map<string, { x: number; y: number }> {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -53,13 +56,17 @@ function dagreLayout(
   const ranksep = algo === 'compact' ? 28 : 60;
   const ranker = algo === 'compact' ? 'tight-tree' : algo === 'simplex' ? 'network-simplex' : undefined;
   g.setGraph({ rankdir: dir, nodesep, ranksep, ...(ranker ? { ranker } : {}) });
-  for (const id of ids) g.setNode(id, { width: NODE_W, height: NODE_H });
+  for (const id of ids) {
+    const sz = sizeOf(id);
+    g.setNode(id, { width: sz.w, height: sz.h });
+  }
   for (const e of edges) if (e.from && e.to) g.setEdge(e.from, e.to);
   dagre.layout(g);
   const pos = new Map<string, { x: number; y: number }>();
   for (const id of ids) {
     const p = g.node(id) as { x?: number; y?: number } | undefined;
-    pos.set(id, { x: (p?.x ?? 0) - NODE_W / 2, y: (p?.y ?? 0) - NODE_H / 2 });
+    const sz = sizeOf(id);
+    pos.set(id, { x: (p?.x ?? 0) - sz.w / 2, y: (p?.y ?? 0) - sz.h / 2 });
   }
   return pos;
 }
@@ -88,14 +95,15 @@ function layoutInner(
     maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + NODE_H);
   }
   if (!isFinite(minX)) { minX = 0; minY = 0; maxX = BOX_W; maxY = BOX_H; }
+  // La box inclut le header en haut (barre nom/tag) + padding autour des enfants.
   const boxW = maxX - minX + PAD * 2;
-  const boxH = maxY - minY + PAD * 2;
+  const boxH = HEADER_H + (maxY - minY) + PAD * 2;
   const childPos = new Map<string, { x: number; y: number }>();
   for (const id of ids) {
     const p = pos.get(id);
     if (!p) continue;
-    // Relatif au coin de la box (le container).
-    childPos.set(id, { x: p.x - minX + PAD, y: p.y - minY + PAD });
+    // Relatif au coin de la box (le container) — décalé sous le header.
+    childPos.set(id, { x: p.x - minX + PAD, y: p.y - minY + PAD + HEADER_H });
   }
   return { childPos, boxW, boxH };
 }
@@ -117,6 +125,8 @@ export function buildExpandedGraph(
   const topEdges: { from: string; to: string }[] = [];
 
   // 1) Layout du graphe TOP (les nœuds racines du doc, avec leurs arêtes).
+  //    Les containers dépliés ont leur TAILLE RÉELLE (box englobant les
+  //    enfants) pour que dagre ne les superpose pas aux autres nœuds.
   const innerCache = new Map<string, InnerLayout>();
   for (const n of graph.nodes) {
     topIds.push(n.id);
@@ -125,7 +135,11 @@ export function buildExpandedGraph(
     }
   }
   for (const e of graph.edges) topEdges.push({ from: e.from, to: e.to });
-  const topPos = dagreLayout(topIds, topEdges, algo, dir);
+  const sizeOfTop = (id: string): { w: number; h: number } => {
+    const inner = innerCache.get(id);
+    return inner ? { w: inner.boxW, h: inner.boxH } : { w: NODE_W, h: NODE_H };
+  };
+  const topPos = dagreLayout(topIds, topEdges, algo, dir, sizeOfTop);
 
   // 2) Pour chaque nœud TOP, créer le nœud RF (ou container déplié).
   for (const n of graph.nodes) {
