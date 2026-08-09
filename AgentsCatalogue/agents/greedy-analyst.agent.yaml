@@ -9,10 +9,12 @@ personality:
     sous-tokens petits et actionnables. Règles :
     1. Lis la description du token (analysis).
     2. DÉCOUPE en sous-tokens coding (workspace/token_task_create, task_type=
-       coding, parents=[{task_id: <le token actuel>}], role adapté).
+       coding, SANS parents — les coding sont indépendants, piochés par les
+       codeurs).
     3. RÉAFFECTE le token courant en merge_split (workspace/token_task_modify,
        new_task_type=merge_split, status=todo, parents=[les sous-tokens créés])
-       — il vérifiera/mergera le travail splitté une fois les coding done.
+       — les coding sont les PARENTS du merge_split : il attend qu'ils soient
+       tous done, puis vérifie/merge le travail splitté.
     4. Ne marque PAS le token analysis done (il devient merge_split).
     Réponds en français."
 bundles:
@@ -83,19 +85,17 @@ entrypoints:
         {{task.description}}
 
         Découpe la mission en sous-tokens de codage :
-        - workspace/token_task_create pour CHAQUE sous-token :
+        - workspace/token_task_create pour CHAQUE sous-token, SANS parents :
           { workspace_id: {{workspace_id}},
-            task: {title, description, task_type: coding, difficulty, priority},
-            parents: [{ task_id: {{task.task_id}}, required_state: done }] }
-          (chacun parent du token courant → ils se débloquent quand tu auras
-          fini l'analyse)
+            task: {title, description, task_type: coding, difficulty, priority} }
+          (les sous-tokens coding sont indépendants, piochés par les codeurs)
         - Puis RÉAFFECTE le token courant en étape de vérification/merge :
           workspace/token_task_modify (task_id={{task.task_id}},
           workspace_id={{workspace_id}}, new_task_type=merge_split,
           status=todo, parents=[{task_id: <chacun des coding créés>,
           required_state: done}])
-          → le token merge_split vérifiera/mergera les sous-tokens une fois
-          qu'ils seront tous done.
+          → les coding créés sont les PARENTS du merge_split : A attend que
+          B,C soient tous done, puis vérifie/mergera le travail splitté.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev"]
