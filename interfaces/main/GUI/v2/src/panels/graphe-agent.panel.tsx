@@ -2,7 +2,7 @@
 // Lecture seule (pas d'édition). Utilise graphe_subpanel (module générique).
 // Sources : catalogue/agents/list + catalogue/agents/get.
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { PanelDef } from './contract.ts';
 import { usePoll } from './panel-utils.ts';
 import { GrapheSubPanel } from '../theme_graphe/graphe_subpanel.tsx';
@@ -241,6 +241,7 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
   const [agentYaml, setAgentYaml] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
+  // Chargement de l'agent : fetch une fois par sélection.
   useEffect(() => {
     if (!sel) { setAgentData(null); setAgentYaml(''); return; }
     setErr(null);
@@ -252,8 +253,15 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
     }).catch((e: any) => setErr(String(e?.message ?? e)));
   }, [sel, ctx.api.post]);
 
-  const graphFsm = agentData ? agentYamlToGraph(agentData, sel) : null;
-  const graphTaskflow = agentData ? agentYamlToTaskflow(agentData, sel) : null;
+  // Calcul en MÉMOIRE des deux graphes : recalculé UNIQUEMENT quand agentData
+  // ou sel change (pas à chaque poll du catalogue → pas de blip/re-layout).
+  const { graphFsm, graphTaskflow } = useMemo(() => {
+    return {
+      graphFsm: agentData ? agentYamlToGraph(agentData, sel) : null,
+      graphTaskflow: agentData ? agentYamlToTaskflow(agentData, sel) : null,
+    };
+  }, [agentData, sel]);
+
   const shownGraph = view === 'taskflow' ? graphTaskflow : graphFsm;
 
   return (
