@@ -116,3 +116,23 @@ resource_budget:
   `USE_CASE_REQUIREMENTS` (features) et `provider_models.agentic`.
 - L'auto-test local d'un modèle Ollama (micro-benchmark embarqué) pour
   mesurer la compétence réelle est envisageable.
+
+---
+
+## Idée 2 — Redéfinir `ask_question_humain`
+
+**Statut** : idée notée, NON implémentée.
+
+Redéfinir la skill de question à l'humain avec 2 paramètres clés :
+- `multichoice` : la question propose plusieurs choix (réponse structurée,
+  pas un texte libre) — utile pour les autorisations, les arbitrages, les
+  décisions rapides
+- `time_before_working_recommended` : délai recommandé avant que l'agent
+  reprenne le travail s'il n'y a pas de réponse (ex. 30s, 5min, 30min) —
+  permet à l'agent de continuer en mode "best effort" plutôt que de
+  bloquer indéfiniment sur une question sans réponse
+
+Contexte : s'insère dans la cascade d'autorisation (membre → team_leader →
+global_security → humain). Quand on escalade à l'humain, il faut poser une
+question claire (multichoice) ET savoir quand reprendre le travail si
+l'humain est absent.
