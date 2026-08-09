@@ -89,4 +89,37 @@ describe('buildExpandedGraph — dépliage hiérarchique', () => {
     const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
     expect(overlap).toBe(false);
   });
+
+  it('déplie récursivement niveau 2 (container imbriqué)', () => {
+    // outer (container) → inner2 (container) → leaf.
+    const g = {
+      nodes: [{
+        id: 'outer', type: 'flow', vars: { inner: {
+          nodes: [{
+            id: 'inner2', type: 'flow', vars: { inner: {
+              nodes: [{ id: 'leaf', type: 'llm' }],
+              edges: [], entrypoint: 'leaf', exitpoints: ['leaf'],
+            } },
+          }],
+          edges: [], entrypoint: 'inner2', exitpoints: ['inner2'],
+        } },
+      }],
+      edges: [],
+    };
+    const r = buildExpandedGraph(g as any, {
+      theme, expanded: new Set(['outer', 'inner2']), onToggle: () => {},
+    });
+    const ids = r.nodes.map((n: any) => n.id);
+    expect(ids).toContain('outer');
+    expect(ids).toContain('inner2');
+    expect(ids).toContain('leaf');
+    // inner2 est enfant de outer, leaf est enfant de inner2 (parentId).
+    const i2 = r.nodes.find((n: any) => n.id === 'inner2');
+    const lf = r.nodes.find((n: any) => n.id === 'leaf');
+    expect(i2?.parentId).toBe('outer');
+    expect(lf?.parentId).toBe('inner2');
+    // leaf a une position non nulle (pas de cadre vide).
+    expect(lf?.position.x).toBeGreaterThan(0);
+    expect(lf?.position.y).toBeGreaterThan(0);
+  });
 });

@@ -239,6 +239,13 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     return { rfNodes: r.nodes, rfEdges: r.edges };
   }, [graph, parsedTheme, algo, dir, expanded, toggle]);
 
+  // Clé stable par graphe : force le REMOUNT du ReactFlow quand le doc change
+  // (évite les edges "fantômes" d'un agent précédent qui restent affichés).
+  const graphKey = useMemo(() => {
+    const base = typeof doc === 'string' ? doc.slice(0, 40) : (graph.id ?? JSON.stringify(graph.nodes.map((n: any) => n.id)));
+    return `${base}|${algo}|${dir}`;
+  }, [doc, graph, algo, dir]);
+
   const [nodes, setNodes, onNodesChange] = useNodesState<any>(rfNodes as any[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>(rfEdges as any[]);
 
@@ -262,16 +269,18 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     else setExpanded(new Set()); // replier tout
   }, [graph, onGraphChange]);
 
-  // Collecte récursive des ids de nœuds dépliables (ayant vars.inner).
-  const collectExpandable = useCallback((g: GraphDoc, acc: Set<string> = new Set()): Set<string> => {
-    for (const n of g.nodes) {
+  // Collecte RÉCURSIVE des ids de nœuds dépliables (ayant vars.inner), y
+  // compris ceux des sous-graphes internes (fold/unfold récursif).
+  const collectExpandable = useCallback((nodes: any[], acc: Set<string> = new Set()): Set<string> => {
+    for (const n of nodes) {
       if (n.vars?.inner) acc.add(n.id);
+      if (n.vars?.inner?.nodes) collectExpandable(n.vars.inner.nodes, acc);
     }
     return acc;
   }, []);
 
   const unfoldAll = useCallback(() => {
-    const all = collectExpandable(graph);
+    const all = collectExpandable(graph.nodes);
     if (all.size) setExpanded(new Set(all));
   }, [graph, collectExpandable]);
 
@@ -347,6 +356,7 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
       <div style={{ flex: 1, minHeight: 0, border: '1px solid var(--mw-border, #1e293b)', borderRadius: 6, overflow: 'hidden', position: 'relative', background: parsedTheme.color_scheme === 'light' ? '#f8fafc' : '#0f172a' }}>
         {useRF ? (
           <ReactFlow
+            key={graphKey}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}

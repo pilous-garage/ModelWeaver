@@ -1,27 +1,25 @@
-// graphExpand.ts — rendu HIÉRARCHIQUE du graphe (dépliage/fold des nœuds).
+// graphExpand.ts — rendu HIÉRARCHIQUE récursif du graphe (dépliage/fold).
 //
-// Transforme un GraphDoc (avec vars.inner sur les nœuds dépliables) en un
-// ensemble de nœuds/arêtes React Flow PLATS, selon l'état d'expansion :
+// Transforme un GraphDoc (avec vars.inner) en nœuds/arêtes React Flow PLATS,
+// selon l'état d'expansion :
+//   - PLIÉ   : le nœud est seul ; ses arêtes internes ne sont PAS affichées.
+//   - DÉPLIÉ : container (box underlay) englobant ses sous-nœuds (parentId),
+//              récursivement. Arêtes internes visibles ; arêtes externes
+//              entrent par l'entrypoint et sortent par les exitpoints.
 //
-//   - PLIÉ   : le nœud est seul (avec un indicateur de dépliable). SES ARÊTES
-//              INTERNES NE SONT PAS AFFICHÉES. Les arêtes externes le relient.
-//   - DÉPLIÉ : le nœud devient un CONTAINER (box underlay) qui englobe ses
-//              sous-nœuds (parentId). Ses arêtes internes apparaissent, et les
-//              arêtes externes sont RÉ-ROUTÉES : elles entrent par l'entrypoint
-//              interne et sortent par les exitpoints internes.
-//
-// Layout : dagre sur le graphe TOP (parents). Chaque container déplié est un
-// nœud dagre dont la taille englobe ses sous-nœuds (layout récursif local).
+// Layout : PRÉCALCUL bottom-up des tailles (feuilles → racine), puis dagre par
+// niveau. Chaque container déplié a une taille = header + bbox de SES enfants
+// (eux-mêmes dépliés), connue avant le layout du parent.
 
 import dagre from 'dagre';
-import type { Node as RFNode, Edge as RFEdge, Position } from '@xyflow/react';
+import type { Node as RFNode, Edge as RFEdge } from '@xyflow/react';
 import { nodeStyleOf, type ThemeGraphe } from './themeGraphe.ts';
 import type { GraphDoc, GraphNode, GraphEdge } from './grapheTypes.ts';
 
 const NODE_W = 150;
 const NODE_H = 44;
-const PAD = 40;      // padding intérieur du container (box underlay)
-const HEADER_H = 22; // hauteur du header du container (barre nom/tag + fold)
+const PAD = 40;
+const HEADER_H = 22;
 const BOX_W = 220;
 const BOX_H = 60;
 
@@ -33,17 +31,130 @@ export interface ExpandOptions {
   onToggle: (id: string) => void;
 }
 
-interface LaidNode {
-  id: string;
-  x: number;  // top-left absolu
-  y: number;
-  w: number;
+interface Sizes {
+  w: number; // taille du nœud (container déplié = box englobant ses enfants)
   h: number;
-  kind: 'plain' | 'container';
+  childPos: Map<string, { x: number; y: number }> | null; // si déplié (relatif, sous header)
 }
 
-// Layout dagre d'un ensemble de nœuds/arêtes (positions absolues).
-// `sizeOf` : taille de chaque nœud (ex. container déplié = sa box réelle).
+// ── PRÉCALCUL BOTTOM-UP des tailles (mémoïsé) ──────────────────────
+// Calcule récursivement la taille de chaque nœud. Les feuilles d'abord,
+// puis les containers dépliés (header + bbox de leurs enfants).
+//
+// MÉMOÏSATION incrémentale : le cache garde les tailles déjà calculées par
+// nœud. Quand un nœud change d'état (fold/unfold), on invalide SA taille et
+// on remonte récursivement vers les parents (qui dépendent de la taille de
+// leurs enfants). Les sous-graphes non touchés sont réutilisés tels quels.
+
+export interface SizeCache {
+  map: Map<string, Sizes>;
+  /** Calcule (mémoïsé, bottom-up) la taille d'un nœud. */
+  compute(node: GraphNode, expanded: Set<string>, algo: string, dir: string): Sizes;
+  /** Invalide le cache d'un nœud + tous ses ascendants (recalcul bottom-up). */
+  invalidate(node: GraphNode): void;
+}
+
+export function createSizeCache(): SizeCache {
+  const map = new Map<string, Sizes>();
+  const key = (node: GraphNode, algo: string, dir: string) =>
+    `${node.id}|${algo}|${dir}|${node.vars?.inner ? (node.vars.inner as any).nodes?.length ?? 0 : 0}`;
+
+  function compute(node: GraphNode, expanded: Set<string>, algo: string, dir: string): Sizes {
+    const k = key(node, algo, dir);
+    const cached = map.get(k);
+    // Un nœud plié est toujours NODE_W×NODE_H (indépendant de expanded) →
+    // on ne cache que les résultats avec le bon état d'expansion (via k).
+    if (cached) return cached;
+    let s: Sizes;
+    if (!node.vars?.inner || !expanded.has(node.id)) {
+      s = { w: NODE_W, h: NODE_H, childPos: null };
+    } else {
+      const inner = node.vars.inner;
+      const children: { id: string; s: Sizes }[] = [];
+      for (const sub of inner.nodes) {
+        children.push({ id: sub.id, s: compute(sub, expanded, algo, dir) });
+      }
+      const ids = children.map((c) => c.id);
+      const es = (inner.edges ?? []).map((e: GraphEdge) => ({ from: e.from, to: e.to }));
+      const sizeOf = (id: string) => {
+        const c = children.find((x) => x.id === id);
+        return { w: c?.s.w ?? NODE_W, h: c?.s.h ?? NODE_H };
+      };
+      const pos = dagreLayout(ids, es, algo, dir, sizeOf);
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const c of children) {
+        const p = pos.get(c.id);
+        if (!p) continue;
+        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x + c.s.w); maxY = Math.max(maxY, p.y + c.s.h);
+      }
+      if (!isFinite(minX)) { minX = 0; minY = 0; maxX = BOX_W; maxY = BOX_H; }
+      const w = maxX - minX + PAD * 2;
+      const h = HEADER_H + (maxY - minY) + PAD * 2;
+      const childPos = new Map<string, { x: number; y: number }>();
+      for (const c of children) {
+        const p = pos.get(c.id);
+        if (!p) continue;
+        childPos.set(c.id, { x: p.x - minX + PAD, y: p.y - minY + PAD + HEADER_H });
+      }
+      s = { w, h, childPos };
+    }
+    map.set(k, s);
+    return s;
+  }
+
+  return {
+    map,
+    compute,
+    invalidate(node: GraphNode) {
+      // Retire les clés de CE nœud (les parents seront recalculés à la
+      // demande dans compute, remontant automatiquement).
+      for (const k of [...map.keys()]) {
+        if (k.startsWith(node.id + '|')) map.delete(k);
+      }
+    },
+  };
+}
+
+function computeSize(node: GraphNode, expanded: Set<string>, algo: string, dir: string): Sizes {
+  if (!node.vars?.inner || !expanded.has(node.id)) {
+    return { w: NODE_W, h: NODE_H, childPos: null };
+  }
+  const inner = node.vars.inner;
+  const children: { id: string; s: Sizes }[] = [];
+  for (const sub of inner.nodes) {
+    children.push({ id: sub.id, s: computeSize(sub, expanded, algo, dir) });
+  }
+  // Layout dagre du sous-graphe avec les tailles réelles des enfants.
+  const ids = children.map((c) => c.id);
+  const es = (inner.edges ?? []).map((e: GraphEdge) => ({ from: e.from, to: e.to }));
+  const sizeOf = (id: string) => {
+    const c = children.find((x) => x.id === id);
+    return { w: c?.s.w ?? NODE_W, h: c?.s.h ?? NODE_H };
+  };
+  const pos = dagreLayout(ids, es, algo, dir, sizeOf);
+  // Bounding box des enfants (vraies tailles).
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of children) {
+    const p = pos.get(c.id);
+    if (!p) continue;
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + c.s.w); maxY = Math.max(maxY, p.y + c.s.h);
+  }
+  if (!isFinite(minX)) { minX = 0; minY = 0; maxX = BOX_W; maxY = BOX_H; }
+  const w = maxX - minX + PAD * 2;
+  const h = HEADER_H + (maxY - minY) + PAD * 2;
+  const childPos = new Map<string, { x: number; y: number }>();
+  for (const c of children) {
+    const p = pos.get(c.id);
+    if (!p) continue;
+    childPos.set(c.id, { x: p.x - minX + PAD, y: p.y - minY + PAD + HEADER_H });
+  }
+  return { w, h, childPos };
+}
+
+// ── Layout dagre (positions absolues) ───────────────────────────────
+
 function dagreLayout(
   ids: string[],
   edges: { from: string; to: string }[],
@@ -71,45 +182,60 @@ function dagreLayout(
   return pos;
 }
 
-// Layout RÉCURSIF : pour un nœud (id, type) et son inner, place les
-// sous-nœuds DANS une box relative, retourne { laid, size }.
-interface InnerLayout {
-  childPos: Map<string, { x: number; y: number }>; // positions RELATIVES à la box
-  boxW: number;
-  boxH: number;
+// ── Ajout récursif des nœuds (avec parentId) ───────────────────────
+
+function addNodeRecursive(
+  node: GraphNode,
+  rfNodes: RFNode[],
+  rfEdges: RFEdge[],
+  theme: ThemeGraphe,
+  opts: ExpandOptions,
+  absPos: { x: number; y: number },
+  size: { w: number; h: number },
+  parentId?: string,
+  cache?: SizeCache,
+): void {
+  const st = nodeStyleOf(theme, node.type);
+  const isExpanded = opts.expanded.has(node.id) && !!node.vars?.inner;
+  const data: any = {
+    label: `${st.icon ?? ''} ${node.label}`,
+    n: node, style: st,
+    hasInner: !!node.vars?.inner,
+    expanded: isExpanded,
+    onToggle: opts.onToggle,
+  };
+  const rf: any = {
+    id: node.id,
+    type: 'flow',
+    position: { x: absPos.x, y: absPos.y },
+    data,
+    style: { width: size.w, height: size.h },
+  };
+  if (parentId) rf.parentId = parentId;
+  rfNodes.push(rf);
+
+  // Sous-nœuds du container (si déplié) — positions relatives depuis le cache.
+  if (isExpanded && node.vars?.inner) {
+    const inner = node.vars.inner;
+    const sizes = cache
+      ? cache.compute(node, opts.expanded, opts.algo ?? 'dagre', opts.dir ?? 'LR')
+      : computeSize(node, opts.expanded, opts.algo ?? 'dagre', opts.dir ?? 'LR');
+    const childPos = sizes.childPos!;
+    for (const sub of inner.nodes) {
+      const rel = childPos.get(sub.id) || { x: 0, y: 0 };
+      const subSizes = cache
+        ? cache.compute(sub, opts.expanded, opts.algo ?? 'dagre', opts.dir ?? 'LR')
+        : computeSize(sub, opts.expanded, opts.algo ?? 'dagre', opts.dir ?? 'LR');
+      addNodeRecursive(sub, rfNodes, rfEdges, theme, opts, rel, subSizes, node.id, cache);
+    }
+    for (const ie of inner.edges) {
+      rfEdges.push(makeEdge(ie, theme, ie.type === 'loop' ? 'loop' : 'next'));
+    }
+  }
 }
 
-function layoutInner(
-  inner: { nodes: GraphNode[]; edges: GraphEdge[] },
-  algo: string, dir: string,
-): InnerLayout {
-  const ids = inner.nodes.map((n) => n.id);
-  const es = inner.edges.map((e) => ({ from: e.from, to: e.to }));
-  const pos = dagreLayout(ids, es, algo, dir);
-  // Bounding box des enfants.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const id of ids) {
-    const p = pos.get(id);
-    if (!p) continue;
-    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-    maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + NODE_H);
-  }
-  if (!isFinite(minX)) { minX = 0; minY = 0; maxX = BOX_W; maxY = BOX_H; }
-  // La box inclut le header en haut (barre nom/tag) + padding autour des enfants.
-  const boxW = maxX - minX + PAD * 2;
-  const boxH = HEADER_H + (maxY - minY) + PAD * 2;
-  const childPos = new Map<string, { x: number; y: number }>();
-  for (const id of ids) {
-    const p = pos.get(id);
-    if (!p) continue;
-    // Relatif au coin de la box (le container) — décalé sous le header.
-    childPos.set(id, { x: p.x - minX + PAD, y: p.y - minY + PAD + HEADER_H });
-  }
-  return { childPos, boxW, boxH };
-}
+// ── Point d'entrée ─────────────────────────────────────────────────
 
-// Calcule la liste "à plat" des nœuds + positions absolues, en remontant les
-// containers. Retourne les nœuds RF (avec parentId) et la position du TOP.
 export function buildExpandedGraph(
   graph: GraphDoc,
   opts: ExpandOptions,
@@ -121,97 +247,45 @@ export function buildExpandedGraph(
 
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
-  const topIds: string[] = [];
-  const topEdges: { from: string; to: string }[] = [];
+  const cache = createSizeCache();
 
-  // 1) Layout du graphe TOP (les nœuds racines du doc, avec leurs arêtes).
-  //    Les containers dépliés ont leur TAILLE RÉELLE (box englobant les
-  //    enfants) pour que dagre ne les superpose pas aux autres nœuds.
-  const innerCache = new Map<string, InnerLayout>();
-  for (const n of graph.nodes) {
-    topIds.push(n.id);
-    if (expanded.has(n.id) && n.vars?.inner) {
-      innerCache.set(n.id, layoutInner(n.vars.inner, algo, dir));
-    }
-  }
-  for (const e of graph.edges) topEdges.push({ from: e.from, to: e.to });
+  // 1) Tailles de tous les nœuds (bottom-up, mémoïsé).
   const sizeOfTop = (id: string): { w: number; h: number } => {
-    const inner = innerCache.get(id);
-    return inner ? { w: inner.boxW, h: inner.boxH } : { w: NODE_W, h: NODE_H };
+    const n = graph.nodes.find((x) => x.id === id);
+    if (n) {
+      const s = cache.compute(n, expanded, algo, dir);
+      return { w: s.w, h: s.h };
+    }
+    return { w: NODE_W, h: NODE_H };
   };
+
+  // 2) Layout TOP avec tailles réelles.
+  const topIds = graph.nodes.map((n) => n.id);
+  const topEdges = graph.edges.map((e) => ({ from: e.from, to: e.to }));
   const topPos = dagreLayout(topIds, topEdges, algo, dir, sizeOfTop);
 
-  // 2) Pour chaque nœud TOP, créer le nœud RF (ou container déplié).
+  // 3) Nœuds TOP + descendants récursifs.
   for (const n of graph.nodes) {
-    const st = nodeStyleOf(theme, n.type);
     const pos = topPos.get(n.id) || { x: 0, y: 0 };
-    const isExpanded = expanded.has(n.id) && n.vars?.inner;
-    const inner = isExpanded ? innerCache.get(n.id) : null;
-
-    const size: [number, number] = inner ? [inner.boxW, inner.boxH] : [NODE_W, NODE_H];
-    const data: any = {
-      label: `${st.icon ?? ''} ${n.label}`,
-      n,
-      style: st,
-      hasInner: !!n.vars?.inner,
-      expanded: !!isExpanded,
-      onToggle: opts.onToggle,
-    };
-    rfNodes.push({
-      id: n.id,
-      type: 'flow',
-      position: { x: pos.x, y: pos.y },
-      data,
-      style: { width: size[0], height: size[1] },
-    } as RFNode);
-
-    // 3) Sous-nœuds (si déplié) : parentId + positions relatives.
-    if (inner) {
-      const innerNodes = n.vars!.inner.nodes;
-      for (const sub of innerNodes) {
-        const subSt = nodeStyleOf(theme, sub.type);
-        const rel = inner.childPos.get(sub.id) || { x: 0, y: 0 };
-        rfNodes.push({
-          id: sub.id,
-          type: 'flow',
-          parentId: n.id,
-          position: { x: rel.x, y: rel.y },
-          data: {
-            label: `${subSt.icon ?? ''} ${sub.label}`,
-            n: sub,
-            style: subSt,
-            hasInner: !!sub.vars?.inner,
-            expanded: expanded.has(sub.id) && !!sub.vars?.inner,
-            onToggle: opts.onToggle,
-          },
-          style: { width: NODE_W, height: NODE_H },
-        } as RFNode);
-      }
-      // Arêtes internes (seulement si déplié).
-      for (const ie of n.vars!.inner.edges) {
-        rfEdges.push(makeEdge(ie, theme, ie.type === 'loop' ? 'loop' : 'next'));
-      }
-    }
-
-    // 4) Arêtes externes : si le parent est déplié, l'arête qui entre pointe
-    //    vers l'entrypoint interne ; celle qui sort part des exitpoints.
-    const innerEntry = isExpanded ? n.vars!.inner.entrypoint : null;
-    const innerExits = isExpanded ? (n.vars!.inner.exitpoints ?? []) : [];
+    const s = cache.compute(n, expanded, algo, dir);
+    addNodeRecursive(n, rfNodes, rfEdges, theme, opts, pos, s, undefined, cache);
   }
 
-  // 5) Arêtes TOP (externes).
+  // 4) Arêtes TOP (externes) — ré-routées vers entrypoint/exitpoints si déplié.
   for (const e of graph.edges) {
     const src = graph.nodes.find((n) => n.id === e.from);
     const tgt = graph.nodes.find((n) => n.id === e.to);
     const srcExp = expanded.has(e.from) && !!src?.vars?.inner;
     const tgtExp = expanded.has(e.to) && !!tgt?.vars?.inner;
-    const from = srcExp ? (tgt?.vars?.inner?.entrypoint ?? e.from) : e.from;
+    const from = srcExp ? (src?.vars?.inner?.entrypoint ?? e.from) : e.from;
     const to = tgtExp ? (tgt?.vars?.inner?.entrypoint ?? e.to) : e.to;
     rfEdges.push(makeEdge({ from, to, label: e.label, type: e.type }, theme, e.type));
   }
 
   return { nodes: rfNodes, edges: rfEdges };
 }
+
+// ── Point d'entrée ─────────────────────────────────────────────────
 
 function makeEdge(e: GraphEdge, theme: ThemeGraphe, type?: string): RFEdge {
   const st = (theme.edges as any)[type || 'next'] || (theme.edges as any).next || {};
