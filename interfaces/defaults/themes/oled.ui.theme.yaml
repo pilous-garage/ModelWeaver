@@ -1,0 +1,14 @@
+name: oled
+label: "OLED"
+vars:
+  --mw-bg: '#000000'
+  --mw-bg-panel: '#0a0a0a'
+  --mw-bg-hover: '#1a1a1a'
+  --mw-fg: '#e2e8f0'
+  --mw-fg-dim: '#94a3b8'
+  --mw-fg-faint: '#4b5563'
+  --mw-border: '#1f2937'
+  --mw-accent: '#22d3ee'
+  --mw-accent-bg: '#164e63'
+  --mw-error: '#f87171'
+  --mw-ok: '#4ade80'

@@ -1,0 +1,16 @@
+name: light
+label: "Clair"
+vars:
+  --mw-bg: '#f1f5f9'
+  --mw-bg-panel: '#ffffff'
+  --mw-bg-hover: '#e2e8f0'
+  --mw-fg: '#0f172a'
+  --mw-fg-dim: '#475569'
+  --mw-fg-faint: '#64748b'
+  --mw-border: '#cbd5e1'
+  --mw-accent: '#2563eb'
+  --mw-accent-bg: '#3b82f6'
+  --mw-error: '#dc2626'
+  --mw-ok: '#16a34a'
+  --mw-font-ui: 'sans-serif'
+  --mw-font-mono: 'ui-monospace, monospace'

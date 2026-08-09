@@ -1,0 +1,14 @@
+name: sepia
+label: "Sépia"
+vars:
+  --mw-bg: '#f5ecd7'
+  --mw-bg-panel: '#fff8e7'
+  --mw-bg-hover: '#efe4c8'
+  --mw-fg: '#3d2f1e'
+  --mw-fg-dim: '#6b5a40'
+  --mw-fg-faint: '#8a785a'
+  --mw-border: '#d8c9a8'
+  --mw-accent: '#8b5a2b'
+  --mw-accent-bg: '#a06b35'
+  --mw-error: '#a02828'
+  --mw-ok: '#3f7d3f'

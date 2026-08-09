@@ -1,0 +1,16 @@
+name: dark
+label: "Sombre"
+vars:
+  --mw-bg: '#0f172a'
+  --mw-bg-panel: '#1e293b'
+  --mw-bg-hover: '#243349'
+  --mw-fg: '#e2e8f0'
+  --mw-fg-dim: '#94a3b8'
+  --mw-fg-faint: '#64748b'
+  --mw-border: '#334155'
+  --mw-accent: '#3b82f6'
+  --mw-accent-bg: '#1d4ed8'
+  --mw-error: '#f87171'
+  --mw-ok: '#4ade80'
+  --mw-font-ui: 'sans-serif'
+  --mw-font-mono: 'ui-monospace, monospace'

@@ -15,6 +15,13 @@ _LAYOUTS_DIR = mw_home() / "layouts"
 _SESSIONS_DIR = mw_home() / "sessions"
 _THEMES_DIR = mw_home() / "themes"
 _DEFAULT_LAYOUTS = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "defaults" / "layouts"
+_DEFAULT_THEMES = Path(__file__).resolve().parent.parent.parent.parent / "interfaces" / "defaults" / "themes"
+
+# Extensions de thèmes (suffixe complet) :
+#   - UI (fenêtre/panel, variables --mw-*) : .ui.theme.yaml
+#   - graphe (chartes nodes/edges)          : .graphe.theme.yaml
+_UI_THEME_EXT = ".ui.theme.yaml"
+_GRAPHE_THEME_EXT = ".graphe.theme.yaml"
 
 
 def _ensure_dir(d: Path) -> None:
@@ -140,16 +147,68 @@ def op_session_delete(params: dict) -> Dict[str, Any]:
 
 
 # ── Thèmes ────────────────────────────────────────────────
+# Deux familles : UI (fenêtre/panel, --mw-*) et GRAPHE (charte nodes/edges).
+# Extensions : .ui.theme.yaml / .graphe.theme.yaml. Les officiels vivent dans
+# interfaces/defaults/themes (fallback si le dossier perso est vide/disparu).
+
+def _theme_files(d: Path, ext: str) -> list:
+    """Liste les fichiers de thèmes (perso + officiels en fallback)."""
+    _ensure_dir(d)
+    seen = set()
+    result = []
+    for source_dir in ([d, _DEFAULT_THEMES]):
+        if not source_dir or not source_dir.exists():
+            continue
+        for p in sorted(source_dir.glob(f"*{ext}")):
+            name = p.name[: -len(ext)]
+            if name in seen:
+                continue
+            seen.add(name)
+            result.append({
+                "name": name,
+                "kind": "ui" if ext == _UI_THEME_EXT else "graphe",
+                "path": str(p),
+                "default": source_dir == _DEFAULT_THEMES,
+            })
+    return result
+
+
+def _theme_get(d: Path, name: str, ext: str) -> Optional[Dict]:
+    """Lit un thème (perso d'abord, officiel en fallback)."""
+    _ensure_dir(d)
+    for source_dir in ([d, _DEFAULT_THEMES]):
+        if not source_dir:
+            continue
+        p = source_dir / f"{name}{ext}"
+        if p.exists():
+            return {"name": name, "yaml": p.read_text(), "path": str(p),
+                    "default": source_dir == _DEFAULT_THEMES}
+    return None
+
+
+def _theme_save(d: Path, name: str, content: str, ext: str) -> Dict:
+    _ensure_dir(d)
+    p = d / f"{name}{ext}"
+    tmp = d / f".{name}{ext}.tmp"
+    tmp.write_text(content, encoding="utf-8")
+    import os
+    os.replace(tmp, p)
+    return {"ok": True, "path": str(p)}
+
 
 def op_theme_list(params: dict) -> Dict[str, Any]:
-    return {"themes": _list_json_dir(_THEMES_DIR), "count": 0}
+    kind = params.get("kind", "ui")  # ui | graphe
+    ext = _GRAPHE_THEME_EXT if kind == "graphe" else _UI_THEME_EXT
+    return {"themes": _theme_files(_THEMES_DIR, ext), "count": 0}
 
 
 def op_theme_get(params: dict) -> Dict[str, Any]:
     name = params.get("name", "")
+    kind = params.get("kind", "ui")
     if not name:
         return {"error": "name requis"}
-    result = _get_json(_THEMES_DIR, name)
+    ext = _GRAPHE_THEME_EXT if kind == "graphe" else _UI_THEME_EXT
+    result = _theme_get(_THEMES_DIR, name, ext)
     if not result:
         return {"error": f"theme '{name}' introuvable"}
     return result
@@ -158,9 +217,11 @@ def op_theme_get(params: dict) -> Dict[str, Any]:
 def op_theme_save(params: dict) -> Dict[str, Any]:
     name = params.get("name", "")
     yaml_content = params.get("yaml", "")
+    kind = params.get("kind", "ui")
     if not name or not yaml_content:
         return {"error": "name et yaml requis"}
-    return _save_json(_THEMES_DIR, name, yaml_content)
+    ext = _GRAPHE_THEME_EXT if kind == "graphe" else _UI_THEME_EXT
+    return _theme_save(_THEMES_DIR, name, yaml_content, ext)
 
 
 # ── Panels ────────────────────────────────────────────────

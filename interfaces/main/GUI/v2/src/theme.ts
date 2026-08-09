@@ -62,7 +62,7 @@ export function getCurrentTheme(): string {
 export async function listThemes(): Promise<ThemeDef[]> {
   const out: ThemeDef[] = Object.entries(BUILTIN).map(([name, t]) => ({ name, label: t.label, vars: t.vars }));
   try {
-    const res = await daemonPost('theme/list', {});
+    const res = await daemonPost('theme/list', { kind: 'ui' });
     const themes = res?.result?.themes ?? res?.themes ?? [];
     for (const t of themes) {
       if (!BUILTIN[t.name]) out.push({ name: t.name, label: t.label ?? t.name, vars: {} });
@@ -74,7 +74,7 @@ export async function listThemes(): Promise<ThemeDef[]> {
 /** Charge un thème daemon (YAML → vars CSS). */
 export async function loadThemeVars(name: string): Promise<Record<string, string> | null> {
   try {
-    const res = await daemonPost('theme/get', { name });
+    const res = await daemonPost('theme/get', { name, kind: 'ui' });
     const yaml = res?.result?.yaml ?? res?.yaml;
     if (!yaml) return null;
     const data = parse(yaml);

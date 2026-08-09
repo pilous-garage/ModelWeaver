@@ -1,0 +1,203 @@
+# theme_graphe — thème par défaut du rendu de graphe.
+# Chaque TYPE de node/edge → sa représentation visuelle.
+# Le rendu devient générique : graphe.yaml (données) + theme.yaml (style).
+#
+# node.shape : rect | rounded | pill | diamond | hex | square
+# node.edge  : style de bordure
+# edge.style : solid | dashed | dotted
+# arrow      : true = flèche dirigée (de → to)
+
+id: default
+name: "Défaut"
+color_scheme: dark
+
+nodes:
+  # ── CHARTE GRAPHIQUE (catégories de nœuds FSM) ──
+  #   entrypoint     : vert      — où on RENTRE (début de flux)
+  #   exitpoint      : jaune     — où on SORT normalement (end SUCCESS)
+  #   error          : rouge     — fin en erreur (end FAILED)
+  #   skill          : bleu      — tool/appel skill (lib.skill)
+  #   agent          : violet    — agent (dépliable vers son FSM)
+  #   flow           : cyan      — composant de flux (if/switch/for/while/condition)
+  #   fonction       : gris-bleu — call python / step atomique (set_variable…)
+  #   llm            : bleu clair— appel LLM (moteur cognitif)
+  entrypoint:
+    shape: pill
+    icon: "▶"
+    color: "#4ade80"
+    border: "#22c55e"
+    thick: true
+  exitpoint:
+    shape: diamond
+    icon: "⏹"
+    color: "#fde047"
+    border: "#eab308"
+    thick: true
+  error:
+    shape: diamond
+    icon: "✖"
+    color: "#f87171"
+    border: "#ef4444"
+    thick: true
+  exit_error:
+    shape: diamond
+    icon: "✖"
+    color: "#fb923c"
+    border: "#f97316"
+    thick: true
+  skill:
+    shape: rounded
+    icon: "🛠️"
+    color: "#60a5fa"
+    border: "#2563eb"
+  agent:
+    shape: rounded
+    icon: "🤖"
+    color: "#c084fc"
+    border: "#9333ea"
+  flow:
+    shape: diamond
+    icon: "🔀"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  condition:
+    shape: diamond
+    icon: "❓"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  condition_out:
+    shape: diamond
+    icon: "→"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  fonction:
+    shape: rounded
+    icon: "ƒ"
+    color: "#94a3b8"
+    border: "#64748b"
+  llm:
+    shape: rect
+    icon: "🧠"
+    color: "#bae6fd"
+    border: "#38bdf8"
+  sandbox:
+    shape: rounded
+    icon: "🏖️"
+    color: "#fde68a"
+    border: "#facc15"
+  heavy_tool:
+    shape: rounded
+    icon: "🏭"
+    color: "#fdba74"
+    border: "#fb923c"
+  sleep:
+    shape: rounded
+    icon: "💤"
+    color: "#7f849c"
+    border: "#94a3b8"
+  handoff:
+    shape: rounded
+    icon: "🤝"
+    color: "#f5c2e7"
+    border: "#f0abfc"
+  spawn:
+    shape: rounded
+    icon: "🐣"
+    color: "#fab387"
+    border: "#fb923c"
+  # ── Tokens de TÂCHES (taskflow) — les JETONS ──
+  # eaten (entrée, consommé) : jeton argenté grignoté 🪙.
+  # created (sortie, livré)  : jeton d'or / médaille 🥇.
+  token-in:
+    shape: circle
+    icon: "🪙"
+    color: "#e2e8f0"
+    border: "#94a3b8"
+    thick: true
+  token-out:
+    shape: circle
+    icon: "🥇"
+    color: "#fde047"
+    border: "#eab308"
+    thick: true
+  token:
+    shape: circle
+    icon: "●"
+    color: "#f9e2af"
+    border: "#fbbf24"
+  # Rétro-compat : anciens types FSM.
+  entry:
+    shape: pill
+    icon: "▶"
+    color: "#a6e3a1"
+    border: "#4ade80"
+    thick: true
+  exit:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  end:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  call:
+    shape: rounded
+    icon: "🧩"
+    color: "#a6e3a1"
+    border: "#4ade80"
+  tool:
+    shape: rounded
+    icon: "🔧"
+    color: "#94e2d5"
+    border: "#2dd4bf"
+  if:
+    shape: diamond
+    icon: "🔀"
+    color: "#cba6f7"
+    border: "#c084fc"
+  group:
+    shape: rect
+    icon: "📁"
+    color: "#6c7086"
+    border: "#475569"
+  default:
+    shape: rounded
+    icon: "●"
+    color: "#94a3b8"
+    border: "#64748b"
+
+edges:
+  flow:
+    style: solid
+    color: "#64748b"
+    arrow: true
+  next:
+    style: solid
+    color: "#94a3b8"
+    arrow: true
+  loop:
+    style: dotted
+    color: "#a5b4fc"
+    arrow: true
+  success:
+    style: solid
+    color: "#4ade80"
+    arrow: true
+  error:
+    style: dashed
+    color: "#f87171"
+    arrow: true
+  handoff:
+    style: dashed
+    color: "#f0abfc"
+    arrow: true
+  token:
+    style: dotted
+    color: "#fbbf24"
+    arrow: true
+  default:
+    style: solid
+    color: "#64748b"
+    arrow: true
