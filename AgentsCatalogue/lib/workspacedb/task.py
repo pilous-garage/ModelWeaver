@@ -116,12 +116,21 @@ def pick_token(inputs: dict, home: str) -> dict:
     agent_id = str(inputs.get("agent_id", "") or "")
     accept_external = bool(inputs.get("accept_external_work", True))
     types_in = inputs.get("task_types") or []
-    if isinstance(types_in, str):  # JSON passé par le FSM (ex. "[{type: coding, max_difficulty: expert}]")
-        try:
-            import json
-            types_in = json.loads(types_in)
-        except Exception:
-            types_in = []
+    if isinstance(types_in, str):  # FSM : "[{type: coding, max_difficulty: expert}]"
+        import re
+        parsed = []
+        for m in re.finditer(r"\{([^}]*)\}", types_in):
+            body = m.group(1)
+            t = re.search(r"type\s*:\s*[\"']?([\w]+)[\"']?", body)
+            d = re.search(r"max_difficulty\s*:\s*[\"']?([\w]+)[\"']?", body)
+            entry = {}
+            if t:
+                entry["type"] = t.group(1)
+            if d:
+                entry["max_difficulty"] = d.group(1)
+            if entry:
+                parsed.append(entry)
+        types_in = parsed
     if isinstance(types_in, dict):  # tolérance {type: max_diff}
         types_in = [{"type": k, "max_difficulty": v} for k, v in types_in.items()]
     if not workspace_id or not types_in:
