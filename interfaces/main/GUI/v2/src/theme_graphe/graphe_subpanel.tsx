@@ -25,6 +25,10 @@ import {
   computeEdgePorts, toBoxes, anchorPoint,
   type Side, type NodeBox,
 } from './graphLayout.ts';
+import {
+  layoutByAlgo, LAYOUT_ALGOS, LAYOUT_DIRS,
+  type LayoutAlgo, type LayoutDir,
+} from './graphLayouts.ts';
 
 export interface GrapheSubPanelProps {
   doc: string | Record<string, any> | null;   // graph.yaml (string) ou objet
@@ -39,20 +43,14 @@ export interface GrapheSubPanelProps {
 const NODE_W = 150;
 const NODE_H = 44;
 
-// ── Layout dagre (positions auto) ──────────────────────────────────
-function layoutNodes(nodes: GraphDoc['nodes'], edges: GraphDoc['edges']): Map<string, { x: number; y: number }> {
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 60 });
-  for (const n of nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
-  for (const e of edges) g.setEdge(e.from, e.to);
-  dagre.layout(g);
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const n of nodes) {
-    const p = g.node(n.id) as { x: number; y: number } | undefined;
-    pos.set(n.id, { x: (p?.x ?? 0) - NODE_W / 2, y: (p?.y ?? 0) - NODE_H / 2 });
-  }
-  return pos;
+// ── Layout (multi-algos × directions) ───────────────────────────────
+function layoutNodes(
+  nodes: GraphDoc['nodes'],
+  edges: GraphDoc['edges'],
+  algo: LayoutAlgo = 'dagre',
+  dir: LayoutDir = 'LR',
+): Map<string, { x: number; y: number }> {
+  return layoutByAlgo(nodes, edges, algo, dir);
 }
 
 // ── Nœud custom : 4 handles positionnés sur les côtés ───────────────
@@ -80,8 +78,8 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
 const nodeTypes = { flow: FlowNode };
 
 // ── Conversion GraphDoc → React Flow nodes/edges (layout par côtés) ──
-function toFlowNodes(g: GraphDoc, theme: ThemeGraphe): Node[] {
-  const auto = layoutNodes(g.nodes, g.edges);
+function toFlowNodes(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: LayoutDir): Node[] {
+  const auto = layoutNodes(g.nodes, g.edges, algo, dir);
   return g.nodes.map((n: any) => {
     const st = nodeStyleOf(theme, n.type);
     const pos = nodePosOf(n);
@@ -99,8 +97,8 @@ function toFlowNodes(g: GraphDoc, theme: ThemeGraphe): Node[] {
   });
 }
 
-function toFlowEdges(g: GraphDoc, theme: ThemeGraphe): Edge[] {
-  const auto = layoutNodes(g.nodes, g.edges);
+function toFlowEdges(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: LayoutDir): Edge[] {
+  const auto = layoutNodes(g.nodes, g.edges, algo, dir);
   const boxes = toBoxes(auto, () => [NODE_W, NODE_H] as [number, number],
     g.nodes.map((n) => n.id));
   const ports = computeEdgePorts(boxes, g.edges);
@@ -129,8 +127,8 @@ function toFlowEdges(g: GraphDoc, theme: ThemeGraphe): Edge[] {
 }
 
 // ── Moteur SVG/DOM maison (export, fallback) — layout par côtés ─────
-function SvgRenderer({ g, theme }: { g: GraphDoc; theme: ThemeGraphe }) {
-  const auto = layoutNodes(g.nodes, g.edges);
+function SvgRenderer({ g, theme, algo, dir }: { g: GraphDoc; theme: ThemeGraphe; algo: LayoutAlgo; dir: LayoutDir }) {
+  const auto = layoutNodes(g.nodes, g.edges, algo, dir);
   const boxes = toBoxes(auto, () => [NODE_W, NODE_H] as [number, number],
     g.nodes.map((n) => n.id));
   const ports = computeEdgePorts(boxes, g.edges);
@@ -204,14 +202,16 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
   }, [doc]);
 
   // React Flow state (positions éditables)
-  const [nodes, setNodes, onNodesChange] = useNodesState<any>(toFlowNodes(graph, parsedTheme) as any[]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(toFlowEdges(graph, parsedTheme) as any[]);
+  const [algo, setAlgo] = React.useState<LayoutAlgo>('dagre');
+  const [dir, setDir] = React.useState<LayoutDir>('LR');
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>(toFlowNodes(graph, parsedTheme, algo, dir) as any[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(toFlowEdges(graph, parsedTheme, algo, dir) as any[]);
 
-  // Re-sync quand le doc change
+  // Re-sync quand le doc ou l'algo/direction change
   React.useEffect(() => {
-    setNodes(toFlowNodes(graph, parsedTheme));
-    setEdges(toFlowEdges(graph, parsedTheme));
-  }, [graph, parsedTheme, setNodes, setEdges]);
+    setNodes(toFlowNodes(graph, parsedTheme, algo, dir));
+    setEdges(toFlowEdges(graph, parsedTheme, algo, dir));
+  }, [graph, parsedTheme, algo, dir, setNodes, setEdges]);
 
   const onNodeDragStop = useCallback((_: any, node: Node) => {
     if (!editable || !onGraphChange) return;
@@ -224,8 +224,8 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
   const reLayout = useCallback(() => {
     const stripped = stripPositions(graph);
     if (onGraphChange) onGraphChange(stripped);
-    else setNodes(toFlowNodes(stripped, parsedTheme));
-  }, [graph, onGraphChange, parsedTheme, setNodes]);
+    else setNodes(toFlowNodes(stripped, parsedTheme, algo, dir));
+  }, [graph, onGraphChange, parsedTheme, setNodes, algo, dir]);
 
   if (!doc) return <div style={{ color: '#475569', padding: 8 }}>Aucun graphe</div>;
 
@@ -244,8 +244,39 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
       {graph.title && (
         <div style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc', padding: '4px 8px' }}>{graph.title}</div>
       )}
-      {/* Barre d'outils */}
-      <div style={{ display: 'flex', gap: 6, padding: '2px 8px 6px', alignItems: 'center' }}>
+      {/* Barre d'outils : algo × direction */}
+      <div style={{ display: 'flex', gap: 6, padding: '2px 8px 6px', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Algortihmes */}
+        <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          {LAYOUT_ALGOS.map((a) => (
+            <button key={a} className="mw-btn"
+              onClick={() => setAlgo(a)}
+              style={{
+                fontSize: 10, padding: '1px 8px', textTransform: 'capitalize',
+                opacity: algo === a ? 1 : 0.45,
+                borderColor: algo === a ? '#38bdf8' : undefined,
+                color: algo === a ? '#38bdf8' : undefined,
+              }}>
+              {a}
+            </button>
+          ))}
+        </div>
+        {/* Directions (flèches) */}
+        <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          {LAYOUT_DIRS.map((d) => (
+            <button key={d} className="mw-btn" title={`direction ${d}`}
+              onClick={() => setDir(d)}
+              style={{
+                fontSize: 10, padding: '1px 6px', lineHeight: 1,
+                opacity: dir === d ? 1 : 0.45,
+                borderColor: dir === d ? '#38bdf8' : undefined,
+                color: dir === d ? '#38bdf8' : undefined,
+              }}>
+              {d === 'LR' ? '→' : d === 'RL' ? '←' : d === 'TB' ? '↓' : '↑'}
+            </button>
+          ))}
+        </div>
+        <span style={{ flex: 1 }} />
         <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={reLayout}>
           ⟳ Re-layout
         </button>
@@ -273,14 +304,14 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           </ReactFlow>
         ) : (
           <div ref={svgHostRef} data-testid="graphe-svg-host">
-            <SvgRenderer g={graph} theme={parsedTheme} />
+            <SvgRenderer g={graph} theme={parsedTheme} algo={algo} dir={dir} />
           </div>
         )}
         {/* Host SVG invisible pour export (mode React Flow) */}
         {useRF && (
           <div ref={svgHostRef} style={{ position: 'absolute', left: -99999, top: 0, width: 800 }}
             data-testid="graphe-svg-hidden" aria-hidden>
-            <SvgRenderer g={graph} theme={parsedTheme} />
+            <SvgRenderer g={graph} theme={parsedTheme} algo={algo} dir={dir} />
           </div>
         )}
       </div>
