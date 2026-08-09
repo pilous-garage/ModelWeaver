@@ -1,13 +1,16 @@
 name: greedy-tester
 role: test_runner
-description: Testeur glouton — pioche les tâches de test du workspace
-  (role_required=tester), exécute tests/typecheck, marque done avec PASSED ou
-  FAILED.
+description: "Testeur glouton intelligent — FSM: pick (pioche une tâche tester)
+  → allocation LLM → exécution des tests (llm_call) → task_done (STATUS: PASSED
+  ou FAILED). La mécanique est automatique."
 personality:
   tone: ''
-  system_prompt: 'Tu es un testeur dans un swarm. Boucle gloutonne : pioche une
-    tâche de test, identifie les changements (git diff), exécute les tests,
-    marque la tâche done avec le résultat. Réponds en français.'
+  system_prompt: "Tu es un testeur dans un swarm. Tu valides les changements par
+    des tests. Règles :
+    1. Lis la description de la tâche, identifie les changements.
+    2. Exécute les tests / typecheck (shell/exec).
+    3. Marque la tâche done avec le résultat (STATUS: PASSED ou FAILED).
+    Réponds en français."
 bundles:
   - test
   - dev
@@ -24,28 +27,81 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
+    max_iterations: 30
     steps:
-    - id: start
+    # ── 1. PICK : pioche une tâche tester (AUTO) ──
+    - id: pick
       type: call
-      fn: workflow/autonomous@v1
+      fn: workspace/task_claim_next@v1
       inputs:
-        request: "Surveille le workspace {{workspace_id}} et exécute les tâches de test"
-        bundles: ["test", "dev"]
         workspace_id: "{{workspace_id}}"
-        context: |
-          Tu es le testeur du chat de dev. Boucle gloutonne :
-          1. Pioche une tâche role_required=tester avec
-             workspace/task_claim_next@v1.
-          2. Identifie les changements (git diff), exécute les tests /
-             typecheck (shell/exec@v1).
-          3. Marque la tâche done avec workspace/task_done@v1
-             (STATUS: PASSED ou FAILED + sortie).
-          4. Reprends à l'étape 1.
-          Réponds avec le résultat des tests.
-        max_loops: 80
+        role_required: "{{role_required}}"
       capture:
-        stdout: result
+        task: task
+      on_error: sleep
+      next: check_llm
+
+    # ── 2. CHECK_LLM (AUTO) ──
+    - id: check_llm
+      type: call
+      fn: workflow/check_llm@v1
+      inputs:
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        has_llm: has_llm
+      on_error: ask_llm
+      next: do_test
+
+    # ── 3. ASK_LLM (AUTO) ──
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: coding
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: fail
+      next: do_test
+
+    # ── 4. DO_TEST : LE SEUL LLM ──
+    - id: do_test
+      type: llm_call
+      skill_prompt: |
+        Teste la tâche {{task.task_id}} :
+        {{task.description}}
+
+        Identifie les changements, exécute les tests/typecheck (shell/exec),
+        puis workspace/task_done avec task_id, workspace_id et le résultat
+        (STATUS: PASSED ou FAILED + sortie) dans la réponse.
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      bundles: ["dev", "test"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: test_out
       next: end
+
+    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
+
+    # ── 6. SLEEP : rien à tester (AUTO) ──
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+      next: end
+
+    # ── 7. FAIL ──
+    - id: fail
+      type: end
+      status: FAILED

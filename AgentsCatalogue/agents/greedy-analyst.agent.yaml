@@ -1,14 +1,17 @@
 name: greedy-analyst
 role: architecte
-description: Analyste glouton — pioche les tâches d'analyse du workspace
-  (role_required=analyst), découpe les missions en sous-tâches maximales et
-  actionnables, produit un livrable.
+description: "Analyste glouton intelligent — FSM: pick (pioche une tâche analyst)
+  → allocation LLM → analyse + découpe en sous-tâches (llm_call) → task_done.
+  La mécanique est automatique."
 personality:
   tone: ''
-  system_prompt: 'Tu es un analyste dans un swarm. Boucle gloutonne : pioche une
-    tâche d''analyse, lis la description et les livrables, DÉCOUPE la mission en
-    sous-tâches petites et indépendantes, produis ton analyse, marque done.
-    Réponds en français.'
+  system_prompt: "Tu es un analyste dans un swarm. Tu découpes les missions en
+    sous-tâches petites et actionnables. Règles :
+    1. Lis la description de la tâche et les livrables liés.
+    2. DÉCOUPE la mission en sous-tâches maximales (petites, indépendantes)
+       avec workspace/task_create (role adapté).
+    3. Produis ton analyse, marque la tâche done.
+    Réponds en français."
 bundles:
   - dev
 model_requirements:
@@ -24,32 +27,82 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
+    max_iterations: 30
     steps:
-    - id: start
+    # ── 1. PICK : pioche une tâche analyst (AUTO) ──
+    - id: pick
       type: call
-      fn: workflow/autonomous@v1
+      fn: workspace/task_claim_next@v1
       inputs:
-        request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'analyse (role analyst)"
-        bundles: ["dev"]
         workspace_id: "{{workspace_id}}"
-        context: |
-          Tu es l'analyste du chat de dev. Boucle gloutonne :
-          1. Pioche une tâche role_required=analyst avec
-             workspace/task_claim_next@v1 (workspace {{workspace_id}}).
-          2. Lis la description de la tâche et les livrables liés.
-          3. DÉCOUPE la mission en sous-tâches maximale (chaque sous-tâche
-             doit être petite, actionnable, indépendante — plus c'est
-             découpé, plus le swarm est fiable). Crée-les avec
-             workspace/task_create@v1 (role adapté).
-          4. Produis ton analyse/livrable dans ton home (write_file_v1),
-             commit avec git/lite@v1, puis marque la tâche done avec
-             workspace/task_done@v1 (commit_hash).
-          5. Reprends à l'étape 1.
-          Réponds avec ton analyse + les sous-tâches créées.
-        max_loops: 80
+        role_required: "{{role_required}}"
       capture:
-        stdout: result
+        task: task
+      on_error: sleep
+      next: check_llm
+
+    # ── 2. CHECK_LLM (AUTO) ──
+    - id: check_llm
+      type: call
+      fn: workflow/check_llm@v1
+      inputs:
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        has_llm: has_llm
+      on_error: ask_llm
+      next: do_analyse
+
+    # ── 3. ASK_LLM (AUTO) ──
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: analysis
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: fail
+      next: do_analyse
+
+    # ── 4. DO_ANALYSE : LE SEUL LLM ──
+    - id: do_analyse
+      type: llm_call
+      skill_prompt: |
+        Analyse la tâche {{task.task_id}} :
+        {{task.description}}
+
+        Découpe la mission en sous-tâches (workspace/task_create, workspace_id
+        {{workspace_id}}, role adapté : explore|coder_junior|coder_senior|
+        tester|reviewer|merger). Produis ton analyse, puis workspace/task_done
+        avec task_id, workspace_id, delivered=true (livrable = analyse).
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      bundles: ["dev"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: analyse_out
       next: end
+
+    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
+
+    # ── 6. SLEEP : rien à analyser (AUTO) ──
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+      next: end
+
+    # ── 7. FAIL ──
+    - id: fail
+      type: end
+      status: FAILED

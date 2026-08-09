@@ -1,14 +1,14 @@
 name: greedy-coordinateur
 role: planificateur
-description: Coordinateur glouton — explore le taskflow du workspace, analyse ce
-  que font les autres, garantit la complétion de bout en bout (chat → swarm →
-  chat). Écrit un rapport de coordination.
+description: "Coordinateur glouton intelligent — FSM: pick (pioche une tâche de
+  coordination) → allocation LLM → exploration du taskflow + actions correctives
+  (llm_call) → task_done. La mécanique est automatique."
 personality:
   tone: ''
-  system_prompt: 'Tu es un coordinateur de swarm. Ta mission : explorer le
-    taskflow complet, vérifier que chaque mission va de chat → swarm → chat sans
-    rester bloquée, remettre en route ce qui est bloqué ou stub. Réponds en
-    français.'
+  system_prompt: "Tu es un coordinateur de swarm. Tu explores le taskflow, vérifies
+    que chaque mission va de chat → swarm → chat sans rester bloquée, et remets en
+    route ce qui est bloqué ou stub. Tu écris un rapport de coordination. Réponds
+    en français."
 bundles:
   - dev
 model_requirements:
@@ -22,52 +22,88 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
+    max_iterations: 30
     steps:
-    - id: start
+    # ── 1. PICK : pioche une tâche de coordination (AUTO) ──
+    - id: pick
       type: call
-      fn: workflow/autonomous@v1
+      fn: workspace/task_claim_next@v1
       inputs:
-        request: "Coordinateur : explore le taskflow du workspace {{workspace_id}} et assure la complétion de bout en bout"
-        bundles: ["dev"]
         workspace_id: "{{workspace_id}}"
-        context: |
-          Tu es le COORDINATEUR du swarm. Ta mission : explorer le
-          TASKFLOW complet et t'assurer que chaque mission va de
-          chat → swarm → chat sans rester bloquée. Boucle gloutonne :
-
-          1. EXPLORE le taskflow :
-             - workspace/task_list@v1 (all=true) : toutes les tâches,
-               statuts (pending/running/review/done), rôles, assignations.
-             - workspace/task_get@v1 sur les tâches clés.
-             - git/lite@v1 status + log : les commits récents.
-
-          2. ANALYSE avec ton LLM ce que font les autres :
-             - Quelles tâches sont pending depuis longtemps ? bloquées ?
-             - Quelles tâches done n'ont AUCUN livrable réel (fichier .md
-               absent ou stub vide "à compléter"/"Contenu du fichier") ?
-             - Y a-t-il des agents qui tournent sans avancer ?
-
-          3. ASSURE la complétion :
-             - Tâche pending actionnable → vérifie qu'un agent va la
-               piocher (un agent greedy devrait être actif) ; sinon
-               relance (workspace/task_create_v1 corrective).
-             - Tâche done SANS livrable réel → remets-la en pending
-               (workspace/task_done_v1 est refusé, utilise task_create
-               corrective + signale le problème).
-             - Tâche review → le reviewer doit la valider ; sinon signale.
-
-          4. Écris un RAPPORT DE COORDINATION dans ton home
-             (write_file_v1, fichier coordination.md) : état global,
-             blocages, tâches relancées, ce qui reste pour compléter
-             chat → swarm → chat.
-
-          IMPORTANT : ne crée PAS de tâches parasites inutiles. Ta valeur
-          = VÉRIFIER la complétion réelle et REMETTRE en route ce qui
-          est bloqué/stub. Réponds avec le rapport + actions prises.
-        max_loops: 120
+        role_required: "{{role_required}}"
       capture:
-        stdout: result
+        task: task
+      on_error: sleep
+      next: check_llm
+
+    # ── 2. CHECK_LLM (AUTO) ──
+    - id: check_llm
+      type: call
+      fn: workflow/check_llm@v1
+      inputs:
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        has_llm: has_llm
+      on_error: ask_llm
+      next: do_coordinate
+
+    # ── 3. ASK_LLM (AUTO) ──
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: analysis
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: fail
+      next: do_coordinate
+
+    # ── 4. DO_COORDINATE : LE SEUL LLM ──
+    - id: do_coordinate
+      type: llm_call
+      skill_prompt: |
+        Coordonne le taskflow du workspace {{workspace_id}} (tâche
+        {{task.task_id}}) :
+        {{task.description}}
+
+        1. Explore le taskflow : workspace/task_list (all=true), task_get sur
+           les clés, git status/log.
+        2. Analyse ce que font les autres : tâches bloquées, done sans livrable
+           réel (stub), agents qui tournent sans avancer.
+        3. Agis : tâche pending actionnable → vérifie qu'un agent la pioche,
+           sinon task_create corrective. Tâche done sans livrable → signaler
+           + task_create corrective.
+        4. Écris ton rapport (write_file coordination.md), puis
+           workspace/task_done avec task_id, workspace_id, delivered=true.
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      bundles: ["dev"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: coord_out
       next: end
+
+    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
+
+    # ── 6. SLEEP : rien à coordonner (AUTO) ──
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+      next: end
+
+    # ── 7. FAIL ──
+    - id: fail
+      type: end
+      status: FAILED

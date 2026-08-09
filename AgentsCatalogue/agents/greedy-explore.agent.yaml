@@ -1,14 +1,13 @@
 name: greedy-explore
 role: explore
-description: Explorateur glouton — pioche les tâches d'exploration du workspace
-  (role_required=explore), lit le code, marque done. Read-only, ne modifie jamais
-  le code.
+description: "Explorateur glouton intelligent — FSM: pick (pioche une tâche
+  explore) → allocation LLM → exploration (llm_call, read-only) → task_done
+  (livrable = analyse). Ne modifie jamais le code."
 personality:
   tone: ''
-  system_prompt: 'Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne
-    modifies JAMAIS le code. Boucle gloutonne : pioche une tâche d''exploration,
-    explore le code demandé, marque la tâche done avec ton analyse. Réponds en
-    français.'
+  system_prompt: "Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne
+    modifies JAMAIS le code. Tu pioches une tâche d'exploration, lis le code
+    demandé, produis ton analyse. Réponds en français."
 bundles:
   - dev
 model_requirements:
@@ -22,29 +21,84 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
+    max_iterations: 30
     steps:
-    - id: start
+    # ── 1. PICK : pioche une tâche explore (AUTO) ──
+    - id: pick
       type: call
-      fn: workflow/autonomous@v1
+      fn: workspace/task_claim_next@v1
       inputs:
-        request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'exploration (role explore)"
-        bundles: ["dev"]
         workspace_id: "{{workspace_id}}"
-        context: |
-          Tu es l'explorateur du chat de dev. READ-ONLY : tu ne modifies
-          JAMAIS le code. Boucle gloutonne :
-          1. Pioche une tâche role_required=explore avec
-             workspace/task_claim_next@v1 (workspace {{workspace_id}}).
-          2. Explore le code demandé (file/read_file@v1, shell/exec@v1 :
-             ls/cat/grep/glob).
-          3. Marque la tâche done avec workspace/task_done@v1 (résultat =
-             ton analyse).
-          4. Reprends à l'étape 1.
-          Réponds avec ton analyse des fichiers explorés.
-        max_loops: 80
+        role_required: "{{role_required}}"
       capture:
-        stdout: result
+        task: task
+      on_error: sleep
+      next: check_llm
+
+    # ── 2. CHECK_LLM (AUTO) ──
+    - id: check_llm
+      type: call
+      fn: workflow/check_llm@v1
+      inputs:
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        has_llm: has_llm
+      on_error: ask_llm
+      next: do_explore
+
+    # ── 3. ASK_LLM (AUTO) ──
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: analysis
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: fail
+      next: do_explore
+
+    # ── 4. DO_EXPLORE : LE SEUL LLM (read-only) ──
+    - id: do_explore
+      type: llm_call
+      skill_prompt: |
+        Explore la tâche {{task.task_id}} :
+        {{task.description}}
+
+        READ-ONLY : tu ne modifies JAMAIS le code. Utilise file/read_file,
+        file/glob, file/grep, shell/exec (ls/cat/grep) pour explorer.
+
+        Quand ton analyse est prête : workspace/task_done avec task_id,
+        workspace_id, delivered=true (le livrable est ton analyse dans la
+        réponse).
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      bundles: ["dev"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: explore_out
       next: end
+
+    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
+
+    # ── 6. SLEEP : rien à explorer (AUTO) ──
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "task_for_role"
+        role: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+      next: end
+
+    # ── 7. FAIL ──
+    - id: fail
+      type: end
+      status: FAILED
