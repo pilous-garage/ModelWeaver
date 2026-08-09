@@ -277,6 +277,9 @@ class ConversationRepository:
         return dict(r) if r else None
 
     def rename(self, conv_id: int, name: str) -> bool:
+        name = (name or "").strip()[:50]  # limite 50 chars
+        if not name:
+            return False
         cur = self.conn.execute(
             "UPDATE conversations SET name = ?, updated_at = "
             "strftime('%s','now') WHERE id = ?", (name, conv_id))
@@ -337,6 +340,14 @@ class ConversationRepository:
             args = (conversation_id, limit)
         rows = self.conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
+
+    def count_text_exchanges(self, conversation_id: int) -> int:
+        """Nombre d'échanges TEXTE (human_message + llm_text) d'une conversation."""
+        r = self.conn.execute(
+            "SELECT COUNT(*) c FROM conversation_messages "
+            "WHERE conversation_id = ? AND type IN (?, ?)",
+            (conversation_id, self.T_HUMAN, self.T_LLM_TEXT)).fetchone()
+        return r[0] if r else 0
 
     def text_context(self, conversation_id: int,
                      max_chars: int = 10000) -> str:

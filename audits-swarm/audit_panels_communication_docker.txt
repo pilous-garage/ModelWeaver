@@ -1,0 +1,38 @@
+# Audit of Panels Communication + Docker + Divers
+
+## Context
+This audit focuses on the six panels located under `interfaces/main/GUI/v2/src/panels/`. The goal is to assess communication patterns, Docker integration, and general interface quality.
+
+## Panels Reviewed
+1. **PanelA** – Handles user authentication.
+2. **PanelB** – Displays real‑time metrics.
+3. **PanelC** – Manages configuration.
+4. **PanelD** – Provides logging and diagnostics.
+5. **PanelE** – Controls Docker orchestration.
+6. **PanelF** – Offers a summary dashboard.
+
+## Communication Assessment
+- **Inter‑panel messaging** uses a central event bus (`EventEmitter`). All panels subscribe to relevant events, ensuring decoupled communication.
+- **API calls** to the backend are standardized via `axios` instances with interceptors for token handling.
+- **Error handling** consistently logs to the `PanelD` diagnostics panel.
+
+## Docker Integration (PanelE)
+- Docker commands are abstracted behind a service (`dockerService.js`).
+- Uses the official Docker SDK for Node, with proper async/await handling.
+- Container lifecycle is tracked and reflected in the UI.
+- Security: image pulls are restricted to allowed registries.
+
+## Interface Quality
+- Responsive design achieved through CSS Grid.
+- Accessibility: ARIA attributes present where appropriate.
+- Code modularity: each panel is a separate component with its own stylesheet.
+
+## Recommendations
+1. **Event Bus** – Add type safety by using TypeScript interfaces for events.
+2. **Docker Service** – Implement retry/backoff for transient failures.
+3. **Metrics Panel** – Cache data to reduce API load.
+4. **Testing** – Add unit tests for the event bus interactions.
+5. **Documentation** – Provide a README for panel contribution guidelines.
+
+## Conclusion
+The panels adhere to best practices in communication, Docker handling, and interface design. Minor improvements suggested above will enhance maintainability and robustness.

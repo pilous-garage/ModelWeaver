@@ -1,0 +1,18 @@
+Rapport synthétique:
+
+1. Streaming:
+- Aucun flux de données n'a été détecté.
+- Aucun fichier de configuration de streaming n'existe.
+
+2. État du dépôt Git:
+- Projet central cloné: mw-swarm.
+- Branche actuelle: auto_code_412.
+- Aucun commit n'a été ajouté ou modifié; le dépôt reste à son état initial.
+
+3. Absence de code projet:
+- Aucun fichier source n'a été présent dans le workspace.
+- Le répertoire reste vide.
+
+Conclusion:
+- Le dépôt ne contient pas de code, il ne peut donc pas être exécuté.
+- Le rapport est prêt pour l'utilisateur.

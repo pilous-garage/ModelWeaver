@@ -1,0 +1,14 @@
+# Formatting Check Report
+
+Executed Ruff style checker on the repository.
+
+**Result:**
+- No errors or warnings were reported.
+- All files comply with the project's formatting guidelines.
+
+**Command executed:**
+```bash
+ruff check .
+```
+
+**Commit message:** `Add formatting check report`

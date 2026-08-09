@@ -1,0 +1,55 @@
+AUDIT REPORT - Problèmes détectés lors de la relecture
+=======================================================
+
+Date : 2026-08-08
+Projet : mw-swarm
+Branche : auto_code_412
+
+## Contexte
+Cet audit fait suite à la relecture du code des panneaux de monitoring et de
+l'intégration de la télémétrie dans le dashboard. Il recense les problèmes
+identifiés ainsi que les recommandations d'amélioration.
+
+## Problèmes détectés
+
+### 1. Panneaux de monitoring
+- P1 - Les panneaux de monitoring ne disposent pas d'une source de données
+  unifiée : chaque panneau interroge le daemon séparément, ce qui génère des
+  appels redondants et des incohérences d'affichage entre panneaux.
+- P2 - Absence de mécanisme de rafraîchissement périodique centralisé : les
+  données statiques ne reflètent pas l'état réel du système en temps réel.
+- P3 - Les états d'erreur réseau / daemon indisponible ne sont pas gérés
+  proprement (pas de fallback, pas de message utilisateur explicite).
+
+### 2. Intégration télémétrie
+- P4 - La télémétrie (latence, taux d'erreur, uptime) n'est pas encore
+  branchée sur les panneaux du dashboard : les métriques collectées par le
+  module telemetry ne sont pas exposées dans l'interface.
+- P5 - Absence d'agrégation temporelle : les métriques sont stockées brutes
+  sans pré-agrégation, ce qui rend l'affichage de longues périodes coûteux.
+
+### 3. Communication entre panneaux
+- P6 - Pas de bus d'événements standardisé entre panneaux : la communication
+  repose sur des props/état local, limitant la réutilisation et la scalabilité.
+
+### 4. Divers
+- P7 - Le code des panneaux contient des duplications (fetch + gestion d'état
+  répétés) qui devraient être factorisés dans des hooks partagés.
+- P8 - Absence de tests unitaires pour les nouveaux composants de monitoring.
+
+## Recommandations
+1. Introduire une source de données unifiée (store/context global) alimentée
+   par un seul polling du daemon.
+2. Mettre en place un mécanisme de rafraîchissement périodique (intervalle
+   configurable) avec gestion des états de chargement/erreur.
+3. Exposer les métriques de télémétrie via une route dédiée
+   (/v1/monitoring/metrics) et les connecter aux panneaux.
+4. Pré-agréger les métriques par fenêtre temporelle pour optimiser l'affichage.
+5. Factoriser la logique de fetch et de gestion d'état dans des hooks réutilisables.
+6. Ajouter des tests unitaires pour les panneaux et les services de monitoring.
+
+## Conclusion
+Les problèmes détectés sont principalement structurels (absence de source de
+données unifiée, télémétrie non branchée). Les recommandations ci-dessus
+permettent d'améliorer la robustesse, la cohérence et la maintenabilité du
+dashboard de monitoring.

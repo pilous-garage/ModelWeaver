@@ -9,7 +9,7 @@ inputs:
   name:
     type: string
     required: true
-    description: Nouveau nom (max 120 chars)
+    description: Nouveau nom (max 50 chars)
 outputs:
   ok:
     type: boolean

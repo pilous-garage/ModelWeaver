@@ -1,0 +1,25 @@
+Rapport synthétique
+
+1. Streaming
+   • Le streaming est actuellement désactivé dans l'environnement. Aucun flux de données en temps réel n'est détecté.
+   • Les logs indiquent que le service de streaming n'a pas été initialisé et que les sockets restent inactifs.
+   • Pour réactiver, il faut lancer le service de streaming via la commande appropriée ou configurer le fichier de configuration.
+
+2. État du dépôt Git
+   • Projet central : mw-swarm
+   • Branche cible : auto_code_412
+   • Le dépôt a été cloné avec succès dans le répertoire "workspace/mw-swarm".
+   • Aucun commit n'a été effectué sur cette branche jusqu'à présent ; elle est vide.
+   • Le rapport ci‑dessus a été ajouté, commité et poussé sur la branche auto_code_412.
+
+3. Absence de code projet
+   • Aucun fichier source ou structure de projet n'est présent dans le dépôt central.
+   • Le répertoire est vide, indiquant qu'aucun code n'a encore été ajouté.
+   • Cette absence est coïncidente avec l'absence de configuration de l'application.
+
+Conclusion
+   • Le dépôt est prêt pour accueillir de nouveaux fichiers.
+   • Il faut créer la structure de projet et ajouter le code nécessaire.
+   • Le service de streaming doit être configuré pour fonctionner correctement.
+
+-- Fin du rapport

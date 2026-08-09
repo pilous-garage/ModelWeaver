@@ -225,6 +225,16 @@ def op_dev_chat_send(params: dict) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+    # ── Persister le message humain dans la conversation ──
+    if conversation_id:
+        try:
+            from modules.sql.agents_repo import ConversationRepository
+            repo = ConversationRepository(mgr.db.conn)
+            repo.append(int(conversation_id), repo.T_HUMAN,
+                        _time.time(), payload={"text": message})
+        except Exception:
+            pass
+
     try:
         result = _run_pilot(aid, mode, message, workspace_id, home,
                             params.get("provider_ref", ""),
@@ -232,7 +242,25 @@ def op_dev_chat_send(params: dict) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-    return {"status": "ok", "session": session, **result}
+    # ── Nommage automatique (au 2ème échange texte) ──
+    if conversation_id and result.get("status") in ("ok", "success"):
+        try:
+            from AgentsCatalogue.lib.workspacedb.conversation import maybe_auto_name
+            from modules.llm_manager.llm_manager import LLMManager
+            _bridge = LLMManager(cat=None).get_bridge()
+            _name_res = maybe_auto_name({
+                "conversation_id": conversation_id,
+                "bridge": _bridge,
+                "provider_ref": params.get("provider_ref", ""),
+                "model_ref": params.get("model_ref", ""),
+            }, home)
+            if _name_res.get("ok"):
+                result["conversation_named"] = _name_res.get("name")
+        except Exception:
+            pass
+
+    return {"status": "ok", "session": session,
+            "conversation_id": conversation_id, **result}
 
 
 def _stream_writer_send(wfile, event: str, data: dict) -> None:
@@ -336,11 +364,17 @@ def _conv_repo():
 def op_dev_chat_conversations(params):
     """Liste les conversations d'un agent pilote (menu déroulant).
 
-    params : { agent_id } (pilote de la session). Si absent, liste toutes.
+    params : { agent_id } (pilote de la session) OU { session } (nom de la
+    session, on résout le pilote). Si ni l'un ni l'autre, liste toutes.
     """
-    agent_id = params.get("agent_id")
     repo, db = _conv_repo()
     try:
+        agent_id = params.get("agent_id")
+        if not agent_id and params.get("session"):
+            from services.agent_manager.service import AgentManager
+            row = AgentManager(db=db).get_by_name(params["session"])
+            if row:
+                agent_id = row["agent_id"]
         if agent_id:
             convs = repo.list_for_agent(int(agent_id))
         else:

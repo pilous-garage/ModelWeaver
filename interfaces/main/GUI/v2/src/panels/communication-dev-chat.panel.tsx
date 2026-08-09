@@ -26,6 +26,9 @@ panels:
     assistant: "Assistant"
     envoi: "Envoyé"
     termine: "Terminé"
+    nouvelle_conv: "＋ Nouvelle conversation"
+    conversation: "Conversation"
+    renommer: "Renommer"
 `;
 
 const LANG_EN = `
@@ -46,6 +49,9 @@ panels:
     assistant: "Assistant"
     envoi: "Sent"
     termine: "Done"
+    nouvelle_conv: "＋ New conversation"
+    conversation: "Conversation"
+    renommer: "Rename"
 `;
 
 interface Seg {
@@ -126,7 +132,10 @@ function useNow(live: boolean): number {
 
 function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
   const workspaceId = params.workspace_id ?? 'mw-dev-chat';
-  const [session] = useState(() => params.session ?? `devchat_${Date.now().toString(36)}`);
+  const [session, setSession] = useState(() => params.session ?? `devchat_${Date.now().toString(36)}`);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [conversationId, setConversationId] = useState<number | null>(
+    params.conversation_id ? Number(params.conversation_id) : null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<'plan' | 'build'>('plan');
@@ -154,6 +163,63 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
   useEffect(() => {
     if (provider && model) setActiveModel(fmtWho(provider, model));
   }, [provider, model]);
+
+  // ── Conversations : chargement + sélection ──
+  // Le menu déroulant liste les conversations du pilote (dev-chat/
+  // conversations). Sélectionner une conv la charge ; « nouvelle conv » en
+  // crée une et le LLM la nomme ensuite.
+  const loadConversations = async () => {
+    try {
+      const res = await ctx.api.post('dev-chat/conversations', { session });
+      const list = res?.result?.conversations ?? res?.conversations ?? [];
+      setConversations(list);
+      if (conversationId == null && list.length > 0) {
+        setConversationId(list[0].id);
+      }
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { loadConversations(); /* eslint-disable-next-line */ }, []);
+
+  const selectConversation = async (id: number) => {
+    setConversationId(id);
+    setMessages([]);
+    setBusy(false);
+    setError(null);
+    try {
+      const res = await ctx.api.post('dev-chat/conversation/get', { conversation_id: id });
+      const msgs = (res?.result?.messages ?? res?.messages ?? []) as any[];
+      // Reconstruire l'historique lisible : user/assistant à partir des
+      // événements textuels (llm_text + human_message).
+      const rebuilt: Msg[] = [];
+      let cur: any = null;
+      for (const m of msgs) {
+        if (m.type === 'human_message') {
+          cur = { role: 'user', content: m.payload_json?.text ?? '', mode, ts: m.time_start, sentTs: m.time_start, finished: true, durationMs: 0 };
+          rebuilt.push(cur);
+        } else if (m.type === 'llm_text') {
+          const p = m.payload_json ?? {};
+          const txt = p.text ?? '';
+          if (cur && cur.role === 'assistant') cur.content += txt;
+          else {
+            cur = { role: 'assistant', content: txt, mode, provider: p.provider, model: p.model, ts: m.time_start, sentTs: m.time_start, finished: true, durationMs: 0, status: 'termine' };
+            rebuilt.push(cur);
+          }
+        }
+      }
+      setMessages(rebuilt);
+    } catch { setMessages([]); }
+  };
+
+  const newConversation = async () => {
+    // Nouvelle conversation = nouvelle session (nouvel agent pilote), qui
+    // créera sa première conversation au prochain envoi.
+    setConversationId(null);
+    setSession(`devchat_${Date.now().toString(36)}`);
+    setMessages([]);
+    setBusy(false);
+    setError(null);
+    await loadConversations();
+  };
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -203,7 +269,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           const abort = () => { if (doAbort) doAbort(); };
           abortRef.current = { abort };
           const ret = ctx.api.stream('dev-chat/stream', {
-            message: text, mode, session, workspace_id: workspaceId,
+            message: text, mode, session, workspace_id: workspaceId, conversation_id: conversationId,
             provider_ref: provider, model_ref: model,
           }, (ev: any) => {
             const { event, data } = ev ?? {};
@@ -333,7 +399,7 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
       } else {
         // Repli : dev-chat/send synchrone (pas de streaming).
         const res = await ctx.api.post('dev-chat/send', {
-          message: text, mode, session, workspace_id: workspaceId,
+          message: text, mode, session, workspace_id: workspaceId, conversation_id: conversationId,
           provider_ref: provider, model_ref: model,
         });
         const r = res?.result ?? res ?? {};
@@ -416,6 +482,26 @@ function DevChatPanel({ ctx, params }: { ctx: any; params: Record<string, any> }
           </span>
         )}
         <span style={{ color: '#64748b', fontSize: 11 }}>{workspaceId}</span>
+        {/* Menu déroulant des conversations */}
+        <select
+          data-testid="dev-chat-conv-select"
+          value={conversationId ?? ''}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === '__new__') newConversation();
+            else if (v) selectConversation(Number(v));
+          }}
+          style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                   background: 'rgba(148,163,184,.08)', color: '#cbd5e1',
+                   border: '1px solid rgba(148,163,184,.25)', maxWidth: 180 }}
+          title={ctx.t?.('panels.communication-dev-chat.conversation') ?? 'Conversation'}
+        >
+          <option value="">{ctx.t?.('panels.communication-dev-chat.conversation') ?? 'Conversation'}…</option>
+          {conversations.map((c) => (
+            <option key={c.id} value={String(c.id)}>{c.name}</option>
+          ))}
+          <option value="__new__">{ctx.t?.('panels.communication-dev-chat.nouvelle_conv') ?? '＋ Nouvelle conversation'}</option>
+        </select>
       </div>
 
       {/* Historique */}
