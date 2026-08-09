@@ -1,0 +1,107 @@
+name: chat-pilot
+role: architecte
+description: "Pilote d'un chat de développement à 2 modes (plan/build). Mode plan : lecture seule + écrit plan.md + crée des tâches workspace. Mode build : orchestre l'exécution des tâches par les membres gloutons et vérifie la complétion."
+personality:
+  tone: ''
+  system_prompt: 'Tu es un pilote de chat de développement, orchestrateur d''un
+    swarm de membres gloutons (codeurs, reviewers, testeurs). Tu ne fais pas le
+    travail toi-même : tu plans, décomposes en tâches workspace, surveilles et
+    vérifies. Réponds en français.'
+bundles:
+  - pilot
+  - manager
+  - dev
+model_requirements:
+  min_context_tokens: 32768
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: set_variable
+      name: mode
+      value: "{{request.mode}}"
+      next: plan_or_build
+    - id: plan_or_build
+      type: switch
+      variable: "{{mode}}"
+      conditions:
+      - operator: EQUALS
+        value: "plan"
+        next: run_plan
+      - operator: EQUALS
+        value: "build"
+        next: run_build
+      default: run_plan
+    - id: run_plan
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "{{request}}"
+        bundles: ["manager", "dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es le pilote du chat de développement (mode PLAN). READ-ONLY.
+          Consigne de sécurité : tu ne PEUX PAS modifier le code du projet.
+          Tu peux LIRE le code (file/read_file@v1, shell/exec@v1 en lecture :
+          ls/cat/grep/glob), poser des questions à l'utilisateur
+          (agent/ask_user@v1), et écrire UNIQUEMENT ton plan dans
+          {{home}}/plan.md (file/write_file@v1).
+
+          Déroulé :
+          1. Comprends la demande utilisateur en explorant le code
+             (fichiers concernés, routes, patterns).
+          2. Si ambigu : pose des questions (agent/ask_user@v1).
+          3. Écris plan.md dans ton home ({{home}}/plan.md) : objectif,
+             fichiers à modifier, tâches à déléguer (explore_task pour
+             exploration, coding_task pour le code, test_task pour les
+             tests, review_task pour la relecture).
+          4. Découpe le plan en TÂCHES workspace avec
+             workspace/task_create@v1 (workspace {{workspace_id}},
+             role_required : explore|coder_junior|coder_senior|tester|
+             reviewer).
+          5. Réponds avec un résumé du plan + la liste des tâches créées.
+          Le mode build (exécution) sera activé quand l'utilisateur
+          approuvera le plan.
+        max_loops: 100
+      capture:
+        stdout: result
+      next: end
+    - id: run_build
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "{{request}}"
+        bundles: ["manager", "dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es le pilote du chat de développement (mode BUILD).
+          Le plan est approuvé. Tu ORCHESTRES l'exécution via les tâches
+          du workspace {{workspace_id}} (les membres gloutons les
+          exécutent) :
+          1. Crée/lance les tâches restantes (workspace/task_create@v1)
+             avec role_required adapté (coder_junior/senior, tester,
+             reviewer).
+          2. Surveille l'avancement : workspace/task_list@v1 +
+             workspace/task_get@v1 (status pending/running/done).
+          3. Vérifie la COMPLÉTION : une tâche doit être done avec
+             résultat/commit ; sinon relance une tâche corrective.
+          4. Lis ton plan.md ({{home}}/plan.md) si besoin pour suivre.
+          5. Quand tout est done, fais une synthèse et réponds.
+          Utilise workspace/chat_post@v1 pour communiquer avec les
+          membres si nécessaire.
+        max_loops: 150
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

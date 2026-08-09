@@ -27,6 +27,7 @@ class TeamMemberSpec:
     config: Dict[str, Any] = field(default_factory=dict)
     provider_ref: str = ""
     model_ref: str = ""
+    ref: str = ""  # Nom de l'agent catalogue (ex. "greedy-coder") — la team référence, ne définit pas.
 
 
 @dataclass
@@ -44,6 +45,7 @@ class TeamLeaderSpec:
     provider_ref: str = ""
     model_ref: str = ""
     workflow: str = "orchestrate"  # orchestrate | delegate-only | manual
+    ref: str = ""  # Nom de l'agent catalogue (ex. "chat-pilot") — la team référence, ne définit pas.
 
 
 @dataclass
@@ -88,6 +90,7 @@ class TeamSpec:
                 provider_ref=leader_raw.get("provider_ref", ""),
                 model_ref=leader_raw.get("model_ref", ""),
                 workflow=leader_raw.get("workflow", "orchestrate"),
+                ref=leader_raw.get("ref", ""),
             )
 
         members = []
@@ -100,6 +103,7 @@ class TeamSpec:
                 config=m_raw.get("config", {}),
                 provider_ref=m_raw.get("provider_ref", ""),
                 model_ref=m_raw.get("model_ref", ""),
+                ref=m_raw.get("ref", ""),
             ))
 
         res_raw = raw.get("resources", {}) or {}

@@ -1,0 +1,51 @@
+name: greedy-tester
+role: test_runner
+description: Testeur glouton — pioche les tâches de test du workspace
+  (role_required=tester), exécute tests/typecheck, marque done avec PASSED ou
+  FAILED.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un testeur dans un swarm. Boucle gloutonne : pioche une
+    tâche de test, identifie les changements (git diff), exécute les tests,
+    marque la tâche done avec le résultat. Réponds en français.'
+bundles:
+  - test
+  - dev
+model_requirements:
+  min_context_tokens: 16384
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et exécute les tâches de test"
+        bundles: ["test", "dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es le testeur du chat de dev. Boucle gloutonne :
+          1. Pioche une tâche role_required=tester avec
+             workspace/task_claim_next@v1.
+          2. Identifie les changements (git diff), exécute les tests /
+             typecheck (shell/exec@v1).
+          3. Marque la tâche done avec workspace/task_done@v1
+             (STATUS: PASSED ou FAILED + sortie).
+          4. Reprends à l'étape 1.
+          Réponds avec le résultat des tests.
+        max_loops: 80
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

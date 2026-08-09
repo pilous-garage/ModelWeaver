@@ -1,430 +1,117 @@
 name: dev-chat
 version: 0.1.0
-description: "Chat de développement piloté par un agent maître (chat-pilot) à 2 modes (plan/build). Le pilote lit le code, écrit un plan.md dans son home, décompose en tâches workspace (explore_task, coding_task, test_task, review_task), les membres gloutons les piochent (greedy), et le pilote vérifie la complétion via task_get/task_list. Délégation = tâches workspace, PAS call_agent."
+description: "Chat de développement piloté par un agent maître (chat-pilot) à 2 modes (plan/build). Le pilote lit le code, écrit un plan.md dans son home, décompose en tâches workspace (explore_task, coding_task, test_task, review_task), les membres gloutons les piochent (greedy), et le pilote vérifie la complétion via task_get/task_list. Délégation = tâches workspace, PAS call_agent. Tous les membres RÉFÉRENCENT le catalogue d'agents (field ref) — la team est une composition d'agents, elle ne les définit pas."
 workspace_id: mw-dev-chat
 topology: flat
 
 members:
   # ── AGENT MAÎTRE : chat de dev, modes plan/build (gérés par le prompt + FSM) ──
-  # Variable mode : "plan" (lecture seule + écrit plan.md + crée des tâches) ou
-  # "build" (exécute les tâches, vérifie, itère). Le home de l'agent contient
-  # plan.md qu'il écrit puis relit.
   - agent_name: chat-pilot
+    ref: chat-pilot
     role: architecte
     occupation: noncontinue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: set_variable
-            name: mode
-            value: "{{request.mode}}"
-            next: plan_or_build
-          - id: plan_or_build
-            type: switch
-            variable: "{{mode}}"
-            conditions:
-              - operator: EQUALS
-                value: "plan"
-                next: run_plan
-              - operator: EQUALS
-                value: "build"
-                next: run_build
-            default: run_plan
-          - id: run_plan
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "{{request}}"
-              bundles: ["manager", "dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le pilote du chat de développement (mode PLAN). READ-ONLY.
-                Consigne de sécurité : tu ne PEUX PAS modifier le code du projet.
-                Tu peux LIRE le code (file/read_file@v1, shell/exec@v1 en lecture :
-                ls/cat/grep/glob), poser des questions à l'utilisateur
-                (agent/ask_user@v1), et écrire UNIQUEMENT ton plan dans
-                {{home}}/plan.md (file/write_file@v1).
-
-                Déroulé :
-                1. Comprends la demande utilisateur en explorant le code
-                   (fichiers concernés, routes, patterns).
-                2. Si ambigu : pose des questions (agent/ask_user@v1).
-                3. Écris plan.md dans ton home ({{home}}/plan.md) : objectif,
-                   fichiers à modifier, tâches à déléguer (explore_task pour
-                   exploration, coding_task pour le code, test_task pour les
-                   tests, review_task pour la relecture).
-                4. Découpe le plan en TÂCHES workspace avec
-                   workspace/task_create@v1 (workspace {{workspace_id}},
-                   role_required : explore|coder_junior|coder_senior|tester|
-                   reviewer).
-                5. Réponds avec un résumé du plan + la liste des tâches créées.
-                Le mode build (exécution) sera activé quand l'utilisateur
-                approuvera le plan.
-              max_loops: 100
-            capture:
-              stdout: result
-            next: end
-          - id: run_build
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "{{request}}"
-              bundles: ["manager", "dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le pilote du chat de développement (mode BUILD).
-                Le plan est approuvé. Tu ORCHESTRES l'exécution via les tâches
-                du workspace {{workspace_id}} (les membres gloutons les
-                exécutent) :
-                1. Crée/lance les tâches restantes (workspace/task_create@v1)
-                   avec role_required adapté (coder_junior/senior, tester,
-                   reviewer).
-                2. Surveille l'avancement : workspace/task_list@v1 +
-                   workspace/task_get@v1 (status pending/running/done).
-                3. Vérifie la COMPLÉTION : une tâche doit être done avec
-                   résultat/commit ; sinon relance une tâche corrective.
-                4. Lis ton plan.md ({{home}}/plan.md) si besoin pour suivre.
-                5. Quand tout est done, fais une synthèse et réponds.
-                Utilise workspace/chat_post@v1 pour communiquer avec les
-                membres si nécessaire.
-              max_loops: 150
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
   # ── EXPLORE : pioche les explore_task (lecture seule) ──
   - agent_name: explore
+    ref: greedy-explore
     role: explore
     occupation: continue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'exploration (role explore)"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es l'explorateur du chat de dev. READ-ONLY : tu ne modifies
-                JAMAIS le code. Boucle gloutonne :
-                1. Pioche une tâche role_required=explore avec
-                   workspace/task_claim_next@v1 (workspace {{workspace_id}}).
-                2. Explore le code demandé (file/read_file@v1, shell/exec@v1 :
-                   ls/cat/grep/glob).
-                3. Marque la tâche done avec workspace/task_done@v1 (résultat =
-                   ton analyse).
-                4. Reprends à l'étape 1.
-                Réponds avec ton analyse des fichiers explorés.
-              max_loops: 80
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
   # ── CODEURS : piochent les coding_task (junior/senior) ──
   - agent_name: coder-a
+    ref: greedy-coder
     role: codeur
     occupation: continue
     resources:
       llm: true
-    config: &coder_cfg
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et exécute les tâches de code"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es un codeur du chat de dev. Boucle gloutonne :
-                1. Clone d'abord le projet : git/lite@v1 action=init
-                   (le code est alors dans ton workspace agents/{id}/workspace).
-                2. Pioche une tâche role_required=coder_junior OU coder_senior
-                   avec workspace/task_claim_next@v1.
-                3. Lis la description, puis travaille DANS ton workspace
-                   agents/{id}/workspace/ : lis les fichiers (read_file_v1),
-                   implémente (write_file_v1), utilise le shell UNIQUEMENT dans
-                   ce dossier (exec_v1 avec cd agents/{id}/workspace).
-                   NE FAIS PAS exec dans shared/ ni dans /home/pierreloup2.
-                4. Commit avec git/lite@v1 action=commit, puis marque la tâche
-                   done avec workspace/task_done@v1 (branch + commit_hash).
-                5. Reprends à l'étape 1.
-                IMPORTANT : après avoir lu l'essentiel, ÉCRIS le livrable
-                (write_file_v1) — ne te contente pas de lire en boucle.
-                Réponds avec le résumé + le commit.
-              max_loops: 100
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
   - agent_name: coder-b
+    ref: greedy-coder
     role: codeur
     occupation: continue
     resources:
       llm: true
-    config: *coder_cfg
   - agent_name: coder-c
+    ref: greedy-coder
     role: codeur
     occupation: continue
     resources:
       llm: true
-    config: *coder_cfg
   - agent_name: coder-d
+    ref: greedy-coder
     role: codeur
     occupation: continue
     resources:
       llm: true
-    config: *coder_cfg
 
   # ── TESTEUR : pioche les test_task ──
   - agent_name: tester
+    ref: greedy-tester
     role: test_runner
     occupation: continue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et exécute les tâches de test"
-              bundles: ["test", "dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le testeur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=tester avec
-                   workspace/task_claim_next@v1.
-                2. Identifie les changements (git diff), exécute les tests /
-                   typecheck (shell/exec@v1).
-                3. Marque la tâche done avec workspace/task_done@v1
-                   (STATUS: PASSED ou FAILED + sortie).
-                4. Reprends à l'étape 1.
-                Réponds avec le résultat des tests.
-              max_loops: 80
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
   # ── REVIEWER : pioche les review_task ──
   - agent_name: reviewer
+    ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
-    config: &reviewer_cfg
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et exécute les tâches de relecture"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le relecteur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche en attente de review avec
-                   workspace/task_claim_next@v1 (workspace {{workspace_id}},
-                   status='review', role_required=reviewer).
-                2. Récupère les VRAIS fichiers du livrable : appelle
-                   workspace/task_get_files@v1 avec le task_id pioché — il
-                   retourne la liste des fichiers livrés (source/rendu). Lis
-                   CES chemins exacts avec file/read_file@v1. N'invente JAMAIS
-                   un chemin : si task_get_files ne retourne rien, regarde le
-                   commit de la tâche (git diff / git show <commit_hash>).
-                3. Si OK : marque la tâche done avec workspace/task_done@v1
-                   (approve=true, branch + commit_hash de la tâche).
-                   Si problèmes : crée une tâche corrective (task_create).
-                4. Reprends à l'étape 1.
-                IMPORTANT : ne re-pioche PAS une 2e tâche sans avoir validé la
-                première. Réponds avec ta relecture.
-              max_loops: 80
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
-  # Reviewers additionnels (backlog de review important) : même workflow, ils
-  # piochent les tâches 'review' en parallèle du reviewer principal.
+  # Reviewers additionnels (backlog de review important) : même agent catalogue.
   - agent_name: reviewer-2
+    ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
-    config: *reviewer_cfg
   - agent_name: reviewer-3
+    ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
-    config: *reviewer_cfg
   - agent_name: reviewer-4
+    ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
-    config: *reviewer_cfg
   - agent_name: reviewer-5
+    ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
-    config: *reviewer_cfg
 
   # ── ANALYST : analyse les missions (avis indépendants, découpe des tâches) ──
   - agent_name: analyst
+    ref: greedy-analyst
     role: architecte
     occupation: continue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'analyse (role analyst)"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es l'analyste du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=analyst avec
-                   workspace/task_claim_next@v1 (workspace {{workspace_id}}).
-                2. Lis la description de la tâche et les livrables liés.
-                3. DÉCOUPE la mission en sous-tâches maximale (chaque sous-tâche
-                   doit être petite, actionnable, indépendante — plus c'est
-                   découpé, plus le swarm est fiable). Crée-les avec
-                   workspace/task_create@v1 (role adapté).
-                4. Produis ton analyse/livrable dans ton home (write_file_v1),
-                   commit avec git/lite@v1, puis marque la tâche done avec
-                   workspace/task_done@v1 (commit_hash).
-                5. Reprends à l'étape 1.
-                Réponds avec ton analyse + les sous-tâches créées.
-              max_loops: 80
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
   # ── MERGER : regroupe les livrables des membres dans le home ──
   - agent_name: merger
+    ref: greedy-merger
     role: orchestrateur
     occupation: continue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Surveille le workspace {{workspace_id}} et fusionne les livrables (role merger)"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le mergeur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=merger avec
-                   workspace/task_claim_next@v1 (workspace {{workspace_id}}).
-                2. Récupère les livrables des membres (read_file dans leurs
-                   homes : agent_home/*/…, ou git/lite@v1 pull + read).
-                3. Fusionne/regroupe tout dans un dossier consolidé de ton home
-                   (ex. livrables_fusion.md), avec les sources par agent.
-                4. Commit avec git/lite@v1, marque la tâche done avec
-                   workspace/task_done@v1 (commit_hash).
-                5. Reprends à l'étape 1.
-                Réponds avec le chemin du livrable fusionné.
-              max_loops: 80
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
   # ── COORDINATEUR : explore le taskflow, analyse ce que font les autres,
   #    et garantit que le chemin chat → swarm → chat est complété. ──
   - agent_name: surveillant
+    ref: greedy-coordinateur
     role: planificateur
     occupation: continue
     resources:
       llm: true
-    config:
-      workflow:
-        steps:
-          - id: start
-            type: call
-            fn: workflow/autonomous@v1
-            inputs:
-              request: "Coordinateur : explore le taskflow du workspace {{workspace_id}} et assure la complétion de bout en bout"
-              bundles: ["dev"]
-              workspace_id: "{{workspace_id}}"
-              context: |
-                Tu es le COORDINATEUR du swarm. Ta mission : explorer le
-                TASKFLOW complet et t'assurer que chaque mission va de
-                chat → swarm → chat sans rester bloquée. Boucle gloutonne :
-
-                1. EXPLORE le taskflow :
-                   - workspace/task_list@v1 (all=true) : toutes les tâches,
-                     statuts (pending/running/review/done), rôles, assignations.
-                   - workspace/task_get@v1 sur les tâches clés.
-                   - git/lite@v1 status + log : les commits récents.
-
-                2. ANALYSE avec ton LLM ce que font les autres :
-                   - Quelles tâches sont pending depuis longtemps ? bloquées ?
-                   - Quelles tâches done n'ont AUCUN livrable réel (fichier .md
-                     absent ou stub vide "à compléter"/"Contenu du fichier") ?
-                   - Y a-t-il des agents qui tournent sans avancer ?
-
-                3. ASSURE la complétion :
-                   - Tâche pending actionnable → vérifie qu'un agent va la
-                     piocher (un agent greedy devrait être actif) ; sinon
-                     relance (workspace/task_create_v1 corrective).
-                   - Tâche done SANS livrable réel → remets-la en pending
-                     (workspace/task_done_v1 est refusé, utilise task_create
-                     corrective + signale le problème).
-                   - Tâche review → le reviewer doit la valider ; sinon signale.
-
-                4. Écris un RAPPORT DE COORDINATION dans ton home
-                   (write_file_v1, fichier coordination.md) : état global,
-                   blocages, tâches relancées, ce qui reste pour compléter
-                   chat → swarm → chat.
-
-                IMPORTANT : ne crée PAS de tâches parasites inutiles. Ta valeur
-                = VÉRIFIER la complétion réelle et REMETTRE en route ce qui
-                est bloqué/stub. Réponds avec le rapport + actions prises.
-              max_loops: 120
-            capture:
-              stdout: result
-            next: end
-          - id: end
-            type: end
-            status: SUCCESS
 
 resources:
   budget_per_hour: 100

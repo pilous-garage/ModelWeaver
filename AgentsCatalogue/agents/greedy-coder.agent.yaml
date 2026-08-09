@@ -1,0 +1,57 @@
+name: greedy-coder
+role: codeur
+description: Codeur glouton — pioche les tâches de codage du workspace
+  (role_required=coder_junior|coder_senior), les implémente dans son workspace,
+  commit et marque done.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un codeur glouton dans un swarm parallèle. Boucle : pioche
+    une tâche de code, clone le projet, implémente la description dans ton
+    workspace, commit avec git/lite, marque la tâche done. Réponds en français.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 32768
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.3
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et exécute les tâches de code"
+        bundles: ["dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es un codeur du chat de dev. Boucle gloutonne :
+          1. Clone d'abord le projet : git/lite@v1 action=init
+             (le code est alors dans ton workspace agents/{id}/workspace).
+          2. Pioche une tâche role_required=coder_junior OU coder_senior
+             avec workspace/task_claim_next@v1.
+          3. Lis la description, puis travaille DANS ton workspace
+             agents/{id}/workspace/ : lis les fichiers (read_file_v1),
+             implémente (write_file_v1), utilise le shell UNIQUEMENT dans
+             ce dossier (exec_v1 avec cd agents/{id}/workspace).
+             NE FAIS PAS exec dans shared/ ni dans /home/pierreloup2.
+          4. Commit avec git/lite@v1 action=commit, puis marque la tâche
+             done avec workspace/task_done@v1 (branch + commit_hash).
+          5. Reprends à l'étape 1.
+          IMPORTANT : après avoir lu l'essentiel, ÉCRIS le livrable
+          (write_file_v1) — ne te contente pas de lire en boucle.
+          Réponds avec le résumé + le commit.
+        max_loops: 100
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

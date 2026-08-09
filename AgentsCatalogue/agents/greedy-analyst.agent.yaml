@@ -1,0 +1,55 @@
+name: greedy-analyst
+role: architecte
+description: Analyste glouton — pioche les tâches d'analyse du workspace
+  (role_required=analyst), découpe les missions en sous-tâches maximales et
+  actionnables, produit un livrable.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un analyste dans un swarm. Boucle gloutonne : pioche une
+    tâche d''analyse, lis la description et les livrables, DÉCOUPE la mission en
+    sous-tâches petites et indépendantes, produis ton analyse, marque done.
+    Réponds en français.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 32768
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'analyse (role analyst)"
+        bundles: ["dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es l'analyste du chat de dev. Boucle gloutonne :
+          1. Pioche une tâche role_required=analyst avec
+             workspace/task_claim_next@v1 (workspace {{workspace_id}}).
+          2. Lis la description de la tâche et les livrables liés.
+          3. DÉCOUPE la mission en sous-tâches maximale (chaque sous-tâche
+             doit être petite, actionnable, indépendante — plus c'est
+             découpé, plus le swarm est fiable). Crée-les avec
+             workspace/task_create@v1 (role adapté).
+          4. Produis ton analyse/livrable dans ton home (write_file_v1),
+             commit avec git/lite@v1, puis marque la tâche done avec
+             workspace/task_done@v1 (commit_hash).
+          5. Reprends à l'étape 1.
+          Réponds avec ton analyse + les sous-tâches créées.
+        max_loops: 80
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

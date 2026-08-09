@@ -59,6 +59,16 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         if spec.config:
             updates.append("config_json = ?")
             params.append(json.dumps(spec.config or {}))
+        # Si la team référence le catalogue (spec.ref) sans config inline,
+        # recharger depuis le catalogue : le .agent.yaml est la source de
+        # vérité (écrase un éventuel ancien config inline hérité).
+        elif getattr(spec, "ref", ""):
+            from services.api.catalogue_agents import _load_agent_yaml_config
+            loaded = _load_agent_yaml_config(spec.role, spec.agent_name,
+                                             catalogue_ref=spec.ref)
+            if loaded:
+                updates.append("config_json = ?")
+                params.append(json.dumps(loaded))
         if updates:
             db.conn.execute(
                 f"UPDATE agents SET {', '.join(updates)} WHERE agent_id = ?",
@@ -70,9 +80,11 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
     # Si le membre ne définit pas de workflow explicite, charger le .agent.yaml
     # du rôle (ex. codeur → codeur@v2.agent.yaml, greedy). Permet de réutiliser
     # la même déclaration d'agent pour plusieurs membres (codeur-a, codeur-b…).
+    # Si `spec.ref` est fourni, on référence CET agent catalogue précisément.
     if not spec.config:
         from services.api.catalogue_agents import _load_agent_yaml_config
-        loaded = _load_agent_yaml_config(spec.role, spec.agent_name)
+        loaded = _load_agent_yaml_config(spec.role, spec.agent_name,
+                                         catalogue_ref=getattr(spec, "ref", ""))
         if loaded:
             config_json = json.dumps(loaded)
 

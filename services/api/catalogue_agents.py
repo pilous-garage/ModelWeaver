@@ -98,21 +98,32 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
     return inline
 
 
-def _load_agent_yaml_config(role: str, agent_name: str = "") -> Optional[Dict[str, Any]]:
+def _load_agent_yaml_config(role: str, agent_name: str = "", catalogue_ref: str = "") -> Optional[Dict[str, Any]]:
     """Charge le config d'un .agent.yaml par rôle (ou nom d'agent).
 
     Cherche d'abord `{role}@v2.agent.yaml` (version gloutonne), puis
     `{role}.agent.yaml`, puis `{agent_name}@v2.agent.yaml`. Retourne le
     dict config utilisable (entrypoints migrés) ou None si introuvable.
+
+    Si `catalogue_ref` est fourni (référence explicite d'une team vers un
+    agent catalogue), ce nom a la PRIORITÉ sur le rôle : on charge
+    `{catalogue_ref}.agent.yaml` tel quel. C'est le mécanisme de
+    composition des teams (une team référence un agent du catalogue au
+    lieu de le définir inline).
     """
     candidates = []
-    base = (role or agent_name or "").strip()
-    if base:
-        candidates.append(f"{base}@v2.agent.yaml")
-        candidates.append(f"{base}.agent.yaml")
-    if agent_name and agent_name != base:
-        candidates.append(f"{agent_name}@v2.agent.yaml")
-        candidates.append(f"{agent_name}.agent.yaml")
+    if catalogue_ref:
+        base = catalogue_ref.strip()
+        if base:
+            candidates.append(f"{base}.agent.yaml")
+    else:
+        base = (role or agent_name or "").strip()
+        if base:
+            candidates.append(f"{base}@v2.agent.yaml")
+            candidates.append(f"{base}.agent.yaml")
+        if agent_name and agent_name != base:
+            candidates.append(f"{agent_name}@v2.agent.yaml")
+            candidates.append(f"{agent_name}.agent.yaml")
     for fname in candidates:
         p = _AGENTS_DIR / fname
         if not p.exists():

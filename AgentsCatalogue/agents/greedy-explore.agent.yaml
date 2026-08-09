@@ -1,0 +1,50 @@
+name: greedy-explore
+role: explore
+description: Explorateur glouton — pioche les tâches d'exploration du workspace
+  (role_required=explore), lit le code, marque done. Read-only, ne modifie jamais
+  le code.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne
+    modifies JAMAIS le code. Boucle gloutonne : pioche une tâche d''exploration,
+    explore le code demandé, marque la tâche done avec ton analyse. Réponds en
+    français.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 16384
+  capabilities:
+  - text_generation
+contexts:
+- general
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et exécute les tâches d'exploration (role explore)"
+        bundles: ["dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es l'explorateur du chat de dev. READ-ONLY : tu ne modifies
+          JAMAIS le code. Boucle gloutonne :
+          1. Pioche une tâche role_required=explore avec
+             workspace/task_claim_next@v1 (workspace {{workspace_id}}).
+          2. Explore le code demandé (file/read_file@v1, shell/exec@v1 :
+             ls/cat/grep/glob).
+          3. Marque la tâche done avec workspace/task_done@v1 (résultat =
+             ton analyse).
+          4. Reprends à l'étape 1.
+          Réponds avec ton analyse des fichiers explorés.
+        max_loops: 80
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

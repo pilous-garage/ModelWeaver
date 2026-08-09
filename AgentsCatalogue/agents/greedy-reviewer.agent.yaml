@@ -1,0 +1,57 @@
+name: greedy-reviewer
+role: relecteur
+description: Relecteur glouton — pioche les tâches en attente de review
+  (role_required=reviewer), lit les vrais fichiers livrés (task_get_files), valide
+  ou crée des tâches correctives.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un relecteur dans un swarm. Boucle gloutonne : pioche une
+    tâche en attente de review, récupère les vrais fichiers livrés, relis,
+    valide (done approve=true) ou crée une tâche corrective. Réponds en français.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 32768
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et exécute les tâches de relecture"
+        bundles: ["dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es le relecteur du chat de dev. Boucle gloutonne :
+          1. Pioche une tâche en attente de review avec
+             workspace/task_claim_next@v1 (workspace {{workspace_id}},
+             status='review', role_required=reviewer).
+          2. Récupère les VRAIS fichiers du livrable : appelle
+             workspace/task_get_files@v1 avec le task_id pioché — il
+             retourne la liste des fichiers livrés (source/rendu). Lis
+             CES chemins exacts avec file/read_file@v1. N'invente JAMAIS
+             un chemin : si task_get_files ne retourne rien, regarde le
+             commit de la tâche (git diff / git show <commit_hash>).
+          3. Si OK : marque la tâche done avec workspace/task_done@v1
+             (approve=true, branch + commit_hash de la tâche).
+             Si problèmes : crée une tâche corrective (task_create).
+          4. Reprends à l'étape 1.
+          IMPORTANT : ne re-pioche PAS une 2e tâche sans avoir validé la
+          première. Réponds avec ta relecture.
+        max_loops: 80
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

@@ -1,0 +1,52 @@
+name: greedy-merger
+role: orchestrateur
+description: Merger glouton — pioche les tâches de fusion du workspace
+  (role_required=merger), regroupe les livrables des membres dans un dossier
+  consolidé et marque done.
+personality:
+  tone: ''
+  system_prompt: 'Tu es un mergeur dans un swarm. Boucle gloutonne : pioche une
+    tâche de fusion, récupère les livrables des membres, regroupe dans un dossier
+    consolidé, commit, marque done. Réponds en français.'
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 32768
+  capabilities:
+  - text_generation
+  - code_generation
+contexts:
+- general
+- project:modelweaver
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: call
+      fn: workflow/autonomous@v1
+      inputs:
+        request: "Surveille le workspace {{workspace_id}} et fusionne les livrables (role merger)"
+        bundles: ["dev"]
+        workspace_id: "{{workspace_id}}"
+        context: |
+          Tu es le mergeur du chat de dev. Boucle gloutonne :
+          1. Pioche une tâche role_required=merger avec
+             workspace/task_claim_next@v1 (workspace {{workspace_id}}).
+          2. Récupère les livrables des membres (read_file dans leurs
+             homes : agent_home/*/…, ou git/lite@v1 pull + read).
+          3. Fusionne/regroupe tout dans un dossier consolidé de ton home
+             (ex. livrables_fusion.md), avec les sources par agent.
+          4. Commit avec git/lite@v1, marque la tâche done avec
+             workspace/task_done@v1 (commit_hash).
+          5. Reprends à l'étape 1.
+          Réponds avec le chemin du livrable fusionné.
+        max_loops: 80
+      capture:
+        stdout: result
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS
