@@ -29,6 +29,7 @@ import {
   layoutByAlgo, LAYOUT_ALGOS, LAYOUT_DIRS,
   type LayoutAlgo, type LayoutDir,
 } from './graphLayouts.ts';
+import { buildExpandedGraph } from './graphExpand.ts';
 
 export interface GrapheSubPanelProps {
   doc: string | Record<string, any> | null;   // graph.yaml (string) ou objet
@@ -59,88 +60,55 @@ function layoutNodes(
 function FlowNode({ data }: NodeProps & { data?: any }) {
   const n: any = data?.n;
   const st: any = data?.style;
+  const hasInner = !!data?.hasInner;
+  const expanded = !!data?.expanded;
+  const onToggle = data?.onToggle;
   const hs = { width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' };
   return (
     <div style={{
-      width: '100%', height: '100%', background: st?.color, border: `1.5px solid ${st?.border}`,
+      width: '100%', height: '100%',
+      background: expanded ? 'rgba(148,163,184,.08)' : st?.color,
+      border: expanded ? `1.5px dashed ${st?.border ?? '#64748b'}` : `1.5px solid ${st?.border ?? '#64748b'}`,
       borderRadius: st?.shape === 'pill' ? 999 : (st?.shape === 'rounded' || st?.shape === 'circle') ? 8 : 3,
       color: '#0f172a', fontWeight: 600, fontSize: 11,
       display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+      position: 'relative',
     }}>
-      {`${st?.icon ?? ''} ${n?.label ?? ''}`}
-      {/* Chaque côté expose un handle source ET un handle target (ids distincts)
-          → toute combinaison sourceSide/targetSide est connectable. */}
-      <Handle type="source" position={Position.Left} id="ws" style={hs} />
-      <Handle type="target" position={Position.Left} id="wt" style={hs} />
-      <Handle type="source" position={Position.Right} id="es" style={hs} />
-      <Handle type="target" position={Position.Right} id="et" style={hs} />
-      <Handle type="source" position={Position.Top} id="ns" style={hs} />
-      <Handle type="target" position={Position.Top} id="nt" style={hs} />
-      <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
-      <Handle type="target" position={Position.Bottom} id="st" style={hs} />
+      <span style={{ lineHeight: 1.2, textAlign: 'center', padding: '0 18px' }}>
+        {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+      </span>
+      {/* Bouton de dépliage : + / − (ou flèche) à droite */}
+      {hasInner && (
+        <button
+          onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
+          style={{
+            position: 'absolute', right: 3, top: '50%', transform: 'translateY(-50%)',
+            width: 16, height: 16, lineHeight: '13px', padding: 0, fontSize: 12,
+            background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
+            borderRadius: 3, cursor: 'pointer',
+          }}
+          title={expanded ? 'Replier' : 'Déplier'}
+        >
+          {expanded ? '−' : '+'}
+        </button>
+      )}
+      {!expanded && (
+        <>
+          <Handle type="source" position={Position.Left} id="ws" style={hs} />
+          <Handle type="target" position={Position.Left} id="wt" style={hs} />
+          <Handle type="source" position={Position.Right} id="es" style={hs} />
+          <Handle type="target" position={Position.Right} id="et" style={hs} />
+          <Handle type="source" position={Position.Top} id="ns" style={hs} />
+          <Handle type="target" position={Position.Top} id="nt" style={hs} />
+          <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
+          <Handle type="target" position={Position.Bottom} id="st" style={hs} />
+        </>
+      )}
     </div>
   );
 }
 
 const nodeTypes = { flow: FlowNode };
-
-// ── Conversion GraphDoc → React Flow nodes/edges (layout par côtés) ──
-function toFlowNodes(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: LayoutDir): Node[] {
-  const auto = layoutNodes(g.nodes, g.edges, algo, dir);
-  return g.nodes.map((n: any) => {
-    const st = nodeStyleOf(theme, n.type);
-    const pos = nodePosOf(n);
-    const xy = pos?.center
-      ? { x: pos.center[0] - (pos.size?.[0] ?? NODE_W) / 2, y: pos.center[1] - (pos.size?.[1] ?? NODE_H) / 2 }
-      : auto.get(n.id) || { x: 0, y: 0 };
-    const size = pos?.size ?? [NODE_W, NODE_H];
-    return {
-      id: n.id,
-      type: 'flow',
-      position: xy,
-      data: { label: `${st.icon ?? ''} ${n.label}`, n, style: st },
-      style: { width: size[0], height: size[1] },
-    } as Node;
-  });
-}
-
-function toFlowEdges(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: LayoutDir): Edge[] {
-  const auto = layoutNodes(g.nodes, g.edges, algo, dir);
-  const boxes = toBoxes(auto, () => [NODE_W, NODE_H] as [number, number],
-    g.nodes.map((n) => n.id));
-  const ports = computeEdgePorts(boxes, g.edges);
-  const byKey = new Map<string, { s: Side; t: Side }>();
-  for (const p of ports) byKey.set(`${p.from}|${p.to}`, { s: p.sourceSide, t: p.targetSide });
-
-  return g.edges.map((e: any, i: number) => {
-    const st = edgeStyleOf(theme, e.type);
-    const labelIn = e.vars?.label_in;
-    const labelOut = e.vars?.label_out;
-    const pt = byKey.get(`${e.from}|${e.to}`);
-    // Layout par côtés : chaque arête référence le handle source/target du côté
-    // choisi (es/ws/ns/ss pour source, et/wt/nt/st pour target). Défaut : droite
-    // pour source, gauche pour target (toujours connectable).
-    const s = pt?.s ?? 'e';
-    const t = pt?.t ?? 'w';
-    const sourceHandle = `${s}s`;
-    const targetHandle = `${t}t`;
-    return {
-      id: `${e.from}->${e.to}-${i}`,
-      source: e.from,
-      target: e.to,
-      sourceHandle,
-      targetHandle,
-      label: e.label || (labelIn && labelOut ? `${labelIn} → ${labelOut}` : undefined),
-      animated: e.type === 'token',
-      style: { stroke: st.color, strokeDasharray: st.style === 'dashed' ? '5 4' : st.style === 'dotted' ? '2 3' : undefined },
-      markerEnd: st.arrow ? { type: 'arrowclosed', color: st.color } : undefined,
-    } as Edge;
-  });
-}
-
-function sideToPosition(s: Side): Position {
-  return ({ n: Position.Top, s: Position.Bottom, e: Position.Right, w: Position.Left } as Record<Side, Position>)[s];
-}
 
 // ── Moteur SVG/DOM maison (export, fallback) — layout par côtés ─────
 function SvgRenderer({ g, theme, algo, dir }: { g: GraphDoc; theme: ThemeGraphe; algo: LayoutAlgo; dir: LayoutDir }) {
@@ -217,17 +185,34 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     try { return parseGraph(doc); } catch { return { nodes: [], edges: [] }; }
   }, [doc]);
 
-  // React Flow state (positions éditables)
+  // État de dépliage : ensemble des ids de nœuds dépliés.
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const toggle = useCallback((id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Layout algo/direction
   const [algo, setAlgo] = React.useState<LayoutAlgo>('dagre');
   const [dir, setDir] = React.useState<LayoutDir>('LR');
-  const [nodes, setNodes, onNodesChange] = useNodesState<any>(toFlowNodes(graph, parsedTheme, algo, dir) as any[]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(toFlowEdges(graph, parsedTheme, algo, dir) as any[]);
 
-  // Re-sync quand le doc ou l'algo/direction change
+  // Construction du graphe étendu (déplié) à partir du doc + état.
+  const { rfNodes, rfEdges } = useMemo(() => {
+    const r = buildExpandedGraph(graph, { algo, dir, theme: parsedTheme, expanded, onToggle: toggle });
+    return { rfNodes: r.nodes, rfEdges: r.edges };
+  }, [graph, parsedTheme, algo, dir, expanded, toggle]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>(rfNodes as any[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>(rfEdges as any[]);
+
+  // Re-sync quand le graphe étendu change (doc, algo, dir, expanded).
   React.useEffect(() => {
-    setNodes(toFlowNodes(graph, parsedTheme, algo, dir));
-    setEdges(toFlowEdges(graph, parsedTheme, algo, dir));
-  }, [graph, parsedTheme, algo, dir, setNodes, setEdges]);
+    setNodes(rfNodes);
+    setEdges(rfEdges);
+  }, [rfNodes, rfEdges, setNodes, setEdges]);
 
   const onNodeDragStop = useCallback((_: any, node: Node) => {
     if (!editable || !onGraphChange) return;
@@ -240,8 +225,8 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
   const reLayout = useCallback(() => {
     const stripped = stripPositions(graph);
     if (onGraphChange) onGraphChange(stripped);
-    else setNodes(toFlowNodes(stripped, parsedTheme, algo, dir));
-  }, [graph, onGraphChange, parsedTheme, setNodes, algo, dir]);
+    else setExpanded(new Set()); // replier tout
+  }, [graph, onGraphChange]);
 
   if (!doc) return <div style={{ color: '#475569', padding: 8 }}>Aucun graphe</div>;
 
