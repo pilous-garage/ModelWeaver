@@ -94,8 +94,18 @@ export function agentYamlToTaskflow(data: any, name: string): any {
 
   // Bundles connus qui exposent des tools de production de tokens au LLM.
   const bundleTokenTools: Record<string, string[]> = {
-    dev: ['end_exec', 'token_task_create', 'token_task_modify', 'task_verdict'],
+    dev: ['end_exec', 'token_task_create', 'token_task_modify',
+          'token_task_release', 'task_verdict'],
     workspace_verdict: ['end_exec', 'token_task_modify', 'task_verdict', 'task_done'],
+    coding_work: ['it_is_done', 'exit_loop_too_hard', 'making_progress'],
+  };
+
+  // Productions spécifiques d'un tool (token produit).
+  const toolProductions: Record<string, string> = {
+    token_task_release: 'erreur_agent',
+    exit_loop_too_hard: 'too_hard',
+    task_verdict: 'done',
+    task_done: 'done',
   };
 
   const resolveType = (v: any, dflt: string): string => {
@@ -176,10 +186,19 @@ export function agentYamlToTaskflow(data: any, name: string): any {
         ensureToken(taskRole, 'token-in', taskRole);
         edges.push({ from: taskRole, to: id, label: 'deliver', type: 'token' });
         addProduction(id, nt, '→' + nt);
+      } else if (fn.includes('token_task_release')) {
+        // release : libère le token + produit un token erreur_agent.
+        ensureToken(taskRole, 'token-in', taskRole);
+        edges.push({ from: taskRole, to: id, label: 'release', type: 'token' });
+        addProduction(id, 'erreur_agent', 'erreur_agent');
+      } else if (fn.includes('exit_loop_too_hard')) {
+        // too_hard : bump difficulty ou re-découpe → token too_hard.
+        addProduction(id, 'too_hard', 'too_hard');
       }
       // ── LLM_CALL : les tools exposés (bundles) peuvent produire des tokens.
       //    On déduit les productions possibles : end_exec/modify → étape
-      //    suivante du pipeline ; task_verdict/task_done → done.
+      //    suivante du pipeline ; task_verdict/task_done → done ;
+      //    token_task_release → erreur_agent ; exit_loop_too_hard → too_hard.
       if (stype === 'llm_call') {
         const bundles: string[] = s.bundles ?? [];
         const tokenTools = new Set<string>();
@@ -190,8 +209,9 @@ export function agentYamlToTaskflow(data: any, name: string): any {
           const nt = pipelineNext[taskRole];
           if (nt && nt !== 'done') addProduction(id, nt, '→' + nt);
         }
-        if (tokenTools.has('task_verdict') || tokenTools.has('task_done')) {
-          addProduction(id, 'done', 'done');
+        for (const tool of tokenTools) {
+          const prod = toolProductions[tool];
+          if (prod) addProduction(id, prod, prod);
         }
       }
       // Corps de boucle

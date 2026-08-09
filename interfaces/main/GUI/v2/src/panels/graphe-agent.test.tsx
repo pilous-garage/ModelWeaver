@@ -135,6 +135,28 @@ describe('agentYamlToTaskflow', () => {
     expect(g.edges.some((e: any) => e.from === 'main_end' && e.to === 'done')).toBe(false);
   });
 
+  it('produit erreur_agent/too_hard via coding_work + end_exec via finalisation', () => {
+    const data = { role: 'codeur', entrypoints: { main: { steps: [
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
+        inputs: { task_types: '[{type: coding, max_difficulty: expert}]' } },
+      { id: 'do_work', type: 'llm_call', bundles: ['coding_work'] },
+      { id: 'finalisation', type: 'call', fn: 'git/end_exec@v1' },
+      { id: 'release', type: 'call', fn: 'workspace/token_task_release@v1' },
+    ] } } };
+    const g = agentYamlToTaskflow(data, 'greedy-coder');
+    const ids = g.nodes.map((n: any) => n.id);
+    // do_work (coding_work → exit_loop_too_hard) produit too_hard
+    expect(ids).toContain('too_hard');
+    // finalisation (end_exec) produit code_review (transition)
+    expect(ids).toContain('code_review');
+    const crEdge = g.edges.find((e: any) => e.to === 'code_review');
+    expect(crEdge.from).toBe('main_finalisation');
+    // release produit erreur_agent
+    expect(ids).toContain('erreur_agent');
+    const eaEdge = g.edges.find((e: any) => e.to === 'erreur_agent');
+    expect(eaEdge.from).toBe('main_release');
+  });
+
   it('résout le task_type par défaut quand le rôle est inconnu', () => {
     const data = { role: 'explore', entrypoints: { main: { steps: [
       { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
