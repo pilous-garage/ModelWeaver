@@ -79,6 +79,25 @@ export function agentYamlToTaskflow(data: any, name: string): any {
   };
   const taskRole = roleToTask[role] ?? role;
 
+  // Transitions connues du pipeline (task_type courant → étape suivante).
+  // Utilisées pour déduire les tokens que le LLM peut produire via ses tools
+  // (end_exec / token_task_modify) pendant un step llm_call.
+  const pipelineNext: Record<string, string> = {
+    coding: 'code_review',
+    code_review: 'merger_code',
+    merger_code: 'testing_code',
+    testing_code: 'done',
+    analysis: 'merge_split',
+    merge_split: 'done',
+    exploration: 'done',
+  };
+
+  // Bundles connus qui exposent des tools de production de tokens au LLM.
+  const bundleTokenTools: Record<string, string[]> = {
+    dev: ['end_exec', 'token_task_create', 'token_task_modify', 'task_verdict'],
+    workspace_verdict: ['end_exec', 'token_task_modify', 'task_verdict', 'task_done'],
+  };
+
   const resolveType = (v: any, dflt: string): string => {
     const s = String(v ?? '').trim();
     if (!s || s.includes('{{')) return dflt || taskRole;
@@ -90,6 +109,12 @@ export function agentYamlToTaskflow(data: any, name: string): any {
       tokenNodes.set(tid, kind);
       nodes.push({ id: tid, type: kind, label, ref: label, tags: [kind], vars: {} });
     }
+  };
+
+  // Ajoute une production token depuis un step (si le token n'existe pas déjà).
+  const addProduction = (fromId: string, tt: string, label: string) => {
+    ensureToken(tt, 'token-out', tt);
+    edges.push({ from: fromId, to: tt, label, type: 'success' });
   };
 
   const stepId = (s: any, parent: string): string =>
@@ -145,13 +170,29 @@ export function agentYamlToTaskflow(data: any, name: string): any {
       } else if (fn.includes('end_exec')) {
         // end_exec : transition du token courant → étape suivante du pipeline
         // (ex. coding → code_review). Production OBLIGATOIRE.
-        const raw = String(s.inputs?.new_task_type ?? 'code_review');
+        const raw = String(s.inputs?.new_task_type ?? '');
         const m = raw.match(/([\w]+)/);
-        const nt = m ? m[1] : 'code_review';
+        const nt = m ? m[1] : (pipelineNext[taskRole] ?? 'code_review');
         ensureToken(taskRole, 'token-in', taskRole);
         edges.push({ from: taskRole, to: id, label: 'deliver', type: 'token' });
-        ensureToken(nt, 'token-out', nt);
-        edges.push({ from: id, to: nt, label: '→' + nt, type: 'success' });
+        addProduction(id, nt, '→' + nt);
+      }
+      // ── LLM_CALL : les tools exposés (bundles) peuvent produire des tokens.
+      //    On déduit les productions possibles : end_exec/modify → étape
+      //    suivante du pipeline ; task_verdict/task_done → done.
+      if (stype === 'llm_call') {
+        const bundles: string[] = s.bundles ?? [];
+        const tokenTools = new Set<string>();
+        for (const b of bundles) {
+          for (const t of (bundleTokenTools[b] ?? [])) tokenTools.add(t);
+        }
+        if (tokenTools.has('end_exec') || tokenTools.has('token_task_modify')) {
+          const nt = pipelineNext[taskRole];
+          if (nt && nt !== 'done') addProduction(id, nt, '→' + nt);
+        }
+        if (tokenTools.has('task_verdict') || tokenTools.has('task_done')) {
+          addProduction(id, 'done', 'done');
+        }
       }
       // Corps de boucle
       if (s.type === 'while' && s.body?.steps) {
@@ -160,25 +201,10 @@ export function agentYamlToTaskflow(data: any, name: string): any {
     }
     return last;
   };
-  const final = walk(steps, 'main', null);
-  // Terminaison : le token `done` est produit par le step `end` (SUCCESS),
-  // PAS par `fail` (fin en erreur, pas de token produit). On cherche le step
-  // end SUCCESS ; sinon on ne crée pas de done (le flux s'arrête en erreur).
-  let successEnd: string | null = null;
-  const scan = (stepList: any[], parent: string) => {
-    for (const s of stepList) {
-      const id = stepId(s, parent);
-      if (s.type === 'end' && (s.status === 'SUCCESS' || !s.status)) {
-        successEnd = successEnd ?? id;
-      }
-      if (s.type === 'while' && s.body?.steps) scan(s.body.steps, id);
-    }
-  };
-  scan(steps, 'main');
-  if (successEnd) {
-    ensureToken('done', 'token-out', 'done');
-    edges.push({ from: successEnd, to: 'done', label: 'done', type: 'success' });
-  }
+  walk(steps, 'main', null);
+  // Le token `done` est produit UNIQUEMENT par les tools LLM (task_verdict /
+  // task_done / transition vers done) — pas automatiquement par un step `end`
+  // (qui n'est qu'une terminaison, sans skill token).
   return { id: `taskflow-${name}`, title: `${name} — taskflow`, nodes, edges };
 }
 

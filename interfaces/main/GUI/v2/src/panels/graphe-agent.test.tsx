@@ -105,6 +105,36 @@ describe('agentYamlToTaskflow', () => {
     expect(ids.some((x: string) => x.includes('code_review'))).toBe(true);
   });
 
+  it('produit les tokens via les tools des steps llm_call (pas par end)', () => {
+    const data = { role: 'codeur', entrypoints: { main: { steps: [
+      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
+        inputs: { task_types: '[{type: coding, max_difficulty: expert}]' } },
+      { id: 'do_work', type: 'llm_call', bundles: ['dev'] },
+      { id: 'ask_verdict', type: 'llm_call', bundles: ['workspace_verdict'] },
+      { id: 'end', type: 'end', status: 'SUCCESS' },
+      { id: 'fail', type: 'end', status: 'FAILED' },
+    ] } } };
+    const g = agentYamlToTaskflow(data, 'greedy-coder');
+    const ids = g.nodes.map((n: any) => n.id);
+    // token-in : coding (pioché)
+    expect(ids).toContain('coding');
+    // do_work (bundles dev → end_exec) produit code_review (transition)
+    expect(ids).toContain('code_review');
+    const crEdge = g.edges.find((e: any) => e.to === 'code_review');
+    expect(crEdge.from).toBe('main_do_work');
+    // ask_verdict (workspace_verdict → task_verdict) produit done
+    expect(ids).toContain('done');
+    const doneEdges = g.edges.filter((e: any) => e.to === 'done');
+    expect(doneEdges.length).toBeGreaterThan(0);
+    // done vient d'un step llm_call (tool token), jamais du step end
+    for (const e of doneEdges) {
+      expect(e.from).not.toBe('main_end');
+      expect(e.from).not.toBe('main_fail');
+    }
+    // PAS de done relié au step end (terminaison sans skill token)
+    expect(g.edges.some((e: any) => e.from === 'main_end' && e.to === 'done')).toBe(false);
+  });
+
   it('résout le task_type par défaut quand le rôle est inconnu', () => {
     const data = { role: 'explore', entrypoints: { main: { steps: [
       { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
@@ -112,20 +142,5 @@ describe('agentYamlToTaskflow', () => {
     ] } } };
     const g = agentYamlToTaskflow(data, 'explore');
     expect(g.nodes.map((n: any) => n.id)).toContain('exploration');
-  });
-
-  it('relie done au step end SUCCESS, pas au fail (greedy-coder)', () => {
-    const data = { role: 'codeur', entrypoints: { main: { steps: [
-      { id: 'pick', type: 'call', fn: 'workspace/token_task_pick@v1',
-        inputs: { task_types: '[{type: coding, max_difficulty: expert}]' } },
-      { id: 'end', type: 'end', status: 'SUCCESS' },
-      { id: 'fail', type: 'end', status: 'FAILED' },
-    ] } } };
-    const g = agentYamlToTaskflow(data, 'greedy-coder');
-    // token-out done existe
-    expect(g.nodes.map((n: any) => n.id)).toContain('done');
-    // l'arête done part du step end (SUCCESS), PAS de fail
-    const doneEdge = g.edges.find((e: any) => e.to === 'done');
-    expect(doneEdge.from).toBe('main_end');
   });
 });
