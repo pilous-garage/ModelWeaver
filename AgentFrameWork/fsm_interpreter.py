@@ -308,8 +308,13 @@ class FSMInterpreter:
 
     # ── Steps ──────────────────────────────────────────
 
-    def _build_llm_tools(self) -> List[Dict]:
-        """Construit la liste des outils (OpenAI function calling) depuis les skills YAML."""
+    def _build_llm_tools(self, bundles: Optional[List[str]] = None) -> List[Dict]:
+        """Construit la liste des outils (OpenAI function calling) depuis les skills YAML.
+
+        `bundles` (optionnel) : expose les tools des bundles nommés (ex. ["dev"])
+        en plus des outils de base. C'est le mécanisme qui permet à un step
+        `llm_call` de donner accès au LLM à end_exec, task_verdict, git, etc.
+        """
         try:
             import yaml as _yaml
         except ImportError:
@@ -323,7 +328,15 @@ class FSMInterpreter:
             "file/read_file@v1",
             "file/write_file@v1",
         ]
+        # Tools additionnels depuis les bundles nommés.
+        if bundles:
+            try:
+                from AgentsCatalogue.lib.workflow.bundles import resolve as _resolve_bundles
+                tool_skills += [s.get("name", "") for s in _resolve_bundles(bundles)]
+            except Exception:
+                pass
         tools = []
+        seen = set()
         for ref in tool_skills:
             parts = ref.replace("@v1", "").split("/")
             candidates = list(base.rglob(f"{parts[-1]}*.skill.yaml"))
@@ -336,11 +349,16 @@ class FSMInterpreter:
             except Exception:
                 continue
             name = skill.get("name", "").replace("/", "_").replace("@", "_").replace(".", "_")
+            if name in seen:
+                continue
+            seen.add(name)
             desc = skill.get("description", "")
             inputs = skill.get("inputs", {})
             props = {}
             required = []
             for k, v in inputs.items():
+                if v.get("injected"):
+                    continue
                 if v.get("required"):
                     required.append(k)
                 props[k] = {"type": v.get("type", "string"), "description": v.get("description", "")}
@@ -378,6 +396,15 @@ class FSMInterpreter:
 
         p_ref = step.get("provider_ref") or provider_ref
         m_ref = step.get("model_ref") or model_ref
+        # Résolution des placeholders {{_llm_provider}} / {{_llm_model}} : le
+        # step ask_llm capture ces variables, les steps llm_call suivants les
+        # référencent pour utiliser le LLM alloué.
+        p_ref = self._resolve(p_ref, result.variables)
+        m_ref = self._resolve(m_ref, result.variables)
+        if not p_ref:
+            p_ref = provider_ref
+        if not m_ref:
+            m_ref = model_ref
         temperature = step.get("temperature", 0.7)
         max_tokens = step.get("max_tokens", 4096)
 
@@ -412,7 +439,7 @@ class FSMInterpreter:
                 result.variables["_llm_fallbacks"] = 0
             else:
                 # Tools : convertir les skills disponibles au format OpenAI
-                tools = self._build_llm_tools()
+                tools = self._build_llm_tools(step.get("bundles"))
                 tool_kwargs = {"tools": tools} if tools else {}
 
                 timeout = step.get("timeout")

@@ -42,6 +42,29 @@ entrypoints:
       capture:
         task: task
       on_error: sleep
+      next: resolve_repo
+
+    # ── 1b. RESOLVE_REPO : repo de la tâche, fallback sur project_id ──
+    - id: resolve_repo
+      type: switch
+      variable: "{{task.repo}}"
+      conditions:
+      - operator: CONTAINS
+        value: "{{"
+        next: repo_default
+      - operator: EQUALS
+        value: ""
+        next: repo_default
+      default: repo_task
+    - id: repo_default
+      type: set_variable
+      name: repo_eff
+      value: "{{project_id}}"
+      next: clone
+    - id: repo_task
+      type: set_variable
+      name: repo_eff
+      value: "{{task.repo}}"
       next: clone
 
     # ── 2. CLONE : le repo de la tâche (AUTO) ──
@@ -49,7 +72,7 @@ entrypoints:
       type: call
       fn: git/git_clone@v1
       inputs:
-        project_id: "{{task.repo}}"
+        project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
       on_error: fail
       next: checkout
@@ -59,7 +82,7 @@ entrypoints:
       type: call
       fn: git/git_checkout@v1
       inputs:
-        project_id: "{{task.repo}}"
+        project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
         name: "{{task.branch}}"
       next: check_llm
@@ -131,12 +154,12 @@ entrypoints:
             Tâche à implémenter :
             {{task.description}}
 
-            Projet : {{task.repo}} (clone dans ton workspace agents/{{agent_id}}/workspace/{{task.repo}})
+            Projet : {{repo_eff}} (clone dans ton workspace agents/{{agent_id}}/workspace/{{repo_eff}})
             Branche cible : {{task.branch}}
 
             Implémente la tâche. Quand tu as fini (code écrit, syntaxe vérifiée),
             appelle IMMÉDIATEMENT le tool end_exec avec task_id={{task.task_id}},
-            workspace_id={{workspace_id}}, project_id={{task.repo}},
+            workspace_id={{workspace_id}}, project_id={{repo_eff}},
             agent_id={{agent_id}}.
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"

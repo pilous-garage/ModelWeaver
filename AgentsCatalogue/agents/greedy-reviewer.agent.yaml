@@ -43,6 +43,29 @@ entrypoints:
       capture:
         task: task
       on_error: sleep
+      next: resolve_repo
+
+    # ── 1b. RESOLVE_REPO : repo de la tâche, fallback sur project_id ──
+    - id: resolve_repo
+      type: switch
+      variable: "{{task.repo}}"
+      conditions:
+      - operator: CONTAINS
+        value: "{{"
+        next: repo_default
+      - operator: EQUALS
+        value: ""
+        next: repo_default
+      default: repo_task
+    - id: repo_default
+      type: set_variable
+      name: repo_eff
+      value: "{{project_id}}"
+      next: clone
+    - id: repo_task
+      type: set_variable
+      name: repo_eff
+      value: "{{task.repo}}"
       next: clone
 
     # ── 2. CLONE : le repo de la tâche (AUTO) ──
@@ -50,7 +73,7 @@ entrypoints:
       type: call
       fn: git/git_clone@v1
       inputs:
-        project_id: "{{task.repo}}"
+        project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
       on_error: fail
       next: checkout
@@ -60,7 +83,7 @@ entrypoints:
       type: call
       fn: git/git_checkout@v1
       inputs:
-        project_id: "{{task.repo}}"
+        project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
         name: "{{task.commit_hash}}"
       next: check_llm
@@ -97,7 +120,7 @@ entrypoints:
         Relis la tâche {{task.task_id}} :
         {{task.description}}
 
-        Le code livré est dans ton clone agents/{{agent_id}}/workspace/{{task.repo}}
+        Le code livré est dans ton clone agents/{{agent_id}}/workspace/{{repo_eff}}
         au commit {{task.commit_hash}}.
 
         Actions possibles (tools du bundle dev) :

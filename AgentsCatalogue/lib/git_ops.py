@@ -247,10 +247,14 @@ def git_checkout(inputs: dict, home: str) -> dict:
     if err:
         return err
     name = inputs.get("name", "")
-    if not name:
-        return {"stdout": "", "stderr": "name requis", "exit_code": -1}
-    # Nom vide → master (branche par défaut du clone). Accepte branche, branche
-    # distante (origin/x) et SHA de commit (detached HEAD).
+    # Nom vide/placeholder non résolu → rester sur la branche par défaut du
+    # clone (master). Une tâche sans branche/commit cible ne doit pas échouer.
+    if not name or "{{" in str(name):
+        cur = _git_run(root, ["branch", "--show-current"])
+        b = cur.get("stdout", "").strip() or "master"
+        return {"ok": True, "stdout": f"aucune branche cible — reste sur {b}",
+                "branch": b, "exit_code": 0}
+    # Accepte branche, branche distante (origin/x) et SHA de commit (detached HEAD).
     r = _git_run(root, ["checkout", name])
     if r["exit_code"] != 0:
         # Branche absente localement → tenter depuis la distante (si le repo
