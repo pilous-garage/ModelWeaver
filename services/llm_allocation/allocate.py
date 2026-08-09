@@ -104,6 +104,7 @@ def _query_candidates() -> List[Dict[str, Any]]:
                 COALESCE(pm.free_tier, 0) AS free_tier,
                 kem.available,
                 kem.declared,
+                COALESCE(pm.agentic, 0) AS agentic_flag,
                 me.score_chat, me.score_coding, me.score_reasoning,
                 me.score_knowledge, me.score_agentic, me.is_synthetic,
                 -- Métriques runtime (fenêtre glissante ~200 derniers appels) :
@@ -162,6 +163,17 @@ def _query_candidates() -> List[Dict[str, Any]]:
                        )
             WHERE kem.available = 1 AND kem.declared = 1
               AND pm.status = 'active'
+              -- Exclure les modèles EN REPOS ACTIF (échec runtime) : noretryuntil
+              -- dans le futur. Sans ce filtre, un modèle marqué après un échec
+              -- (ex. huggingface Not Found → repos 24h) reste candidat et le
+              -- scoring le re-sélectionne en boucle.
+              -- NB : on filtre sur noretryuntil (source de vérité du repos), PAS
+              -- sur unavailable — un modèle dont le repos est EXPIRÉ
+              -- (noretryuntil dans le passé) redevient candidat même si
+              -- unavailable=1 (le flag n'est jamais remis à 0). Sinon des
+              -- modèles google/groq fiables restent exclus pour toujours après
+              -- un rate-limit de 5 min.
+              AND COALESCE(pm.noretryuntil, 0) <= CAST(strftime('%s','now') AS INTEGER)
             -- Dédupliquer : un même (provider, model) peut exister via
             -- plusieurs provider_models_mapping (endpoints/clés). On garde UNE
             -- ligne par modèle — sinon un doublon à 0/0 ressort en tête avec
@@ -169,13 +181,58 @@ def _query_candidates() -> List[Dict[str, Any]]:
             GROUP BY cp.ref, cm.ref, kem.provider_model_name,
                      pm.context_window_effective, pm.context_window_tokens,
                      pm.cost_per_input_token, pm.cost_per_output_token,
-                     cm.modality, pm.free_tier, me.score_chat, me.score_coding,
+                     cm.modality, pm.free_tier, pm.agentic, me.score_chat,
+                     me.score_coding,
                      me.score_reasoning, me.score_knowledge, me.score_agentic,
                      me.is_synthetic, cl_stats.success_count,
                      cl_stats.total_calls, cl_stats.avg_latency_ms
             ORDER BY cp.ref, cm.ref
         """).fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(r) for r in rows]
+        # ── Fallback score via alias_model ──
+        # Quand un candidat n'a PAS de score model_efficacy direct (jointure
+        # me.model_ref = cm.model_key vide, ex. model_key du catalogue qui ne
+        # correspond à aucune ref source), on cherche parmi les alias liés à ce
+        # model_id (alias_model.status='linked') un score disponible.
+        # Le lien : model_efficacy.model_ref EST le model_key normalisé d'un
+        # nom source ; on normalise alias_model.source_name (model_key) pour
+        # retrouver la ligne scorée correspondante.
+        try:
+            _needs_alias = any(
+                (r.get("score_chat") is None and r.get("score_coding") is None
+                 and r.get("score_agentic") is None) for r in rows)
+            if _needs_alias:
+                from benchmarks.model_key import model_key as _mk
+                # model_id → [model_ref scorés] via les aliases liés (normalisés)
+                alias_refs: dict = {}
+                for a in cat.conn.execute(
+                        "SELECT model_id, source_name FROM alias_model "
+                        "WHERE status = 'linked'"):
+                    ref = _mk(a["source_name"]) if a["source_name"] else ""
+                    if ref:
+                        alias_refs.setdefault(a["model_id"], set()).add(ref)
+                for r in rows:
+                    if (r.get("score_chat") is not None
+                            or r.get("score_coding") is not None
+                            or r.get("score_agentic") is not None):
+                        continue
+                    for ref in alias_refs.get(r.get("model_id"), set()):
+                        me = cat.conn.execute(
+                            "SELECT score_chat, score_coding, score_reasoning, "
+                            "score_knowledge, score_agentic, is_synthetic "
+                            "FROM model_efficacy WHERE model_ref = ? "
+                            "AND use_case = 'general' LIMIT 1", (ref,)).fetchone()
+                        if me:
+                            r["score_chat"] = me["score_chat"]
+                            r["score_coding"] = me["score_coding"]
+                            r["score_reasoning"] = me["score_reasoning"]
+                            r["score_knowledge"] = me["score_knowledge"]
+                            r["score_agentic"] = me["score_agentic"]
+                            r["is_synthetic"] = me["is_synthetic"]
+                            break
+        except Exception:
+            pass
+        return rows
     except Exception:
         return []
 
@@ -297,6 +354,7 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
             score_reasoning=float(row.get("score_reasoning") or 0),
             score_knowledge=float(row.get("score_knowledge") or 0),
             score_agentic=float(row.get("score_agentic") or 0),
+            agentic_flag=int(row.get("agentic_flag") or 0),
             is_synthetic=int(row.get("is_synthetic") or 0),
             runtime_success_count=int(row.get("runtime_success_count") or 0),
             runtime_calls=int(row.get("runtime_calls") or 0),
@@ -336,9 +394,11 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
                 prev.runtime_calls += c.runtime_calls
                 prev.runtime_latency_ms = max(prev.runtime_latency_ms,
                                               c.runtime_latency_ms)
+                prev.context_window = max(prev.context_window, c.context_window)
                 prev.score_chat = max(prev.score_chat, c.score_chat)
                 prev.score_coding = max(prev.score_coding, c.score_coding)
                 prev.score_agentic = max(prev.score_agentic, c.score_agentic)
+                prev.agentic_flag = max(prev.agentic_flag, c.agentic_flag)
                 prev.score_reasoning = max(prev.score_reasoning, c.score_reasoning)
                 prev.score_knowledge = max(prev.score_knowledge, c.score_knowledge)
         candidates = list(by_ref.values())
@@ -381,6 +441,7 @@ def allocate_llm(params: dict) -> dict:
         max_cost_per_call=float(params.get("max_cost_per_call", 0)),
         exclude=params.get("exclude", []),
         agent_name=params.get("agent_name", ""),
+        features=params.get("features", []),
         latence_penalise=float(params.get("latence_penalise", 1.0)),
         latence_regule=float(params.get("latence_regule", 60.0)),
     )

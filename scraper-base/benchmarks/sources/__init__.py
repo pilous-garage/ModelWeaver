@@ -15,14 +15,22 @@ où chaque dict a les clés standardisées :
 
 from . import frontier
 from . import lmsys_arena
+from . import lmsys_elo
 from . import arena_hard
+from . import artificial_analysis
+from . import open_llm_leaderboard
+from . import seeded
 from . import synthetic
 
 
 SOURCES = {
     "lmsys_arena": lmsys_arena,
+    "lmsys_elo": lmsys_elo,
     "arena_hard": arena_hard,
     "frontier_estimate": frontier,
+    "artificial_analysis": artificial_analysis,
+    "open_llm_leaderboard": open_llm_leaderboard,
+    "seeded": seeded,
     "synthetic_catalogue": synthetic,
 }
 

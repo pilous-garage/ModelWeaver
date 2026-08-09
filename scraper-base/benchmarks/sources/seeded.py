@@ -51,25 +51,16 @@ _SEED_DATA = [
 
 
 def fetch() -> List[Dict[str, Any]]:
-    """Retourne les données benchmark pré-remplies."""
+    """Retourne les données benchmark pré-remplies.
+
+    Ne fournit que SWE-bench (aucun scraper live ne couvre ce benchmark).
+    L'ELO vient désormais du scraper lmsys_elo (pkl), et quality/speed/cost
+    du scraper artificial_analysis (API v2) — les dupliquer ici entrerait en
+    collision (INSERT OR REPLACE) avec les données réelles.
+    """
     results = []
 
     for (ref, elo, quality, speed, cost_in, cost_out, swe) in _SEED_DATA:
-        results.append({"model_ref": ref, "benchmark_key": "lmsys_arena_elo",
-                        "metric_name": "elo", "raw_value": elo,
-                        "source_url": "seeded/lmsys"})
-        results.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                        "metric_name": "quality", "raw_value": quality,
-                        "source_url": "seeded/artificial-analysis"})
-        results.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                        "metric_name": "speed_tps", "raw_value": speed,
-                        "source_url": "seeded/artificial-analysis"})
-        results.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                        "metric_name": "cost_per_m_input", "raw_value": cost_in,
-                        "source_url": "seeded/artificial-analysis"})
-        results.append({"model_ref": ref, "benchmark_key": "artificial_analysis",
-                        "metric_name": "cost_per_m_output", "raw_value": cost_out,
-                        "source_url": "seeded/artificial-analysis"})
         results.append({"model_ref": ref, "benchmark_key": "swe_bench_verified",
                         "metric_name": "pass_rate", "raw_value": swe,
                         "source_url": "seeded/swe-bench"})

@@ -88,7 +88,9 @@ def compute_block_5m(cat, rt, cutoff: int) -> int:
                    COALESCE(p.ref, '') AS provider_ref,
                    COALESCE(m.ref, '') AS model_ref,
                    COUNT(*) AS requests,
-                   SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END) AS fail_count,
+                   SUM(CASE WHEN l.success = 0 AND COALESCE(l.error_code, '')
+                                 NOT IN ('rate_limit', 'quota') THEN 1 ELSE 0 END)
+                       AS fail_count,
                    SUM(l.latency_ms) AS total_latency_ms
             FROM model_call_log l
             LEFT JOIN catalogue_providers p ON p.id = l.provider_id

@@ -206,18 +206,26 @@ def _upsert_provider_model(cat, provider_ref: str, model_id: str, mdata: dict) -
         mdata.get("status", "active"),
     ))
 
+    # model_capabilities : capacités OFFICIELLES du modèle (bornes hautes).
+    # Clé = model_id (identifiant canonique) ; `official=1` car la source
+    # remote est une fiche fournisseur (certaine par rapport à l'expérience).
+    model_row = cat.conn.execute(
+        "SELECT id FROM catalogue_models WHERE ref = ? LIMIT 1", (model_id,)).fetchone()
+    mc_id = model_row["id"] if model_row else None
     cat.conn.execute("""
         INSERT INTO model_capabilities
-            (model_ref, supports_chat, supports_function_calling,
-             supports_vision, supports_embedding, supports_streaming, source)
-        VALUES (?, ?, ?, ?, ?, ?, 'remote')
-        ON CONFLICT(model_ref) DO UPDATE SET
+            (model_id, model_ref, supports_chat, supports_function_calling,
+             supports_vision, supports_embedding, supports_streaming, source, official)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'remote', 1)
+        ON CONFLICT(model_id) DO UPDATE SET
+            model_ref = COALESCE(NULLIF(EXCLUDED.model_ref, ''), model_capabilities.model_ref),
             supports_chat = COALESCE(EXCLUDED.supports_chat, model_capabilities.supports_chat),
             supports_function_calling = COALESCE(EXCLUDED.supports_function_calling, model_capabilities.supports_function_calling),
             supports_vision = COALESCE(EXCLUDED.supports_vision, model_capabilities.supports_vision),
-            source = CASE WHEN model_capabilities.source = 'unknown' THEN 'remote' ELSE model_capabilities.source END
+            source = CASE WHEN model_capabilities.source = 'unknown' THEN 'remote' ELSE model_capabilities.source END,
+            official = MAX(model_capabilities.official, EXCLUDED.official)
     """, (
-        model_id,
+        mc_id, model_id,
         int(caps.get("chat", caps.get("supports_chat", False))),
         int(caps.get("tool_call", caps.get("supports_function_calling", False))),
         int(caps.get("attachment", caps.get("supports_vision", False))),

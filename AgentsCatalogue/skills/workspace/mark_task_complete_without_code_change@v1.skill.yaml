@@ -1,0 +1,34 @@
+name: workspace/mark_task_complete_without_code_change@v1
+category: workspace
+description: >-
+  Marque une tâche terminée SANS modification de code, APRÈS vérification
+  explicite que c'est légitime (le git_diff a confirmé aucun changement, ou
+  la tâche ne nécessitait pas de code). Outil d'exception : le coder doit
+  d'abord avoir vérifié (git_diff) avant de l'appeler.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  reason:
+    type: string
+    required: true
+    description: Justification (git_diff vide, aucune modif nécessaire, dépendance externe…)
+  branch:
+    type: string
+    required: false
+    default: ''
+  commit_hash:
+    type: string
+    required: false
+    default: ''
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.task.done_no_code

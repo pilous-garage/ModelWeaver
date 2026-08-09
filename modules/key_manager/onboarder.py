@@ -23,6 +23,7 @@ class Onboarder:
             (r"OPENROUTER_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "openrouter", "paid", None),
             (r"HUGGINGFACE_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "huggingface", "free", None),
             (r"OPENCODE_ZEN_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "opencode-zen", "paid", None),
+            (r"AA_API_KEY\s*=\s*['\"]?([^'\"\s]+)['\"]?", "artificial_analysis", "free", None),
         ]
 
     def onboard_from_env(self, env_path: Path) -> int:

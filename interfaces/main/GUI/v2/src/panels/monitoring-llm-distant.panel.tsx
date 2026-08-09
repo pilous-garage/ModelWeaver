@@ -22,6 +22,8 @@ panels:
     latence: "Latence"
     dispo: "Disponibilité"
     dernierCall: "Dernier call"
+    appelant: "Appelant"
+    tous: "Tous"
 `;
 
 const LANG_EN = `
@@ -40,6 +42,8 @@ panels:
     latence: "Latency"
     dispo: "Availability"
     dernierCall: "Last call"
+    appelant: "Caller"
+    tous: "All"
 `;
 
 
@@ -48,6 +52,7 @@ const WINDOWS = ['5m', '15m', '1h', '4h', '24h', '7j'];
 function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any> }) {
   const [metrics, setMetrics] = useState<any>(null);
   const [window, setWindow] = useState(params.window ?? '24h');
+  const [caller, setCaller] = useState<string>('all');
   const [err, setErr] = useState<string | null>(null);
   const alive = useRef(true);
 
@@ -71,6 +76,8 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
   const summary = w?.summary ?? {};
   const recents = metrics?.recent_llm?.calls ?? [];
   const sysStatus = metrics?.system_status ?? {};
+  const callers = Array.from(new Set(recents.map((r: any) => r.caller_id ?? '?')));
+  const shown = caller === 'all' ? recents : recents.filter((r: any) => (r.caller_id ?? '?') === caller);
 
   const fmt = (n: number | null | undefined) => n == null ? '0' : Number(n).toLocaleString('fr-FR');
   const fmtTime = (ts: number | null | undefined) => {
@@ -114,8 +121,23 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
 
       {/* ── Derniers LLM utilisés (model_call_log réel) ── */}
       <div style={{ fontWeight: 700, margin: '10px 0 4px', color: '#4ade80' }}>{ctx.t?.('panels.monitoring-llm-distant.recents') ?? 'Derniers LLM utilisés'}</div>
-      {recents.length === 0 && <div style={{ fontSize: 11, color: '#475569' }}>Aucun appel enregistré (24h)</div>}
-      {recents.map((r: any, i: number) => {
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
+        <button
+          className="mw-btn"
+          style={{ padding: '1px 8px', fontSize: 10, opacity: caller === 'all' ? 1 : 0.5 }}
+          onClick={() => setCaller('all')}
+        >{ctx.t?.('panels.monitoring-llm-distant.tous') ?? 'Tous'}</button>
+        {callers.map((c: any) => (
+          <button
+            key={c}
+            className="mw-btn"
+            style={{ padding: '1px 8px', fontSize: 10, opacity: caller === c ? 1 : 0.5 }}
+            onClick={() => setCaller(c)}
+          >{c}</button>
+        ))}
+      </div>
+      {shown.length === 0 && <div style={{ fontSize: 11, color: '#475569' }}>Aucun appel enregistré (24h)</div>}
+      {shown.map((r: any, i: number) => {
         const rateLimited = (r.error_codes ?? []).some((c: string) => c?.toLowerCase().includes('rate_limit'));
         const down = (r.error_rate ?? 0) >= 50;
         return (
@@ -128,6 +150,7 @@ function LlmMonitorPanel({ ctx, params }: { ctx: any; params: Record<string, any
             </div>
             <div style={{ fontSize: 11, color: '#94a3b8', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <span>{r.provider}</span>
+              <span style={{ color: '#c084fc' }}>{ctx.t?.('panels.monitoring-llm-distant.appelant') ?? 'Appelant'} : {r.caller_id}</span>
               <span>{r.requests} req</span>
               <span>in {fmt(r.tokens_in)}</span>
               <span>out {fmt(r.tokens_out)}</span>
@@ -146,7 +169,7 @@ export const Panel: PanelDef = {
   id: 'monitoring-llm-distant',
   labelKey: 'panels.monitoring-llm-distant.titre',
   iconKey: 'panels.monitoring-llm-distant.titre',
-  version: '1.1.0',
+  version: '1.2.0',
   essential: false,
   bundles: ['monitoring'],
   paramsSchema: {

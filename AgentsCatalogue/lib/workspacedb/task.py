@@ -143,6 +143,28 @@ def done(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def done_no_code(inputs: dict, home: str) -> dict:
+    """Marque une tâche done SANS livrable code — exception vérifiée.
+
+    À n'utiliser QU'après vérification (git_diff vide, tâche ne nécessitant
+    pas de code). Passe `delivered=True` pour contourner la garde anti
+    faux-positif de `done()`, et enregistre la raison pour l'audit.
+    """
+    reason = (inputs.get("reason") or "").strip()
+    if not reason:
+        return {"ok": False,
+                "error": "reason requis : explique pourquoi la tâche est "
+                         "done sans changement de code (git_diff vide, "
+                         "dépendance externe…)"}
+    # `delivered=True` : la tâche est considérée livrée (vérification faite).
+    inputs["delivered"] = True
+    result = done(inputs, home)
+    if result.get("ok"):
+        result["no_code_change"] = True
+        result["reason"] = reason
+    return result
+
+
 def claim_next(inputs: dict, home: str) -> dict:
     """Pioche la prochaine tâche dispo pour le rôle de l'agent (greedy).
 
@@ -225,4 +247,5 @@ def list_tasks(inputs: dict, home: str) -> dict:
 
 
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
-              "claim", "claim_next", "done", "add_file", "get_files"]
+              "claim", "claim_next", "done", "done_no_code", "add_file",
+              "get_files"]

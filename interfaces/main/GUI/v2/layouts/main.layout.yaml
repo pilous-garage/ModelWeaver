@@ -18,4 +18,5 @@ tree:
       tabs:
         - { panel: etat-systeme, occId: occ-etat }
         - { panel: etat-simple, occId: occ-etat-simple }
+        - { panel: autorisations, occId: occ-autorisations }
       active: occ-etat

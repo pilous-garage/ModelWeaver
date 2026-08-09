@@ -103,6 +103,82 @@ def _auto_git_sync(home: str, phase: str, branch: str = "") -> None:
             continue
 
 
+def _auto_git_head(home: str) -> Dict[str, Any]:
+    """HEAD (commit) d'entrée de chaque clone workspace/{projet} du membre.
+
+    Retourne {clone_path: head_sha}. Utilisé pour vérifier ensuite si le
+    membre a produit du travail (le HEAD a bougé OU des changements non
+    commités existent). Best-effort, vide si pas de clone.
+    """
+    import subprocess as _sp
+    heads: Dict[str, Any] = {}
+    ws = _Path(home) / "workspace"
+    if not ws.is_dir():
+        return heads
+    for clone in ws.iterdir():
+        if not (clone / ".git").is_dir():
+            continue
+        c = ["git", "-C", str(clone)]
+        try:
+            r = _sp.run(c + ["rev-parse", "-q", "HEAD"],
+                        capture_output=True, text=True, timeout=10)
+            heads[str(clone)] = r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            continue
+    return heads
+
+
+def _auto_git_verify(home: str, branch: str = "") -> Dict[str, Any]:
+    """Vérifie que le membre a produit du code dans son clone workspace.
+
+    Compare l'état git à la sortie de boucle :
+      - changements NON commités → commit + push auto (le travail est là)
+      - HEAD a bougé depuis l'entrée (déjà commité par le membre) → push auto
+      - rien de tout ça → `produced_code=False` (aucun travail git)
+
+    Retourne {produced_code, committed, pushed, clones}. Infrastructurel.
+    """
+    import subprocess as _sp
+    result = {"produced_code": False, "committed": False, "pushed": False,
+              "clones": 0}
+    ws = _Path(home) / "workspace"
+    if not ws.is_dir():
+        return result
+    for clone in ws.iterdir():
+        if not (clone / ".git").is_dir():
+            continue
+        c = ["git", "-C", str(clone)]
+        result["clones"] += 1
+        try:
+            # 1. Changements non commités ?
+            _sp.run(c + ["add", "-A"], capture_output=True, timeout=10)
+            changed = _sp.run(c + ["diff", "--cached", "--quiet"],
+                              capture_output=True, timeout=10)
+            has_work = changed.returncode != 0
+            # 2. Commit auto si travail présent.
+            if has_work:
+                _sp.run(c + ["commit", "-q", "-m", "auto-commit agent"],
+                        capture_output=True, timeout=10)
+                result["committed"] = True
+                result["produced_code"] = True
+            # 3. Push (si commit local non poussé).
+            unpushed = _sp.run(c + ["rev-list", "-q", "--count",
+                                    "@{u}..HEAD"], capture_output=True,
+                               text=True, timeout=10)
+            if unpushed.returncode == 0 and unpushed.stdout.strip().lstrip("0") != "":
+                _sp.run(c + ["fetch", "-q", "origin"], capture_output=True, timeout=30)
+                _sp.run(c + ["pull", "-q", "--rebase", "origin"],
+                        capture_output=True, timeout=30)
+                ref = f"HEAD:{branch}" if branch else "HEAD"
+                _sp.run(c + ["push", "-q", "origin", ref],
+                        capture_output=True, timeout=30)
+                result["pushed"] = True
+                result["produced_code"] = True
+        except Exception:
+            continue
+    return result
+
+
 def _git_add_safe(c: List[str]) -> None:
     """git add -A PROTÉGÉ contre les suppressions accidentelles de masse.
 
@@ -272,6 +348,77 @@ def _extract_toolcalls_from_text(content: str):
     return out
 
 
+def _try_repick_next_task(messages: List[Dict], _fsm_log, agent_id: str,
+                          cat, p_ref: str, m_ref: str, skill_home: str) -> bool:
+    """Re-pioche directement la tâche suivante pour un greedy « occupation
+    continue » qui vient de clôturer une tâche.
+
+    Lit le workspace_id + role_required de l'agent (variables_json), appelle
+    workspace/task_claim_next_v1 et, si une tâche est dispo, injecte le résultat
+    dans messages (comme si le LLM l'avait demandé) pour que la boucle continue
+    dessus. Retourne True si une tâche a été piochée, False sinon.
+
+    Évite de dépendre du LLM (qui a tendance à répondre « tâche terminée » en
+    texte) : la re-pioche est décisionnelle et immédiate.
+    """
+    try:
+        from services.skill_manager import call_skill
+        import json as _json
+
+        # Récupérer workspace_id + role_required depuis les variables de l'agent.
+        ws_id = ""
+        role_req = ""
+        try:
+            from modules.sql.db import AgentsDB
+            db = AgentsDB()
+            row = db.conn.execute(
+                "SELECT variables_json FROM agents WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            if row:
+                vars_j = _json.loads(row["variables_json"] or "{}")
+                ws_id = vars_j.get("workspace_id", "") or ""
+                role_req = vars_j.get("role_required", "") or ""
+            db.close()
+        except Exception:
+            pass
+        if not ws_id:
+            # Fallback : le workspace du run (injecté dans le wait_for/skill).
+            ws_id = "mw-dev-chat"
+
+        result = None
+        for cand in _resolve_skill_candidates("task_claim_next_v1"):
+            try:
+                result = call_skill(cand, {
+                    "workspace_id": ws_id,
+                    "role_required": role_req,
+                    "team_id": -1,
+                    "agent_id": agent_id or "",
+                }, home=skill_home)
+                if isinstance(result, dict) and not result.get("error", "").startswith("skill"):
+                    break
+            except Exception:
+                result = None
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return False
+
+        task = result.get("task") or {}
+        # Injecte le résultat dans l'historique (message tool) pour que le LLM
+        # voie la tâche piochée et travaille dessus au round suivant.
+        asst_entry = {"role": "assistant", "content": "",
+                      "tool_calls": [{"id": "repick", "type": "function",
+                                      "function": {"name": "task_claim_next_v1",
+                                                   "arguments": _json.dumps(
+                                                       {"workspace_id": ws_id,
+                                                        "role_required": role_req})}}]}
+        messages.append(asst_entry)
+        messages.append({"role": "tool", "tool_call_id": "repick",
+                         "name": "task_claim_next_v1",
+                         "content": _json.dumps(result, default=str)})
+        return True
+    except Exception:
+        return False
+
+
 def _count_match(fn_name: str, counts: Dict[str, int], thresholds: Dict[str, int]) -> Optional[str]:
     """Vérifie si un tool a atteint son seuil de comptage."""
     for pattern, limit in thresholds.items():
@@ -371,7 +518,10 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                      provider_ref: str = "", model_ref: str = "",
                      skill_home: str = "/tmp",
                      on_event: Optional[Callable[[str, str], None]] = None,
-                     stream_events: bool = False) -> List[Dict]:
+                     stream_events: bool = False,
+                     bridge: Any = None,
+                     role_type: str = "",
+                     cat: Any = None) -> List[Dict]:
     import time as _time
     from pathlib import Path as _Path
     from modules.sql.db import CatalogueDB
@@ -403,6 +553,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     from services.agent_shell_manager import agent_shell_manager
     agent_shell_manager.init()
     _agent_id = _Path(skill_home).name
+    _role_type = ""
     if agent_shell_manager.get(_agent_id) is None:
         # Le pilote de dev-chat (rôle 'chat') a les autorités MANAGER : rôle
         # leader + accès en lecture aux homes des AUTRES agents (pour analyser
@@ -414,6 +565,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             _arow = _cat.conn.execute(
                 "SELECT role_type FROM agents WHERE agent_id = ?", (int(_agent_id),)
             ).fetchone()
+            if _arow:
+                _role_type = _arow["role_type"] or ""
             if _arow and _arow["role_type"] == "chat":
                 from services._common import mw_home as _mwh
                 _allowed_roots = [(_mwh() / "agent_home").resolve()]
@@ -504,6 +657,12 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     _pin_model = model_ref or ""
     _pin_fail_streak = 0
     _PIN_RETRIES = 3
+    # Tentatives max de fallback LLM AVANT d'abandonner le run (quand rien n'a
+    # été produit). Élevé : un problème LLM (rate-limit, pool saturé) ne doit
+    # pas mettre fin au run — le fallback re-tente le pool rafraîchi (les
+    # cooldowns RPM expirent). Un greedy qui a déjà produit des outils termine
+    # en succès bien avant ce seuil.
+    LLM_FALLBACK_MAX_TRIES = 30
     # Compteurs séparés : tours d'outils réels vs tours d'échec/fallback LLM.
     # Un tour d'échec = l'appel LLM a raté (rate-limit, modèle mort, fallback)
     # sans exécuter d'outil. max_loops borne les DEUX ; on trace séparément
@@ -514,6 +673,15 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     # On re-sollicite UNE fois en rappelant d'utiliser les outils (certains
     # modèles de fallback répondent en texte au 1er tour), puis échec.
     _no_action_retries = 0
+    # Tâches clôturées dans CE run (task_done_v1 réussi). Les greedy
+    # « occupation continue » doivent ENCHAÎNER : après un task_done, ils
+    # re-piochent une autre tâche au lieu de conclure. On ne les endort
+    # que si task_claim_next répond « aucune tâche dispo ».
+    _tasks_done_in_run = 0
+    # Force une re-pioche après chaque task_done réussi : le LLM a tendance à
+    # répondre en texte (« tâche terminée ») au lieu de rappeler task_claim.
+    # On injecte une consigne de re-pioche tant qu'il reste du travail.
+    _greedy_repick_pending = False
     # Compteurs anti « liseur sans conclusion » : un membre qui lit beaucoup
     # (read_file/list_dir/glob…) sans jamais produire de livrable (write_file,
     # git_commit, task_done…) tourne jusqu'à max_loops sans rien livrer.
@@ -580,11 +748,16 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 _fsm_log.log("debug", "llm/ok",
                              f"provider={p_ref} model={m_ref} "
                              f"tools={len(getattr(response, 'tool_calls', None) or [])}")
+            # Le LLM a répondu (fallback réussi) : reset des échecs consécutifs —
+            # le pool re-fonctionne, on ne doit pas abandonner le run sur un
+            # compteur d'échecs anciens.
+            _consec_llm_fails = 0
             # Journal de conversation complet (réponses + tool calls) pour
             # l'analyse en profondeur (boucles, qualité). Rotation 10 Mo.
             try:
                 from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
-                log_llm_exchange(skill_home, p_ref, m_ref, _round, response, ok=True)
+                log_llm_exchange(skill_home, p_ref, m_ref, _round, response,
+                                 ok=True, messages=messages)
             except Exception:
                 pass
         except Exception as e:
@@ -602,7 +775,8 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             # Journal de conversation : tracer l'erreur aussi.
             try:
                 from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
-                log_llm_exchange(skill_home, p_ref, m_ref, _round, ok=False, error=err_str)
+                log_llm_exchange(skill_home, p_ref, m_ref, _round, ok=False,
+                                 error=err_str, messages=messages)
             except Exception:
                 pass
             if _fsm_log is not None:
@@ -615,10 +789,12 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                             "stdout": "", "stderr": err_str, "exit_code": 1})
             # Seuil d'échecs LLM consécutifs SANS outil réussi : si le pool de
             # fallback est saturé de modèles morts (chacun échoue au vrai
-            # appel), on abandonne vite au lieu de faire 100 tours. Un membre
-            # qui a déjà fait son travail (successful_tools>0) termine en
-            # succès partiel ; sinon échec.
-            if _consec_llm_fails >= 8:
+            # appel), on abandonne au lieu de faire des centaines de tours.
+            # ÉLEVÉ (30) : un problème LLM ne met pas fin au run tout de suite —
+            # le fallback continue de tenter le pool rafraîchi (les cooldowns
+            # RPM des modèles en repos expirent). Seul un agent qui n'a RIEN
+            # produit après 30 tentatives abandonne.
+            if _consec_llm_fails >= LLM_FALLBACK_MAX_TRIES:
                 if successful_tools > 0:
                     signals.append({"signal": "loop_end",
                                     "stdout": (f"Travail effectué ({successful_tools} outils réussis) "
@@ -770,10 +946,17 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                             break
                 if switched:
                     continue
-                # Pas de re-try long du provider original : si le fallback a
-                # épuisé le pool, on échoue vite (llm_timeout) au lieu
-                # d'attendre 40s — l'utilisateur préfère un échec rapide qu'une
-                # boucle de backoff interminable.
+                # Le pool de fallback a été épuisé à CET instant (tous les
+                # modèles proposés ont échoué). Un problème LLM ne doit PAS
+                # mettre fin au run : on exclut le provider fautif, on attend un
+                # court délai (les cooldowns RPM des modèles en repos expirent
+                # vite, ex. 5-10 min → on re-tente le pool rafraîchi) et on
+                # repart pour un nouveau round de fallback. On ne termine que
+                # si le pool reste saturé très longtemps SANS qu'aucun outil
+                # n'ait réussi (l'agent n'a de toute façon rien produit).
+                if _consec_llm_fails < LLM_FALLBACK_MAX_TRIES:
+                    _time.sleep(min(20.0, 3.0 * _consec_llm_fails))
+                    continue
             # Travail déjà effectué : si le membre a exécuté des outils avec
             # succès (ex. write_file + commit + push OK) et que seul l'appel
             # LLM de CONFIRMATION finale échoue (pool saturé), on considère le
@@ -808,7 +991,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                                      f"{len(parsed_calls)} toolcalls extraits du texte")
                     # On laisse le flux normal construire asst_msg AVEC les
                     # tool_calls extraits (tc_list) — pas de message séparé.
-                elif _no_action_retries < 1:
+                elif _no_action_retries < 1 and not _greedy_repick_pending:
                     _no_action_retries += 1
                     if _fsm_log is not None:
                         _fsm_log.log("warn", "tool/no_action_retry",
@@ -820,6 +1003,28 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                                                  "directement un outil pour faire le travail.")})
                     continue
                 else:
+                    # Greedy « occupation continue » : une tâche vient d'être
+                    # clôturée → on re-pioche directement une autre tâche du
+                    # même rôle au lieu de conclure. Seule l'absence de tâche
+                    # (task_claim_next → « aucune tâche dispo ») endort l'agent.
+                    if _greedy_repick_pending:
+                        _greedy_repick_pending = False
+                        _repick = _try_repick_next_task(
+                            messages, _fsm_log, _aid_from_home or "",
+                            _cat, p_ref, m_ref, skill_home)
+                        if _repick:
+                            if _fsm_log is not None:
+                                _fsm_log.log("warn", "tool/greedy_repick",
+                                             "tâche clôturée — re-pioche d'une nouvelle tâche")
+                            continue
+                        # Plus aucune tâche dispo → l'agent s'endort proprement.
+                        if _fsm_log is not None:
+                            _fsm_log.log("info", "tool/greedy_idle",
+                                         "tâche clôturée et plus rien à piocher — agent endormi")
+                        signals.append({"signal": "loop_end",
+                                        "stdout": "toutes les tâches dispo traitées — agent endormi",
+                                        "exit_code": 0})
+                        return signals
                     # Faux appel : réponse texte sans tool call ni action.
                     # On le trace pour pénaliser le modèle au scoring.
                     try:
@@ -884,16 +1089,46 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
             # skills git/workspace le requièrent).
             tool_result = None
             _injected = dict(raw_args)
+
+            # ── GATE d'accomplissement avant task_done ──
+            # Un agent ne peut clôturer une tâche sans avoir exécuté AU MOINS
+            # un outil réussi dans la session (tout le workflow passe par des
+            # tool_calls). Pour les codeurs/mergers, on exige en plus du
+            # travail git (le commit auto de sortie le prouvera). Le gate
+            # REFUSE le task_done en renvoyant une erreur au LLM — il doit
+            # réellement agir (ou obtenir l'exception via le skill dédié).
+            if fn_name in ("task_done_v1", "workspace_task_done_v1"):
+                if successful_tools == 0:
+                    _reject = {
+                        "ok": False,
+                        "error": ("task_done refusé : aucun outil réussi dans "
+                                  "cette session. Tu dois AGIR (écrire un "
+                                  "fichier, faire un git_diff/commit, exécuter "
+                                  "un test) avant de clôturer. Marquer une tâche "
+                                  "done sans avoir produit de travail est "
+                                  "interdit."),
+                        "exit_code": 1,
+                    }
+                    tool_result = _reject
+                    if _fsm_log is not None:
+                        _fsm_log.log("warn", "task_done/rejected",
+                                     "task_done refusé (0 outil réussi)")
+                    if on_event:
+                        try:
+                            on_event("tool", "err task_done_v1 refusé : 0 outil réussi")
+                        except Exception:
+                            pass
+                else:
+                    # Rôles à impératif de code : la vérification git se fait à
+                    # la sortie de boucle (auto_git_sync post). On note ici
+                    # qu'une vérification agentic peut être nécessaire si le
+                    # codeur n'a RIEN produit dans le repo.
+                    _injected["delivered"] = (_write_tools_ok > 0)
             # L'agent_id du home est TOUJOURS forcé (le LLM l'invente souvent,
             # ex. "agent_388" ou un nom de membre) — les skills git/workspace
             # s'en servent pour le home et le clone.
             if _aid_from_home:
                 _injected["agent_id"] = _aid_from_home
-            # Un write_file réussi = un livrable existe : on le signale au
-            # task_done pour qu'il accepte le done même sans commit (cas des
-            # rapports d'audit/analyse écrits dans le home).
-            if _write_tools_ok > 0 and fn_name in ("task_done_v1", "workspace_task_done_v1"):
-                _injected["delivered"] = True
             candidates = _resolve_skill_candidates(fn_name)
             for cand in candidates:
                 try:
@@ -953,6 +1188,11 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 # Un outil réussi = le membre avance → reset les échecs LLM
                 # consécutifs (le pool n'est plus la cause du blocage).
                 _consec_llm_fails = 0
+                # Tâche clôturée → l'agent greedy doit re-piocher une autre
+                # tâche (occupation continue) au lieu de conclure.
+                if fn_name in ("task_done_v1", "workspace_task_done_v1"):
+                    _tasks_done_in_run += 1
+                    _greedy_repick_pending = True
                 # Suivi des outils de lecture vs d'écriture : si le membre
                 # enchaîne les lectures sans produire de livrable, on le pousse
                 # à conclure (sinon il « analyse » jusqu'à max_loops).
@@ -992,6 +1232,87 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
     signals.append({"signal": "max_loops",
                     "stdout": f"Limite de {max_loops} boucles atteinte (tools={_tool_rounds}, échecs_llm={_llm_fail_rounds})",
                     "exit_code": 1})
+
+    # ── Test agentic automatique ──
+    # Un codeur/merger qui termine SANS avoir produit de livrable (aucun outil
+    # d'écriture réussi) est suspect : soit il n'a rien fait, soit le dernier
+    # LLM n'est pas agentic (répond en texte sans jamais appeler les outils).
+    # On vérifie la capacité du dernier modèle utilisé AVANT de conclure.
+    if _write_tools_ok == 0 and role_type in ("codeur", "orchestrateur") \
+            and bridge is not None and p_ref and m_ref:
+        try:
+            _agentic = None
+            if cat is not None:
+                from modules.sql.catalogue_repo import ModelCapaciteRepository
+                try:
+                    _repo = ModelCapaciteRepository(cat.conn)
+                    # Trouver l'endpoint/provider du modèle courant.
+                    _ep = cat.conn.execute("""
+                        SELECT kem.endpoint_id, kem.provider_id
+                        FROM provider_models_mapping kem
+                        JOIN catalogue_models cm ON cm.id = kem.model_id
+                        WHERE (cm.ref = ? OR cm.model_key = ?)
+                          AND kem.provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                        LIMIT 1
+                    """, (m_ref, m_ref, p_ref)).fetchone()
+                    if _ep:
+                        _mid = cat.conn.execute(
+                            "SELECT id FROM catalogue_models "
+                            "WHERE ref = ? OR model_key = ? LIMIT 1",
+                            (m_ref, m_ref)).fetchone()
+                        if _mid:
+                            _agentic = _repo.resolve_bool(
+                                _mid["id"], _ep["endpoint_id"], _ep["provider_id"],
+                                "agentic")
+                except Exception:
+                    _agentic = None
+            # Seuil 0.8 : si déjà ≥ 0.8 (capacité prouvée), on ne re-teste pas.
+            if _agentic is None or _agentic < 0.8:
+                try:
+                    _test = bridge.test_agentic(p_ref, m_ref)
+                    _ok = bool(_test.get("ok"))
+                    if _fsm_log is not None:
+                        _fsm_log.log(
+                            "warn" if not _ok else "info",
+                            "agentic/test",
+                            f"{p_ref}/{m_ref} agentic={'OUI' if _ok else 'NON'} "
+                            f"(tc={_test.get('tool_calls')} coh={_test.get('coherent')} "
+                            f"tested={_test.get('tested')} skip={_test.get('skipped_errors')})")
+                    # Observer dans model_endpoint_provider_capacite.
+                    if cat is not None:
+                        from modules.sql.catalogue_repo import ModelCapaciteRepository
+                        try:
+                            _ep = cat.conn.execute("""
+                                SELECT kem.endpoint_id, kem.provider_id
+                                FROM provider_models_mapping kem
+                                JOIN catalogue_models cm ON cm.id = kem.model_id
+                                WHERE (cm.ref = ? OR cm.model_key = ?)
+                                  AND kem.provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                                LIMIT 1
+                            """, (m_ref, m_ref, p_ref)).fetchone()
+                            _mid = cat.conn.execute(
+                                "SELECT id FROM catalogue_models "
+                                "WHERE ref = ? OR model_key = ? LIMIT 1",
+                                (m_ref, m_ref)).fetchone()
+                            if _ep and _mid:
+                                ModelCapaciteRepository(cat.conn).observe_bool(
+                                    _mid["id"], _ep["endpoint_id"],
+                                    _ep["provider_id"], "agentic", _ok,
+                                    source="api", strength=0.5)
+                                cat.conn.commit()
+                        except Exception:
+                            pass
+                    signals.append({
+                        "signal": "agentic_test",
+                        "stdout": (f"codeur sans livrable → test agentic "
+                                   f"{p_ref}/{m_ref}: {'agentic' if _ok else 'NON agentic'}"),
+                        "agentic": _ok,
+                        "provider": p_ref, "model": m_ref,
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
     return signals
 
 
@@ -1014,6 +1335,28 @@ def exec(inputs: dict, home: str) -> dict:
     provider_ref = inputs.get("provider_ref", "")
     model_ref = inputs.get("model_ref", "")
     branch = inputs.get("branch", "") or inputs.get("branch_name", "")
+
+    # Connexions DB + rôle de l'agent (pour les gates git/agentic de sortie).
+    _cat = None
+    _km = None
+    _role_type = ""
+    try:
+        from modules.sql.db import CatalogueDB as _CDB, ModelWeaverDB as _MWDB
+        from modules.key_manager.key_manager_module import KeyManager as _KM
+        _cat = _CDB()
+        _km = _KM(ModelWeaverDB())
+    except Exception:
+        pass
+    try:
+        _agent_id_from_home = _Path(home).name
+        if _cat is not None:
+            _arow = _cat.conn.execute(
+                "SELECT role_type FROM agents WHERE agent_id = ?",
+                (int(_agent_id_from_home),)).fetchone()
+            if _arow:
+                _role_type = _arow["role_type"] or ""
+    except Exception:
+        pass
 
     # Diffusion streaming : dev-chat (GUI) peut activer le mode streaming œ
     # `stream_events=true`. Les deltas thinking/content sont publiés dans le
@@ -1046,17 +1389,57 @@ def exec(inputs: dict, home: str) -> dict:
     if not tools:
         return {"signal": "error", "stdout": "", "stderr": f"aucun outil trouvé dans bundles {bundle_names}", "exit_code": 1}
 
+    # Bridge actif (pour le test agentic de sortie de boucle). Best-effort.
+    _bridge_outer = None
+    try:
+        from modules.llm_manager.llm_manager import LLMManager as _LLMMgr
+        _bridge_outer = _LLMMgr(_cat, km=_km).get_bridge()
+    except Exception:
+        try:
+            from modules.llm_manager.direct_bridge import DirectBridge as _DB
+            _bridge_outer = _DB(cat=_cat, km=_km)
+        except Exception:
+            _bridge_outer = None
+
     # Discipline git : pull avant d'agir (voir le travail des autres membres)
     _auto_git_sync(home, "pre", branch)
+    # HEAD d'entrée : référence pour vérifier si le membre a produit du code.
+    _git_heads_in = _auto_git_head(home)
 
     signals = _chat_with_tools(request, context, tools, max_loops, grouping,
                                break_on_signals, break_on_counts,
                                llm_timeout, global_timeout,
                                provider_ref, model_ref, home,
-                               on_event=on_event, stream_events=stream_events)
+                               on_event=on_event, stream_events=stream_events,
+                               bridge=_bridge_outer, role_type=_role_type, cat=_cat)
 
     # Discipline git : commit + push après l'action (publier son travail)
     _auto_git_sync(home, "post", branch)
+
+    # ── Vérification git pour les rôles à impératif de code ──
+    # codeur / orchestrateur (merger) doivent produire du code. On vérifie
+    # que le clone workspace a bougé (HEAD différent de l'entrée OU commit
+    # auto effectué). Sinon, un signal 'no_code_produced' est émis : le
+    # workflow/gestionnaire décide (test agentic, relance, etc.).
+    if _role_type in ("codeur", "orchestrateur"):
+        try:
+            _git_after = _auto_git_verify(home, branch)
+            _heads_out = _auto_git_head(home)
+            _moved = any(
+                _heads_out.get(p) and _heads_out.get(p) != h
+                for p, h in _git_heads_in.items())
+            _produced = _git_after.get("produced_code", False) or _moved
+            if not _produced:
+                signals.append({
+                    "signal": "no_code_produced",
+                    "stdout": (f"Rôle {_role_type} : aucun changement git détecté "
+                               f"dans la session (commit/push vide). Vérifier que "
+                               f"le travail a bien été produit."),
+                    "git_committed": _git_after.get("committed", False),
+                    "git_pushed": _git_after.get("pushed", False),
+                })
+        except Exception:
+            pass
 
     # Auto-commit/push si des fichiers ont été modifiés dans le workdir
     workdir = _Path(home) / "work"

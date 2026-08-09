@@ -37,6 +37,9 @@ class ModelCapabilities:
     supports_vision: bool = False
     supports_function_calling: bool = False
     mode: str = "chat"
+    # official : 1 = capacité certaine (source officielle), 0 = déduite par
+    # l'expérience. Borne haute ; l'endpoint peut restreindre mais pas étendre.
+    official: bool = False
 
 
 @dataclass

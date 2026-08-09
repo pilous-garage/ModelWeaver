@@ -179,6 +179,18 @@ members:
     resources:
       llm: true
     config: *coder_cfg
+  - agent_name: coder-c
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    config: *coder_cfg
+  - agent_name: coder-d
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    config: *coder_cfg
 
   # ── TESTEUR : pioche les test_task ──
   - agent_name: tester
@@ -220,7 +232,7 @@ members:
     occupation: continue
     resources:
       llm: true
-    config:
+    config: &reviewer_cfg
       workflow:
         steps:
           - id: start
@@ -232,15 +244,21 @@ members:
               workspace_id: "{{workspace_id}}"
               context: |
                 Tu es le relecteur du chat de dev. Boucle gloutonne :
-                1. Pioche une tâche role_required=reviewer en attente de review
-                   avec workspace/task_claim_next@v1 (workspace {{workspace_id}},
-                   status='review').
-                2. Relis les changements (git diff, file/read_file@v1).
+                1. Pioche une tâche en attente de review avec
+                   workspace/task_claim_next@v1 (workspace {{workspace_id}},
+                   status='review', role_required=reviewer).
+                2. Récupère les VRAIS fichiers du livrable : appelle
+                   workspace/task_get_files@v1 avec le task_id pioché — il
+                   retourne la liste des fichiers livrés (source/rendu). Lis
+                   CES chemins exacts avec file/read_file@v1. N'invente JAMAIS
+                   un chemin : si task_get_files ne retourne rien, regarde le
+                   commit de la tâche (git diff / git show <commit_hash>).
                 3. Si OK : marque la tâche done avec workspace/task_done@v1
                    (approve=true, branch + commit_hash de la tâche).
                    Si problèmes : crée une tâche corrective (task_create).
                 4. Reprends à l'étape 1.
-                Réponds avec ta relecture.
+                IMPORTANT : ne re-pioche PAS une 2e tâche sans avoir validé la
+                première. Réponds avec ta relecture.
               max_loops: 80
             capture:
               stdout: result
@@ -248,6 +266,32 @@ members:
           - id: end
             type: end
             status: SUCCESS
+  # Reviewers additionnels (backlog de review important) : même workflow, ils
+  # piochent les tâches 'review' en parallèle du reviewer principal.
+  - agent_name: reviewer-2
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    config: *reviewer_cfg
+  - agent_name: reviewer-3
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    config: *reviewer_cfg
+  - agent_name: reviewer-4
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    config: *reviewer_cfg
+  - agent_name: reviewer-5
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    config: *reviewer_cfg
 
   # ── ANALYST : analyse les missions (avis indépendants, découpe des tâches) ──
   - agent_name: analyst

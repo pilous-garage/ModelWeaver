@@ -36,10 +36,11 @@ def _recent_llm(hours: int = 24, limit: int = 50):
         cat = _get_cat()
         now = int(time.time())
         rows = cat.conn.execute("""
-            SELECT provider_ref, model_ref, requests, ok_req, err_req,
+            SELECT caller_id, provider_ref, model_ref, requests, ok_req, err_req,
                    tokens_in, tokens_out, tokens_thinking, latency_ms,
                    error_codes, last_call FROM (
-              SELECT p.ref AS provider_ref,
+              SELECT COALESCE(NULLIF(l.caller_id, ''), '?') AS caller_id,
+                     p.ref AS provider_ref,
                      COALESCE(m.ref, pm.provider_model_name, '?') AS model_ref,
                      COUNT(*) AS requests,
                      SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok_req,
@@ -55,9 +56,10 @@ def _recent_llm(hours: int = 24, limit: int = 50):
               LEFT JOIN catalogue_models m   ON m.id = l.model_id
               LEFT JOIN provider_models pm   ON pm.id = l.provider_model_id
               WHERE l.created_at >= ?
-              GROUP BY l.provider_id, l.model_id, l.provider_model_id
+              GROUP BY l.caller_id, l.provider_id, l.model_id, l.provider_model_id
               UNION ALL
-              SELECT p.ref, COALESCE(m.ref, pm.provider_model_name, '?'),
+              SELECT COALESCE(NULLIF(l.caller_id, ''), '?'), p.ref,
+                     COALESCE(m.ref, pm.provider_model_name, '?'),
                      COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
                      SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
                      SUM(tokens_in), SUM(tokens_out), SUM(tokens_thinking),
@@ -69,9 +71,9 @@ def _recent_llm(hours: int = 24, limit: int = 50):
               LEFT JOIN catalogue_models m   ON m.id = l.model_id
               LEFT JOIN provider_models pm   ON pm.id = l.provider_model_id
               WHERE l.created_at >= ?
-              GROUP BY l.provider_id, l.model_id, l.provider_model_id
+              GROUP BY l.caller_id, l.provider_id, l.model_id, l.provider_model_id
             )
-            GROUP BY provider_ref, model_ref
+            GROUP BY caller_id, provider_ref, model_ref
             ORDER BY last_call DESC
             LIMIT ?
         """, (now - hours * 3600, now - hours * 3600, limit)).fetchall()
@@ -80,6 +82,7 @@ def _recent_llm(hours: int = 24, limit: int = 50):
             req = r["requests"] or 0
             err = r["err_req"] or 0
             out.append({
+                "caller_id": r["caller_id"] or "?",
                 "provider": r["provider_ref"] or "?",
                 "model": r["model_ref"] or "?",
                 "requests": req,

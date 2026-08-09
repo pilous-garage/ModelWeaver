@@ -156,10 +156,20 @@ class AgentDaemon:
         mgr = AgentManager(db=db)
         active = mgr.list_active()
         zombies = mgr.check_heartbeats()
+        # ACTIVITÉ RÉELLE : l'agent-manager (process séparé) écrit le nombre
+        # d'agents greedy réellement en run (threads vivants) dans meta.
+        # agents_active à chaque tick — l'API ne peut pas voir ses threads.
+        live = 0
+        try:
+            live = int(db.read_meta("agents_active", default=0))
+        except Exception:
+            pass
+        real = max(len(active), live)
         return {
             "status": "ok",
-            "active_agents": len(active),
+            "active_agents": real,
             "active": [{"id": a["agent_id"], "name": a["name"]} for a in active],
+            "live_threads": live,
             "zombies": zombies,
         }
 

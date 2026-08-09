@@ -261,6 +261,220 @@ class ModelRepository:
         return cur.lastrowid
 
 
+class ModelCapaciteRepository:
+    """Capacités d'un modèle PAR (endpoint, provider) — expérience + confiance.
+
+    Chaque capacité est un tuple (model_id, endpoint_id, provider_id,
+    capability, cap_type). Deux types :
+      - 'bool'  : agentic, vision, supports_chat, streaming, function_calling,
+                  reasoning → confiance 0-1 (monte/baisse selon les observations)
+      - 'range' : context_window, max_input, max_output → min/max observés
+
+    La capacité OFFICIELLE du modèle (catalogue_models / model_capabilities)
+    est la BORNE HAUTE ; l'expérience ici ne peut que la restreindre
+    (un endpoint n'a jamais PLUS de capacité que le modèle).
+    """
+
+    # Capacités booléennes connues.
+    BOOL_CAPS = ("agentic", "vision", "supports_chat", "streaming",
+                 "function_calling", "reasoning")
+    # Capacités de plage connues (tokens).
+    RANGE_CAPS = ("context_window", "max_input", "max_output")
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    # ── Lecture ──
+
+    def get(self, model_id: int, endpoint_id: int, provider_id: int,
+            capability: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.execute("""
+            SELECT * FROM model_endpoint_provider_capacite
+            WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+              AND capability = ?
+        """, (model_id, endpoint_id, provider_id, capability))
+        return _row_to_dict(cur.fetchone())
+
+    def list_for_model(self, model_id: int,
+                       endpoint_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        if endpoint_id is not None:
+            cur = self.conn.execute("""
+                SELECT * FROM model_endpoint_provider_capacite
+                WHERE model_id = ? AND endpoint_id = ?
+                ORDER BY capability
+            """, (model_id, endpoint_id))
+        else:
+            cur = self.conn.execute("""
+                SELECT * FROM model_endpoint_provider_capacite
+                WHERE model_id = ? ORDER BY endpoint_id, capability
+            """, (model_id,))
+        return _rows_to_list(cur.fetchall())
+
+    def list_by_endpoint(self, endpoint_id: int,
+                         capability: Optional[str] = None) -> List[Dict[str, Any]]:
+        if capability:
+            cur = self.conn.execute("""
+                SELECT * FROM model_endpoint_provider_capacite
+                WHERE endpoint_id = ? AND capability = ?
+                ORDER BY model_id
+            """, (endpoint_id, capability))
+        else:
+            cur = self.conn.execute("""
+                SELECT * FROM model_endpoint_provider_capacite
+                WHERE endpoint_id = ? ORDER BY model_id, capability
+            """, (endpoint_id,))
+        return _rows_to_list(cur.fetchall())
+
+    # ── Écriture ──
+
+    def observe_bool(self, model_id: int, endpoint_id: int, provider_id: int,
+                     capability: str, ok: bool, source: str = "experience",
+                     strength: float = 1.0) -> None:
+        """Enregistre une observation booléenne de capacité.
+
+        `ok=True` → la capacité a fonctionné (confidence monte) ;
+        `ok=False` → elle a échoué (confidence baisse).
+        `strength` : pondération de l'observation (0-1, défaut 1).
+        Le score de confiance est un taux lissé : chaque observation rapproche
+        la confiance de 1 (succès) ou 0 (échec), pondérée par `strength`.
+        """
+        assert capability in self.BOOL_CAPS, f"capacité bool inconnue: {capability}"
+        existing = self.get(model_id, endpoint_id, provider_id, capability)
+        if existing is None:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO model_endpoint_provider_capacite
+                    (model_id, endpoint_id, provider_id, capability, cap_type,
+                     confidence, yes_count, no_count, source,
+                     last_observed_at, updated_at)
+                VALUES (?, ?, ?, ?, 'bool', 0.5, 0, 0, ?,
+                        strftime('%s','now'), strftime('%s','now'))
+            """, (model_id, endpoint_id, provider_id, capability, source))
+            existing = self.get(model_id, endpoint_id, provider_id, capability)
+        conf = float(existing["confidence"] or 0.5)
+        target = 1.0 if ok else 0.0
+        # Lissage exponentiel : strength=0.5 → chaque observation rapproche la
+        # confiance de moitié vers la cible (2 succès depuis 0.5 → 0.875).
+        # Une valeur strength=1.0 écraserait (pas de mémoire) — on borne à 0.7.
+        alpha = max(0.05, min(0.7, strength))
+        conf = conf + alpha * (target - conf)
+        conf = max(0.0, min(1.0, conf))
+        if ok:
+            self.conn.execute("""
+                UPDATE model_endpoint_provider_capacite SET
+                    confidence = ?, yes_count = yes_count + 1,
+                    source = ?, last_observed_at = strftime('%s','now'),
+                    updated_at = strftime('%s','now')
+                WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+                  AND capability = ?
+            """, (conf, source, model_id, endpoint_id, provider_id, capability))
+        else:
+            self.conn.execute("""
+                UPDATE model_endpoint_provider_capacite SET
+                    confidence = ?, no_count = no_count + 1,
+                    source = ?, last_observed_at = strftime('%s','now'),
+                    updated_at = strftime('%s','now')
+                WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+                  AND capability = ?
+            """, (conf, source, model_id, endpoint_id, provider_id, capability))
+
+    def observe_range(self, model_id: int, endpoint_id: int, provider_id: int,
+                      capability: str, value: int, source: str = "experience",
+                      confidence: float = 1.0) -> None:
+        """Enregistre une observation de plage (context_window / max_output…).
+
+        Étend min/max observés. `confidence` pondère la fiabilité de la mesure
+        (1.0 = mesuré par l'API, plus faible = estimé).
+        """
+        assert capability in self.RANGE_CAPS, f"capacité range inconnue: {capability}"
+        existing = self.get(model_id, endpoint_id, provider_id, capability)
+        if existing is None:
+            self.conn.execute("""
+                INSERT INTO model_endpoint_provider_capacite
+                    (model_id, endpoint_id, provider_id, capability, cap_type,
+                     confidence, min_value, max_value, observations, source,
+                     last_observed_at, updated_at)
+                VALUES (?, ?, ?, ?, 'range', ?, ?, ?, 1, ?,
+                        strftime('%s','now'), strftime('%s','now'))
+            """, (model_id, endpoint_id, provider_id, capability,
+                  confidence, value, value, source))
+            return
+        mn = existing.get("min_value")
+        mx = existing.get("max_value")
+        new_min = value if (mn is None or value < mn) else mn
+        new_max = value if (mx is None or value > mx) else mx
+        self.conn.execute("""
+            UPDATE model_endpoint_provider_capacite SET
+                min_value = ?, max_value = ?, observations = observations + 1,
+                confidence = ?, source = ?,
+                last_observed_at = strftime('%s','now'),
+                updated_at = strftime('%s','now')
+            WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+              AND capability = ?
+        """, (new_min, new_max, confidence, source,
+              model_id, endpoint_id, provider_id, capability))
+
+    def set_manual(self, model_id: int, endpoint_id: int, provider_id: int,
+                   capability: str, cap_type: str, value: Any) -> None:
+        """Fixe une capacité à la main (source='manual', confiance forte)."""
+        assert cap_type in ("bool", "range")
+        existing = self.get(model_id, endpoint_id, provider_id, capability)
+        if cap_type == "bool":
+            conf = 0.9 if value else 0.1
+            if existing is None:
+                self.conn.execute("""
+                    INSERT INTO model_endpoint_provider_capacite
+                        (model_id, endpoint_id, provider_id, capability, cap_type,
+                         confidence, source, updated_at)
+                    VALUES (?, ?, ?, ?, 'bool', ?, 'manual', strftime('%s','now'))
+                """, (model_id, endpoint_id, provider_id, capability, conf))
+            else:
+                self.conn.execute("""
+                    UPDATE model_endpoint_provider_capacite SET
+                        confidence = ?, source = 'manual',
+                        updated_at = strftime('%s','now')
+                    WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+                      AND capability = ?
+                """, (conf, model_id, endpoint_id, provider_id, capability))
+        else:
+            v = int(value)
+            if existing is None:
+                self.conn.execute("""
+                    INSERT INTO model_endpoint_provider_capacite
+                        (model_id, endpoint_id, provider_id, capability, cap_type,
+                         confidence, min_value, max_value, observations, source,
+                         updated_at)
+                    VALUES (?, ?, ?, ?, 'range', 0.9, ?, ?, 1, 'manual',
+                            strftime('%s','now'))
+                """, (model_id, endpoint_id, provider_id, capability, v, v))
+            else:
+                self.conn.execute("""
+                    UPDATE model_endpoint_provider_capacite SET
+                        confidence = 0.9, min_value = ?, max_value = ?,
+                        observations = 1, source = 'manual',
+                        updated_at = strftime('%s','now')
+                    WHERE model_id = ? AND endpoint_id = ? AND provider_id = ?
+                      AND capability = ?
+                """, (v, v, model_id, endpoint_id, provider_id, capability))
+
+    def resolve_bool(self, model_id: int, endpoint_id: int, provider_id: int,
+                     capability: str, default: bool = False) -> bool:
+        """État booléen dérivé : vrai si confidence >= 0.7.
+
+        Inconnu (0.5) → `default`. On ne prend JAMAIS un 'non' pour acquis à
+        basse confiance (un modèle peut être bridé par un endpoint mais pas
+        l'autre) : seuls les échecs répétés font tomber sous 0.3.
+        """
+        row = self.get(model_id, endpoint_id, provider_id, capability)
+        if row is None:
+            return default
+        conf = float(row.get("confidence") or 0.5)
+        if conf >= 0.7:
+            return True
+        if conf <= 0.3:
+            return False
+        return default
+
+
 class KeyRepository:
     """Clés API."""
 
@@ -975,6 +1189,18 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         except Exception:
             self.conn.rollback()
 
+        # Migration: colonnes de probe fine (point B/E) sur provider_models :
+        #   deprecated : modèle périmé/disparu du listing provider (ne pas
+        #                confondre avec unavailable transitoire)
+        #   slow       : modèle lent mais joignable (timeout), à ne pas traiter
+        #                comme bloqué
+        for col in ("deprecated", "slow"):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE provider_models ADD COLUMN {col} INTEGER DEFAULT 0")
+            except Exception:
+                self.conn.rollback()
+
         # Table d'état système
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS system_state (
@@ -1325,6 +1551,37 @@ class CatalogueDB:
             self.conn.rollback()
             print(f"⚠️  Migration model_key ignorée: {e}")
 
+        # ── Migration official (source certaine) + nom obligatoire ──
+        # official = 1 si le modèle est « certain » (nom confirmé par une source
+        # fiable, ex. fiche éditeur / Hugging Face), 0 s'il est déduit par
+        # l'expérience (un provider l'expose sans confirmation officielle).
+        # Backfill : un modèle sans name prend le premier nom trouvé (ref / alias).
+        try:
+            _add_column_if_missing(self.conn, "catalogue_models", "official",
+                                   "INTEGER DEFAULT 0")
+            # Nom minimum obligatoire à l'insertion (contrainte déclenchée sur
+            # les lignes existantes vides → backfill AVANT d'ajouter le CHECK).
+            empties = self.conn.execute(
+                "SELECT id, ref FROM catalogue_models "
+                "WHERE name IS NULL OR TRIM(name) = ''").fetchall()
+            for row in empties:
+                fallback = row["ref"] or f"model-{row['id']}"
+                self.conn.execute(
+                    "UPDATE catalogue_models SET name = ? WHERE id = ?",
+                    (fallback, row["id"]))
+            self.conn.commit()
+            # Official par défaut : 1 si le ref ressemble à un nom canonique
+            # (pas un placeholder générique). Affiné ensuite par le scraper.
+            self.conn.execute("""
+                UPDATE catalogue_models SET official = 1
+                WHERE official = 0 AND name IS NOT NULL AND TRIM(name) != ''
+                  AND ref != '' AND ref NOT LIKE 'model-%'
+            """)
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration official ignorée: {e}")
+
         # ── Migration context_window_effective + context_audit_log ──
         try:
             _add_column_if_missing(self.conn, "provider_models", "context_window_effective", "INTEGER")
@@ -1387,6 +1644,10 @@ class CatalogueDB:
             _add_column_if_missing(self.conn, "model_call_log", "agent_id", "TEXT")
             _add_column_if_missing(self.conn, "model_call_log", "error_msg", "TEXT")
             _add_column_if_missing(self.conn, "model_call_log", "call_type", "TEXT DEFAULT 'chat'")
+            # Source de l'appel LLM : agent:N / bridge / service:model_sync / probe…
+            # Permet de reconstruire les SESSIONS PAR APPELLANT (llm_caller_sessions)
+            # sans confondre avec les séquences globales par modèle.
+            _add_column_if_missing(self.conn, "model_call_log", "caller_id", "TEXT")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
                 "ON model_call_log(provider_id, model_id, id)")
@@ -1416,6 +1677,7 @@ class CatalogueDB:
                     error_code       TEXT,
                     error_msg        TEXT,
                     call_type        TEXT DEFAULT 'chat',
+                    caller_id        TEXT,
                     created_at       INTEGER DEFAULT (strftime('%s', 'now')),
                     archived_at      INTEGER DEFAULT (strftime('%s', 'now'))
                 )
@@ -1426,6 +1688,11 @@ class CatalogueDB:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_archive_model "
                 "ON model_call_log_archive(provider_id, model_id, id)")
+            _add_column_if_missing(self.conn, "model_call_log_archive",
+                                   "caller_id", "TEXT")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_archive_caller "
+                "ON model_call_log_archive(caller_id, id)")
         except Exception as e:
             self.conn.rollback()
             print(f"⚠️  Migration model_call_log ignorée: {e}")
@@ -1437,11 +1704,22 @@ class CatalogueDB:
             has_old = self.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
                 "AND name='key_endpoint_models'").fetchone()
-            if has_old:
+            has_new = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='provider_models_mapping'").fetchone()
+            if has_old and not has_new:
                 self.conn.execute("""
                     ALTER TABLE key_endpoint_models
                     RENAME TO provider_models_mapping
                 """)
+            elif has_old and has_new:
+                # Les DEUX existent (migration partielle antérieure) : on
+                # abandonne l'ancienne pour éviter le conflit de nom. Les
+                # données utiles sont déjà dans provider_models_mapping.
+                try:
+                    self.conn.execute("DROP TABLE key_endpoint_models")
+                except Exception:
+                    pass
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS provider_models_mapping (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1500,6 +1778,26 @@ class CatalogueDB:
                 )
             """)
             self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS alias_model (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id      INTEGER REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    source_name   TEXT NOT NULL,
+                    source        TEXT NOT NULL,
+                    source_type   TEXT NOT NULL CHECK(source_type IN ('provider','benchmark')),
+                    confidence    TEXT DEFAULT 'auto',
+                    status        TEXT NOT NULL DEFAULT 'linked'
+                                  CHECK(status IN ('linked','unresolved','ambiguous')),
+                    updated_at    INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(source, source_type, source_name)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alias_model_mid ON alias_model(model_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alias_model_src ON alias_model(source, source_type)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alias_model_name ON alias_model(source_name)")
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS budget_tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
@@ -1551,10 +1849,153 @@ class CatalogueDB:
                     UNIQUE(endpoint_id, key_ref, model_id)
                 )
             """)
+
+            # ── Capacités PAR (modèle, endpoint, provider) ──
+            # Un même modèle peut avoir des capacités différentes selon
+            # l'endpoint/provider qui le sert (ex. tool-calling dispo sur
+            # google direct mais bridé sur un proxy). Chaque capacité porte un
+            # SCORE DE CONFIANCE 0-1 : il monte quand la capacité est
+            # réellement utilisée avec succès, baisse quand elle échoue.
+            #   - bool (agentic, vision, supports_chat, streaming/sse,
+            #           function_calling, reasoning) : confidence + compteurs
+            #   - range (context_window, max_input, max_output) : min/max
+            #     observés + nb observations.
+            # La capacité OFFICIELLE du modèle (catalogue_models/model_capabilities)
+            # est la BORNE HAUTE ; celle-ci est l'EXPÉRIENCE (≤ borne).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_endpoint_provider_capacite (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id      INTEGER NOT NULL REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    endpoint_id   INTEGER NOT NULL REFERENCES provider_endpoints(endpoint_id) ON DELETE CASCADE,
+                    provider_id   INTEGER NOT NULL REFERENCES catalogue_providers(id) ON DELETE CASCADE,
+                    capability    TEXT NOT NULL,
+                    cap_type      TEXT NOT NULL CHECK(cap_type IN ('bool','range')),
+                    confidence    REAL DEFAULT 0.5,
+                    yes_count     INTEGER DEFAULT 0,
+                    no_count      INTEGER DEFAULT 0,
+                    min_value     INTEGER,
+                    max_value     INTEGER,
+                    observations  INTEGER DEFAULT 0,
+                    source        TEXT DEFAULT 'experience'
+                                  CHECK(source IN ('api','experience','manual')),
+                    last_observed_at INTEGER,
+                    updated_at    INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, endpoint_id, provider_id, capability)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mepc_model "
+                "ON model_endpoint_provider_capacite(model_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mepc_endpoint "
+                "ON model_endpoint_provider_capacite(endpoint_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mepc_cap "
+                "ON model_endpoint_provider_capacite(capability)")
         except Exception as e:
             import sys as _sys
             self.conn.rollback()
             print(f"⚠️  Migration tables d'acces ignoree: {e}", file=_sys.stderr)
+
+        # ── Migration model_capabilities → model_id + official ──
+        # Les capacités OFFICIELLES du modèle (bornes hautes, source certaine).
+        # On remplace la clé model_ref par model_id (l'identifiant canonique)
+        # et on ajoute `official` : 1 si la source est certaine (fiche éditeur /
+        # API officielle), 0 si déduite par l'expérience ou un provider tiers.
+        # NB : la table est créée historiquement par catalogue_sync/remote avec
+        # UNIQUE(model_ref) ; on la RE-CRÉE avec UNIQUE(model_id) pour que
+        # ON CONFLICT(model_id) fonctionne (un index unique ne suffit pas).
+        try:
+            has_old = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='model_capabilities'").fetchone()
+            has_new = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='model_capabilities_v2'").fetchone()
+            if has_old and not has_new:
+                # Renommer l'ancienne → recréer avec la bonne contrainte.
+                try:
+                    self.conn.execute(
+                        "ALTER TABLE model_capabilities RENAME TO model_capabilities_v2")
+                except Exception:
+                    pass
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS model_capabilities (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id        INTEGER UNIQUE
+                                    REFERENCES catalogue_models(id) ON DELETE CASCADE,
+                    model_ref       TEXT,
+                    supports_chat           INTEGER DEFAULT 0,
+                    supports_function_calling INTEGER DEFAULT 0,
+                    supports_vision         INTEGER DEFAULT 0,
+                    supports_embedding      INTEGER DEFAULT 0,
+                    supports_streaming      INTEGER DEFAULT 0,
+                    supports_tools          INTEGER DEFAULT 0,
+                    max_context_tokens      INTEGER,
+                    max_output_tokens       INTEGER,
+                    pricing_input_per_1k    REAL,
+                    pricing_output_per_1k   REAL,
+                    source                  TEXT DEFAULT 'unknown',
+                    official                INTEGER DEFAULT 0,
+                    last_updated_at         INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mc_model_ref "
+                "ON model_capabilities(model_ref)")
+            # Table pré-existante : ALTER idempotent au cas où.
+            _add_column_if_missing(self.conn, "model_capabilities", "official",
+                                   "INTEGER DEFAULT 0")
+            # Migration des données depuis l'ancienne table (si renommée).
+            has_v2 = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='model_capabilities_v2'").fetchone()
+            if has_v2:
+                done = self.conn.execute(
+                    "SELECT COUNT(*) FROM model_capabilities").fetchone()[0]
+                if done == 0:
+                    # Copier + résoudre model_id via ref/model_key.
+                    self.conn.execute("""
+                        INSERT OR IGNORE INTO model_capabilities
+                            (model_id, model_ref, supports_chat,
+                             supports_function_calling, supports_vision,
+                             supports_embedding, supports_streaming,
+                             supports_tools, max_context_tokens,
+                             max_output_tokens, pricing_input_per_1k,
+                             pricing_output_per_1k, source, official,
+                             last_updated_at)
+                        SELECT NULL, mc.model_ref, mc.supports_chat,
+                               mc.supports_function_calling, mc.supports_vision,
+                               mc.supports_embedding, mc.supports_streaming,
+                               mc.supports_tools, mc.max_context_tokens,
+                               mc.max_output_tokens, mc.pricing_input_per_1k,
+                               mc.pricing_output_per_1k, mc.source,
+                               CASE WHEN mc.source IN ('api','knowledge','remote','official')
+                                    THEN 1 ELSE 0 END, mc.last_updated_at
+                        FROM model_capabilities_v2 mc
+                    """)
+                    # Résoudre model_id par ref exacte puis model_key.
+                    for row in self.conn.execute(
+                            "SELECT id, model_ref FROM model_capabilities "
+                            "WHERE model_id IS NULL AND model_ref IS NOT NULL"):
+                        mid = self.conn.execute(
+                            "SELECT id FROM catalogue_models WHERE ref = ? "
+                            "OR model_key = ? LIMIT 1",
+                            (row["model_ref"], row["model_ref"])).fetchone()
+                        if mid:
+                            self.conn.execute(
+                                "UPDATE model_capabilities SET model_id = ? "
+                                "WHERE id = ?", (mid["id"], row["id"]))
+                self.conn.commit()
+                try:
+                    self.conn.execute("DROP TABLE model_capabilities_v2")
+                    self.conn.commit()
+                except Exception:
+                    pass
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            print(f"⚠️  Migration model_capabilities ignorée: {e}")
 
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
@@ -1798,7 +2239,7 @@ class CatalogueDB:
         Retourne {table: count} des entrées synchronisées.
         """
         rows = self.conn.execute("""
-            SELECT me.model_ref, me.global_score, me.score_quality,
+            SELECT me.model_id, me.model_ref, me.global_score, me.score_quality,
                    me.score_chat, me.score_coding, me.score_reasoning,
                    me.score_knowledge, me.score_agentic,
                    me.is_synthetic, me.samples, me.source_count,
@@ -1848,7 +2289,7 @@ class CatalogueDB:
                 ))
                 count += 1
             except Exception as e:
-                print(f"  ⚠ skip scoring {r.get('model_ref','?')}: {e}")
+                print(f"  ⚠ skip scoring {r['model_ref']}: {e}")
 
         self.conn.commit()
         return {"model_provider_scoring": count}

@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS provider_models (
     rate_limits_json    TEXT,
     next_reset_at       INTEGER,
     status              TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated', 'experimental')),
+    deprecated          INTEGER DEFAULT 0,
+    slow                INTEGER DEFAULT 0,
     metadata_json       TEXT,
     created_at          INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at          INTEGER DEFAULT (strftime('%s', 'now')),

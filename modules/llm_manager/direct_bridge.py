@@ -72,6 +72,43 @@ try:
 except (TypeError, ValueError):
     HTTP_TIMEOUT = 120.0
 
+# Budget TOTAL pour un appel LLM (lecture complète de la réponse) : le timeout
+# socket se réarme à chaque paquet reçu, donc une réponse qui dégouline pendant
+# 9 min ne timeout jamais. Ce budget impose une échéance ABSOLUE sur la lecture.
+# Lisible depuis l'env ``MODELWEAVER_LLM_BUDGET_S`` (défaut 60s) : au-delà, on
+# abandonne l'appel (categoré timeout) → le thread agent se termine vite au
+# lieu de rester bloqué → pas de purge P8 ni de re-spawn en boucle.
+try:
+    LLM_CALL_TOTAL_BUDGET_S = float(os.environ.get("MODELWEAVER_LLM_BUDGET_S", "60"))
+except (TypeError, ValueError):
+    LLM_CALL_TOTAL_BUDGET_S = 60.0
+
+def _read_response_budgeted(resp, max_total_s: float = LLM_CALL_TOTAL_BUDGET_S,
+                            chunk: int = 8192) -> bytes:
+    """Lit la réponse complète avec une échéance ABSOLUE (pas un timeout socket
+    réarmé). Lève socket.timeout si le budget est dépassé — l'appelant le
+    traite comme un timeout réseau (bascule de provider)."""
+    import socket as _socket
+    deadline = time.time() + max_total_s
+    parts = []
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise _socket.timeout(
+                f"lecture réponse > {max_total_s:.0f}s (budget total dépassé)")
+        try:
+            b = resp.read(chunk)
+        except _socket.timeout:
+            # Timeout socket : seul si le budget le permet, on réessaie une
+            # dernière lecture courte, sinon on abandonne.
+            if time.time() >= deadline:
+                raise
+            raise
+        if not b:
+            break
+        parts.append(b)
+    return b"".join(parts)
+
 def _load_provider_endpoints(cat) -> Dict[str, dict]:
     """Charge les endpoints et clés API depuis le catalogue DB.
 
@@ -336,15 +373,148 @@ def _build_model_id(provider_ref: str, model_ref: str) -> str:
     return model_ref
 
 
+# ── Adaptateur Cohere (chat natif, format non-OpenAI) ───────
+# Cohere n'est PAS compatible OpenAI : son endpoint est /v1/chat (pas
+# /v1/chat/completions) et le corps utilise `message` + `chat_history` +
+# outils au format `parameter_definitions`. cf. point C (fix 405).
+
+def _to_cohere_tools(openai_tools: Optional[List[Dict]]) -> Optional[List[dict]]:
+    """Convertit des outils au format OpenAI function-calling en format Cohere."""
+    if not openai_tools:
+        return None
+    out = []
+    for t in openai_tools:
+        fn = t.get("function", t)
+        name = fn.get("name", "")
+        desc = fn.get("description", "")
+        params = fn.get("parameters", {}) or {}
+        props = params.get("properties", {}) or {}
+        required = params.get("required", []) or []
+        pdefs = {}
+        for pname, pspec in props.items():
+            ptype = (pspec.get("type") or "string").lower()
+            ctype = {
+                "string": "string", "str": "string",
+                "integer": "integer", "int": "integer",
+                "number": "float", "float": "float",
+                "boolean": "boolean", "bool": "boolean",
+                "object": "object", "array": "array",
+            }.get(ptype, "string")
+            pdefs[pname] = {
+                "type": ctype,
+                "description": pspec.get("description", ""),
+                "required": pname in required,
+            }
+        out.append({"name": name, "description": desc,
+                    "parameter_definitions": pdefs})
+    return out
+
+
+def _cohere_build_body(provider_ref: str, model_ref: str,
+                        messages: List[Dict[str, str]],
+                        temperature: float, max_tokens: Optional[int],
+                        system_prompt: Optional[str],
+                        params: dict) -> dict:
+    """Construit le corps d'une requête Cohere /v1/chat."""
+    model_id = _build_model_id(provider_ref, model_ref)
+    sys_msg = system_prompt
+    history = []
+    pending_user = None
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
+            if not sys_msg:
+                sys_msg = content
+            continue
+        if role == "user":
+            if pending_user is not None:
+                history.append({"role": "USER", "message": pending_user})
+            pending_user = content
+        elif role == "assistant":
+            history.append({"role": "CHATBOT", "message": content})
+        elif role == "tool":
+            history.append({"role": "TOOL", "message": content})
+    if sys_msg:
+        history.insert(0, {"role": "SYSTEM", "message": sys_msg})
+    body = {"model": model_id, "message": pending_user or "",
+            "chat_history": history, "temperature": temperature}
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    tools = params.get("tools")
+    if tools:
+        body["tools"] = _to_cohere_tools(tools)
+    return body
+
+
+def _cohere_extract_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict):
+                parts.append(p.get("text") or "")
+            else:
+                parts.append(str(p))
+        return "".join(parts)
+    return ""
+
+
+def _cohere_parse_response(data: dict, provider_ref: str,
+                           model_ref: str) -> "ChatResponse":
+    """Parse une réponse Cohere /v1/chat en ChatResponse (format OpenAI)."""
+    msg = (data or {}).get("message", {}) or {}
+    content = _cohere_extract_content(msg.get("content"))
+    tool_calls = []
+    for tc in (msg.get("tool_calls") or []):
+        if "function" in tc:
+            fn = tc["function"]
+            name = fn.get("name", "")
+            args = fn.get("arguments", {})
+        else:
+            name = tc.get("name", "")
+            args = tc.get("parameters", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+        tool_calls.append({
+            "id": "", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)},
+        })
+    usage_raw = ((data or {}).get("usage") or {}).get("tokens") or {}
+    usage = {
+        "prompt_tokens": int(usage_raw.get("input_tokens") or 0),
+        "completion_tokens": int(usage_raw.get("output_tokens") or 0),
+    }
+    return ChatResponse(
+        content=content, model=(data or {}).get("model", model_ref),
+        finish_reason="stop", usage=usage, raw=data,
+        tool_calls=tool_calls or None)
+
+
 # ── Classification des erreurs HTTP ────────────────────────
 
 def _detect_limit_type(body: str, status: int, headers=None) -> Optional[str]:
     """Détecte le type de limite depuis le body / en-têtes d'erreur."""
     bl = (body or "").lower()
     if status == 429:
-        # Quota journalier (ex. openrouter free-models-per-day) : ne se résout
+        # Quota journalier (ex. openrouter free-models-per-day, google
+        # GenerateRequestsPerDayPerProjectPerModel-FreeTier) : ne se résout
         # pas en secondes → doit poser un repos LONG (24h), pas un backoff court.
-        if "per-day" in bl or "daily" in bl or "per day" in bl or "day limit" in bl:
+        # Le message google « Quota exceeded for metric … PerDay … limit: 20 »
+        # porte le marqueur camelCase « PerDay » (pas « per-day » avec tiret).
+        if ("per-day" in bl or "daily" in bl or "per day" in bl or "day limit" in bl
+                or "perday" in bl):
+            return "daily_quota"
+        # CRÉDIT/COMPTE À SEC ("no credits remaining", "insufficient_balance") :
+        # problème PERMANENT (le compte n'a pas de fonds) → repos 24h + blacklist
+        # du provider. On teste AVANT "rate"/"tokens" car ces messages peuvent
+        # contenir "rate" ailleurs. Un 429 openai "You have no credits remaining"
+        # n'est PAS un rate-limit réversible.
+        if "credit" in bl or "balance" in bl or "insufficient" in bl:
             return "daily_quota"
         if "tokens" in bl or "token" in bl:
             return "tokens"
@@ -409,6 +579,15 @@ def _classify_http_error(status: int, body: str,
 
     if status == 429:
         retry_after = _extract_retry_after(body, headers)
+        # "No credits remaining" = compte à sec → problème de COMPTE permanent
+        # (provider-wide). Catégorie AUTH pour que le fallback blackliste le
+        # provider entier (tous ses modèles sont morts) au lieu d'essayer chaque
+        # modèle un par un. Le limit_type daily_quota pose déjà 24h de repos.
+        if limit_type == "daily_quota" and ("credit" in (body or "").lower()
+                                            or "balance" in (body or "").lower()
+                                            or "insufficient" in (body or "").lower()):
+            return BridgeError(ErrorCategory.AUTH, msg, provider_ref, model_ref,
+                              retry_after_seconds=retry_after, limit_type="daily_quota")
         return BridgeError(ErrorCategory.RATE_LIMIT, msg, provider_ref, model_ref,
                           retry_after_seconds=retry_after, limit_type=limit_type)
 
@@ -510,14 +689,26 @@ class DirectBridge(BaseBridge):
         try:
             now = time.time()
             duration = TIME_NO_RESTART_MAX if limit_type == "daily_quota" else None
+            # La colonne provider_model_name est INCOHÉRENTE selon le provider :
+            # certains stockent `provider/nom` (huggingface/deepseek-ai/…),
+            # d'autres `nom` seul (nvidia/01-ai/…). Le model_ref passé ici est
+            # souvent sans préfixe → le match exact rate la moitié des modèles
+            # et les modèles morts ne sont JAMAIS marqués unavailable (re-alloués
+            # en boucle). On matche les DEUX formes.
+            prefixed = f"{provider_ref}/{model_ref}" if not model_ref.startswith(provider_ref + "/") else model_ref
+            _match = (model_ref, prefixed)
             if duration is None:
                 row = self.cat.conn.execute("""
                     SELECT notrytime FROM provider_models
                     WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-                      AND provider_model_name = ?
-                """, (provider_ref, model_ref)).fetchone()
+                      AND (provider_model_name = ? OR provider_model_name = ?)
+                """, (provider_ref, _match[0], _match[1])).fetchone()
                 last = row["notrytime"] if row else 0.0
                 duration = TIME_NO_RESTART_INIT if not last else last * TIME_NO_RESTART_MULTIPLY
+                # Échec DÉFINITIF (404 Not Found, modèle disparu) : ne JAMAIS
+                # re-tenter avant longtemps — un 404 ne se résout pas en minutes.
+                if limit_type == "not_found":
+                    duration = TIME_NO_RESTART_MAX
                 # Rate-limit RPM : ne pas laisser un modèle revenir au pool après
                 # 5s — la fenêtre RPM n'est pas résorbée (ordre de la minute).
                 # Plafond RPM séparé : ne jamais dépasser 10 min (un RPM se
@@ -531,8 +722,9 @@ class DirectBridge(BaseBridge):
                 UPDATE provider_models
                 SET unavailable = 1, noretryuntil = ?, notrytime = ?
                 WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-                  AND provider_model_name = ?
-            """, (now + duration, duration, provider_ref, model_ref))
+                  AND (provider_model_name = ? OR provider_model_name = ?)
+            """, (now + duration, duration, provider_ref,
+                  _match[0], _match[1]))
             # Problème de CRÉDIT (402 "insufficient credits/balance") : on
             # blackliste le provider UNIQUEMENT si c'est un vrai souci de COMPTE
             # — c.-à-d. si le MODÈLE échoué est free_tier=1 (le compte free est
@@ -570,12 +762,13 @@ class DirectBridge(BaseBridge):
         if not self.cat:
             return
         try:
+            prefixed = f"{provider_ref}/{model_ref}" if not model_ref.startswith(provider_ref + "/") else model_ref
             self.cat.conn.execute("""
                 UPDATE provider_models
                 SET unavailable = 0, noretryuntil = 0, notrytime = 0
                 WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-                  AND provider_model_name = ?
-            """, (provider_ref, model_ref))
+                  AND (provider_model_name = ? OR provider_model_name = ?)
+            """, (provider_ref, model_ref, prefixed))
             try:
                 self.cat.conn.commit()
             except Exception:
@@ -587,11 +780,15 @@ class DirectBridge(BaseBridge):
                   latency_ms: float, usage: Optional[dict] = None,
                   error_code: str = "", tokens_thinking: int = 0,
                   agent_id: Optional[str] = None,
-                  error_msg: str = "", call_type: str = "chat") -> None:
+                  error_msg: str = "", call_type: str = "chat",
+                  caller_id: Optional[str] = None) -> None:
         """Journalise un appel LLM réel dans model_call_log (métriques runtime).
 
         Référencé par ID (provider_id/model_id/provider_model_id), pas par nom.
         ``agent_id`` identifie l'agent appelant (None pour probes/health/sync).
+        ``caller_id`` = SOURCE de l'appel (agent:N / bridge / service:X / probe).
+          Permet de reconstruire les sessions PAR APPELLANT. Si non fourni,
+          dérivé de agent_id (agent:<id>) sinon ``bridge``.
         ``error_code`` = catégorie (rate_limit/unknown/auth/...), ``error_msg`` =
         message brut tronqué (≤200 ch) pour l'analyse des patterns.
         ``call_type`` = chat / chat_stream / (futurs).
@@ -605,24 +802,27 @@ class DirectBridge(BaseBridge):
             # Comptage normalisé (tous formats) : thinking déduit des champs
             # reasoning/thoughts des providers.
             toks = _extract_tokens(u)
+            if not caller_id:
+                caller_id = f"agent:{agent_id}" if agent_id else "bridge"
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, agent_id, success,
                      tokens_in, tokens_out, tokens_thinking, latency_ms,
-                     error_code, error_msg, call_type)
+                     error_code, error_msg, call_type, caller_id)
                 VALUES (
                     COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
                     COALESCE((SELECT id FROM catalogue_models WHERE ref = ?), 0),
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, model_ref, provider_ref, model_ref,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), toks["prompt"], toks["completion"],
                   toks["thinking"] or int(tokens_thinking or 0),
                   float(latency_ms or 0), (error_code or "")[:100],
-                  (error_msg or "")[:200], (call_type or "chat")[:30]))
+                  (error_msg or "")[:200], (call_type or "chat")[:30],
+                  (str(caller_id)[:120] if caller_id else None)))
             self.cat.conn.commit()
             # Les lignes détaillées sont agrégées par le TICKER DE BATCHAGE
             # (usage_batcher, service séparé) : il lit model_call_log par
@@ -661,7 +861,7 @@ class DirectBridge(BaseBridge):
             time.sleep(min(retry_after, RETRY_AUTO_MAX_S))
             try:
                 with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                    return json.loads(resp.read().decode())
+                    return json.loads(_read_response_budgeted(resp).decode())
             except Exception as exc:
                 retry_after = retry_after * 2  # backoff doux sur place
         return None
@@ -681,6 +881,10 @@ class DirectBridge(BaseBridge):
         """
         params["agent_id"] = agent_id
         params.setdefault("call_type", "chat_stream" if stream else "chat")
+        # Source de l'appel : dérivé de agent_id si fourni, sinon un identifiant
+        # de contexte explicite (bridge/service/probe) passé via caller_id.
+        if "caller_id" not in params:
+            params["caller_id"] = f"agent:{agent_id}" if agent_id else "bridge"
         if stream:
             return self._chat_stream_internal(provider_ref, model_ref,
                                               messages, temperature,
@@ -693,6 +897,10 @@ class DirectBridge(BaseBridge):
         if api_type == "gemini":
             return self._google_chat(ep, provider_ref, model_ref, messages,
                                      temperature, max_tokens, system_prompt, **params)
+        if api_type == "cohere":
+            return self._cohere_chat(ep, provider_ref, model_ref, messages,
+                                     temperature, max_tokens, system_prompt,
+                                     stream=stream, **params)
 
         # OpenAI-compatible
         model_id = _build_model_id(provider_ref, model_ref)
@@ -727,11 +935,12 @@ class DirectBridge(BaseBridge):
         _t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(_read_response_budgeted(resp).decode())
             self._log_call(provider_ref, model_ref, True,
                            (time.time() - _t0) * 1000.0,
                            usage=(data or {}).get("usage"),
                            agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                            call_type=params.get("call_type", "chat"))
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
@@ -750,6 +959,7 @@ class DirectBridge(BaseBridge):
                                error_code=_cat.value if _cat else str(err)[:100],
                                error_msg=_msg,
                                agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                                call_type=params.get("call_type", "chat"))
                 raise err
 
@@ -874,8 +1084,8 @@ class DirectBridge(BaseBridge):
 
         _t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode())
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                data = json.loads(_read_response_budgeted(resp).decode())
             _gm_usage = (data or {}).get("usageMetadata", {})
             self._log_call(
                 provider_ref, model_ref, True,
@@ -885,6 +1095,7 @@ class DirectBridge(BaseBridge):
                     "completion_tokens": _gm_usage.get("candidatesTokenCount", 0),
                 },
                 agent_id=params.get("agent_id"),
+                caller_id=params.get("caller_id"),
                 call_type=params.get("call_type", "chat"))
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
@@ -903,6 +1114,7 @@ class DirectBridge(BaseBridge):
                                error_code=_cat.value if _cat else str(err)[:100],
                                error_msg=_msg,
                                agent_id=params.get("agent_id"),
+                               caller_id=params.get("caller_id"),
                                call_type=params.get("call_type", "chat"))
                 raise err
 
@@ -997,7 +1209,16 @@ class DirectBridge(BaseBridge):
                                                 max_tokens, system_prompt,
                                                 **params)
             return
+        if api_type == "cohere":
+            yield from self._cohere_chat_stream_events(
+                ep, provider_ref, model_ref, messages, temperature,
+                max_tokens, system_prompt, **params)
+            return
 
+        # Source de l'appel pour la session par caller (appel direct, sans passer
+        # par chat() : on dérive de agent_id sinon bridge).
+        params.setdefault("caller_id",
+                          f"agent:{params.get('agent_id')}" if params.get("agent_id") else "bridge")
         model_id = _build_model_id(provider_ref, model_ref)
         msgs = _build_messages(messages, system_prompt)
 
@@ -1063,6 +1284,7 @@ class DirectBridge(BaseBridge):
                            (time.time() - _t0) * 1000.0,
                            usage=usage_meta,
                            agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                            call_type="chat_stream")
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
@@ -1072,6 +1294,7 @@ class DirectBridge(BaseBridge):
                            error_code=_cat.value if _cat else str(err)[:100],
                            error_msg=str(err)[:200],
                            agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                            call_type="chat_stream")
             raise err
 
@@ -1092,6 +1315,77 @@ class DirectBridge(BaseBridge):
             finish_reason="stop",
             usage={},
         )
+
+    def _cohere_chat(self, ep: dict, provider_ref: str, model_ref: str,
+                     messages: List[Dict[str, str]],
+                     temperature: float = 0.7, max_tokens: Optional[int] = None,
+                     system_prompt: Optional[str] = None,
+                     stream: bool = False, **params) -> ChatResponse:
+        """Chat via l'API native Cohere (/v1/chat). cf. point C (fix 405)."""
+        if stream:
+            # Pas de SSE natif simple : on appelle la variante non-stream.
+            return self._chat_stream_internal(provider_ref, model_ref,
+                                              messages, temperature,
+                                              max_tokens, system_prompt, **params)
+        params["agent_id"] = params.get("agent_id")
+        params.setdefault("call_type", "chat")
+        api_key = ep.get("api_key", "")
+        url = ep["base_url"].rstrip("/") + "/chat"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}" if api_key else "",
+            "User-Agent": _USER_AGENT,
+        }
+        body = _cohere_build_body(provider_ref, model_ref, messages,
+                                  temperature, max_tokens, system_prompt, params)
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode(),
+            headers={k: v for k, v in headers.items() if v}, method="POST")
+        _t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                data = json.loads(_read_response_budgeted(resp).decode())
+            self._log_call(provider_ref, model_ref, True,
+                           (time.time() - _t0) * 1000.0,
+                           agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
+                           call_type=params.get("call_type", "chat"))
+        except Exception as exc:
+            err = _classify_exception(exc, provider_ref, model_ref)
+            self._mark_call_failed(
+                provider_ref, model_ref,
+                limit_type=err.limit_type,
+                provider_wide=(getattr(err.category, "value", "") == "auth"))
+            retried = self._auto_retry_rate_limit(req, err)
+            if retried is not None:
+                data = retried
+            else:
+                self._log_call(
+                    provider_ref, model_ref, False,
+                    (time.time() - _t0) * 1000.0,
+                    error_code=getattr(err.category, "value", ""),
+                    error_msg=str(exc)[:200],
+                    agent_id=params.get("agent_id"),
+                    caller_id=params.get("caller_id"),
+                    call_type=params.get("call_type", "chat"))
+                raise err
+        self._mark_call_ok(provider_ref, model_ref)
+        return _cohere_parse_response(data, provider_ref, model_ref)
+
+    def _cohere_chat_stream_events(self, ep: dict, provider_ref: str,
+                                   model_ref: str, messages: List[Dict[str, str]],
+                                   temperature: float, max_tokens: Optional[int],
+                                   system_prompt: Optional[str] = None,
+                                   **params) -> Iterator[Dict[str, Any]]:
+        """Streaming Cohere : on appelle la variante non-stream et on émet le
+        contenu + les tool_calls sous forme d'événements (même contrat)."""
+        resp = self._cohere_chat(ep, provider_ref, model_ref, messages,
+                                  temperature, max_tokens, system_prompt,
+                                  stream=False, **params)
+        if resp and resp.content:
+            yield {"type": "content", "delta": resp.content}
+        for tc in (resp.tool_calls or []):
+            yield {"type": "tool_calls", "delta": tc}
 
     def _google_chat_stream(self, ep: dict, provider_ref: str, model_ref: str,
                             messages: List[Dict[str, str]],
@@ -1180,6 +1474,7 @@ class DirectBridge(BaseBridge):
                            (time.time() - _t0) * 1000.0,
                            usage=usage_meta,
                            agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                            call_type="chat_stream")
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
@@ -1187,6 +1482,7 @@ class DirectBridge(BaseBridge):
                            (time.time() - _t0) * 1000.0,
                            error_code=str(err)[:100], error_msg=str(err)[:200],
                            agent_id=params.get("agent_id"),
+                           caller_id=params.get("caller_id"),
                            call_type="chat_stream")
             raise err
 
@@ -1241,19 +1537,28 @@ class DirectBridge(BaseBridge):
 
     def get_capabilities(self, provider_ref: str,
                          model_ref: str) -> ModelCapabilities:
-        """Retourne les capacités depuis la base ou valeurs par défaut."""
+        """Retourne les capacités depuis la base ou valeurs par défaut.
+
+        Lit les capacités OFFICIELLES du modèle (model_capabilities, clé
+        model_id). `official=1` (source certaine) fait foi ; sinon on retombe
+        sur les valeurs par défaut (la plupart des modèles récents supportent
+        le chat + le function calling).
+        """
         if self.cat:
             try:
                 row = self.cat.conn.execute("""
                     SELECT mc.* FROM model_capabilities mc
-                    WHERE mc.model_ref = ?
-                """, (model_ref,)).fetchone()
+                    JOIN catalogue_models cm ON cm.id = mc.model_id
+                    WHERE cm.ref = ? OR cm.model_key = ?
+                    LIMIT 1
+                """, (model_ref, model_ref)).fetchone()
                 if row:
                     return ModelCapabilities(
                         context_window=row.get("max_context_tokens", 4096),
                         max_output=row.get("max_output_tokens", 4096),
                         supports_function_calling=bool(row.get("supports_function_calling", 1)),
                         supports_vision=bool(row.get("supports_vision", 0)),
+                        official=bool(row.get("official", 0)),
                     )
             except Exception:
                 pass
@@ -1514,6 +1819,179 @@ class DirectBridge(BaseBridge):
             result["error_code"] = self._probe_classify(result["error"])
         return result
 
+    # ── Test agentic actif (séquence de prompts) ──────────────────────
+    # Déclenché quand un codeur/merger n'a produit AUCUN tool_call dans sa
+    # session (improbable pour un rôle qui doit écrire du code). On vérifie
+    # que le modèle est bien capable d'appeler des outils, avec UNE SÉRIE de
+    # prompts conçus pour nécessiter un tool_call (plus fiable qu'un seul).
+    # Les erreurs NON agentic (rate_limit, quota, auth, timeout, réseau)
+    # sont IGNORÉES : elles ne comptent ni pour ni contre (le modèle peut
+    # être parfaitement agentic mais simplement en quota).
+
+    # Série de prompts → tous pointent vers un outil nécessaire.
+    AGENTIC_TEST_CASES = [
+        {
+            "name": "disk",
+            "messages": [{"role": "user",
+                          "content": "Quelle est l'espace libre restant sur le disque ?"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "fake_shell_v1",
+                    "description": "Exécute une commande shell sur la machine.",
+                    "parameters": {"type": "object",
+                                   "properties": {"command": {"type": "string"}},
+                                   "required": ["command"]},
+                },
+            }],
+            "coherent": ("df", "disk", "space", "storage", "filesystem", "free"),
+        },
+        {
+            "name": "write",
+            "messages": [{"role": "user",
+                          "content": "Crée un fichier nommé test_agentic.txt contenant 'ok'."}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "write_file_v1",
+                    "description": "Écrit un fichier sur le disque.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"},
+                                                  "content": {"type": "string"}},
+                                   "required": ["path", "content"]},
+                },
+            }],
+            "coherent": ("test_agentic",),
+        },
+        {
+            "name": "list",
+            "messages": [{"role": "user",
+                          "content": "Liste les fichiers du répertoire courant."}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "list_dir_v1",
+                    "description": "Liste le contenu d'un répertoire.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}},
+                                   "required": ["path"]},
+                },
+            }],
+            "coherent": (),
+        },
+        {
+            "name": "search",
+            "messages": [{"role": "user",
+                          "content": "Recherche 'TODO' dans les fichiers Python du projet."}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "grep_v1",
+                    "description": "Recherche une chaîne dans des fichiers.",
+                    "parameters": {"type": "object",
+                                   "properties": {"pattern": {"type": "string"},
+                                                  "path": {"type": "string"}},
+                                   "required": ["pattern"]},
+                },
+            }],
+            "coherent": (),
+        },
+        {
+            "name": "compute",
+            "messages": [{"role": "user",
+                          "content": "Calcule 15 * 7 et écris le résultat dans un fichier."}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "write_file_v1",
+                    "description": "Écrit un fichier sur le disque.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"},
+                                                  "content": {"type": "string"}},
+                                   "required": ["path", "content"]},
+                },
+            }],
+            "coherent": ("result",),
+        },
+    ]
+
+    def test_agentic(self, provider_ref: str, model_ref: str,
+                     timeout: float = 15.0,
+                     max_cases: int = 5) -> Dict[str, Any]:
+        """Teste si un modèle appelle réellement des outils, sur N cas.
+
+        Chaque cas est un prompt conçu pour nécessiter un tool_call. Le modèle
+        est agentic s'il appelle un outil (et, quand vérifiable, cohérent avec
+        la demande) sur AU MOINS UN cas.
+
+        Les erreurs NON agentic (rate_limit/quota/auth/timeout/réseau) sont
+        ignorées : elles ne font pas échouer le test (le modèle peut être
+        agentic mais en quota). Seul « répond en texte sans tool_call » ou
+        « tool unsupported » compte comme échec.
+
+        Retourne {ok, tool_calls, coherent, tested, skipped_errors, error?}.
+        """
+        import time as _t
+        results = []
+        tool_calls_total = 0
+        coherent_total = 0
+        skipped = 0
+        last_err = ""
+        cases = self.AGENTIC_TEST_CASES[:max_cases]
+        t0 = _t.time()
+
+        for case in cases:
+            try:
+                resp = self.chat(
+                    provider_ref=provider_ref, model_ref=model_ref,
+                    messages=case["messages"], tools=case["tools"],
+                    temperature=0.0, max_tokens=80, stream=False,
+                    caller_id="test:agentic")
+                tc = getattr(resp, "tool_calls", None) or []
+                if tc:
+                    tool_calls_total += 1
+                    args = tc[0]["function"].get("arguments", "") if tc else ""
+                    low = (args or "").lower()
+                    coh = any(k in low for k in case["coherent"]) \
+                        if case["coherent"] else True
+                    if coh:
+                        coherent_total += 1
+                    results.append({"case": case["name"], "tool_call": True,
+                                    "coherent": coh})
+                else:
+                    # Réponse texte SANS tool_call malgré des outils fournis :
+                    # échec agentic (le modèle n'a pas saisi l'opportunité).
+                    results.append({"case": case["name"], "tool_call": False,
+                                    "coherent": False})
+            except Exception as e:
+                err_str = str(e)
+                cat = self._probe_classify(err_str)
+                if cat in ("rate_limit", "quota", "auth", "credit",
+                           "timeout", "not_found"):
+                    # Erreur NON agentic : ignorée (ni pour ni contre).
+                    skipped += 1
+                    last_err = err_str[:200]
+                    results.append({"case": case["name"], "skipped": True,
+                                    "error_code": cat})
+                else:
+                    # Erreur potentiellement liée au tool calling
+                    # (tool_format, unknown…) : comptée comme échec doux.
+                    results.append({"case": case["name"], "tool_call": False,
+                                    "coherent": False, "error_code": cat})
+                    last_err = err_str[:200]
+
+        ok = coherent_total >= 1
+        return {
+            "ok": ok,
+            "tool_calls": tool_calls_total,
+            "coherent": coherent_total,
+            "tested": len(cases) - skipped,
+            "skipped_errors": skipped,
+            "cases": results,
+            "latency_ms": int((_t.time() - t0) * 1000),
+            "last_error": last_err,
+        }
+
     @staticmethod
     def _probe_classify(err: str) -> str:
         low = (err or "").lower()
@@ -1521,6 +1999,19 @@ class DirectBridge(BaseBridge):
                    "permission denied"):
             if kw in low:
                 return "auth"
+        # Modèle ACTIF mais appel d'outil refusé pour une raison de FORMAT
+        # (ex. nvidia : « only supports single tool-calls at once »). On ne le
+        # marque PAS indisponible : il répond, on ne sait juste pas s'il est
+        # agentic. cf. point D.
+        if "single tool-call" in low or "single tool call" in low \
+                or "only supports single" in low:
+            return "tool_format"
+        # Upstream qui casse le tool calling sur certains modèles raisonneurs
+        # (opencode-zen/deepseek : « reasoning_content … must be passed back »).
+        # Modèle actif, agentic indéterminé → pas d'indispo. cf. point D.
+        if "reasoning_content" in low and ("passed back" in low
+                                           or "thinking mode" in low):
+            return "reasoning_format"
         for kw in ("insufficient credits", "never purchased", "billing",
                    "credit"):
             if kw in low:
@@ -1538,13 +2029,30 @@ class DirectBridge(BaseBridge):
         return "unknown"
 
     def _probe_is_api_fail(self, code: str) -> bool:
-        """Un échec API (auth/404/timeout/credit) = modèle indisponible.
+        """Un échec API DÉFINITIF (auth/credit/not_found) = modèle indisponible.
 
-        `unknown` (erreur réseau bizarre, modèle qui lève une exception) est
-        aussi traité comme indisponible : un modèle qui ne répond pas du tout
-        ne doit pas rester allouable.
+        On ne périme PAS sur les erreurs transitoires ou « modèle actif mais
+        agentic indéterminé » :
+          - rate_limit / unknown : transient (hammering, réseau) → ne périme pas
+          - timeout           : modèle LENT, pas bloqué (cf. point E)
+          - tool_format / reasoning_format : modèle actif, agentic indéterminé
+            (cf. point D)
         """
-        return code in ("auth", "credit", "not_found", "timeout", "unknown")
+        return code in ("auth", "credit", "not_found")
+
+    # Espacement entre probes d'un même provider (secondes). Les providers
+    # gratuits / à RPM bas (opencode-zen, google…) ont besoin de plus d'air
+    # pour ne pas se prendre des rate-limit qui fausseraient la probe.
+    # cf. point A.
+    _PROBE_INTRA_SPACING = 1.0
+    _PROBE_EXTRA_SPACING = {
+        "opencode-zen": 2.5, "google": 1.5, "llm7": 1.5,
+        "kilo": 1.2, "groq": 1.2, "huggingface": 1.0,
+    }
+
+    def _probe_spacing(self, provider_ref: str) -> float:
+        return DirectBridge._PROBE_EXTRA_SPACING.get(
+            provider_ref, DirectBridge._PROBE_INTRA_SPACING)
 
     def probe(self, provider_ref: Optional[str] = None,
               model_ref: Optional[str] = None,
@@ -1561,8 +2069,10 @@ class DirectBridge(BaseBridge):
         (ex. opencode-zen, google à RPM bas) → faux unavailable. Un thread par
         fournisseur reste dans la limite ~20 threads simultanés.
 
-        Marque `unavailable` les modèles en échec API (auth/404/timeout/
-        credit/rate_limit répété) et réactive ceux qui répondent.
+        Marque `unavailable` les modèles en échec API DÉFINITIF (auth/credit/
+        not_found), `slow` les modèles lents (timeout), et laisse actifs les
+        modèles en erreur transitoire (rate_limit/unknown) ou à agentic
+        indéterminé (tool_format/reasoning_format).
         """
         import threading
         # Cible : {provider: [modèles]} — pour un seul modèle, (provider,[model]).
@@ -1578,21 +2088,38 @@ class DirectBridge(BaseBridge):
 
         def _probe_provider(prov, models):
             """Probe séquentiellement les modèles d'un provider."""
+            spacing = self._probe_spacing(prov)
             for mname in models:
                 r = self._probe_one(prov, mname, timeout)
                 r["provider"] = prov
                 r["model"] = mname
+                code = r.get("error_code", "unknown")
                 if r["ok"]:
-                    self._probe_set_available(prov, mname, True, agentic=True)
-                elif self._probe_is_api_fail(r.get("error_code", "unknown")):
-                    self._probe_set_available(prov, mname, False,
-                                              r.get("error_code", "unknown"),
-                                              agentic=False)
+                    # Répond + tool cohérent → disponible, agentic, ni lent ni périmé.
+                    self._probe_set_available(prov, mname, True, agentic=True,
+                                              slow=False, deprecated=False)
+                elif code in ("auth", "credit", "not_found"):
+                    # Échec DÉFINITIF → indisponible. not_found = modèle
+                    # périmé/disparu (colonne deprecated). cf. point B.
+                    self._probe_set_available(prov, mname, False, reason=code,
+                                              agentic=False,
+                                              deprecated=(code == "not_found"))
+                elif code == "timeout":
+                    # Lent mais JOIGNABLE → marqué `slow`, PAS `unavailable`.
+                    # cf. point E (séparer lent / bloqué).
+                    self._probe_set_available(prov, mname, True, agentic=None,
+                                              slow=True, deprecated=False)
+                else:
+                    # rate_limit / unknown / tool_format / reasoning_format :
+                    # modèle actif (ou transient) → ni indispo ni périmé.
+                    # (tool_format/reasoning_format = actif mais agentic
+                    #  indéterminé ; cf. point D)
+                    pass
                 with lock:
                     results.append(r)
-                # Petit espacement intra-provider : évite le rate-limit
-                # (RPM) quand on enchaîne les probes du même fournisseur.
-                time.sleep(0.3)
+                # Espacement intra-provider (configurable par provider) : évite
+                # le rate-limit (RPM) quand on enchaîne les probes. cf. point A.
+                time.sleep(spacing)
 
         threads = [threading.Thread(target=_probe_provider,
                                     args=(prov, models), daemon=True)
@@ -1653,8 +2180,17 @@ class DirectBridge(BaseBridge):
 
     def _probe_set_available(self, provider_ref: str, model_name: str,
                              available: bool, reason: str = "",
-                             agentic: Optional[bool] = None) -> None:
-        """Marque un modèle disponible/indisponible en base (+ agentic)."""
+                             agentic: Optional[bool] = None,
+                             slow: Optional[bool] = None,
+                             deprecated: Optional[bool] = None) -> None:
+        """Marque un modèle disponible/indisponible en base (+ agentic/slow/deprecated).
+
+        - available=True  : mapping.available=1, provider_models.unavailable=0
+        - available=False : mapping.available=0, provider_models.unavailable=1
+        - agentic         : force/efface le flag agentic (None = ne touche pas)
+        - slow            : modèle lent mais joignable (None = ne touche pas)
+        - deprecated      : modèle périmé/disparu (None = ne touche pas)
+        """
         if not self.cat:
             return
         try:
@@ -1687,6 +2223,18 @@ class DirectBridge(BaseBridge):
                     WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
                       AND provider_model_name = ?
                 """, (1 if agentic else 0, provider_ref, model_name))
+            if slow is not None:
+                self.cat.conn.execute("""
+                    UPDATE provider_models SET slow = ?
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (1 if slow else 0, provider_ref, model_name))
+            if deprecated is not None:
+                self.cat.conn.execute("""
+                    UPDATE provider_models SET deprecated = ?
+                    WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                      AND provider_model_name = ?
+                """, (1 if deprecated else 0, provider_ref, model_name))
             self.cat.conn.commit()
         except Exception:
             try:

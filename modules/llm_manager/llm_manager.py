@@ -284,6 +284,7 @@ class LLMManager:
                                           + ([exclude_provider] if exclude_provider else []),
                     "exclude_models": excl_models,
                     "agent_id": agent_id or "",
+                    "features": list(USE_CASE_REQUIREMENTS.get(use_case, {}).get("features", [])),
                     "latence_penalise": latence_penalise,
                     "latence_regule": latence_regule,
                 })

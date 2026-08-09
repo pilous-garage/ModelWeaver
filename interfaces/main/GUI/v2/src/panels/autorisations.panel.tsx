@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import type { PanelDef } from './contract.ts';
 import { usePoll, unwrapResult } from './panel-utils.ts';
+import { CustomSelect } from '../components/CustomSelect.tsx';
 
 const LANG_FR = `
 panels:
@@ -138,12 +139,13 @@ function AutorisationsPanel({ ctx }: { ctx: any; params: Record<string, any> }) 
 
           {/* Contrôles : scope + actions */}
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
-            <select
+            <CustomSelect
               value={scopes[a.request_id] || 'once'}
-              onChange={(e) => setScopes((s) => ({ ...s, [a.request_id]: e.target.value }))}
-              style={{ fontSize: 11, padding: '2px 4px', background: 'var(--mw-bg, #0f172a)', color: '#e2e8f0', border: '1px solid var(--mw-border, #334155)', borderRadius: 4 }}>
-              {SCOPES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+              onChange={(v) => setScopes((s) => ({ ...s, [a.request_id]: v }))}
+              options={SCOPES.map((s) => ({ value: s, label: s }))}
+              testid="autoris-scope"
+              maxWidth={110}
+            />
             <button className="mw-btn" style={{ fontSize: 11, color: '#4ade80', border: '1px solid #4ade80', background: 'transparent', cursor: 'pointer', padding: '2px 10px', borderRadius: 4 }}
               onClick={() => decide(a.request_id, 'allow')}>
               {ctx.t?.('panels.autorisations.autoriser') ?? 'Autoriser'}

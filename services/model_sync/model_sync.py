@@ -288,6 +288,12 @@ def sync_once() -> dict:
                             last_error = NULL
                         WHERE endpoint_id = ? AND key_ref = ? AND model_id = ?
                     """, (int(time.time()), endpoint_id, key_ref, d["model_id"]))
+                    # Modèle de nouveau présent : on le sort des périmés.
+                    cat.conn.execute("""
+                        UPDATE provider_models SET deprecated = 0
+                        WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                          AND model_id = ?
+                    """, (provider_ref, d["model_id"]))
                     _upsert_probe_state(cat, endpoint_id, key_ref,
                                         provider_ref, d["model_id"], ok=True)
                     stats["found"] += 1
@@ -299,6 +305,15 @@ def sync_once() -> dict:
                             last_error = 'disparu du listing API'
                         WHERE endpoint_id = ? AND key_ref = ? AND model_id = ?
                     """, (int(time.time()), endpoint_id, key_ref, d["model_id"]))
+                    # Disparition confirmée du listing = modèle PÉRIMÉ (point B).
+                    # On ne périme PAS sur les erreurs de probe transitoires
+                    # (rate_limit/auth/timeout) — seulement sur l'absence
+                    # autoritative du listing provider.
+                    cat.conn.execute("""
+                        UPDATE provider_models SET deprecated = 1
+                        WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
+                          AND model_id = ?
+                    """, (provider_ref, d["model_id"]))
                     _upsert_probe_state(cat, endpoint_id, key_ref,
                                         provider_ref, d["model_id"],
                                         ok=False, absent=True)

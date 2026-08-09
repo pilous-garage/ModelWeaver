@@ -38,7 +38,10 @@ def _read_rest_models() -> set:
     """Modèles en repos runtime : unavailable=1 ou noretryuntil dans le futur.
 
     Retourne {(provider_ref, provider_model_name)} — la clé utilisée par
-    l'allocation (ref brute côté provider).
+    l'allocation (ref brute côté provider). Le provider_model_name est NORMALISÉ
+    sans préfixe provider redondant (certains providers stockent
+    `huggingface/deepseek-ai/…`, d'autres `01-ai/…`) pour que l'exclusion
+    `{provider_ref}/{model}` matche la ref du candidat.
     """
     import sqlite3
     try:
@@ -51,7 +54,14 @@ def _read_rest_models() -> set:
                 JOIN catalogue_providers p ON p.id = pm.provider_id
                 WHERE pm.noretryuntil > ?
             """, (time_now(),)).fetchall()
-            return {(r["provider_ref"], r["provider_model_name"]) for r in rows}
+            out = set()
+            for r in rows:
+                prov = r["provider_ref"]
+                mname = r["provider_model_name"]
+                if mname.startswith(prov + "/"):
+                    mname = mname[len(prov) + 1:]
+                out.add((prov, mname))
+            return out
         finally:
             conn.close()
     except Exception:
@@ -86,7 +96,8 @@ def _probe_model(provider_ref: str, model_ref: str) -> bool:
         }]
         resp = bridge.chat(provider_ref, model_ref,
                            [{"role": "user", "content": "ok"}],
-                           max_tokens=1, temperature=0, tools=probe_tools)
+                           max_tokens=1, temperature=0, tools=probe_tools,
+                           caller_id="probe:llm-manager")
         return resp is not None
     except Exception:
         return False
@@ -312,19 +323,24 @@ class LLMManagerService:
 
 
 def _mark_unavailable(provider_ref: str, model_ref: str) -> None:
-    """Marque un modèle indisponible + pose un repos croissant (DDL direct)."""
+    """Marque un modèle indisponible + pose un repos croissant (DDL direct).
+
+    Matche le provider_model_name avec ou sans préfixe provider (les colonnes
+    sont incohérentes : huggingface/... vs nvidia/...).
+    """
     import sqlite3
     from modules.llm_manager.direct_bridge import (
         TIME_NO_RESTART_INIT, TIME_NO_RESTART_MULTIPLY, TIME_NO_RESTART_MAX,
     )
+    prefixed = f"{provider_ref}/{model_ref}" if not model_ref.startswith(provider_ref + "/") else model_ref
     now = time_now()
     conn = sqlite3.connect(str(STATE_DB), timeout=5, isolation_level=None)
     try:
         row = conn.execute("""
             SELECT notrytime FROM provider_models
             WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-              AND provider_model_name = ?
-        """, (provider_ref, model_ref)).fetchone()
+              AND (provider_model_name = ? OR provider_model_name = ?)
+        """, (provider_ref, model_ref, prefixed)).fetchone()
         last = row[0] if row else 0.0
         duration = TIME_NO_RESTART_INIT if not last else last * TIME_NO_RESTART_MULTIPLY
         duration = min(duration, TIME_NO_RESTART_MAX)
@@ -332,22 +348,23 @@ def _mark_unavailable(provider_ref: str, model_ref: str) -> None:
             UPDATE provider_models
             SET unavailable = 1, noretryuntil = ?, notrytime = ?
             WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-              AND provider_model_name = ?
-        """, (now + duration, duration, provider_ref, model_ref))
+              AND (provider_model_name = ? OR provider_model_name = ?)
+        """, (now + duration, duration, provider_ref, model_ref, prefixed))
     finally:
         conn.close()
 
 
 def _clear_unavailable(provider_ref: str, model_ref: str) -> None:
     import sqlite3
+    prefixed = f"{provider_ref}/{model_ref}" if not model_ref.startswith(provider_ref + "/") else model_ref
     conn = sqlite3.connect(str(STATE_DB), timeout=5, isolation_level=None)
     try:
         conn.execute("""
             UPDATE provider_models
             SET unavailable = 0, noretryuntil = 0, notrytime = 0
             WHERE provider_id = (SELECT id FROM catalogue_providers WHERE ref = ?)
-              AND provider_model_name = ?
-        """, (provider_ref, model_ref))
+              AND (provider_model_name = ? OR provider_model_name = ?)
+        """, (provider_ref, model_ref, prefixed))
     finally:
         conn.close()
 

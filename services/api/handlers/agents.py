@@ -16,6 +16,155 @@ def _get_agent_db():
 
 # ── Agent Metrics ───────────────────────────────────────────────────────
 
+def op_agent_logs(params):
+    """Logs d'un agent : FSM log (dernier run) + conversation LLM.
+
+    Lit le répertoire agent_home/{id}/log/ :
+      - fsm_*.log  : dernier fichier (lignes `ts|level|kind|message`)
+      - llm_conversation.log : échanges LLM (blocs multi-lignes avec content/tool)
+    Retourne {agent_id, fsm: [...], conversation: [...]}. Best-effort.
+    """
+    agent_id = params.get("agent_id") if params else None
+    name = params.get("name") if params else None
+    if not agent_id and name:
+        try:
+            db = _get_agent_db()
+            r = db.conn.execute(
+                "SELECT agent_id FROM agents WHERE name = ?", (name,)).fetchone()
+            agent_id = r["agent_id"] if r else None
+        except Exception:
+            pass
+    if not agent_id:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    from pathlib import Path
+    from services._common import mw_home
+    log_dir = Path(mw_home()) / "agent_home" / str(agent_id) / "log"
+    out = {"agent_id": agent_id, "fsm": [], "conversation": []}
+    try:
+        if log_dir.is_dir():
+            fsm_files = sorted(log_dir.glob("fsm_*.log"),
+                               key=lambda p: p.stat().st_mtime)
+            if fsm_files:
+                # Dernier run (par mtime) ; on garde aussi le précédent pour
+                # contexte si le dernier est presque vide.
+                for f in fsm_files[-2:]:
+                    lines = f.read_text(encoding="utf-8",
+                                        errors="replace").splitlines()
+                    entries = []
+                    for ln in lines:
+                        parts = ln.split("|", 3)
+                        if len(parts) < 4:
+                            continue
+                        entries.append({
+                            "ts": parts[0], "level": parts[1],
+                            "kind": parts[2], "message": parts[3],
+                        })
+                    out["fsm"].append({"file": f.name, "entries": entries})
+    except Exception:
+        pass
+    try:
+        conv_file = log_dir / "llm_conversation.log"
+        if conv_file.exists():
+            out["conversation"] = _parse_llm_conversation(conv_file)
+    except Exception:
+        pass
+    return out
+
+
+def _parse_llm_conversation(path) -> list:
+    """Parse le fichier llm_conversation.log en blocs structurés.
+
+    Format d'un bloc :
+      [YYYY-MM-DD HH:MM:SS] round=N provider=X model=Y ok=True/False ... usage={...}
+        content: <texte>          (lignes indentées)
+        tool: <nom>(<json>)       (éventuellement multiple)
+        error: <message>
+    """
+    import re as _re
+    blocks = []
+    cur = None
+    try:
+        for raw in path.read_text(encoding="utf-8",
+                                  errors="replace").splitlines():
+            if raw.startswith("["):
+                if cur:
+                    blocks.append(cur)
+                m = _re.match(
+                    r"\[([^\]]+)\] round=(\d+) provider=(\S+) model=(\S+) "
+                    r"ok=(True|False)(.*)$", raw)
+                cur = None
+                if m:
+                    rest = m.group(6)
+                    finish = ""
+                    fm = _re.search(r"finish=(\S+)", rest)
+                    if fm:
+                        finish = fm.group(1)
+                    usage = ""
+                    um = _re.search(r"usage=(\{.*\})", rest)
+                    if um:
+                        usage = um.group(1)
+                    err = ""
+                    em = _re.search(r"error=\[([^\]]+)\] (.+)$", rest)
+                    if em:
+                        err = f"[{em.group(1)}] {em.group(2)}"
+                    cur = {
+                        "ts": m.group(1),
+                        "round": int(m.group(2)),
+                        "provider": m.group(3),
+                        "model": m.group(4),
+                        "ok": m.group(5) == "True",
+                        "finish": finish,
+                        "usage": usage,
+                        "content": "",
+                        "tools": [],
+                        "sends": [],
+                        "error": err,
+                    }
+            elif cur is not None and raw.startswith("  send["):
+                # Envoi : `send[role]: <texte>` ou `send[role]->tool: fn(args)`
+                sm = _re.match(r"  send\[([^\]]+)\](-\>tool)?: (.*)$", raw)
+                if sm:
+                    cur["sends"].append({
+                        "role": sm.group(1),
+                        "tool": sm.group(2) is not None,
+                        "text": sm.group(3),
+                    })
+            elif cur is not None and raw.startswith("  content:"):
+                cur["content"] += raw.split("  content:", 1)[1].replace("⏎", "\n")
+            elif cur is not None and raw.startswith("  tool:"):
+                tm = _re.match(r"  tool: (\w+)\((.*)\)$", raw)
+                if tm:
+                    cur["tools"].append({"name": tm.group(1),
+                                         "args": tm.group(2)})
+                else:
+                    cur["tools"].append({"name": raw.split("  tool:", 1)[1][:120],
+                                         "args": ""})
+            elif cur is not None and raw.startswith("  error:"):
+                cur["error"] = raw.split("  error:", 1)[1]
+        if cur:
+            blocks.append(cur)
+    except Exception:
+        pass
+    return blocks
+
+
+def op_agent_graph(params):
+    """Graphe simplifié d'un agent : dernier FSM run sous forme de timeline
+    d'événements (steps/llm/tools). Réutilise op_agent_logs en extrayant les
+    kinds. Placeholder graphique : le frontend rend une séquence."""
+    r = op_agent_logs(params or {})
+    if r.get("status") == "error":
+        return r
+    graph = []
+    for run in r.get("fsm", []):
+        for e in run.get("entries", []):
+            graph.append({"ts": e["ts"], "kind": e["kind"],
+                          "label": e["message"][:200]})
+    return {"agent_id": r.get("agent_id"), "graph": graph[-200:]}
+
+
+# ── Agent Metrics ───────────────────────────────────────────────────────
+
 def op_agent_metrics(params):
     db = _get_agent_db()
     agent_id = params.get("agent_id") if params else None
@@ -148,8 +297,57 @@ def op_agent_list(_params):
             a["heartbeat"] = rt["heartbeat_at"]
             a["current_step"] = rt["current_step"]
         else:
-            a["running"] = False
+            # L'agent-manager marque status=RUNNING à chaque tick pour les
+            # greedy en thread vivant (hors agent_runtime) → l'activité réelle
+            # est reflétée même si agent_runtime est vide à l'instant T.
+            a["running"] = a.get("status") == "RUNNING"
+            if a["running"]:
+                # Pas de ligne agent_runtime (thread vivant) : on enrichit avec
+                # le dernier événement du FSM log de l'agent (ce qu'il fait
+                # réellement) pour que les panneaux affichent une étape utile
+                # au lieu de « — ».
+                try:
+                    _fsm = _agent_last_fsm_step(a["agent_id"])
+                except Exception:
+                    _fsm = {}
+                a["thread_id"] = _fsm.get("thread_id", "run")
+                a["current_step"] = _fsm.get("current_step", "en cours")
+                a["heartbeat"] = _fsm.get("heartbeat", a.get("last_active_at"))
     return {"agents": agents, "count": len(agents)}
+
+
+def _agent_last_fsm_step(agent_id: int) -> dict:
+    """Dernier événement du log FSM d'un agent (étape/tool/LLM en cours).
+
+    Retourne {thread_id, current_step, heartbeat}. Best-effort : ne lève pas.
+    """
+    from pathlib import Path
+    from services._common import mw_home
+    log_dir = Path(mw_home()) / "agent_home" / str(agent_id) / "log"
+    if not log_dir.is_dir():
+        return {}
+    files = sorted(log_dir.glob("fsm_*.log"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return {}
+    try:
+        lines = files[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+        last = ""
+        for ln in reversed(lines):
+            last = ln
+            if "|debug|llm/call|" in ln or "|debug|tool/call|" in ln \
+                    or "|info|fsm/step|" in ln or "|info|fsm/start|" in ln:
+                break
+        # Extrait un libellé court : ex. "llm/call nvidia/model" ou "tool/call git_clone_v1"
+        label = last
+        for kw in ("|debug|llm/call|", "|debug|tool/call|", "|info|fsm/step|", "|info|fsm/start|"):
+            if kw in last:
+                label = last.split(kw, 1)[1]
+                break
+        ts = last.split("|", 1)[0] if last else ""
+        return {"thread_id": f"agent:{agent_id}", "current_step": label[:90],
+                "heartbeat": ts}
+    except Exception:
+        return {}
 
 
 def op_agent_get(params):
@@ -433,7 +631,36 @@ def op_agent_list_by_team(_params):
             a["heartbeat"] = rt["heartbeat_at"]
             a["current_step"] = rt["current_step"]
         else:
-            a["running"] = False
+            # L'agent-manager marque status=RUNNING à chaque tick pour les
+            # greedy en thread vivant (hors agent_runtime) → l'activité réelle
+            # est reflétée même si agent_runtime est vide à l'instant T.
+            a["running"] = a.get("status") == "RUNNING"
+            if a["running"]:
+                try:
+                    _fsm = _agent_last_fsm_step(a["agent_id"])
+                except Exception:
+                    _fsm = {}
+                a["thread_id"] = _fsm.get("thread_id", "run")
+                a["current_step"] = _fsm.get("current_step", "en cours")
+                a["heartbeat"] = _fsm.get("heartbeat", a.get("last_active_at"))
+            # Tâche en cours : la tâche running assignée à cet agent (assigned_to
+            # = id numérique de l'agent). Le panneau équipe l'affiche comme
+            # « #<task_id> Titre » — sans cet enrichissement il restait vide.
+            a["current_task"] = None
+            try:
+                from modules.sql.workspace import WorkspaceDB
+                _wdb = WorkspaceDB()
+                _t = _wdb.conn.execute(
+                    "SELECT task_id, title FROM tasks "
+                    "WHERE assigned_to = ? AND status = 'running' "
+                    "ORDER BY task_id DESC LIMIT 1",
+                    (str(a["agent_id"]),)
+                ).fetchone()
+                if _t:
+                    a["current_task"] = {"task_id": _t["task_id"], "title": _t["title"]}
+                _wdb.close()
+            except Exception:
+                a["current_task"] = None
 
     import re
     teams = {}
@@ -554,6 +781,8 @@ register("agent/topology",           op_agent_topology)
 register("agent/taskflow",           op_agent_taskflow)
 register("capabilities",             op_agent_capabilities)
 register("agent/get",                op_agent_get)
+register("agent/logs",               op_agent_logs)
+register("agent/graph",              op_agent_graph)
 register("agent/create",             op_agent_create)
 register("agent/delete",             op_agent_delete)
 register("agent/execute",            op_agent_execute)

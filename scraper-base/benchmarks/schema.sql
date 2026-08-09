@@ -11,9 +11,10 @@ CREATE TABLE IF NOT EXISTS model_benchmarks_raw (
     raw_value       REAL NOT NULL,          -- valeur brute
     percentile      REAL,                   -- 0-100, normalise par rapport aux autres modeles
     source_url      TEXT DEFAULT '',
-    fetched_at      TEXT DEFAULT (datetime('now')),
+    fetched_at       TEXT DEFAULT (datetime('now')),
     is_synthetic    INTEGER DEFAULT 0,      -- 1 = data estimée, 0 = donnée réelle
     confidence      REAL DEFAULT 1.0,       -- 0.0-1.0, confiance de la source
+    meta_json       TEXT DEFAULT '{}',      -- métadonnées source (release_date, creator…)
     PRIMARY KEY (model_ref, benchmark_key, metric_name)
 );
 

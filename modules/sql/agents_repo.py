@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from modules.sql.schema import (
-    _default_agents_db, _rows_to_list, _add_column_if_missing,
+    _default_agents_db, _rows_to_list, _add_column_if_missing, read_meta,
 )
 from services._common import mw_home
 

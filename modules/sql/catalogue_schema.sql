@@ -498,6 +498,28 @@ CREATE TABLE IF NOT EXISTS model_efficacy (
  CREATE INDEX IF NOT EXISTS idx_mps_endpoint ON model_provider_scoring(endpoint_id);
 
  -- ============================================================
+ -- 11b. ALIAS_MODEL — Noms d'un modèle chez les sources externes.
+ -- Lie notre model_id au nom utilisé par une source (provider ou
+ -- benchmark : artificial_analysis, lmsys, open_llm_leaderboard…).
+ -- `status` : linked (résolu) / unresolved (aucun modèle) / ambiguous.
+ -- ============================================================
+ CREATE TABLE IF NOT EXISTS alias_model (
+     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+     model_id      INTEGER REFERENCES catalogue_models(id) ON DELETE CASCADE,
+     source_name   TEXT NOT NULL,
+     source        TEXT NOT NULL,
+     source_type   TEXT NOT NULL CHECK(source_type IN ('provider','benchmark')),
+     confidence    TEXT DEFAULT 'auto',
+     status        TEXT NOT NULL DEFAULT 'linked'
+                    CHECK(status IN ('linked','unresolved','ambiguous')),
+     updated_at    INTEGER DEFAULT (strftime('%s','now')),
+     UNIQUE(source, source_type, source_name)
+ );
+ CREATE INDEX IF NOT EXISTS idx_alias_model_mid ON alias_model(model_id);
+ CREATE INDEX IF NOT EXISTS idx_alias_model_src ON alias_model(source, source_type);
+ CREATE INDEX IF NOT EXISTS idx_alias_model_name ON alias_model(source_name);
+
+ -- ============================================================
  -- 11. BUDGET_TAGS — Reference des types de budget.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS budget_tags (

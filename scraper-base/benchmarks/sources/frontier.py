@@ -101,6 +101,36 @@ FRONTIER_MODELS: Dict[str, Dict[str, Any]] = {
         "cost_per_m_input": 0.5, "cost_per_m_output": 2.0,
         "reliability_pct": 89.0, "source_url": "frontier/google-estimate",
     },
+    "gemini-3.1-flash-lite": {
+        "quality_pct": 90.0, "mt_bench_quality": 8.8, "mmlu_knowledge": 82.0,
+        "score": 90.0, "pass_rate": 90.0, "speed_tps": 76.0,
+        "cost_per_m_input": 0.5, "cost_per_m_output": 2.0,
+        "reliability_pct": 90.0, "source_url": "frontier/google-estimate",
+    },
+    "gemini-3.1-flash-live": {
+        "quality_pct": 91.0, "mt_bench_quality": 8.9, "mmlu_knowledge": 83.0,
+        "score": 91.0, "pass_rate": 91.0, "speed_tps": 74.0,
+        "cost_per_m_input": 0.5, "cost_per_m_output": 2.0,
+        "reliability_pct": 90.0, "source_url": "frontier/google-estimate",
+    },
+    "gemini-3.5-flash": {
+        "quality_pct": 94.0, "mt_bench_quality": 9.2, "mmlu_knowledge": 86.0,
+        "score": 94.0, "pass_rate": 94.0, "speed_tps": 70.0,
+        "cost_per_m_input": 0.5, "cost_per_m_output": 2.0,
+        "reliability_pct": 93.0, "source_url": "frontier/google-estimate",
+    },
+    "gemini-3.5-flash-lite": {
+        "quality_pct": 92.0, "mt_bench_quality": 9.0, "mmlu_knowledge": 84.0,
+        "score": 92.0, "pass_rate": 92.0, "speed_tps": 80.0,
+        "cost_per_m_input": 0.25, "cost_per_m_output": 1.0,
+        "reliability_pct": 91.0, "source_url": "frontier/google-estimate",
+    },
+    "gemini-3.6-flash": {
+        "quality_pct": 95.0, "mt_bench_quality": 9.3, "mmlu_knowledge": 87.0,
+        "score": 95.0, "pass_rate": 95.0, "speed_tps": 68.0,
+        "cost_per_m_input": 0.5, "cost_per_m_output": 2.0,
+        "reliability_pct": 93.0, "source_url": "frontier/google-estimate",
+    },
     # ── InclusionAI ──
     "ling-2.6-1t": {
         "quality_pct": 94.0, "mt_bench_quality": 9.2, "mmlu_knowledge": 85.0,
@@ -267,17 +297,25 @@ def fetch(local_db_path: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def _estimate_frontier_scores(ref: str) -> Dict[str, float]:
     """Generate reasonable estimated scores for a frontier model not in our hardcoded list."""
+    import hashlib
     lower = ref.lower()
+    # Jitter DÉTERMINISTE par modèle : sans lui, tous les modèles non hardcodés
+    # reçoivent la MÊME valeur (82.0) → classés au même percentile ~5.6% en
+    # queue de peloton (devant les hardcodés à 92+) → les modèles récents
+    # fiables (gemini-3.x, etc.) sont ridiculisés. Le jitter répartit les refs
+    # inconnues dans une bande [0.96, 1.04] autour du score de base.
+    seed = int(hashlib.sha256(ref.encode()).hexdigest()[:8], 16)
+    jit = 0.96 + (seed % 1000) / 1000.0 * 0.08
     base = {
-        "quality_pct": 85.0,
-        "mt_bench_quality": 8.2,
-        "mmlu_knowledge": 78.0,
-        "score": 82.0,
-        "pass_rate": 82.0,
-        "speed_tps": 60.0,
-        "cost_per_m_input": 5.0,
-        "cost_per_m_output": 20.0,
-        "reliability_pct": 85.0,
+        "quality_pct": 85.0 * jit,
+        "mt_bench_quality": 8.2 * jit,
+        "mmlu_knowledge": 78.0 * jit,
+        "score": 82.0 * jit,
+        "pass_rate": 82.0 * jit,
+        "speed_tps": 60.0 * (2.0 - jit),  # plus lent si plus gros score qualité
+        "cost_per_m_input": 5.0 / jit,
+        "cost_per_m_output": 20.0 / jit,
+        "reliability_pct": 85.0 * jit,
         "source_url": "frontier/auto-estimate",
     }
     # Adjust based on clues in the name

@@ -165,11 +165,11 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
 # Each benchmark metric maps to task types it measures.
 # Scores are stored per-task-type per model in model_efficacy.
 TASK_TYPE_METRICS = {
-    "score_chat":        {"mt_bench_quality", "quality_pct"},
-    "score_knowledge":   {"mmlu_knowledge", "quality_pct"},
+    "score_chat":        {"mt_bench_quality", "quality_pct", "elo"},
+    "score_knowledge":   {"mmlu_knowledge", "quality_pct", "reasoning", "math"},
     "score_coding":      {"score", "arena_hard_auto", "pass_rate"},
-    "score_reasoning":   {"score", "arena_hard_auto", "pass_rate"},
-    "score_agentic":     {"score", "arena_hard_auto"},
+    "score_reasoning":   {"score", "arena_hard_auto", "pass_rate", "reasoning", "math"},
+    "score_agentic":     {"score", "arena_hard_auto", "agentic_index"},
 }
 
 
@@ -268,7 +268,9 @@ def consolidate_to_efficacy(rows: List[Dict]) -> List[Dict]:
 
         n_data = len(sc["q"]) + len(sc["s"]) + len(sc["c"]) + len(sc["rl"])
         source_count = len(sc["sources"])
-        _REAL_SOURCES = {"lmsys_arena", "arena_hard_auto", "artificial_analysis", "seeded"}
+        _REAL_SOURCES = {"lmsys_arena", "lmsys_arena_elo", "arena_hard_auto",
+                         "artificial_analysis", "open_llm_leaderboard",
+                         "seeded", "swe_bench_verified"}
         has_real = sc["sources"].intersection(_REAL_SOURCES)
         is_synth = 0 if has_real else 1
 
@@ -344,6 +346,7 @@ def ensure_schema(conn: sqlite3.Connection, local: bool):
     # Add missing columns if absent (self-healing schema)
     _add_column(conn, "model_benchmarks_raw", "is_synthetic", "INTEGER DEFAULT 0")
     _add_column(conn, "model_benchmarks_raw", "confidence", "REAL DEFAULT 1.0")
+    _add_column(conn, "model_benchmarks_raw", "meta_json", "TEXT DEFAULT '{}'")
     _add_column(conn, "model_efficacy", "model_ref", "TEXT")
     _add_column(conn, "model_efficacy", "source_count", "INTEGER DEFAULT 0")
     _add_column(conn, "model_efficacy", "is_synthetic", "INTEGER DEFAULT 0")
@@ -502,13 +505,14 @@ def write_raw(conn: sqlite3.Connection, rows: List[Dict]):
             conn.execute(
                 "INSERT OR REPLACE INTO model_benchmarks_raw "
                 "(model_ref, benchmark_key, metric_name, raw_value, percentile, "
-                "source_url, fetched_at, is_synthetic, confidence) "
-                "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)",
+                "source_url, fetched_at, is_synthetic, confidence, meta_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)",
                 (key, r["benchmark_key"], r["metric_name"],
                  r["raw_value"], r.get("percentile", 50.0),
                  r.get("source_url", ""),
                  r.get("is_synthetic", 0),
-                 r.get("confidence", 1.0)),
+                 r.get("confidence", 1.0),
+                 r.get("meta_json", "{}")),
             )
             count += 1
         except Exception as e:

@@ -107,7 +107,33 @@ function injectVars(vars: Record<string, string>) {
     _styleEl.id = 'mw-theme';
     document.head.appendChild(_styleEl);
   }
-  const css = `:root {\n${Object.entries(vars).map(([k, v]) => `  ${k}: ${v};`).join('\n')}\n}`;
+  const css = `:root {\n${Object.entries(vars).map(([k, v]) => `  ${k}: ${v};`).join('\n')}\n}
+/* Menus déroulants natifs : valeur sélectionnée lisible dans les deux thèmes.
+   Sans ça, le <select> natif garde le fond/texte par défaut du navigateur
+   (souvent blanc/noir) illisible sur un thème sombre quand il est fermé.
+   appearance:none retire le rendu "widget natif" (WebKitGTK) qui ignore les
+   styles inline de background/color — sinon le select garde le thème système. */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background: var(--mw-bg-panel, #1e293b) !important;
+  color: var(--mw-fg, #e2e8f0) !important;
+  border: 1px solid var(--mw-border, #334155) !important;
+  border-radius: 4px !important;
+  padding: 2px 18px 2px 6px !important;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%2394a3b8'/></svg>") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 4px center !important;
+}
+select:disabled {
+  opacity: 0.5;
+}
+option {
+  background: var(--mw-bg-panel, #1e293b);
+  color: var(--mw-fg, #e2e8f0);
+}
+`;
   _styleEl.textContent = css;
   document.documentElement.setAttribute('data-theme', _current);
 }

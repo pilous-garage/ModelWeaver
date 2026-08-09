@@ -314,6 +314,33 @@ class RuntimeDB:
                 CREATE INDEX IF NOT EXISTS idx_msr_status ON model_success_runs(status);
                 CREATE INDEX IF NOT EXISTS idx_msr_seqend ON model_success_runs(seq_end);
 
+                -- Sessions d'appels LLM PAR SOURCE (caller_id : agent:N, bridge,
+                -- service:model_sync, probe…). DISTINCT de model_success_runs
+                -- (qui est par provider/model au niveau GLOBAL, non interrompu).
+                -- Ici on suit l'activité de CHAQUE appelant : une session s'ouvre
+                -- au premier appel RÉUSSI d'un caller_id et se ferme au premier
+                -- échec (ou quand une NOUVELLE session s'ouvre pour le même id —
+                -- un caller ne garde qu'une session ouverte à la fois).
+                CREATE TABLE IF NOT EXISTS llm_caller_sessions (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    caller_id       TEXT NOT NULL,
+                    provider_ref    TEXT,
+                    model_ref       TEXT,
+                    seq_start       INTEGER NOT NULL,
+                    seq_end         INTEGER,
+                    duration_s      INTEGER,
+                    requests        INTEGER DEFAULT 0,
+                    errors          INTEGER DEFAULT 0,
+                    tokens_in       INTEGER DEFAULT 0,
+                    tokens_out      INTEGER DEFAULT 0,
+                    avg_latency_ms  REAL DEFAULT 0,
+                    status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+                    updated_at      INTEGER DEFAULT (strftime('%s','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_cs_caller ON llm_caller_sessions(caller_id);
+                CREATE INDEX IF NOT EXISTS idx_cs_status ON llm_caller_sessions(status);
+                CREATE INDEX IF NOT EXISTS idx_cs_open ON llm_caller_sessions(caller_id, status);
+
                 -- Rapport de traitement d'archive (réconciliation). Le batcheur
                 -- note chaque lecture d'archive (frame + timestamp + warnings),
                 -- sans jamais supprimer l'archive.

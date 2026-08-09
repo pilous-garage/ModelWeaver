@@ -208,10 +208,14 @@ def _fsm_activity(agent_id: int) -> Dict[str, Any]:
                     lat += 24 * 3600  # minuit
                 max_lat = max(max_lat, lat)
             last_call_ts = None
-    out["max_llm_latency_s"] = max_lat
-    # un tool/ok récent (dans les ~60 dernières lignes) → l'agent agit
-    out["has_recent_tool_ok"] = any("tool/ok" in l for l in lines[-60:])
-    return out
+        out["max_llm_latency_s"] = max_lat
+        # un tool/ok récent (dans les ~60 dernières lignes) → l'agent agit
+        out["has_recent_tool_ok"] = any("tool/ok" in l for l in lines[-60:])
+        # a-t-il loggé quelque chose de récent (llm/ok, tool/ok, fsm/step, ...) ?
+        out["has_recent_progress"] = (
+            out["mtime_age_s"] is not None
+            and out["mtime_age_s"] < P8_MAX_LOG_SILENCE_S)
+        return out
 
 
 def detect_unlinked_issue_workspace(st: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -276,18 +280,19 @@ def detect_unblocked_issues(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
     """P8 — agent actif mais qui semble bloqué (FSM).
 
-    Cas détectés :
-      - silence FSM : aucune nouvelle ligne depuis P8_MAX_LOG_SILENCE_S
-      - LLM très lent : latence llm/call→llm/ok > P8_MAX_LLM_LATENCY_S
-      - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool ok
-    """
-    out = []
-    """P8 — agent actif mais qui semble bloqué (FSM).
+    CONSERVATEUR : on ne purge que ce qui est vraiment bloqué, jamais un agent
+    qui progresse (même lentement). Un appel LLM long (ex. 5-9 min sur un
+    provider lent) ne doit PAS déclencher de purge : l'agent finira son tour,
+    et son thread se terminera naturellement (dehydrate). Purger un agent dont
+    le thread est encore vivant + le re-spawner = accumulation infinie de
+    threads (cause racine des 1000 threads / 8000 fds observés).
 
     Cas détectés :
-      - silence FSM : aucune nouvelle ligne depuis P8_MAX_LOG_SILENCE_S
-      - LLM très lent : latence llm/call→llm/ok > P8_MAX_LLM_LATENCY_S
-      - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool ok
+      - silence FSM prolongé ET aucune progression récente (l'agent ne log
+        plus rien : ni tool/ok, ni llm/ok, ni step) → vraiment bloqué.
+      - boucle d'erreurs : ≥ P8_CONSEC_ERRORS llm/error consécutifs sans tool
+        ok ET silence (évite de purger pendant une rafale d'erreurs récentes
+        que le fallback est en train de résoudre).
     """
     out = []
     for r in st["runtime"]:
@@ -296,11 +301,12 @@ def detect_stalled_agent(st: Dict[str, Any]) -> List[Dict[str, Any]]:
         if act["mtime_age_s"] is None:
             continue
         problems = []
-        if act["mtime_age_s"] > P8_MAX_LOG_SILENCE_S:
+        silent = act["mtime_age_s"] > P8_MAX_LOG_SILENCE_S
+        if silent and not act["has_recent_progress"]:
             problems.append(f"FSM silencieux depuis {act['mtime_age_s']:.0f}s")
-        if act["max_llm_latency_s"] > P8_MAX_LLM_LATENCY_S:
-            problems.append(f"latence LLM max {act['max_llm_latency_s']:.0f}s")
-        if act["consec_errors"] >= P8_CONSEC_ERRORS:
+        # Latence LLM seule : ne purge PAS (l'agent peut être en train de
+        # répondre sur un provider lent — le timebox LLM s'en charge).
+        if act["consec_errors"] >= P8_CONSEC_ERRORS and silent:
             problems.append(f"{act['consec_errors']} erreurs LLM consécutives "
                             f"({','.join(act['error_types'])})")
         if not problems:

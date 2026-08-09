@@ -22,6 +22,7 @@ class AllocationRequest:
     max_cost_per_call: float = 0.0
     exclude: List[str] = field(default_factory=list)
     agent_name: str = ""
+    features: List[str] = field(default_factory=list)
     # Tolérance latence (score_latence = exp( -(max(penalise,lat)-penalise)/regule )).
     # Défauts : penalise=1.0s, regule=60.0s. Une tâche tolérante peut passer
     # penalise/regule élevés pour garder les LLM lents compétitifs.
@@ -46,6 +47,7 @@ class ModelOption:
     score_reasoning: float = 0.0
     score_knowledge: float = 0.0
     score_agentic: float = 0.0
+    agentic_flag: int = 0        # flag provider_models.agentic (1 = tool calling)
     is_synthetic: int = 0
     runtime_success_count: int = 0
     runtime_calls: int = 0
@@ -150,6 +152,7 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     linéaire) pour ne pas laisser un inconnu à score plein.
     """
     import math
+    req_features = set(getattr(request, "features", None) or [])
 
     # ── Composante benchmark étiré (0.1-0.9) ──
     score = option.score_etire if option.score_etire > 0 else 0.1
@@ -177,6 +180,18 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     elif option.runtime_calls >= 1:
         smoothed = (1.0 + option.runtime_success_count) / (1.0 + option.runtime_calls)
         score *= smoothed
+
+    # ── Pénalité modèles JAMAIS appelés ──
+    # Un modèle sans AUCUN appel runtime (runtime_calls=0) est inconnu : son
+    # benchmark peut être haut mais il peut être mort (huggingface Not Found,
+    # cohere tool unsupported…). On le pénalise pour favoriser les modèles
+    # ÉPROUVÉS (qui ont déjà réussi). Sans ça, le scoring re-sélectionne en
+    # boucle des modèles morts jamais testés avant de trouver un modèle fiable.
+    if option.runtime_calls == 0:
+        score *= 0.4
+    elif option.runtime_success_count > 0:
+        # Bonus modeste pour un modèle fiable (≥1 succès réel).
+        score *= 1.05
 
     # ── Ajustements par tâche / contexte / coût (additifs) ──
     # Pénalité si pas assez de window
@@ -212,6 +227,15 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     # récents sans benchmark solide, pas un vrai signal de faible qualité).
     if option.is_synthetic and option.ref not in _TRUSTED_AGENTIC:
         score *= 0.8
+
+    # Pénalité si PAS agentic (tool calling) pour une tâche qui en exige :
+    # un modèle agentic=0 (ex. cohere command-r) répond en texte sans jamais
+    # appeler les outils → l'agent boucle en "no_action". Seuls les modèles
+    # agentic=1 (nvidia/gpt-oss-20b, groq/llama-3.3, google…) font du tool
+    # calling. Pénalité forte pour que les tâches coding/agentic retombent sur
+    # un modèle qui SAIT utiliser les outils.
+    if ("function_calling" in req_features and option.agentic_flag == 0):
+        score *= 0.25
 
     return max(0.0, min(1.0, score))
 

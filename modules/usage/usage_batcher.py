@@ -549,6 +549,119 @@ def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
     return n
 
 
+def _rebuild_caller_sessions(cat, rt) -> int:
+    """Reconstruit les sessions d'appels LLM PAR SOURCE (llm_caller_sessions).
+
+    DISTINCT de model_success_runs (séquences globales par provider/model non
+    interrompues). Ici on suit chaque APPELLANT (caller_id = agent:N / bridge /
+    service:X / probe) :
+      - une session s'ouvre au premier appel RÉUSSI d'un caller_id,
+      - elle se ferme au premier ÉCHEC (ou quand une NOUVELLE session du même
+        caller s'ouvre — un caller ne garde qu'une seule session ouverte).
+    Source : model_call_log + archive (ordre chronologique), regrouppé par
+    caller_id. Purge et recrée tout (les appels en cours, marginés, sont traités
+    au prochain cycle). Retourne le nombre de sessions créées.
+    """
+    try:
+        rt.conn.execute("DELETE FROM llm_caller_sessions")
+        rt.conn.commit()
+    except Exception:
+        pass
+    rows = []
+    try:
+        rows += cat.conn.execute("""
+            SELECT l.caller_id, COALESCE(p.ref, '?') provider_ref,
+                   COALESCE(m.ref, '?') model_ref, l.success, l.created_at,
+                   l.tokens_in, l.tokens_out, l.latency_ms
+            FROM model_call_log l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.caller_id IS NOT NULL
+        """).fetchall()
+    except Exception:
+        pass
+    try:
+        rows += cat.conn.execute("""
+            SELECT l.caller_id, COALESCE(p.ref, '?') provider_ref,
+                   COALESCE(m.ref, '?') model_ref, l.success, l.created_at,
+                   l.tokens_in, l.tokens_out, l.latency_ms
+            FROM model_call_log_archive l
+            LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+            LEFT JOIN catalogue_models m ON m.id = l.model_id
+            WHERE l.caller_id IS NOT NULL
+        """).fetchall()
+    except Exception:
+        pass
+    if not rows:
+        return 0
+    by_caller: Dict[str, List[dict]] = {}
+    for r in rows:
+        cid = r["caller_id"]
+        by_caller.setdefault(cid, []).append(dict(r))
+    n = 0
+    for cid, calls in by_caller.items():
+        calls.sort(key=lambda c: c["created_at"])
+        session = None  # (id, seq_start, requests, errors, tin, tout, lat_sum)
+        for c in calls:
+            if c["success"]:
+                if session is None:
+                    # Nouvelle session : s'il restait une session ouverte du même
+                    # caller (devrait être fermée), on la clôt d'abord.
+                    try:
+                        rt.conn.execute(
+                            "UPDATE llm_caller_sessions SET seq_end = ?, status = 'closed' "
+                            "WHERE caller_id = ? AND status = 'open'",
+                            (c["created_at"], cid))
+                        rt.conn.execute("""
+                            INSERT INTO llm_caller_sessions
+                                (caller_id, provider_ref, model_ref, seq_start,
+                                 requests, tokens_in, tokens_out, avg_latency_ms, status)
+                            VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'open')
+                        """, (cid, c["provider_ref"], c["model_ref"], c["created_at"],
+                              c["tokens_in"] or 0, c["tokens_out"] or 0,
+                              c["latency_ms"] or 0))
+                        session = {"requests": 1, "tin": c["tokens_in"] or 0,
+                                   "tout": c["tokens_out"] or 0,
+                                   "lat": c["latency_ms"] or 0}
+                        n += 1
+                    except Exception:
+                        session = None
+                else:
+                    session["requests"] += 1
+                    session["tin"] += c["tokens_in"] or 0
+                    session["tout"] += c["tokens_out"] or 0
+                    session["lat"] += c["latency_ms"] or 0
+                    try:
+                        rt.conn.execute("""
+                            UPDATE llm_caller_sessions SET
+                                requests = ?, tokens_in = ?, tokens_out = ?,
+                                avg_latency_ms = ?, updated_at = strftime('%s','now')
+                            WHERE caller_id = ? AND status = 'open'
+                        """, (session["requests"], session["tin"], session["tout"],
+                              session["lat"] / session["requests"], cid))
+                    except Exception:
+                        pass
+            else:
+                # Échec : fermer la session ouverte de ce caller.
+                if session is not None:
+                    try:
+                        rt.conn.execute("""
+                            UPDATE llm_caller_sessions SET
+                                seq_end = ?, duration_s = ? - seq_start,
+                                status = 'closed', errors = errors + 1,
+                                updated_at = strftime('%s','now')
+                            WHERE caller_id = ? AND status = 'open'
+                        """, (c["created_at"], c["created_at"], cid))
+                    except Exception:
+                        pass
+                session = None
+    try:
+        rt.conn.commit()
+    except Exception:
+        pass
+    return n
+
+
 def _auto_reconcile(cat, rt) -> int:
     """Réconciliation automatique : 1×/heure (heure précédente) + 1×/jour (veille)."""
     import time as _t
@@ -602,6 +715,13 @@ def run_once() -> Dict[str, Any]:
     batched = _batch_1m(cat, rt)
     cascaded = _cascade(cat, rt, frontier)
     purged = _purge_expired(rt)
+    # Sessions par SOURCE (caller_id) : reconstruites à chaque cycle depuis le
+    # détail + archive. Indépendant de model_success_runs (séquences globales).
+    caller_sessions = 0
+    try:
+        caller_sessions = _rebuild_caller_sessions(cat, rt)
+    except Exception:
+        pass
     # Réconciliation automatique depuis l'archive : heure précédente + veille.
     reconciled = 0
     try:
@@ -610,6 +730,7 @@ def run_once() -> Dict[str, Any]:
         pass
     return {"batched": batched, "cascade": cascaded, "purged": purged,
             "frontier": frontier, "reconciled": reconciled,
+            "caller_sessions": caller_sessions,
             "score_blocks": score_blocks, "score_benchmark": benchmark}
 
 

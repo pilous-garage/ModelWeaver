@@ -38,6 +38,7 @@ tree:
       tabs:
         - { panel: etat-systeme, occId: occ-3 }
         - { panel: etat-simple, occId: occ-4 }
+        - { panel: autorisations, occId: occ-autorisations }
       active: occ-3
 `;
 
@@ -96,8 +97,21 @@ async function bootstrap() {
   } catch {
     // best-effort : catalogue = panels essentiels uniquement
   }
-  // Label réel de la fenêtre (injecté par le binaire Tauri dans chaque webview)
-  const windowId = (window as any).__MW_WINDOW_LABEL || 'main';
+  // Label réel de la fenêtre (injecté par le binaire Tauri dans chaque webview).
+  // NB : après un page reload (HMR/dev), __MW_WINDOW_LABEL est perdu (le script
+  // d'injection ne se rejoue pas) → TOUTES les fenêtres retomberaient sur 'main'
+  // et chargeraient le mauvais layout. On récupère le label via IPC Tauri
+  // (window_label), source fiable, avec fallback sur la variable injectée.
+  let windowId = (window as any).__MW_WINDOW_LABEL || 'main';
+  try {
+    if ((window as any).__TAURI_INTERNALS__) {
+      const core = await import('@tauri-apps/api/core');
+      const lbl: string = await core.invoke('window_label');
+      if (lbl) windowId = lbl;
+    }
+  } catch {
+    // best-effort : on garde __MW_WINDOW_LABEL / 'main'
+  }
   const { layout, profile } = await loadWindowLayout(windowId);
   // Thème : theme-lock (fenêtre) → session active → profil/layout.
   const theme = await resolveTheme(windowId, profile?.theme);

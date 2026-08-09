@@ -572,6 +572,131 @@ def op_providers_list(_params):
 
 def op_provider_endpoint_add(params):
     from modules.sql.sql_module import CatalogueDB
+
+
+def op_alias_model_list(params):
+    """Liste les alias de modèles (alias_model) : matching source → notre modèle.
+
+    Filtres optionnels : source_type (provider|benchmark), source, status
+    (linked|unresolved|ambiguous), q (recherche plein texte sur source_name),
+    limit / offset (pagination).
+    """
+    cat = _get_cat()
+    source_type = params.get("source_type", "")
+    source = params.get("source", "")
+    status = params.get("status", "")
+    q = (params.get("q") or "").strip()
+    limit = min(int(params.get("limit", 500)), 5000)
+    offset = int(params.get("offset", 0))
+
+    where = []
+    args = []
+    if source_type:
+        where.append("a.source_type = ?")
+        args.append(source_type)
+    if source:
+        where.append("a.source = ?")
+        args.append(source)
+    if status:
+        where.append("a.status = ?")
+        args.append(status)
+    if q:
+        where.append("a.source_name LIKE ?")
+        args.append(f"%{q}%")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    try:
+        cur = cat.conn.execute(f"""
+            SELECT a.id, a.model_id, a.source_name, a.source, a.source_type,
+                   a.confidence, a.status, a.updated_at,
+                   COALESCE(cm.model_key, cm.ref, '') AS model_key
+            FROM alias_model a
+            LEFT JOIN catalogue_models cm ON cm.id = a.model_id
+            {where_sql}
+            ORDER BY a.source_type, a.source, a.source_name
+            LIMIT ? OFFSET ?
+        """, (*args, limit, offset))
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        total = cat.conn.execute(
+            f"SELECT COUNT(*) FROM alias_model a {where_sql}", args).fetchone()[0]
+        return {"aliases": rows, "count": len(rows), "total": total,
+                "limit": limit, "offset": offset}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "aliases": []}
+
+
+def op_alias_model_link(params):
+    """Relie manuellement un alias unresolved → un model_id du catalogue.
+
+    params : id (alias id) OU (source_name + source + source_type),
+             model_id (catalogue_models.id) ou model_key / model_ref.
+    """
+    cat = _get_cat()
+    alias_id = params.get("id")
+    model_id = params.get("model_id")
+    ref = (params.get("model_key") or params.get("model_ref") or "").strip()
+
+    if not model_id and ref:
+        row = cat.conn.execute(
+            "SELECT id FROM catalogue_models WHERE model_key = ? OR ref = ? LIMIT 1",
+            (ref, ref)).fetchone()
+        if row:
+            model_id = row["id"]
+        else:
+            return {"status": "error", "error": f"modèle introuvable: {ref}"}
+    if not model_id:
+        return {"status": "error", "error": "model_id ou model_key/model_ref requis"}
+
+    if alias_id:
+        cur = cat.conn.execute(
+            "UPDATE alias_model SET model_id = ?, status = 'linked', "
+            "confidence = 'manual', updated_at = strftime('%s','now') WHERE id = ?",
+            (model_id, alias_id))
+        cat.conn.commit()
+        if cur.rowcount == 0:
+            return {"status": "error", "error": f"alias {alias_id} introuvable"}
+        return {"status": "ok", "linked": int(alias_id), "model_id": model_id}
+    # Sinon par identité (source, source_type, source_name)
+    sn = (params.get("source_name") or "").strip()
+    src = (params.get("source") or "").strip()
+    st = (params.get("source_type") or "").strip()
+    if not (sn and src and st):
+        return {"status": "error", "error": "id ou (source_name+source+source_type) requis"}
+    cat.conn.execute("""
+        INSERT OR REPLACE INTO alias_model
+            (model_id, source_name, source, source_type, confidence, status, updated_at)
+        VALUES (?, ?, ?, ?, 'manual', 'linked', strftime('%s','now'))
+    """, (model_id, sn, src, st))
+    cat.conn.commit()
+    return {"status": "ok", "linked": True, "model_id": model_id}
+
+
+def op_alias_model_unlink(params):
+    """Repasse un alias en unresolved (délie le model_id)."""
+    cat = _get_cat()
+    alias_id = params.get("id")
+    if not alias_id:
+        return {"status": "error", "error": "id requis"}
+    cur = cat.conn.execute(
+        "UPDATE alias_model SET status = 'unresolved', updated_at = strftime('%s','now') "
+        "WHERE id = ?", (alias_id,))
+    cat.conn.commit()
+    return {"status": "ok" if cur.rowcount else "error",
+            "unlinked": bool(cur.rowcount)}
+
+
+def op_alias_model_rebuild(_params):
+    """Reconstruit la table alias_model depuis provider_models + model_benchmarks_raw."""
+    import subprocess, sys as _sys
+    script = Path(repo_root()) / "scripts" / "build_aliases.py"
+    try:
+        r = subprocess.run([_sys.executable, str(script)],
+                           capture_output=True, text=True, timeout=300)
+        return {"status": "ok", "stdout": r.stdout[-2000:],
+                "stderr": r.stderr[-2000:]}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
     ref = params.get("provider_ref")
     label = params.get("label") or "v1"
     url = params.get("endpoint_url")
@@ -621,6 +746,10 @@ register("catalogue/models/sync",    lambda p: _quiet(model_sync_run_once))
 register("watcher/run",              lambda p: _quiet(watcher_run_once))
 register("catalogue/tools_table/update", _wrap(update_tools_table))
 register("catalogue/fetch/remote",   lambda p: _quiet(fetch_remote_to_local))
+register("alias_model/list",          _wrap(op_alias_model_list))
+register("alias_model/link",          _wrap(op_alias_model_link))
+register("alias_model/unlink",        _wrap(op_alias_model_unlink))
+register("alias_model/rebuild",       lambda p: _quiet(op_alias_model_rebuild, p))
 register("tools/installed/list",     _wrap(get_installed_tools))
 register("tools/install",            lambda p: _quiet(jobs.install_tool, p.get("ref"), None, _get_cat()))
 register("tools/uninstall",          lambda p: _quiet(jobs.uninstall_tool, p.get("ref"), None, _get_cat()))

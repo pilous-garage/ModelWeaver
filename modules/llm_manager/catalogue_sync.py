@@ -26,7 +26,8 @@ logger = logging.getLogger("modelweaver.catalogue_sync")
 CAPABILITIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_capabilities (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_ref       TEXT NOT NULL UNIQUE,
+    model_id        INTEGER UNIQUE REFERENCES catalogue_models(id) ON DELETE CASCADE,
+    model_ref       TEXT,
     supports_chat           INTEGER DEFAULT 0,
     supports_function_calling INTEGER DEFAULT 0,
     supports_vision         INTEGER DEFAULT 0,
@@ -38,8 +39,8 @@ CREATE TABLE IF NOT EXISTS model_capabilities (
     pricing_input_per_1k   REAL,
     pricing_output_per_1k  REAL,
     source                  TEXT DEFAULT 'unknown',  -- api | knowledge | scraping | test
-    last_updated_at        INTEGER DEFAULT (strftime('%s','now')),
-    UNIQUE(model_ref)
+    official                INTEGER DEFAULT 0,
+    last_updated_at        INTEGER DEFAULT (strftime('%s','now'))
 );
 """
 
@@ -272,7 +273,7 @@ def scrape_huggingface(model_ref: str) -> Optional[Dict[str, Any]]:
 # ── Mise à jour BDD ───────────────────────────────────────────
 
 def _upsert_model(cat, ref: str, caps: Dict[str, Any], source: str = "unknown"):
-    """Insère ou met à jour un modèle et ses capacités."""
+    """Insère ou met à jour un modèle et ses capacités officielles."""
     try:
         # S'assurer que la table des capacités existe
         cat.conn.execute(CAPABILITIES_SCHEMA)
@@ -280,28 +281,36 @@ def _upsert_model(cat, ref: str, caps: Dict[str, Any], source: str = "unknown"):
             INSERT OR IGNORE INTO catalogue_models (ref, name)
             VALUES (?, ?)
         """, (ref, ref.split("/")[-1] if "/" in ref else ref))
-
+        # model_id canonique (ref exacte puis model_key normalisé)
+        mid = cat.conn.execute(
+            "SELECT id FROM catalogue_models WHERE ref = ? "
+            "OR model_key = ? LIMIT 1", (ref, ref)).fetchone()
+        mid = mid["id"] if mid else None
+        official = 1 if source in ("api", "knowledge", "official", "remote") else 0
         cat.conn.execute("""
             INSERT INTO model_capabilities
-                (model_ref, supports_chat, supports_function_calling,
-                 supports_vision, supports_embedding, supports_streaming, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_ref) DO UPDATE SET
+                (model_id, model_ref, supports_chat, supports_function_calling,
+                 supports_vision, supports_embedding, supports_streaming,
+                 source, official, last_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+            ON CONFLICT(model_id) DO UPDATE SET
+                model_ref = COALESCE(NULLIF(EXCLUDED.model_ref, ''), model_capabilities.model_ref),
                 supports_chat = COALESCE(EXCLUDED.supports_chat, model_capabilities.supports_chat),
                 supports_function_calling = COALESCE(EXCLUDED.supports_function_calling, model_capabilities.supports_function_calling),
                 supports_vision = COALESCE(EXCLUDED.supports_vision, model_capabilities.supports_vision),
                 supports_embedding = COALESCE(EXCLUDED.supports_embedding, model_capabilities.supports_embedding),
                 supports_streaming = COALESCE(EXCLUDED.supports_streaming, model_capabilities.supports_streaming),
                 source = CASE WHEN model_capabilities.source = 'unknown' THEN ? ELSE model_capabilities.source END,
+                official = MAX(model_capabilities.official, EXCLUDED.official),
                 last_updated_at = strftime('%s','now')
         """, (
-            ref,
+            mid, ref,
             caps.get("chat", caps.get("supports_chat", 0)),
             caps.get("fc", caps.get("supports_function_calling", 0)),
             caps.get("vision", caps.get("supports_vision", 0)),
             caps.get("embedding", caps.get("supports_embedding", 0)),
             caps.get("streaming", caps.get("supports_streaming", 1)),
-            source,  # VALUES.source
+            source, official,
             source,  # CASE WHEN source
         ))
         cat.conn.commit()

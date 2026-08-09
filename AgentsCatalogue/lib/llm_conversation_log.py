@@ -66,19 +66,50 @@ def _append(home: str, line: str) -> None:
 
 def log_llm_exchange(home: str, provider_ref: str, model_ref: str,
                      round_n: int, response: Any = None,
-                     ok: bool = True, error: str = "") -> None:
-    """Loggue un échange LLM (réponse ou erreur) dans le journal de conversation.
+                     ok: bool = True, error: str = "",
+                     messages: Optional[list] = None) -> None:
+    """Loggue un échange LLM (envoi + réponse ou erreur) dans le journal.
 
     `response` : ChatResponse (content, tool_calls, finish_reason, usage).
+    `messages` : le prompt complet envoyé au LLM (liste de dicts role/content/
+                 tool_calls). Écrit sous forme de blocs `send: <role>` pour que
+                 le panneau « vue agent » puisse afficher tout l'échange
+                 (envoyé → reçu), chaque envoi étant repliable.
     Le content est conservé en entier (tronqué au max_len pour la taille).
     """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     header = f"[{ts}] round={round_n} provider={provider_ref} model={model_ref} ok={ok}"
+    lines = [header]
+    # ── ENVOI : les messages du prompt (repliable côté UI) ──
+    try:
+        if messages:
+            for m in messages:
+                role = str(m.get("role", "?"))
+                content = m.get("content") or ""
+                if isinstance(content, list):
+                    # contenu multi-part (Gemini) : on garde les textes
+                    parts = [p.get("text", "") for p in content
+                             if isinstance(p, dict) and p.get("text")]
+                    content = "\n".join(parts)
+                if content:
+                    lines.append(f"  send[{role}]: {_safe_str(content)}")
+                tcs = m.get("tool_calls") or []
+                for tc in tcs:
+                    try:
+                        fn = tc.get("function", {}).get("name", "?")
+                        args = tc.get("function", {}).get("arguments", "")
+                    except Exception:
+                        fn, args = "?", ""
+                    lines.append(f"  send[{role}]->tool: {fn}({_safe_str(args, 600)})")
+    except Exception:
+        pass
     if not ok:
-        _append(home, f"{header} error={_safe_str(error, 500)}")
+        lines.append(f"error={_safe_str(error, 500)}")
+        _append(home, "\n".join(lines))
         return
     if response is None:
-        _append(home, f"{header} response=None")
+        lines.append("response=None")
+        _append(home, "\n".join(lines))
         return
     try:
         content = getattr(response, "content", "") or ""
@@ -86,8 +117,8 @@ def log_llm_exchange(home: str, provider_ref: str, model_ref: str,
         finish = getattr(response, "finish_reason", "") or ""
         usage = getattr(response, "usage", {}) or {}
     except Exception:
-        content, tool_calls, finish, usage = "", [], "", {}
-    lines = [header + f" finish={finish} usage={usage}"]
+        content, tool_calls, finish, usage = "", [], {}, {}
+    lines.append(f"finish={finish} usage={usage}")
     if content:
         lines.append(f"  content: {_safe_str(content)}")
     for tc in tool_calls:

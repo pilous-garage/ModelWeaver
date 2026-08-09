@@ -8,6 +8,7 @@
 import React, { useState } from 'react';
 import type { PanelDef } from './contract.ts';
 import { usePoll, unwrapResult } from './panel-utils.ts';
+import { CustomSelect } from '../components/CustomSelect.tsx';
 
 const LANG_FR = `
 panels:
@@ -135,10 +136,20 @@ function TeamMembersPanel({ ctx, params }: { ctx: any; params: Record<string, an
     const running = bt?.running ?? false;
     const step = bt?.current_step ?? m.current_step ?? null;
     const status = running ? 'running' : (step ? 'waiting' : 'idle');
-    const myTasks = (tasks.data ?? []).filter((tk: any) =>
-      String(tk.assigned_to ?? '').includes(nameOf(m)) && tk.status !== 'done');
-    const currentTask = myTasks[0]?.title ?? null;
-    return { ...m, id, bt, met, running, step, status, currentTask };
+    // Tâche en cours : l'API agent/list-by-team fournit current_task (jointure
+    // sur assigned_to = id agent). Fallback : filtre local sur les tâches
+    // (assigned_to peut être le nom ou l'id — on accepte les deux).
+    const apiTask = bt?.current_task;
+    let currentTask = apiTask?.title ?? null;
+    let currentTaskId = apiTask?.task_id ?? null;
+    if (!currentTask) {
+      const myTasks = (tasks.data ?? []).filter((tk: any) =>
+        (String(tk.assigned_to ?? '') === id || String(tk.assigned_to ?? '').includes(nameOf(m)))
+        && tk.status !== 'done');
+      currentTask = myTasks[0]?.title ?? null;
+      currentTaskId = myTasks[0]?.task_id ?? null;
+    }
+    return { ...m, id, bt, met, running, step, status, currentTask, currentTaskId };
   });
 
   return (
@@ -157,14 +168,18 @@ function TeamMembersPanel({ ctx, params }: { ctx: any; params: Record<string, an
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
         <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder={t('panels.agents-team-members.nom_agent')}
           style={{ width: 90, fontSize: 11, padding: '2px 4px', background: 'var(--mw-bg, #0f172a)', color: 'var(--mw-fg, #e2e8f0)', border: '1px solid var(--mw-border, #334155)', borderRadius: 4 }} />
-        <select value={addRole} onChange={(e) => setAddRole(e.target.value)}
-          style={{ fontSize: 11, padding: '2px 4px', background: 'var(--mw-bg, #0f172a)', color: 'var(--mw-fg, #e2e8f0)', border: '1px solid var(--mw-border, #334155)', borderRadius: 4 }}>
-          <option value="codeur">codeur</option>
-          <option value="test_runner">testeur</option>
-          <option value="relecteur">relecteur</option>
-          <option value="explore">explore</option>
-          <option value="architecte">architecte</option>
-        </select>
+        <CustomSelect
+          value={addRole}
+          onChange={(v) => setAddRole(v)}
+          options={[
+            { value: 'codeur', label: 'codeur' },
+            { value: 'test_runner', label: 'testeur' },
+            { value: 'relecteur', label: 'relecteur' },
+            { value: 'explore', label: 'explore' },
+            { value: 'architecte', label: 'architecte' },
+          ]}
+          testid="team-addrole"
+        />
         <button disabled={busy || !addName} onClick={() => act(async () => {
           await ctx.api.post('team/add-member', { name: teamName, agent_name: addName, role: addRole });
           setAddName('');
@@ -190,7 +205,7 @@ function TeamMembersPanel({ ctx, params }: { ctx: any; params: Record<string, an
             )}
             {m.currentTask && (
               <div style={{ color: '#fbbf24', fontSize: 11, marginTop: 2 }}>
-                {t('panels.agents-team-members.tache_cours') ?? 'Tâche en cours'} : {m.currentTask}
+                {t('panels.agents-team-members.tache_cours') ?? 'Tâche en cours'} : #{m.currentTaskId ?? '?'} {m.currentTask}
               </div>
             )}
             <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>

@@ -118,9 +118,52 @@ CHAT_WORKFLOW = {
 
 TICK_INTERVAL = 1          # secondes entre chaque cycle de supervision
 MAX_THREAD_AGENTS = 100    # agents actifs simultanés max
+MIN_ACTIVE_TARGET = 10     # cible d'agents greedy ACTIFS simultanés (le waker
+                           # complète jusqu'à ce seuil quand du travail est dispo)
+MIN_REVIEWERS_ACTIVE = 4   # reviewers greedy MINIMUM actifs quand un backlog
+                           # review existe (priorité : valider les livrables
+                           # avant de produire encore plus de tâches à relire)
 MAX_SLEEPING_AGENTS = 10000  # agents endormis max dans la BDD
 MIN_DISK_FREE_GB = 1       # espace disque libre minimum avant de créer un agent
 MAX_TOTAL_AGENT_DISK_GB = 10  # espace disque total max utilisé par tous les agents
+
+# Registre en mémoire des threads agents EN VIE. Garantie anti re-spawn : même
+# si agent_runtime est purgé en BDD (ex. watcher P8, restart partiel), on ne
+# re-hydrate JAMAIS un agent dont le thread Python tourne encore — sinon on
+# empile des clones (1000 threads / 8000 fds observés).
+_LIVE_AGENT_THREADS: Dict[int, threading.Thread] = {}
+_LIVE_LOCK = threading.Lock()
+
+# Cooldown de ré-armement wait_for après un échec de run (secondes). Évite le
+# spam wait_for→réveil→échec→wait_for toutes les 5s quand un agent échoue vite
+# (modèle mort, exception rapide). On n'arme que 1 fois / cooldown.
+REARM_WAITFOR_COOLDOWN_S = 20.0
+_LAST_REARM_AT: Dict[int, float] = {}
+
+
+def _agent_thread_alive(agent_id: int) -> bool:
+    with _LIVE_LOCK:
+        th = _LIVE_AGENT_THREADS.get(agent_id)
+        return th is not None and th.is_alive()
+
+
+def _live_agent_threads_count() -> int:
+    """Nombre de threads agents actuellement vivants (agents greedy en run).
+
+    Reflète la VRAIE activité : les agents greedy s'exécutent dans des threads
+    daemon enregistrés dans _LIVE_AGENT_THREADS (inscrits au début de
+    _run_sleeping_agent, retirés à la fin). C'est plus fiable que agent_runtime
+    (qui peut être purgé par le watcher P3/P8 pendant un run long).
+    """
+    with _LIVE_LOCK:
+        return sum(1 for th in _LIVE_AGENT_THREADS.values() if th.is_alive())
+
+
+def _live_agent_thread_ids() -> List[int]:
+    """IDs des agents greedy actuellement en run (threads vivants)."""
+    with _LIVE_LOCK:
+        return [aid for aid, th in _LIVE_AGENT_THREADS.items() if th.is_alive()]
+
 
 # Mapping role_type d'agent → rôle requis par une tâche (workspace greedy).
 # Une tâche avec role_required='coder_senior' réveille les agents 'codeur'.
@@ -161,6 +204,7 @@ class Agent:
         self.status = agent_data["status"]
         self._call_provider_ref = ""
         self._call_model_ref = ""
+        self._owns_db = False  # True si hydrate a reçu un db DÉDIÉ → à fermer
 
         # Lifecycle hooks
         config = json.loads(self._data.get("config_json") or "{}")
@@ -198,6 +242,9 @@ class Agent:
                 f"du run avant de le relancer (agent_runtime présent)")
 
         self = cls(db, dict(row))
+        # Si un db DÉDIÉ (non partagé) est passé, l'agent en est propriétaire
+        # → dehydrate() le fermera (évite la fuite de fds SQLite par run).
+        self._owns_db = db is not None
 
         # Marquer comme IDLE dans la BDD
         db.conn.execute(
@@ -747,6 +794,16 @@ class Agent:
             except Exception:
                 pass
 
+        # Fermer la connexion BDD de cet agent (thread_db du thread) : sinon
+        # chaque run laisse des fds SQLite ouverts à vie (fuite → contention).
+        # Best-effort : la connexion partagée self.db.conn n'est PAS fermée ici
+        # (le manager en a besoin), seules les connexions dédiées le sont.
+        if getattr(self, "_owns_db", False):
+            try:
+                db.close()
+            except Exception:
+                pass
+
     # ── Accès au shell interne ────────────────────────────────────
 
     @property
@@ -956,6 +1013,37 @@ class AgentManager:
         woken_coord = self._wake_coordinator()
 
         active = len(self.list_active())
+        # ACTIVITÉ RÉELLE : les agents greedy s'exécutent dans des threads
+        # daemon enregistrés dans _LIVE_AGENT_THREADS. Un agent qui travaille
+        # (même en attente LLM, pas encore dans agent_runtime à cet instant)
+        # compte comme actif. Sans ça, `active_agents` sous-estime massivement
+        # le swarm (les threads vivants vs agent_runtime).
+        active = max(active, _live_agent_threads_count())
+        # Partager la vraie activité avec les AUTRES process (API daemon, GUI) :
+        # ils ne voient pas _LIVE_AGENT_THREADS (registre en mémoire par
+        # process). On écrit le compteur dans meta.agents_active à chaque tick.
+        try:
+            self.db.conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('agents_active', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (active,))
+            self.db.conn.commit()
+        except Exception:
+            pass
+        # SYNCHRO STATUT : marque RUNNING les greedy en thread vivant et remet
+        # les autres à INIT (les panneaux GUI lisent `agents.status` — sans ça
+        # ils affichent IDLE/INIT pour des agents qui travaillent réellement
+        # dans des threads hors agent_runtime).
+        try:
+            live_ids = list(_live_agent_thread_ids())
+            if live_ids:
+                ph = ",".join("?" for _ in live_ids)
+                self.db.conn.execute(
+                    f"UPDATE agents SET status = 'RUNNING', last_active_at = datetime('now') "
+                    f"WHERE agent_id IN ({ph})", tuple(live_ids))
+            self.db.conn.commit()
+        except Exception:
+            pass
 
         return {
             "status": "ok",
@@ -996,6 +1084,8 @@ class AgentManager:
             active = {r["agent_id"] for r in self.db.conn.execute(
                 "SELECT agent_id FROM agent_runtime").fetchall()}
             if aid in active:
+                return 0
+            if _agent_thread_alive(aid):
                 return 0
             threading.Thread(
                 target=self._run_sleeping_agent,
@@ -1128,13 +1218,25 @@ class AgentManager:
             if active + count >= MAX_THREAD_AGENTS:
                 break
             agent_id = row["agent_id"]
+            # Garde-fou mémoire : ne pas re-hydrater un agent dont un thread
+            # tourne encore (même si agent_runtime a été purgé par P8).
+            if _agent_thread_alive(agent_id):
+                continue
             threading.Thread(target=self._run_sleeping_agent, args=(agent_id,), daemon=True).start()
             count += 1
         return count
 
     def _run_sleeping_agent(self, agent_id: int, wakeup_request: str = "wakeup: signals pending",
                             workspace_id: str = "") -> None:
+        # Garde-fou anti re-spawn : si un thread du MÊME agent tourne déjà (même
+        # si agent_runtime a été purgé en BDD), on ne repart pas — évite
+        # l'accumulation de clones bloqués sur des appels LLM lents.
+        if _agent_thread_alive(agent_id):
+            return
+        with _LIVE_LOCK:
+            _LIVE_AGENT_THREADS[agent_id] = threading.current_thread()
         agent = None
+        thread_db = None
         try:
             # Connexion DÉDIÉE au thread : la connexion partagée self.db.conn
             # n'est pas thread-safe (sqlite3) → "bad parameter or API misuse"
@@ -1142,35 +1244,47 @@ class AgentManager:
             from modules.sql.db import AgentsDB
             thread_db = AgentsDB()
             agent = Agent.hydrate(agent_id, db=thread_db)
-            if workspace_id:
+            if workspace_id or True:
                 # Injecte le workspace + le rôle greedy + team_id dans les
                 # variables : l'agent sait où piocher, avec quel rôle, et dans
                 # quelle team. team_id = id du plus ancien membre de la team
                 # (stable par team) ; -1 si pas de team.
+                # Toujours résoudre le workspace DEPUIS LE MANIFEST de la team
+                # (source de vérité) : sans ça un agent réveillé sans ws garde
+                # une variable héritée d'un ancien workspace (pause-resume-
+                # daemon) et pioche au mauvais endroit.
                 try:
                     import json as _json
+                    name = agent._data.get("name", "")
+                    # 0) Source de vérité : le manifest de la team (workspace_id)
+                    from services.team_spec import TeamSpec
+                    _team_name = name.split("/")[0][len("team:"):] if name.startswith("team:") else ""
+                    _manifest_ws = ""
+                    _manifest_proj = ""
+                    if _team_name:
+                        try:
+                            _spec = TeamSpec.from_yaml(
+                                f"services/manifests/teams/{_team_name}.team.yaml")
+                            _manifest_proj = _spec.workspace_id or ""
+                            _manifest_ws = _spec.workspace_id or ""
+                        except Exception:
+                            _manifest_ws = ""
+                    # Le workspace de PIOCHAGE des tâches = le workspace de la
+                    # team (manifest, source de vérité). On l'emporte sur le ws
+                    # passé par le waker s'il vient d'un wait_for obsolète
+                    # (l'agent s'était endormi sur un ancien workspace). Un ws
+                    # explicite n'est respecté que pour les agents HORS team
+                    # (pas de manifest) ou si le manifest n'en définit pas.
+                    _use_ws = _manifest_ws or workspace_id or "mw-dev-chat"
                     vars_j = _json.loads(agent._data.get("variables_json") or "{}")
-                    vars_j["workspace_id"] = workspace_id
+                    vars_j["workspace_id"] = _use_ws
                     # project_id git = le workspace de la TEAM (repo central de
                     # référence, ex. mw-swarm), pas le workspace des tâches.
-                    name = agent._data.get("name", "")
-                    try:
-                        # 0) Source de vérité : le manifest de la team
-                        # (workspace_id) — évite tout devinement fragile.
-                        from services.team_spec import TeamSpec
-                        _team_name = name.split("/")[0][len("team:"):] if name.startswith("team:") else ""
-                        _proj = ""
-                        if _team_name:
-                            try:
-                                _spec = TeamSpec.from_yaml(
-                                    f"services/manifests/teams/{_team_name}.team.yaml")
-                                _proj = _spec.workspace_id or ""
-                            except Exception:
-                                _proj = ""
-                        if _proj:
-                            vars_j["project_id"] = _proj
-                        else:
-                            # fallback : workspace lié à la team (director)
+                    if _manifest_proj:
+                        vars_j["project_id"] = _manifest_proj
+                    else:
+                        # fallback : workspace lié à la team (director)
+                        try:
                             from modules.sql.workspace import WorkspaceDB
                             _wdb = WorkspaceDB()
                             _tname = name.split("/")[0] if name.startswith("team:") else ""
@@ -1185,8 +1299,8 @@ class AgentManager:
                                     (_tname + "%",)).fetchone()
                             vars_j["project_id"] = _ws["workspace_id"] if _ws else "mw-swarm"
                             _wdb.close()
-                    except Exception:
-                        vars_j["project_id"] = "mw-swarm"
+                        except Exception:
+                            vars_j["project_id"] = "mw-swarm"
                     vars_j["role_required"] = ROLE_TO_TASK.get(
                         agent._data.get("role_type"), "")
                     # team_id stable : le plus petit agent_id de la team (ou -1)
@@ -1209,9 +1323,10 @@ class AgentManager:
                     agent._data["variables_json"] = _json.dumps(vars_j)
                 except Exception:
                     pass
-            agent.execute(request=wakeup_request)
+            run_result = agent.execute(request=wakeup_request)
         except Exception as e:
             import traceback
+            run_result = None
             try:
                 log_dir = Path(mw_home()) / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
@@ -1221,11 +1336,86 @@ class AgentManager:
                              f"échec: {e}\n{traceback.format_exc()}\n")
             except Exception:
                 pass
-        if agent:
+        finally:
+            # Réveil auto après ÉCHEC de run (pas un endormissement volontaire) :
+            # si l'agent s'est arrêté sur une série de LLM en échec (llm_timeout,
+            # no_action, max_loops, tool_loop_break…) sans avoir pu s'endormir
+            # proprement via wait_for, on ré-enregistre son wait_for pour que le
+            # waker le re-réveille au prochain tick (il retentera avec des LLM
+            # potentiellement re-disponibles). Un greedy échoue souvent au 1er
+            # essai (modèle mort) puis réussit au suivant — sans ce ré-armement
+            # il resterait INIT/endormi pour toujours.
             try:
-                agent.dehydrate()
+                _sig = ""
+                _code = 1
+                if isinstance(run_result, dict):
+                    _sig = str(run_result.get("signal")
+                               or run_result.get("status")
+                               or run_result.get("end_reason")
+                               or "")
+                    _code = int(run_result.get("exit_code")
+                                or (1 if run_result.get("status") in
+                                    ("failed", "error", "aborted") else 0))
+                _failed_sig = _sig in (
+                    "llm_timeout", "no_action", "max_loops", "tool_loop_break",
+                    "llm_error", "pool_saturated", "error", "failed", "aborted")
+                # Ré-armer le wait_for UNIQUEMENT pour les greedy (occupation
+                # continue) — les agents non-greedy (chat-pilot, etc.) ne doivent
+                # pas boucler.
+                _occupation = ""
+                try:
+                    _r = self.db.conn.execute(
+                        "SELECT occupation FROM agents WHERE agent_id = ?",
+                        (agent_id,)).fetchone()
+                    if _r:
+                        _occupation = _r["occupation"] or ""
+                except Exception:
+                    pass
+                if _failed_sig and _occupation == "continue" and not _agent_thread_alive(agent_id):
+                    # Cooldown : ne pas spammer wait_for si l'agent échoue en
+                    # boucle rapide (modèle mort). On ré-arme au plus 1 fois
+                    # par REARM_WAITFOR_COOLDOWN_S.
+                    _rearm = False
+                    _now_t = time.time()
+                    with _LIVE_LOCK:
+                        _last = _LAST_REARM_AT.get(agent_id, 0.0)
+                        if _now_t - _last >= REARM_WAITFOR_COOLDOWN_S:
+                            _LAST_REARM_AT[agent_id] = _now_t
+                            _rearm = True
+                    if _rearm:
+                        _role_req = ROLE_TO_TASK.get(
+                            (agent._data.get("role_type") if agent else ""), "")
+                        _ws = ""
+                        if agent:
+                            try:
+                                import json as _aj
+                                _v = _aj.loads(agent._data.get("variables_json") or "{}")
+                                _ws = _v.get("workspace_id", "") or "mw-dev-chat"
+                                _role_req = _v.get("role_required", "") or _role_req
+                            except Exception:
+                                _ws = "mw-dev-chat"
+                        self.db.wait_for.register(agent_id, {
+                            "type": "task_for_role",
+                            "workspace_id": _ws or "mw-dev-chat",
+                            "role": _role_req or "",
+                            "team_id": -1})
             except Exception:
                 pass
+            if agent:
+                try:
+                    agent.dehydrate()
+                except Exception:
+                    pass
+            # Fermer la connexion SQLite DÉDIÉE du thread : sans ça chaque run
+            # laisse des fds agents.db/modelweaver.db/catalogue.db ouverts à
+            # vie (des milliers accumulés → contention + CPU).
+            if thread_db is not None:
+                try:
+                    thread_db.close()
+                except Exception:
+                    pass
+            with _LIVE_LOCK:
+                _LIVE_AGENT_THREADS.pop(agent_id, None)
 
     def _wake_for_tasks(self) -> int:
         """Réveille les agents greedy en attente (wait_for) quand leur condition
@@ -1302,6 +1492,14 @@ class AgentManager:
                 return any(t == team or t == -1 for w, t in open_issues)
             if ctype == "task_for_role":
                 role = cond.get("role", "")
+                # Le REVIEWER est réveillé par les tâches EN REVIEW (peu importe
+                # leur rôle d'origine coder_junior/analyst/… : une tâche livrée
+                # n'est done que si reviewée). On matche les tâches 'review'
+                # (team/projet), pas les pending du rôle reviewer (il n'y en a
+                # jamais).
+                if role == "reviewer":
+                    return any(t == team or t == -1
+                               for w, t in review_tasks)
                 # Match par rôle + team sur TOUS les workspaces : l'analyste crée
                 # les tasks dans son workspace (ex. audit_io_declarations), pas
                 # celui de la team (mw-swarm). L'agent doit être réveillé dès
@@ -1322,8 +1520,57 @@ class AgentManager:
                 return False
             return False
 
-        active = len(self.list_active())
+        # Vraie activité : threads greedy vivants (réels) + agent_runtime.
+        # C'est cette mesure qui pilote MIN_ACTIVE_TARGET — sinon on réveille
+        # sans cesse des agents qui tournent déjà en thread (sous-comptés par
+        # agent_runtime seul).
+        active = max(len(self.list_active()), _live_agent_threads_count())
         count = 0
+        # Les wait_for `ready` dont l'agent a TERMINÉ son run (thread fini,
+        # plus dans agent_runtime ni _LIVE_AGENT_THREADS) sont re-réveillables :
+        # l'agent a fini de travailler mais est resté en statut `ready` sans se
+        # re-enregistrer en `waiting` (re-pioche épuisée, échec, ou fin simple).
+        # Sans ça ils restent bloqués en `ready` pour toujours alors que du
+        # travail existe (observé : tous les greedy dev-chat coincés `ready`).
+        ready_rows = self.db.conn.execute("""
+            SELECT w.id AS wid, w.agent_id, w.condition, w.status
+            FROM wait_for w
+            WHERE w.status = 'ready'
+              AND w.agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+              AND w.ready_at < datetime('now', '-20 seconds')
+            ORDER BY w.id ASC
+            LIMIT 40
+        """).fetchall()
+        for r in ready_rows:
+            if active + count >= MIN_ACTIVE_TARGET:
+                break
+            if _agent_thread_alive(r["agent_id"]):
+                continue
+            try:
+                cond = _json.loads(r["condition"])
+            except Exception:
+                self.db.wait_for.mark_done(r["agent_id"])
+                continue
+            if not _cond_matches(cond):
+                continue
+            # Re-réveiller : repasser en waiting pour que la boucle ci-dessous
+            # le réveille (ou le réveiller directement via l'amorce).
+            self.db.wait_for.mark_done(r["agent_id"])
+            ws = cond.get("workspace_id", "")
+            role = cond.get("role", "")
+            team = int(cond.get("team_id", -1))
+            if role == "reviewer":
+                for _w, _t in review_tasks:
+                    if _t == team or _t == -1:
+                        ws = _w
+                        break
+            elif ws and not any(_r == role for _w, _t, _r in pending_tasks):
+                ws = next(iter({w for w, _, _ in pending_tasks}), ws)
+            threading.Thread(target=self._run_sleeping_agent,
+                             args=(r["agent_id"], "wakeup: task pending", ws),
+                             daemon=True).start()
+            count += 1
+
         for w in waiting:
             if active + count >= MAX_THREAD_AGENTS:
                 break
@@ -1362,11 +1609,20 @@ class AgentManager:
                 # crée dans SON workspace, pas celui de la team).
                 _role = cond.get("role", "")
                 _team = int(cond.get("team_id", -1))
-                for _w, _t, _r in pending_tasks:
-                    if _r == _role and (_t == _team or _t == -1):
-                        ws = _w
-                        break
+                if _role == "reviewer":
+                    # Reviewer : passer le workspace où il y a des tâches 'review'.
+                    for _w, _t in review_tasks:
+                        if _t == _team or _t == -1:
+                            ws = _w
+                            break
+                else:
+                    for _w, _t, _r in pending_tasks:
+                        if _r == _role and (_t == _team or _t == -1):
+                            ws = _w
+                            break
             self.db.wait_for.mark_ready(w["id"])
+            if _agent_thread_alive(w["agent_id"]):
+                continue
             threading.Thread(target=self._run_sleeping_agent,
                              args=(w["agent_id"], req, ws),
                              daemon=True).start()
@@ -1375,26 +1631,50 @@ class AgentManager:
         # AMORCE : si aucun agent n'est encore en wait_for (premier cycle) mais
         # qu'il y a du travail et des agents greedy non hydratés, on les réveille
         # pour lancer le swarm. Le wait_for prend le relais ensuite (re-endormir).
-        if count == 0 and (open_issues or pending_tasks):
-            rows = self.db.conn.execute("""
+        # CIBLE D'ACTIFS : on réveille des greedy jusqu'à atteindre au moins
+        # MIN_ACTIVE_TARGET actifs simultanés (le wait_for seul n'en lance qu'un
+        # par condition, le swarm resterait à 1-3 agents). Tant que des tâches
+        # du rôle sont dispo, on complète le pool d'actifs.
+        if active + count < MIN_ACTIVE_TARGET and (open_issues or pending_tasks):
+            # PRIORITÉ REVIEWER : si des tâches attendent en review, les
+            # reviewers passent AVANT les codeurs — sinon le backlog review
+            # grossit sans fin (les codeurs produisent plus vite que 2-3
+            # reviewers ne valident). Les reviewers en premier, puis le reste.
+            _reviewer_first = "1" if review_tasks else "0"
+            rows = self.db.conn.execute(f"""
                 SELECT agent_id, name, role_type FROM agents
-                WHERE (config_json LIKE '%\"pick\"%'
+                WHERE (config_json LIKE '%"pick"%'
                        OR config_json LIKE '%claim_next%'
                        OR config_json LIKE '%Boucle gloutonne%'
                        OR config_json LIKE '%greedy%'
                        OR occupation = 'continue')
                   AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
                   AND agent_id NOT IN (SELECT agent_id FROM wait_for WHERE status='waiting')
-                LIMIT 20
+                ORDER BY CASE WHEN role_type = 'relecteur' THEN {_reviewer_first} ELSE 0 END DESC
+                LIMIT 40
             """).fetchall()
+            # Cible d'actifs DYNAMIQUE : si un backlog review existe, garantir
+            # au moins MIN_REVIEWERS_ACTIVE reviewers actifs — on AUGMENTE le
+            # plafond au-delà de MIN_ACTIVE_TARGET pour que les reviewers aient
+            # toujours des slots (les codeurs/autres greedy ne les évincent pas).
+            _target = MIN_ACTIVE_TARGET
+            if review_tasks:
+                _rev_run = self.db.conn.execute(
+                    "SELECT COUNT(*) n FROM agents WHERE role_type='relecteur' "
+                    "AND status='RUNNING'").fetchone()
+                _rev_run = _rev_run["n"] if _rev_run else 0
+                if _rev_run < MIN_REVIEWERS_ACTIVE:
+                    _target = MIN_ACTIVE_TARGET + (MIN_REVIEWERS_ACTIVE - _rev_run)
             for row in rows:
-                if active + count >= MAX_THREAD_AGENTS:
+                if active + count >= _target:
                     break
                 rt = ROLE_TO_TASK.get(row["role_type"], "")
                 # analyste → issue ; rôles greedy → SEULEMENT si des tasks de son
                 # rôle (+ team/projet) sont dispo, sinon il re-pioche rien et
                 # spam les wait_for.
                 if open_issues and rt == "analyst":
+                    if _agent_thread_alive(row["agent_id"]):
+                        continue
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: issue pending",
                                            next(iter({w for w, _ in open_issues}), "")),
@@ -1407,6 +1687,8 @@ class AgentManager:
                     if rt == "merger" and all_done:
                         _tid = self._agent_team_id(row["agent_id"])
                         if not self._has_unpushed(_tid):
+                            continue
+                        if _agent_thread_alive(row["agent_id"]):
                             continue
                         threading.Thread(target=self._run_sleeping_agent,
                                          args=(row["agent_id"], "wakeup: workspace done",
@@ -1429,6 +1711,8 @@ class AgentManager:
                     elif not any(
                         _r in _compatible_roles(rt) or _r == rt
                         for _w, _t, _r in pending_tasks):
+                        continue
+                    if _agent_thread_alive(row["agent_id"]):
                         continue
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: task pending",
@@ -1931,13 +2215,27 @@ def run_service(interval: float = 5.0):
     if not acquire_instance_lock("agent_manager"):
         return
 
+    def _log(msg: str):
+        try:
+            with open(Path(mw_home()) / "logs" / "agent-manager-tick.log", "a",
+                      encoding="utf-8") as fh:
+                fh.write(f"[{time.time():.0f}] {msg}\n")
+        except Exception:
+            pass
+
     manager = AgentManager()
     while True:
         try:
             result = manager.tick()
             if result["zombies_found"] > 0:
                 print(json.dumps(result), flush=True)
+            _log(json.dumps({k: result.get(k) for k in
+                             ("active_agents", "woken_agents", "woken_tasks",
+                              "woken_coordinator", "tasks_reclaimed")}
+                            | {"live_threads": _live_agent_threads_count()}))
         except Exception as e:
+            import traceback
+            _log(f"TICK ERROR: {e}\n{traceback.format_exc()}")
             print(json.dumps({"error": str(e)}), flush=True)
         time.sleep(interval)
 
