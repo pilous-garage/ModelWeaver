@@ -15,7 +15,7 @@ import React, { useMemo, useCallback } from 'react';
 import { parse as yamlParse } from 'yaml';
 import {
   ReactFlow, Background, Controls, useNodesState, useEdgesState,
-  Handle, Position, type Node, type Edge, type NodeProps,
+  Position, type Node, type Edge, type NodeProps,
 } from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
@@ -67,10 +67,6 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
     }}>
       {`${st?.icon ?? ''} ${n?.label ?? ''}`}
-      <Handle type="target" position={Position.Left} id="w" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
-      <Handle type="source" position={Position.Right} id="e" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
-      <Handle type="target" position={Position.Top} id="n" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
-      <Handle type="source" position={Position.Bottom} id="s" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
     </div>
   );
 }
@@ -110,20 +106,27 @@ function toFlowEdges(g: GraphDoc, theme: ThemeGraphe, algo: LayoutAlgo, dir: Lay
     const labelIn = e.vars?.label_in;
     const labelOut = e.vars?.label_out;
     const pt = byKey.get(`${e.from}|${e.to}`);
-    const sourceHandle = pt?.s;
-    const targetHandle = pt?.t;
+    // Layout par côtés : sourcePosition/targetPosition (React Flow les place
+    // automatiquement au centre du côté choisi). Si un côté est inconnu, on
+    // laisse React Flow choisir (jamais d'arête perdue).
+    const sourcePosition = pt ? sideToPosition(pt.s) : undefined;
+    const targetPosition = pt ? sideToPosition(pt.t) : undefined;
     return {
       id: `${e.from}->${e.to}-${i}`,
       source: e.from,
       target: e.to,
-      sourceHandle,
-      targetHandle,
+      sourcePosition,
+      targetPosition,
       label: e.label || (labelIn && labelOut ? `${labelIn} → ${labelOut}` : undefined),
       animated: e.type === 'token',
       style: { stroke: st.color, strokeDasharray: st.style === 'dashed' ? '5 4' : st.style === 'dotted' ? '2 3' : undefined },
       markerEnd: st.arrow ? { type: 'arrowclosed', color: st.color } : undefined,
     } as Edge;
   });
+}
+
+function sideToPosition(s: Side): Position {
+  return ({ n: Position.Top, s: Position.Bottom, e: Position.Right, w: Position.Left } as Record<Side, Position>)[s];
 }
 
 // ── Moteur SVG/DOM maison (export, fallback) — layout par côtés ─────
