@@ -301,8 +301,20 @@ export function buildMenu(
     }
     return out;
   })();
+  // Les items de panels ciblant le menu AFFICHAGE sont insérés DIRECTEMENT
+  // dans `affichage` (pas en sous-section "Affichage → Affichage").
+  const panelInAffichage: MenuItem[] = [];
   if (panelSection.length) {
-    affichage.push(...panelSection);
+    for (const sec of panelSection) {
+      if (sec.labelKey === 'menu.affichage') {
+        panelInAffichage.push(...(sec.items ?? []));
+      } else {
+        panelInAffichage.push(sec);
+      }
+    }
+  }
+  if (panelInAffichage.length) {
+    affichage.push(...panelInAffichage);
     affichage.push({ type: 'separator' });
   }
 

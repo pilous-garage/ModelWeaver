@@ -108,8 +108,35 @@ describe('resolveLayout', () => {
     expect(labels).toContain('menu.aide');
   });
 
-  it('menu Affichage : Panneaux ouverts + Ouvrir nouveau (bundles) + Mini-layout + Refresh', () => {
-    const catalogue = [
+  it('l\'item menu d\'un panel ciblant Affichage est inséré directement (pas de sous-section)', () => {
+    // Layout avec un panel 'graphe-agent' ouvert.
+    const l: Layout = {
+      ...layout(),
+      tree: {
+        type: 'split', direction: 'horizontal',
+        children: [
+          { type: 'group', id: 'pg-A', tabs: [{ panel: 'graphe-agent', occId: 'o1' }], active: 'o1' },
+        ],
+      },
+    };
+    const r = resolveLayout(l, {
+      'graphe-agent': [
+        { labelKey: 'menu.themeGraphe', action: 'theme-graphe:set', path: ['menu.affichage'] },
+      ],
+    });
+    const affichage = r.menu.find((m) => m.labelKey === 'menu.affichage')!;
+    expect(affichage).toBeTruthy();
+    const labels = affichage.items!.map((i) => i.labelKey ?? (i.style === 'section-header' ? 'header' : 'sep'));
+    // L'item theme-graphe est DANS affichage directement, pas dans un sous-menu "Affichage".
+    expect(labels).toContain('menu.themeGraphe');
+    // Pas de sous-menu imbriqué nommé "Affichage".
+    expect(affichage.items!.some((i) => i.labelKey === 'menu.affichage' && i.items)).toBe(false);
+    // L'item garde son action (transformée en radio par App).
+    const item = affichage.items!.find((i) => i.action === 'theme-graphe:set');
+    expect(item).toBeTruthy();
+  });
+
+  it('menu Affichage : Panneaux ouverts + Ouvrir nouveau (bundles) + Mini-layout + Refresh', () => {    const catalogue = [
       { id: 'monitoring-processus', labelKey: 'panels.monitoring-processus.titre', bundles: ['monitoring'] },
       { id: 'chat', labelKey: 'panels.chat.titre', bundles: ['communication'] },
       { id: 'sans-bundle', labelKey: 'panels.sans-bundle.titre' }, // → Autres
