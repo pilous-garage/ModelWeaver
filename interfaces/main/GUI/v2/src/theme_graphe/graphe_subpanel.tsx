@@ -13,11 +13,18 @@
 
 import React, { useMemo, useCallback } from 'react';
 import { parse as yamlParse } from 'yaml';
-import { ReactFlow, Background, Controls, useNodesState, useEdgesState, type Node, type Edge } from '@xyflow/react';
+import {
+  ReactFlow, Background, Controls, useNodesState, useEdgesState,
+  Handle, Position, type Node, type Edge, type NodeProps,
+} from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
 import { GraphDoc, parseGraph, nodePosOf, setNodePos, stripPositions } from './grapheTypes.ts';
 import { ThemeGraphe, loadTheme, nodeStyleOf, edgeStyleOf } from './themeGraphe.ts';
+import {
+  computeEdgePorts, toBoxes, anchorPoint,
+  type Side, type NodeBox,
+} from './graphLayout.ts';
 
 export interface GrapheSubPanelProps {
   doc: string | Record<string, any> | null;   // graph.yaml (string) ou objet
@@ -48,7 +55,31 @@ function layoutNodes(nodes: GraphDoc['nodes'], edges: GraphDoc['edges']): Map<st
   return pos;
 }
 
-// ── Conversion GraphDoc → React Flow nodes/edges ────────────────────
+// ── Nœud custom : 4 handles positionnés sur les côtés ───────────────
+// Chaque nœud expose les 4 côtés (N/S/E/W) ; les arêtes relient les handles
+// qui pointent vers leur cible/source (layout par côtés).
+function FlowNode({ data }: NodeProps & { data?: any }) {
+  const n: any = data?.n;
+  const st: any = data?.style;
+  return (
+    <div style={{
+      width: '100%', height: '100%', background: st?.color, border: `1.5px solid ${st?.border}`,
+      borderRadius: st?.shape === 'pill' ? 999 : (st?.shape === 'rounded' || st?.shape === 'circle') ? 8 : 3,
+      color: '#0f172a', fontWeight: 600, fontSize: 11,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+    }}>
+      {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+      <Handle type="target" position={Position.Left} id="w" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
+      <Handle type="source" position={Position.Right} id="e" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
+      <Handle type="target" position={Position.Top} id="n" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
+      <Handle type="source" position={Position.Bottom} id="s" style={{ width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' }} />
+    </div>
+  );
+}
+
+const nodeTypes = { flow: FlowNode };
+
+// ── Conversion GraphDoc → React Flow nodes/edges (layout par côtés) ──
 function toFlowNodes(g: GraphDoc, theme: ThemeGraphe): Node[] {
   const auto = layoutNodes(g.nodes, g.edges);
   return g.nodes.map((n: any) => {
@@ -60,28 +91,35 @@ function toFlowNodes(g: GraphDoc, theme: ThemeGraphe): Node[] {
     const size = pos?.size ?? [NODE_W, NODE_H];
     return {
       id: n.id,
+      type: 'flow',
       position: xy,
       data: { label: `${st.icon ?? ''} ${n.label}`, n, style: st },
-      style: {
-        width: size[0], height: size[1],
-        background: st.color, border: `1.5px solid ${st.border}`,
-        borderRadius: st.shape === 'pill' ? 999 : (st.shape === 'rounded' || st.shape === 'circle') ? 8 : 3,
-        color: '#0f172a', fontWeight: 600, fontSize: 11,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      },
+      style: { width: size[0], height: size[1] },
     } as Node;
   });
 }
 
 function toFlowEdges(g: GraphDoc, theme: ThemeGraphe): Edge[] {
+  const auto = layoutNodes(g.nodes, g.edges);
+  const boxes = toBoxes(auto, () => [NODE_W, NODE_H] as [number, number],
+    g.nodes.map((n) => n.id));
+  const ports = computeEdgePorts(boxes, g.edges);
+  const byKey = new Map<string, { s: Side; t: Side }>();
+  for (const p of ports) byKey.set(`${p.from}|${p.to}`, { s: p.sourceSide, t: p.targetSide });
+
   return g.edges.map((e: any, i: number) => {
     const st = edgeStyleOf(theme, e.type);
     const labelIn = e.vars?.label_in;
     const labelOut = e.vars?.label_out;
+    const pt = byKey.get(`${e.from}|${e.to}`);
+    const sourceHandle = pt?.s;
+    const targetHandle = pt?.t;
     return {
       id: `${e.from}->${e.to}-${i}`,
       source: e.from,
       target: e.to,
+      sourceHandle,
+      targetHandle,
       label: e.label || (labelIn && labelOut ? `${labelIn} → ${labelOut}` : undefined),
       animated: e.type === 'token',
       style: { stroke: st.color, strokeDasharray: st.style === 'dashed' ? '5 4' : st.style === 'dotted' ? '2 3' : undefined },
@@ -90,9 +128,15 @@ function toFlowEdges(g: GraphDoc, theme: ThemeGraphe): Edge[] {
   });
 }
 
-// ── Moteur SVG/DOM maison (export, fallback) ────────────────────────
+// ── Moteur SVG/DOM maison (export, fallback) — layout par côtés ─────
 function SvgRenderer({ g, theme }: { g: GraphDoc; theme: ThemeGraphe }) {
   const auto = layoutNodes(g.nodes, g.edges);
+  const boxes = toBoxes(auto, () => [NODE_W, NODE_H] as [number, number],
+    g.nodes.map((n) => n.id));
+  const ports = computeEdgePorts(boxes, g.edges);
+  const byKey = new Map<string, { s: Side; t: Side; sp: number; tp: number }>();
+  for (const p of ports) byKey.set(`${p.from}|${p.to}`,
+    { s: p.sourceSide, t: p.targetSide, sp: p.sourcePos, tp: p.targetPos });
   const width = 800;
   const height = Math.max(300, g.nodes.length * 70 + 40);
   return (
@@ -106,9 +150,12 @@ function SvgRenderer({ g, theme }: { g: GraphDoc; theme: ThemeGraphe }) {
       {g.edges.map((e: any, i: number) => {
         const a = auto.get(e.from); const b = auto.get(e.to);
         if (!a || !b) return null;
-        const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
-        const x2 = b.x, y2 = b.y + NODE_H / 2;
+        const ba = boxes.get(e.from); const bb = boxes.get(e.to);
+        const pt = byKey.get(`${e.from}|${e.to}`);
         const st = edgeStyleOf(theme, e.type);
+        // Point d'ancrage par côté (plus proche de la bordure).
+        const [x1, y1] = ba && pt ? anchorPoint(ba, pt.s, pt.sp) : [a.x + NODE_W, a.y + NODE_H / 2];
+        const [x2, y2] = bb && pt ? anchorPoint(bb, pt.t, pt.tp) : [b.x, b.y + NODE_H / 2];
         return (
           <g key={i}>
             <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={st.color}
@@ -213,6 +260,7 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           <ReactFlow
             nodes={nodes}
             edges={edges}
+            nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeDragStop={onNodeDragStop}
