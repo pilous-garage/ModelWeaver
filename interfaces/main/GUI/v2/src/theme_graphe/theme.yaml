@@ -1,0 +1,120 @@
+# theme_graphe — thème par défaut du rendu de graphe.
+# Chaque TYPE de node/edge → sa représentation visuelle.
+# Le rendu devient générique : graphe.yaml (données) + theme.yaml (style).
+#
+# node.shape : rect | rounded | pill | diamond | hex | square
+# node.edge  : style de bordure
+# edge.style : solid | dashed | dotted
+# arrow      : true = flèche dirigée (de → to)
+
+id: default
+name: "Défaut"
+color_scheme: dark
+
+nodes:
+  entry:
+    shape: pill
+    icon: "▶"
+    color: "#a6e3a1"
+    border: "#4ade80"
+    thick: true
+  exit:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  call:
+    shape: rounded
+    icon: "🧩"
+    color: "#a6e3a1"
+    border: "#4ade80"
+  tool:
+    shape: rounded
+    icon: "🔧"
+    color: "#94e2d5"
+    border: "#2dd4bf"
+  llm:
+    shape: rect
+    icon: "🧠"
+    color: "#89b4fa"
+    border: "#60a5fa"
+  sleep:
+    shape: rounded
+    icon: "💤"
+    color: "#7f849c"
+    border: "#94a3b8"
+  switch:
+    shape: diamond
+    icon: "🔀"
+    color: "#cba6f7"
+    border: "#c084fc"
+  if:
+    shape: diamond
+    icon: "🔀"
+    color: "#cba6f7"
+    border: "#c084fc"
+  group:
+    shape: rect
+    icon: "📁"
+    color: "#6c7086"
+    border: "#475569"
+  agent:
+    shape: rounded
+    icon: "🤖"
+    color: "#a6e3a1"
+    border: "#4ade80"
+  handoff:
+    shape: rounded
+    icon: "🤝"
+    color: "#f5c2e7"
+    border: "#f0abfc"
+  spawn:
+    shape: rounded
+    icon: "🐣"
+    color: "#fab387"
+    border: "#fb923c"
+  end:
+    shape: diamond
+    icon: "⏹"
+    color: "#f38ba8"
+    border: "#fb7185"
+  token:
+    shape: circle
+    icon: "●"
+    color: "#f9e2af"
+    border: "#fbbf24"
+  default:
+    shape: rounded
+    icon: "●"
+    color: "#94a3b8"
+    border: "#64748b"
+
+edges:
+  flow:
+    style: solid
+    color: "#64748b"
+    arrow: true
+  next:
+    style: solid
+    color: "#94a3b8"
+    arrow: true
+  success:
+    style: solid
+    color: "#4ade80"
+    arrow: true
+  error:
+    style: dashed
+    color: "#f87171"
+    arrow: true
+  handoff:
+    style: dashed
+    color: "#f0abfc"
+    arrow: true
+  token:
+    style: dotted
+    color: "#fbbf24"
+    arrow: true
+  default:
+    style: solid
+    color: "#64748b"
+    arrow: true

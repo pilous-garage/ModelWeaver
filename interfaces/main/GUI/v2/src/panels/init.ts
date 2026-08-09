@@ -41,6 +41,7 @@ import { Panel as Autorisations } from './autorisations.panel.tsx';
 import { Panel as ViewAgent } from './view-agent.panel.tsx';
 import { Panel as AgentTaskflow } from './agent-taskflow.panel.tsx';
 import { Panel as SwarmTaskflow } from './swarm-taskflow.panel.tsx';
+import { Panel as GrapheAgent } from './graphe-agent.panel.tsx';
 
 /** Enregistre tous les panels + charge leurs lang. */
 export async function initPanels(): Promise<void> {
@@ -97,6 +98,8 @@ export async function initPanels(): Promise<void> {
   // Graphes : taskflow agent (dépliage) + swarmflow (toutes teams)
   registerPanel(AgentTaskflow);
   registerPanel(SwarmTaskflow);
+  // Graphe Agent : catalogue + YAML/graphe (lecture seule)
+  registerPanel(GrapheAgent);
   // Monitoring LLM avancé (graphes token/min, req/min par dim)
   registerPanel(MonitoringLlmAvance);
   await loadAllPanelLangs();

@@ -690,6 +690,62 @@ def op_agent_list_by_team(_params):
     }
 
 
+def op_catalogue_agents_list(_params):
+    """Liste les agents du catalogue (fichiers .agent.yaml), lecture seule.
+
+    Retourne pour chaque agent : nom, rôle, description, bundles. Permet au
+    panel Graphe Agent de choisir un agent sans l'éditer.
+    """
+    from services.api.catalogue_agents import _AGENTS_DIR, _read_yaml, _slug
+    out = []
+    try:
+        if _AGENTS_DIR.is_dir():
+            for f in sorted(_AGENTS_DIR.glob("*.agent.yaml")):
+                try:
+                    data = _read_yaml(f)
+                except Exception:
+                    continue
+                out.append({
+                    "name": f.stem.replace(".agent", ""),
+                    "file": f.name,
+                    "role": (data or {}).get("role", ""),
+                    "description": ((data or {}).get("description") or "")[:200],
+                    "bundles": (data or {}).get("bundles", []),
+                })
+    except Exception as e:
+        return {"status": "error", "error": str(e), "agents": []}
+    return {"status": "ok", "agents": out, "count": len(out)}
+
+
+def op_catalogue_agents_get(params):
+    """Retourne le YAML d'un agent du catalogue (lecture seule).
+
+    params : { name } (ex. codeur@v2) ou { file } (ex. codeur@v2.agent.yaml).
+    Retourne le contenu YAML brut (string) pour affichage ou conversion en
+    graphe.
+    """
+    from services.api.catalogue_agents import _AGENTS_DIR, _read_yaml
+    name = (params.get("name") or "").strip()
+    file = (params.get("file") or "").strip()
+    candidates = []
+    if file:
+        candidates.append(file)
+    if name:
+        base = name.split("@")[0]
+        candidates.append(f"{name}.agent.yaml")
+        candidates.append(f"{base}@v2.agent.yaml")
+        candidates.append(f"{base}.agent.yaml")
+    for cand in candidates:
+        p = _AGENTS_DIR / cand
+        if p.exists():
+            try:
+                return {"status": "ok", "file": cand, "yaml": p.read_text(encoding="utf-8"),
+                        "data": _read_yaml(p)}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+    return {"status": "error", "error": f"agent introuvable: {name or file}"}
+
+
 def op_agent_topology(_params):
     """Graphe de topologie : équipes (leader → membres), successeurs, handoffs.
     Nœuds : agents avec status/running/preemptible. Liens : team_lead, member, successor."""
@@ -777,6 +833,8 @@ def op_agent_topology(_params):
 
 register("agent/list",               op_agent_list)
 register("agent/list-by-team",       op_agent_list_by_team)
+register("catalogue/agents/list",    op_catalogue_agents_list)
+register("catalogue/agents/get",     op_catalogue_agents_get)
 register("agent/topology",           op_agent_topology)
 register("agent/taskflow",           op_agent_taskflow)
 register("capabilities",             op_agent_capabilities)
