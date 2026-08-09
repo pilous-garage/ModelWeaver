@@ -23,13 +23,15 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche une tâche explore (AUTO) ──
+    # ── 1. PICK : pioche un token exploration (AUTO) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: exploration, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
@@ -70,9 +72,8 @@ entrypoints:
         READ-ONLY : tu ne modifies JAMAIS le code. Utilise file/read_file,
         file/glob, file/grep, shell/exec (ls/cat/grep) pour explorer.
 
-        Quand ton analyse est prête : workspace/task_done avec task_id,
-        workspace_id, delivered=true (le livrable est ton analyse dans la
-        réponse).
+        Quand ton analyse est prête : workspace/token_task_modify (task_id,
+        workspace_id, status=done).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev"]

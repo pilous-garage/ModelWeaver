@@ -1,29 +1,26 @@
 name: greedy-reviewer
 role: relecteur
-description: "Relecteur glouton intelligent — FSM: pick (pioche une tâche en
-  review) → clone (repo de la tâche) → checkout (commit/branche livrés) →
+description: "Relecteur glouton intelligent — FSM: pick (pioche un token code_review
+  via token_task_pick) → clone (repo du token) → checkout (commit livré) →
   allocation LLM → boucle de review (llm_call, lit les vrais fichiers) →
-  task_done (approve) ou tâche corrective. La mécanique est automatique."
+  transition du token (code_review → merger_code). La mécanique est automatique."
 personality:
   tone: ''
-  system_prompt: "Tu es un relecteur dans un swarm. Tu valides les tâches livrées
-    en review. Règles :
-    1. Lis la description de la tâche et les fichiers livrés (le clone git de
-       ton workspace contient le code au bon commit).
+  system_prompt: "Tu es un relecteur dans un swarm. Tu valides les tokens livrés
+    en code_review. Règles :
+    1. Lis la description du token et les fichiers livrés (le clone git de ton
+       workspace contient le code au bon commit).
     2. Relis réellement : qualités du code, respect de la description, tests.
-    3. Si OK : task_done avec approve=true (le FSM fait le reste).
-       Si problèmes : task_create d'une tâche corrective, puis task_done avec
-       approve=false (ou laisse en review).
+    3. Si OK : token_task_modify (task_id, new_task_type=merger_code,
+       status=todo) — la mécanique est automatique.
+       Si problèmes : token_task_create d'une tâche corrective, puis laisse le
+       token en code_review (ou modify vers coding pour re-travail).
     Réponds en français."
 bundles:
   - dev
-# Un reviewer qui trouve des problèmes crée une tâche corrective (même rôle
-# d'origine) ; une validation propre n'en crée pas.
 generates:
-  - coder_senior
-  - coder_mid
-  - coder_junior
-  - tester
+  - merger_code
+  - coding
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -39,20 +36,21 @@ entrypoints:
   main:
     max_iterations: 40
     steps:
-    # ── 1. PICK : pioche une tâche en review (AUTO) ──
+    # ── 1. PICK : pioche un token code_review (AUTO) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
-        status: "review"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: code_review, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
       next: resolve_repo
 
-    # ── 1b. RESOLVE_REPO : repo de la tâche, fallback sur project_id ──
+    # ── 1b. RESOLVE_REPO ──
     - id: resolve_repo
       type: switch
       variable: "{{task.repo}}"
@@ -75,7 +73,7 @@ entrypoints:
       value: "{{task.repo}}"
       next: clone
 
-    # ── 2. CLONE : le repo de la tâche (AUTO) ──
+    # ── 2. CLONE (AUTO) ──
     - id: clone
       type: call
       fn: git/git_clone@v1
@@ -85,7 +83,7 @@ entrypoints:
       on_error: fail
       next: checkout
 
-    # ── 3. CHECKOUT : le commit/branche livré par le coder (AUTO) ──
+    # ── 3. CHECKOUT : le commit livré par le coder (AUTO) ──
     - id: checkout
       type: call
       fn: git/git_checkout@v1
@@ -124,7 +122,8 @@ entrypoints:
     - id: do_review
       type: llm_call
       skill_prompt: |
-        Relis la tâche {{task.task_id}} :
+        Relis le token {{task.task_id}} (code_review) :
+        {{task.title}}
         {{task.description}}
 
         Le code livré est dans ton clone agents/{{agent_id}}/workspace/{{repo_eff}}
@@ -132,11 +131,12 @@ entrypoints:
 
         Actions possibles (tools du bundle dev) :
         - file/read_file : relis les vrais fichiers.
-        - workspace/task_get : statut/commit de la tâche.
-        - Si le code est bon : workspace/task_done avec task_id, workspace_id,
-          approve=true, branch={{task.branch}}, commit_hash={{task.commit_hash}}.
-        - Si problèmes : workspace/task_create (tâche corrective, role_required
-          adapté), puis task_done approve=false.
+        - workspace/task_get : statut/commit du token.
+        - Si le code est bon : workspace/token_task_modify avec task_id,
+          workspace_id, new_task_type=merger_code, status=todo (transition
+          automatique vers la fusion).
+        - Si problèmes : workspace/token_task_create (tâche corrective coding),
+          puis token_task_modify (task_id, new_task_type=coding, status=todo).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev"]

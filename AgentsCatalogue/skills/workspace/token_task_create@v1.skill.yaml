@@ -1,0 +1,34 @@
+name: workspace/token_task_create@v1
+category: workspace
+description: >
+  CRÉE un token de tâche — SEULE façon de créer une tâche. `parents` lie
+  l'enfant à ses parents (dépendance totale : l'enfant n'est piochable que si
+  tous ses parents sont à l'état requis). Split A → B,C,D : créer B,C,D avec
+  parents=[{task_id:A, required_state:done}], puis modifier A en étape de
+  vérification/merge.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task:
+    type: object
+    required: true
+    description: "{title, description, task_type, difficulty, priority, repo, branch, base_commit}"
+  parents:
+    type: array
+    required: false
+    description: "[{task_id, required_state}] dont dépend ce token (défaut done)"
+  team_id:
+    type: integer
+    required: false
+    default: -1
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.create_token

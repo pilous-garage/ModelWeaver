@@ -34,6 +34,11 @@ inputs:
     type: string
     required: false
     default: task done
+  new_task_type:
+    type: string
+    required: false
+    default: code_review
+    description: "Étape suivante du pipeline (transition du token). Défaut : coding → code_review."
 outputs:
   ok:
     type: boolean
@@ -41,9 +46,9 @@ outputs:
     type: string
   branch:
     type: string
-  review:
+  transition:
     type: boolean
-  note:
+  next_task_type:
     type: string
   error:
     type: string

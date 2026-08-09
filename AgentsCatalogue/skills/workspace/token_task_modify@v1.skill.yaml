@@ -1,0 +1,48 @@
+name: workspace/token_task_modify@v1
+category: workspace
+description: >
+  TRANSITION d'un token vers l'étape suivante du pipeline. Conceptuellement
+  détruit le token courant et crée le suivant (même task_id) : change
+  task_type (ex. coding → code_review), status (todo = nouveau token à piocher,
+  done, merged...) et libère l'assignation. `parents` ajoute des dépendances
+  (split : l'étape de vérification dépend des sous-tâches).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  new_task_type:
+    type: string
+    required: false
+    description: "Étape suivante du pipeline (ex. coding → code_review)."
+  status:
+    type: string
+    required: false
+    description: "todo (nouveau token à piocher) | doing | done | merged"
+  branch:
+    type: string
+    required: false
+  commit_hash:
+    type: string
+    required: false
+  parents:
+    type: array
+    required: false
+    description: "[{task_id, required_state}] à ajouter comme dépendances"
+  clear_assigned:
+    type: boolean
+    required: false
+    default: true
+    description: "Libère le token (fin de traitement → nouveau token à piocher)."
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.modify_token

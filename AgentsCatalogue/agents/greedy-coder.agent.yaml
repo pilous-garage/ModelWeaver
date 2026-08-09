@@ -1,27 +1,26 @@
 name: greedy-coder
 role: codeur
-description: "Codeur glouton intelligent — FSM: pick (pioche la tâche) → clone (repo
-  de la tâche) → checkout (branche/commit) → allocation LLM (check_llm/ask_llm) →
-  boucle de travail (llm_call avec tools, end_exec quand fini) → task done. La
-  mécanique (pick/clone/checkout/commit/done) est automatique, le LLM ne fait que
+description: "Codeur glouton intelligent — FSM: pick (pioche un token coding via
+  token_task_pick) → clone (repo du token) → checkout (branche/commit) →
+  allocation LLM (check_llm/ask_llm) → boucle de travail (llm_call, end_exec
+  quand fini) → transition du token (coding → code_review). La mécanique
+  (pick/clone/checkout/commit/transition) est automatique, le LLM ne fait que
   le travail intellectuel."
 personality:
   tone: ''
   system_prompt: "Tu es un codeur dans un swarm parallèle. Tu implémentes la
-    description de ta tâche dans le clone git de ton workspace. Règles :
-    1. Lis la description de la tâche et les fichiers du projet.
+    description de ton token dans le clone git de ton workspace. Règles :
+    1. Lis la description du token et les fichiers du projet.
     2. Écris réellement le code (file_write_file_v1), vérifie la syntaxe.
     3. Quand tu estimes avoir fini, appelle le tool end_exec — TOUTE la
-       mécanique (git add, commit, push, marquer done) est automatique.
+       mécanique (git add, commit, push, transition du token vers code_review)
+       est automatique.
     4. Ne supprime jamais de fichiers existants sans raison.
     Réponds en français, code en anglais."
 bundles:
   - dev
-# Types de tâches que ce rôle GÉNÈRE (graphe taskflow) : un coder qui termine
-# livre son travail → une tâche de review (le reviewer la valide). Il peut
-# aussi demander une re-découpe (ask_analysis) quand c'est trop difficile.
 generates:
-  - reviewer
+  - code_review
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -37,19 +36,21 @@ entrypoints:
   main:
     max_iterations: 60
     steps:
-    # ── 1. PICK : pioche une tâche (AUTO, pas de LLM) ──
+    # ── 1. PICK : pioche un token coding (AUTO, pas de LLM) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: coding, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
       next: resolve_repo
 
-    # ── 1b. RESOLVE_REPO : repo de la tâche, fallback sur project_id ──
+    # ── 1b. RESOLVE_REPO : repo du token, fallback sur project_id ──
     - id: resolve_repo
       type: switch
       variable: "{{task.repo}}"
@@ -72,7 +73,7 @@ entrypoints:
       value: "{{task.repo}}"
       next: clone
 
-    # ── 2. CLONE : le repo de la tâche (AUTO) ──
+    # ── 2. CLONE : le repo du token (AUTO) ──
     - id: clone
       type: call
       fn: git/git_clone@v1
@@ -82,7 +83,7 @@ entrypoints:
       on_error: fail
       next: checkout
 
-    # ── 3. CHECKOUT : branche/commit de la tâche (AUTO) ──
+    # ── 3. CHECKOUT : branche/commit du token (AUTO) ──
     - id: checkout
       type: call
       fn: git/git_checkout@v1
@@ -156,16 +157,17 @@ entrypoints:
         - id: do_work
           type: llm_call
           skill_prompt: |
-            Tâche à implémenter :
+            Token à implémenter :
+            {{task.title}}
             {{task.description}}
 
             Projet : {{repo_eff}} (clone dans ton workspace agents/{{agent_id}}/workspace/{{repo_eff}})
             Branche cible : {{task.branch}}
 
-            Implémente la tâche. Quand tu as fini (code écrit, syntaxe vérifiée),
+            Implémente le token. Quand tu as fini (code écrit, syntaxe vérifiée),
             appelle IMMÉDIATEMENT le tool end_exec avec task_id={{task.task_id}},
             workspace_id={{workspace_id}}, project_id={{repo_eff}},
-            agent_id={{agent_id}}.
+            agent_id={{agent_id}} (la transition vers code_review est auto).
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
           bundles: ["dev"]
@@ -173,7 +175,7 @@ entrypoints:
           temperature: 0.3
           output_capture: work_out
           next: check_done
-        # Vérifier l'état réel de la tâche (AUTO)
+        # Vérifier l'état réel du token (AUTO)
         - id: check_done
           type: call
           fn: workspace/task_get@v1
@@ -183,20 +185,14 @@ entrypoints:
           capture:
             task: task_now
           next: decide
-        # done/review → sortir de la boucle ; sinon → verdict
+        # Le token a transitionné (code_review) → sortir ; sinon → verdict
         - id: decide
           type: switch
-          variable: "{{task_now.status}}"
+          variable: "{{task_now.task_type}}"
           conditions:
-          - operator: EQUALS
-            value: "done"
+          - operator: NOT_EQUALS
+            value: "coding"
             next: break_loop
-          - operator: EQUALS
-            value: "review"
-            next: break_loop
-          - operator: EQUALS
-            value: "running"
-            next: ask_verdict
           default: ask_verdict
         - id: break_loop
           type: set_variable
@@ -207,15 +203,14 @@ entrypoints:
         - id: ask_verdict
           type: llm_call
           skill_prompt: |
-            Tu as travaillé sur la tâche {{task.task_id}} sans pouvoir la marquer
-            done (end_exec a refusé, ou l'état n'est pas done/review).
-            Raison de l'échec éventuelle : {{work_out}}
+            Tu as travaillé sur le token {{task.task_id}} sans pouvoir le
+            transitionner (end_exec a refusé). Raison : {{work_out}}
 
             Décide le verdict en appelant le tool task_verdict avec :
             verdict=done | continue | error | to_difficult
             task_id={{task.task_id}}, workspace_id={{workspace_id}},
-            role_required={{role_required}}.
-            - done : la tâche est réellement faite (utilise end_exec d'abord).
+            task_type=coding.
+            - done : le token est réellement fait (utilise end_exec d'abord).
             - continue : continue à travailler, je relance la boucle.
             - error : impossible, signale l'erreur.
             - to_difficult : trop dur — bump de difficulté automatique (ou
@@ -238,22 +233,16 @@ entrypoints:
           next: decide_after_verdict
         - id: decide_after_verdict
           type: switch
-          variable: "{{task_now.status}}"
+          variable: "{{task_now.task_type}}"
           conditions:
-          - operator: EQUALS
-            value: "done"
-            next: break_loop
-          - operator: EQUALS
-            value: "review"
-            next: break_loop
-          - operator: EQUALS
-            value: "pending"
+          - operator: NOT_EQUALS
+            value: "coding"
             next: break_loop
           default: continue_loop
         - id: continue_loop
           type: continue
 
-    # ── 7. FIN : la tâche est done → terminer ──
+    # ── 7. FIN : le token a transitionné → terminer ──
     - id: end
       type: end
       status: SUCCESS

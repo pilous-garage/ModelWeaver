@@ -13,22 +13,146 @@ def create(inputs: dict, home: str) -> dict:
     title = inputs.get("title", "")
     description = inputs.get("description", "")
     priority = int(inputs.get("priority", 0))
-    parent_id = inputs.get("parent_id")
     difficulty = inputs.get("difficulty", "medium")
-    role_required = inputs.get("role_required", "")
+    task_type = inputs.get("task_type", inputs.get("role_required", ""))
     team_id = int(inputs.get("team_id", -1))
     repo = inputs.get("repo", "")
     branch = inputs.get("branch", "")
     base_commit = inputs.get("base_commit", "")
+    parents = inputs.get("parents", [])  # [{task_id, required_state}]
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id et title requis"}
     try:
         db, scope = _scope(workspace_id)
-        task = scope.tasks.create(title, description, priority, parent_id,
-                                  difficulty=difficulty, role_required=role_required,
+        task = scope.tasks.create(title, description, priority,
+                                  difficulty=difficulty, task_type=task_type,
                                   team_id=team_id, repo=repo, branch=branch,
                                   base_commit=base_commit)
+        for dep in parents or []:
+            pid = dep.get("task_id") if isinstance(dep, dict) else dep
+            rs = dep.get("required_state", "done") if isinstance(dep, dict) else "done"
+            if pid:
+                scope.tasks.add_dependency(task["task_id"], int(pid), rs)
         db.close()
+        return {"ok": True, "task": task}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def create_token(inputs: dict, home: str) -> dict:
+    """token_task_create — seule façon de CRÉER un token de tâche.
+
+    inputs :
+      - task : {title, description, task_type, difficulty, priority, repo,
+                branch, base_commit}
+      - parents : [{task_id, required_state}] (l'enfant n'est piochable que
+        si tous ses parents sont à l'état requis)
+      - workspace_id, team_id
+    Retourne le token créé {status='todo'}.
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task = inputs.get("task") or {}
+    if not workspace_id or not task.get("title"):
+        return {"ok": False, "error": "workspace_id + task.title requis"}
+    return create({
+        "workspace_id": workspace_id,
+        "title": task.get("title"),
+        "description": task.get("description", ""),
+        "priority": task.get("priority", 0),
+        "difficulty": task.get("difficulty", "medium"),
+        "task_type": task.get("task_type", ""),
+        "team_id": task.get("team_id", inputs.get("team_id", -1)),
+        "repo": task.get("repo", ""),
+        "branch": task.get("branch", ""),
+        "base_commit": task.get("base_commit", ""),
+        "parents": inputs.get("parents", []),
+    }, home)
+
+
+def pick_token(inputs: dict, home: str) -> dict:
+    """token_task_pick — seule façon d'OBTENIR un token de tâche.
+
+    inputs :
+      - task_types : [{type, max_difficulty}] — les types que l'agent sait
+        traiter, avec le niveau de difficulté maximal piochable par type
+        (le niveau de l'agent borne la difficulté). Ex. un coder senior :
+        [{type: 'coding', max_difficulty: 'expert'}].
+      - workspace_id, team_id (agent_id injecté → assigned_to)
+    Pioche le token le plus prioritaire compatible, le passe en 'doing'.
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    team_id = int(inputs.get("team_id", -1))
+    agent_id = str(inputs.get("agent_id", "") or "")
+    types_in = inputs.get("task_types") or []
+    if isinstance(types_in, str):  # JSON passé par le FSM (ex. "[{type: coding, max_difficulty: expert}]")
+        try:
+            import json
+            types_in = json.loads(types_in)
+        except Exception:
+            types_in = []
+    if isinstance(types_in, dict):  # tolérance {type: max_diff}
+        types_in = [{"type": k, "max_difficulty": v} for k, v in types_in.items()]
+    if not workspace_id or not types_in:
+        return {"ok": False, "error": "workspace_id + task_types requis"}
+    task_types = []
+    max_diff = {}
+    for t in types_in:
+        tt = t.get("type", "") if isinstance(t, dict) else t
+        mx = t.get("max_difficulty", "") if isinstance(t, dict) else ""
+        if tt:
+            task_types.append(tt)
+            if mx:
+                max_diff[tt] = mx
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.claim_next(task_types, max_diff, team_id=team_id,
+                                      assigned_to=agent_id)
+        db.close()
+        if not task:
+            return {"ok": False,
+                    "error": "aucun token piochable pour les types demandés"}
+        return {"ok": True, "task": task, "task_id": task["task_id"]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def modify_token(inputs: dict, home: str) -> dict:
+    """token_task_modify — transition d'un token vers l'étape suivante.
+
+    Conceptuellement DÉTRUIT le token courant et CRÉE le suivant (même
+    task_id) : change task_type (étape du pipeline) + status + libère le token.
+
+    inputs :
+      - task_id, workspace_id
+      - new_task_type : étape suivante (ex. coding → code_review)
+      - status : 'todo' (nouveau token à piocher) | 'doing' | 'done' | 'merged'
+      - branch / commit_hash : livrable de l'étape
+      - parents : [{task_id, required_state}] (ajoutés si fournis, ex. split)
+      - clear_assigned : libérer le token (défaut True en transition)
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    new_task_type = inputs.get("new_task_type")
+    status = inputs.get("status")
+    clear = inputs.get("clear_assigned", True)
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.modify(
+            int(task_id), new_task_type=new_task_type, status=status,
+            branch=inputs.get("branch", ""),
+            commit_hash=inputs.get("commit_hash", ""),
+            clear_assigned=bool(clear))
+        # Parents additionnels (split) : l'enfant dépend de ces parents.
+        for dep in inputs.get("parents", []) or []:
+            pid = dep.get("task_id") if isinstance(dep, dict) else dep
+            rs = dep.get("required_state", "done") if isinstance(dep, dict) else "done"
+            if pid:
+                scope.tasks.add_dependency(int(task_id), int(pid), rs)
+        db.close()
+        if not task:
+            return {"ok": False, "error": "tâche introuvable"}
         return {"ok": True, "task": task}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -321,4 +445,5 @@ def list_tasks(inputs: dict, home: str) -> dict:
 
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
-              "get_files", "verdict"]
+              "get_files", "verdict", "create_token", "pick_token",
+              "modify_token"]

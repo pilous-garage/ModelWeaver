@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
     title        TEXT NOT NULL,
     description  TEXT DEFAULT '',
-    status       TEXT DEFAULT 'pending',
+    status       TEXT DEFAULT 'todo',   -- todo | doing
     priority     INTEGER DEFAULT 0,
     assigned_to  TEXT DEFAULT '',
     -- Dépôt + branche ciblés par la tâche (composition : une tâche pointe sur
@@ -33,15 +33,35 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch       TEXT DEFAULT '',
     commit_hash  TEXT DEFAULT '',
     base_commit  TEXT DEFAULT '',
-    parent_id    INTEGER,
-    -- Swarm glouton : difficulté de la tâche et rôle requis pour la traiter.
-    difficulty   TEXT DEFAULT 'medium',   -- easy / medium / hard / expert
-    role_required TEXT DEFAULT '',        -- analyst / coder_junior / coder_senior / tester / reviewer / merger
+    -- Type de la tâche = étape du pipeline (coding, code_review, merger_code,
+    -- testing_code, analysis, split, …). Un agent pioche les task_type qu'il
+    -- sait traiter (liste passée au token_task_pick), avec un niveau max de
+    -- difficulté par type.
+    task_type    TEXT DEFAULT '',
+    -- Difficulté de la tâche (easy / medium / hard / expert). Le niveau de
+    -- l'agent (débutant/junior/intermédiaire/senior) borne la difficulté
+    -- piochable par type.
+    difficulty   TEXT DEFAULT 'medium',
     -- Espace de travail : -1 = projet (partagé), sinon team_id de la team qui
     -- traite la tâche (une team peut travailler sur plusieurs projets).
     team_id      INTEGER DEFAULT -1,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Parenté des tâches (dépendances). Une tâche enfant n'est PIOCHABLE que si
+-- TOUS ses parents sont dans l'état requis (dépendance totale). Chaque ligne
+-- est un lien d'affiliation enfant → parent avec l'état du parent exigé pour
+-- débloquer l'enfant (ex. done, merged). Split A → B,C,D : B,C,D ont une ligne
+-- (B→A), (C→A), (D→A) ; B,C,D se débloquent quand A passe à l'état requis.
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id        INTEGER NOT NULL,  -- enfant (dépendant)
+    parent_id      INTEGER NOT NULL,  -- parent (dont on dépend)
+    required_state TEXT DEFAULT 'done',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (task_id, parent_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_id) REFERENCES tasks(task_id) ON DELETE CASCADE
 );
 
 -- Issues : demandes de haut niveau analysées par l'analyste puis découpées

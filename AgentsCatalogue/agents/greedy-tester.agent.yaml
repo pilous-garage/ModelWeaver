@@ -1,24 +1,22 @@
 name: greedy-tester
 role: test_runner
-description: "Testeur glouton intelligent — FSM: pick (pioche une tâche tester)
-  → allocation LLM → exécution des tests (llm_call) → task_done (STATUS: PASSED
-  ou FAILED). La mécanique est automatique."
+description: "Testeur glouton intelligent — FSM: pick (pioche un token testing_code
+  via token_task_pick) → allocation LLM → exécution des tests (llm_call) →
+  transition du token (testing_code → done). La mécanique est automatique."
 personality:
   tone: ''
   system_prompt: "Tu es un testeur dans un swarm. Tu valides les changements par
     des tests. Règles :
-    1. Lis la description de la tâche, identifie les changements.
+    1. Lis la description du token, identifie les changements.
     2. Exécute les tests / typecheck (shell/exec).
-    3. Marque la tâche done avec le résultat (STATUS: PASSED ou FAILED).
+    3. token_task_modify (task_id, status=done) quand validé, ou crée une
+       tâche corrective coding si échec.
     Réponds en français."
 bundles:
   - test
   - dev
-# Un test qui échoue génère une tâche corrective de codage.
 generates:
-  - coder_senior
-  - coder_mid
-  - coder_junior
+  - coding
 model_requirements:
   min_context_tokens: 16384
   capabilities:
@@ -34,13 +32,15 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche une tâche tester (AUTO) ──
+    # ── 1. PICK : pioche un token testing_code (AUTO) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: testing_code, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
@@ -75,12 +75,15 @@ entrypoints:
     - id: do_test
       type: llm_call
       skill_prompt: |
-        Teste la tâche {{task.task_id}} :
+        Teste le token {{task.task_id}} (testing_code) :
+        {{task.title}}
         {{task.description}}
 
-        Identifie les changements, exécute les tests/typecheck (shell/exec),
-        puis workspace/task_done avec task_id, workspace_id et le résultat
-        (STATUS: PASSED ou FAILED + sortie) dans la réponse.
+        Identifie les changements, exécute les tests/typecheck (shell/exec).
+        Si les tests passent : workspace/token_task_modify (task_id,
+        workspace_id, status=done). Si échec : workspace/token_task_create
+        (tâche corrective, task_type=coding) + token_task_modify
+        (task_id, new_task_type=coding, status=todo).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev", "test"]

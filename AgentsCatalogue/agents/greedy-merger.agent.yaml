@@ -1,15 +1,16 @@
 name: greedy-merger
 role: orchestrateur
-description: "Merger glouton intelligent — FSM: pick (pioche une tâche merger) →
-  allocation LLM → fusion des livrables (llm_call) → task_done. La mécanique est
-  automatique."
+description: "Merger glouton intelligent — FSM: pick (pioche un token merger_code
+  via token_task_pick) → allocation LLM → fusion des livrables (llm_call) →
+  transition du token (merger_code → done). La mécanique est automatique."
 personality:
   tone: ''
   system_prompt: "Tu es un mergeur dans un swarm. Tu regroupes les livrables des
     membres. Règles :
-    1. Lis la description de la tâche.
+    1. Lis la description du token.
     2. Récupère les livrables (agent_home/*/, repo central local).
-    3. Fusionne/regroupe dans un dossier consolidé, marque la tâche done.
+    3. Fusionne/regroupe dans un dossier consolidé, puis token_task_modify
+       (task_id, status=done).
     Réponds en français."
 bundles:
   - dev
@@ -28,13 +29,15 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche une tâche merger (AUTO) ──
+    # ── 1. PICK : pioche un token merger_code (AUTO) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: merger_code, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
@@ -69,13 +72,13 @@ entrypoints:
     - id: do_merge
       type: llm_call
       skill_prompt: |
-        Fusionne les livrables de la tâche {{task.task_id}} :
+        Fusionne les livrables du token {{task.task_id}} (merger_code) :
+        {{task.title}}
         {{task.description}}
 
         Récupère les livrables des membres (read_file dans leurs homes, ou le
         repo central local), fusionne dans un dossier consolidé de ton home,
-        puis workspace/task_done avec task_id, workspace_id, delivered=true
-        (livrable = fichier fusionné + chemin dans la réponse).
+        puis workspace/token_task_modify (task_id, workspace_id, status=done).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev"]

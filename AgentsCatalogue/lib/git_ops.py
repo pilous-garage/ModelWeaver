@@ -585,33 +585,43 @@ def end_exec(inputs: dict, home: str) -> dict:
     except Exception:
         pass
     pr = _git_run(root, ["push", "-u", "origin", branch])
-    if pr.get("exit_code") != 0:
-        return {"ok": True, "partial": True, "commit_hash": commit_hash,
-                "warning": f"commit fait mais push central échoué: {pr.get('stderr','')[:200]}",
-                "branch": branch}
+    push_ok = pr.get("exit_code") == 0
 
-    # 5) Marquer la tâche done (branch + commit_hash) — la mécanique de la
-    #    lib workspace le fait ; on propage le résultat.
+    # 5) Transition du token : le travail est livré → le token passe à l'étape
+    #    suivante du pipeline (ex. coding → code_review). C'est un
+    #    token_task_modify (conceptuellement détruire le token courant et
+    #    créer le suivant), PAS un simple task_done. La mécanique est
+    #    automatique, le LLM n'a rien à coder. Se fait même si le push central
+    #    a échoué (le commit local est la preuve de livraison).
     out = {"ok": True, "commit_hash": commit_hash, "branch": branch,
            "files_modified": mod_names, "files_deleted": del_names,
            "stdout": f"committed {commit_hash} on {branch}"}
-    try:
-        from AgentsCatalogue.lib.workspacedb.task import done as _task_done
-        task_id = inputs.get("task_id")
-        if task_id is not None:
-            d = _task_done({
+    if not push_ok:
+        out["partial"] = True
+        out["warning"] = (f"commit fait mais push central échoué: "
+                          f"{pr.get('stderr','')[:200]}")
+    task_id = inputs.get("task_id")
+    if task_id is not None:
+        next_type = inputs.get("new_task_type", "code_review")
+        try:
+            from AgentsCatalogue.lib.workspacedb.task import modify_token
+            m = modify_token({
                 "workspace_id": inputs.get("workspace_id", ""),
                 "task_id": task_id,
+                "new_task_type": next_type,
+                "status": "todo",
                 "branch": branch,
                 "commit_hash": commit_hash,
+                "clear_assigned": True,
             }, home)
-            if d.get("review"):
-                out["review"] = True
-                out["note"] = d.get("note", "")
-            elif not d.get("ok"):
-                out["warning"] = d.get("error", "task_done a échoué")
-    except Exception as e:
-        out["warning"] = f"task_done échoué: {e}"
+            if m.get("ok"):
+                out["next_task_type"] = next_type
+                out["transition"] = True
+            else:
+                out["warning"] = (out.get("warning", "") + " | "
+                                  + m.get("error", "token_task_modify a échoué"))
+        except Exception as e:
+            out["warning"] = (out.get("warning", "") + f" | token_task_modify: {e}")
     return out
 
 

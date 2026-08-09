@@ -1,28 +1,25 @@
 name: greedy-analyst
 role: architecte
-description: "Analyste glouton intelligent — FSM: pick (pioche une tâche analyst)
-  → allocation LLM → analyse + découpe en sous-tâches (llm_call) → task_done.
-  La mécanique est automatique."
+description: "Analyste glouton intelligent — FSM: pick (pioche un token analysis
+  via token_task_pick) → allocation LLM → découpe en sous-tokens coding +
+  réaffectation en merge_split (llm_call) → done. La mécanique est automatique."
 personality:
   tone: ''
   system_prompt: "Tu es un analyste dans un swarm. Tu découpes les missions en
-    sous-tâches petites et actionnables. Règles :
-    1. Lis la description de la tâche et les livrables liés.
-    2. DÉCOUPE la mission en sous-tâches maximales (petites, indépendantes)
-       avec workspace/task_create (role adapté).
-    3. Produis ton analyse, marque la tâche done.
+    sous-tokens petits et actionnables. Règles :
+    1. Lis la description du token (analysis).
+    2. DÉCOUPE en sous-tokens coding (workspace/token_task_create, task_type=
+       coding, parents=[{task_id: <le token actuel>}], role adapté).
+    3. RÉAFFECTE le token courant en merge_split (workspace/token_task_modify,
+       new_task_type=merge_split, status=todo, parents=[les sous-tokens créés])
+       — il vérifiera/mergera le travail splitté une fois les coding done.
+    4. Ne marque PAS le token analysis done (il devient merge_split).
     Réponds en français."
 bundles:
   - dev
-# L'analyste DÉCOUPE une mission en sous-tâches (cœur de sa valeur).
 generates:
-  - explore
-  - coder_senior
-  - coder_mid
-  - coder_junior
-  - tester
-  - reviewer
-  - merger
+  - coding
+  - merge_split
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -38,13 +35,15 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche une tâche analyst (AUTO) ──
+    # ── 1. PICK : pioche un token analysis (AUTO) ──
     - id: pick
       type: call
-      fn: workspace/task_claim_next@v1
+      fn: workspace/token_task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        role_required: "{{role_required}}"
+        team_id: "{{team_id}}"
+        agent_id: "{{agent_id}}"
+        task_types: "[{type: analysis, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
@@ -79,13 +78,24 @@ entrypoints:
     - id: do_analyse
       type: llm_call
       skill_prompt: |
-        Analyse la tâche {{task.task_id}} :
+        Analyse le token {{task.task_id}} (analysis) :
+        {{task.title}}
         {{task.description}}
 
-        Découpe la mission en sous-tâches (workspace/task_create, workspace_id
-        {{workspace_id}}, role adapté : explore|coder_junior|coder_senior|
-        tester|reviewer|merger). Produis ton analyse, puis workspace/task_done
-        avec task_id, workspace_id, delivered=true (livrable = analyse).
+        Découpe la mission en sous-tokens de codage :
+        - workspace/token_task_create pour CHAQUE sous-token :
+          { workspace_id: {{workspace_id}},
+            task: {title, description, task_type: coding, difficulty, priority},
+            parents: [{ task_id: {{task.task_id}}, required_state: done }] }
+          (chacun parent du token courant → ils se débloquent quand tu auras
+          fini l'analyse)
+        - Puis RÉAFFECTE le token courant en étape de vérification/merge :
+          workspace/token_task_modify (task_id={{task.task_id}},
+          workspace_id={{workspace_id}}, new_task_type=merge_split,
+          status=todo, parents=[{task_id: <chacun des coding créés>,
+          required_state: done}])
+          → le token merge_split vérifiera/mergera les sous-tokens une fois
+          qu'ils seront tous done.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       bundles: ["dev"]

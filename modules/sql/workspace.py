@@ -36,6 +36,57 @@ def _rows(rows):
 # rôle (coder, tester, reviewer...), on étend le niveau demandé vers le bas.
 _LEVEL_RANK = {"junior": 0, "mid": 1, "senior": 2}
 
+# Niveaux de difficulté d'une tâche (croissant). Le niveau de l'agent
+# (débutant/junior/intermédiaire/senior) borne la difficulté piochable par
+# type : un coder senior peut traiter coding/easy..expert, un reviewer_code
+# junior seulement code_review/easy+medium.
+_DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}
+
+
+def _migrate_role_required_to_task_type(conn) -> None:
+    """V0.10 : bascule vers le modèle token (task_type + dépendances).
+
+    Les données existantes n'ont pas de valeur (phase de dev) → clean de la
+    table tasks UNE FOIS au moment du passage au nouveau schéma (quand
+    role_required/parent_id sont encore présents). Après, rien n'est effacé.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    migrated = False
+    # Renommer la colonne si elle existe encore et que task_type est absent.
+    if "role_required" in cols and "task_type" not in cols:
+        try:
+            conn.execute("ALTER TABLE tasks RENAME COLUMN role_required TO task_type")
+            migrated = True
+        except Exception:
+            pass
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    # Si role_required coexiste encore avec task_type (migration précédente
+    # partielle), on le droppe : task_type est la source de vérité.
+    if "role_required" in cols and "task_type" in cols:
+        try:
+            conn.execute("ALTER TABLE tasks DROP COLUMN role_required")
+            migrated = True
+        except Exception:
+            pass
+    # parent_id devient redondant : task_dependencies est la seule source de
+    # parenté.
+    cols2 = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "parent_id" in cols2:
+        try:
+            conn.execute("ALTER TABLE tasks DROP COLUMN parent_id")
+            migrated = True
+        except Exception:
+            pass
+    # Clean des données UNIQUEMENT à la migration (rien de valeur à préserver
+    # en phase de dev). Ne pas ré-effacer à chaque ouverture.
+    if migrated:
+        try:
+            conn.execute("DELETE FROM task_dependencies")
+            conn.execute("DELETE FROM tasks")
+            conn.commit()
+        except Exception:
+            pass
+
 
 def _compatible_roles(role_required: str) -> List[str]:
     """Rôles compatibles pour un rôle demandé (hiérarchie de capabilité).
@@ -157,67 +208,109 @@ class TaskRepository:
             (task_id, self.wid)).fetchone())
 
     def create(self, title: str, description: str = "",
-               priority: int = 0, parent_id: int = None,
-               difficulty: str = "medium", role_required: str = "",
+               priority: int = 0,
+               difficulty: str = "medium", task_type: str = "",
                team_id: int = -1, repo: str = "",
                branch: str = "", base_commit: str = "") -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
-                               parent_id, difficulty, role_required, team_id,
+                               status, difficulty, task_type, team_id,
                                repo, branch, base_commit, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (self.wid, title, description, priority, parent_id,
-              difficulty, role_required, team_id, repo, branch, base_commit,
+            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.wid, title, description, priority,
+              difficulty, task_type, team_id, repo, branch, base_commit,
               now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
-    def claim_next(self, role_required: str = "",
+    def add_dependency(self, child_id: int, parent_id: int,
+                       required_state: str = "done") -> bool:
+        """Lie un enfant à un parent : l'enfant n'est piochable que si le
+        parent est dans l'état requis (dépendance totale). Idempotent."""
+        self.conn.execute("""
+            INSERT OR IGNORE INTO task_dependencies
+                (task_id, parent_id, required_state)
+            VALUES (?, ?, ?)
+        """, (child_id, parent_id, required_state))
+        self.conn.commit()
+        return True
+
+    def get_parents(self, task_id: int) -> List[Dict[str, Any]]:
+        """Parents de la tâche (dont elle dépend) avec leur état requis."""
+        return _rows(self.conn.execute(
+            "SELECT d.parent_id, d.required_state, p.status, p.task_type, p.title "
+            "FROM task_dependencies d JOIN tasks p ON p.task_id = d.parent_id "
+            "WHERE d.task_id = ?", (task_id,)).fetchall())
+
+    def _parents_blocked_sql(self) -> str:
+        """Sous-requête : la tâche t est BLOQUÉE si un de ses parents n'est pas
+        dans l'état requis (dépendance totale : TOUS les parents requis)."""
+        return ("""
+            NOT EXISTS (
+                SELECT 1 FROM task_dependencies d
+                WHERE d.task_id = t.task_id
+                  AND (SELECT status FROM tasks p WHERE p.task_id = d.parent_id)
+                      != d.required_state
+            )
+        """)
+
+    def claim_next(self, task_types: List[str] = (),
+                   max_difficulty: Dict[str, str] = None,
                    exclude_assigned: tuple = (),
                    team_id: int = -1,
-                   status: str = "pending",
                    assigned_to: str = "") -> Optional[Dict[str, Any]]:
-        """Pioche la prochaine tâche dispo pour un rôle (greedy).
+        """Pioche le prochain token piochable (greedy) pour les task_types donnés.
 
-        Hiérarchie de capabilité : un rôle `X_senior` peut piocher les tâches
-        X_senior, X_mid et X_junior ; X_mid pioche X_mid + X_junior ; X_junior
-        ne pioche que X_junior. Ne pioche que les tâches de la team (ou -1 =
-        espace projet partagé). Retourne la tâche au statut cible (`pending`
-        par défaut, `review` pour le reviewer) la plus prioritaire compatible,
-        la passe en 'running'. Atomique.
+        Un agent pioche les tokens dont le task_type est dans `task_types` et
+        dont la difficulté est ≤ `max_difficulty[task_type]` (le niveau de
+        l'agent borne la difficulté piochable par type). Dépendance totale :
+        un token n'est piochable que si TOUS ses parents sont dans l'état
+        requis (task_dependencies). Statut cible : 'todo' → 'doing'.
+        Atomique.
         """
-        roles = _compatible_roles(role_required)
+        task_types = [t for t in (task_types or []) if t]
+        if not task_types:
+            return None
+        max_diff = max_difficulty or {}
         sel_args = [self.wid]
-        sel = f"SELECT * FROM tasks WHERE workspace_id = ? AND status = ?"
-        sel_args.append(status)
+        ph = ",".join("?" for _ in task_types)
+        sel = ("SELECT t.* FROM tasks t WHERE t.workspace_id = ? "
+               "AND t.status = 'todo' AND t.task_type IN (" + ph + ")")
+        sel_args.extend(task_types)
+        # Difficulté maximale piochable par type (le niveau de l'agent).
+        diff_conds = []
+        for tt in task_types:
+            mx = max_diff.get(tt)
+            if mx and mx in _DIFFICULTY_RANK:
+                diff_conds.append(
+                    f"(t.task_type = ? AND {_DIFFICULTY_RANK[mx]} >= "
+                    f"CASE t.difficulty WHEN 'easy' THEN 0 WHEN 'medium' THEN 1 "
+                    f"WHEN 'hard' THEN 2 WHEN 'expert' THEN 3 ELSE 1 END)")
+                sel_args.append(tt)
+        if diff_conds:
+            sel += " AND (" + " OR ".join(diff_conds) + ")"
         # team_id : -1 (projet) OU la team de l'agent
-        sel += " AND (team_id = ? OR team_id = -1)"
+        sel += " AND (t.team_id = ? OR t.team_id = -1)"
         sel_args.append(team_id)
-        # Pour les tâches en `review` : le reviewer valide TOUTES les tâches
-        # livrées (peu importe leur rôle d'origine coder_junior/analyst/…).
-        if roles and status != "review":
-            ph = ",".join("?" for _ in roles)
-            sel += f" AND role_required IN ({ph})"
-            sel_args.extend(roles)
+        # Dépendance totale : tous les parents à l'état requis.
+        sel += " AND " + self._parents_blocked_sql()
         if exclude_assigned:
-            ph = ",".join("?" for _ in exclude_assigned)
-            sel += f" AND COALESCE(assigned_to,'') NOT IN ({ph})"
+            ph2 = ",".join("?" for _ in exclude_assigned)
+            sel += f" AND COALESCE(t.assigned_to,'') NOT IN ({ph2})"
             sel_args.extend(exclude_assigned)
-        # Prioriser les tâches de la TEAM de l'agent (team_id exact) avant les
-        # tâches projet partagées (-1) : un greedy dev-chat pioche d'abord les
-        # tâches de mw-dev-chat avant celles des autres workspaces.
-        sel += (" ORDER BY CASE WHEN team_id = ? THEN 0 ELSE 1 END, "
-                "priority DESC, created_at LIMIT 1")
+        # Prioriser les tâches de la TEAM de l'agent avant le projet partagé.
+        sel += (" ORDER BY CASE WHEN t.team_id = ? THEN 0 ELSE 1 END, "
+                "t.priority DESC, t.created_at LIMIT 1")
         sel_args.append(team_id)
         row = _row(self.conn.execute(sel, sel_args).fetchone())
         if not row:
             return None
         cur = self.conn.execute(
-            "UPDATE tasks SET status = 'running', assigned_to = ?, updated_at = ? "
-            "WHERE task_id = ? AND workspace_id = ? AND status = ?",
+            "UPDATE tasks SET status = 'doing', assigned_to = ?, updated_at = ? "
+            "WHERE task_id = ? AND workspace_id = ? AND status = 'todo'",
             (assigned_to, datetime.utcnow().isoformat(),
-             row["task_id"], self.wid, status))
+             row["task_id"], self.wid))
         self.conn.commit()
         return self.get(row["task_id"]) if cur.rowcount else None
 
@@ -260,12 +353,7 @@ class TaskRepository:
     def set_status(self, task_id: int, status: str,
                    branch: str = "", commit_hash: str = "",
                    assigned_to: str = "") -> Optional[Dict[str, Any]]:
-        """Passe une tâche à un statut arbitraire (pending/running/review/done).
-
-        Utilisé pour le flux de review : un coder livre en `review`, le
-        reviewer valide en `done`. `assigned_to` (si fourni) marque qui traite
-        la tâche (transparence du pipeline).
-        """
+        """Passe un token à un statut arbitraire (todo/doing/done/merged...)."""
         sets = ["status = ?", "updated_at = ?"]
         vals = [status, datetime.utcnow().isoformat()]
         if branch:
@@ -277,6 +365,50 @@ class TaskRepository:
         if assigned_to:
             sets.append("assigned_to = ?")
             vals.append(assigned_to)
+        vals.extend([task_id, self.wid])
+        self.conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            "WHERE task_id = ? AND workspace_id = ?", vals)
+        self.conn.commit()
+        return self.get(task_id)
+
+    def modify(self, task_id: int, new_task_type: str = None,
+               status: str = None, branch: str = "",
+               commit_hash: str = "", assigned_to: str = None,
+               clear_assigned: bool = False) -> Optional[Dict[str, Any]]:
+        """Transition de token vers l'étape suivante du pipeline.
+
+        Conceptuellement DÉTRUIT le token courant et CRÉE le token suivant
+        (même task_id : on change task_type + status). Ex. fin d'un coding :
+        modify(task, new_task_type='code_review', status='todo') → le token
+        devient un code_review piochable par les reviewers.
+
+        `assigned_to=None` : ne touche pas l'assignation. `clear_assigned=True` :
+        libère le token (fin de traitement → nouveau token à piocher).
+        """
+        sets = []
+        vals = []
+        if new_task_type is not None:
+            sets.append("task_type = ?")
+            vals.append(new_task_type)
+        if status is not None:
+            sets.append("status = ?")
+            vals.append(status)
+        if branch:
+            sets.append("branch = ?")
+            vals.append(branch)
+        if commit_hash:
+            sets.append("commit_hash = ?")
+            vals.append(commit_hash)
+        if clear_assigned:
+            sets.append("assigned_to = ''")
+        elif assigned_to is not None:
+            sets.append("assigned_to = ?")
+            vals.append(assigned_to)
+        if not sets:
+            return self.get(task_id)
+        sets.append("updated_at = ?")
+        vals.append(datetime.utcnow().isoformat())
         vals.extend([task_id, self.wid])
         self.conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -491,11 +623,34 @@ class WorkspaceDB:
         try:
             from modules.sql.db import _add_column_if_missing
             _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
-            _add_column_if_missing(self.conn, "tasks", "role_required", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
             # V0.9.x : une tâche pointe sur un repo local + branche (ou commit).
             _add_column_if_missing(self.conn, "tasks", "repo", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "base_commit", "TEXT DEFAULT ''")
+            # V0.10 : rôle requis → type de tâche (étape du pipeline). Une
+            # tâche 'coder_senior' devient task_type 'coding' (le niveau de
+            # l'agent borne la difficulté piochable). Clean des données (rien
+            # de valeur à préserver en phase de dev).
+            _migrate_role_required_to_task_type(self.conn)
+            # Parenté des tâches (dépendance totale : tous les parents à l'état
+            # requis pour débloquer l'enfant).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_dependencies (
+                    task_id        INTEGER NOT NULL,
+                    parent_id      INTEGER NOT NULL,
+                    required_state TEXT DEFAULT 'done',
+                    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (task_id, parent_id),
+                    FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
+                    FOREIGN KEY (parent_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_deps_child "
+                "ON task_dependencies(task_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_deps_parent "
+                "ON task_dependencies(parent_id)")
             _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
             # V0.8.9 : lien issue → workspace d'analyse (le workspace où les
             # tasks de découpage vivent). Permet de marquer l'issue 'done'

@@ -1,0 +1,35 @@
+name: workspace/token_task_pick@v1
+category: workspace
+description: >
+  PIOCHE un token de tâche — SEULE façon d'obtenir une tâche. L'agent donne la
+  liste des task_types qu'il sait traiter, avec le niveau de difficulté maximal
+  piochable par type. Un token n'est piochable que si TOUS ses parents sont dans
+  l'état requis (dépendance totale). Le token passe de todo à doing (attribué).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_types:
+    type: array
+    required: true
+    description: "[{type, max_difficulty}] — ex. [{type: coding, max_difficulty: expert}]"
+  team_id:
+    type: integer
+    required: false
+    default: -1
+  agent_id:
+    type: string
+    required: false
+    description: "Agent qui pioche (injecté automatiquement → assigned_to)."
+outputs:
+  ok:
+    type: boolean
+  task:
+    type: object
+  task_id:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.pick_token
