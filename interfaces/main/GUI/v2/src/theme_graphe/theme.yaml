@@ -12,9 +12,15 @@ name: "Défaut"
 color_scheme: dark
 
 nodes:
-  # ── Chartes des nœuds d'ACTION (FSM) ──
-  # entrypoint : vert — où on RENTRE. exitpoint : jaune — où on SORT (done).
-  # error_step : rouge (orange si c'est aussi une fin). autres : bleu clair.
+  # ── CHARTE GRAPHIQUE (catégories de nœuds FSM) ──
+  #   entrypoint     : vert      — où on RENTRE (début de flux)
+  #   exitpoint      : jaune     — où on SORT normalement (end SUCCESS)
+  #   error          : rouge     — fin en erreur (end FAILED)
+  #   skill          : bleu      — tool/appel skill (lib.skill)
+  #   agent          : violet    — agent (dépliable vers son FSM)
+  #   flow           : cyan      — composant de flux (if/switch/for/while/condition)
+  #   fonction       : gris-bleu — call python / step atomique (set_variable…)
+  #   llm            : bleu clair— appel LLM (moteur cognitif)
   entrypoint:
     shape: pill
     icon: "▶"
@@ -27,7 +33,7 @@ nodes:
     color: "#fde047"
     border: "#eab308"
     thick: true
-  error_step:
+  error:
     shape: diamond
     icon: "✖"
     color: "#f87171"
@@ -39,31 +45,41 @@ nodes:
     color: "#fb923c"
     border: "#f97316"
     thick: true
+  skill:
+    shape: rounded
+    icon: "🛠️"
+    color: "#60a5fa"
+    border: "#2563eb"
+  agent:
+    shape: rounded
+    icon: "🤖"
+    color: "#c084fc"
+    border: "#9333ea"
+  flow:
+    shape: diamond
+    icon: "🔀"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  condition:
+    shape: diamond
+    icon: "❓"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  condition_out:
+    shape: diamond
+    icon: "→"
+    color: "#22d3ee"
+    border: "#06b6d4"
+  fonction:
+    shape: rounded
+    icon: "ƒ"
+    color: "#94a3b8"
+    border: "#64748b"
   llm:
     shape: rect
     icon: "🧠"
     color: "#bae6fd"
     border: "#38bdf8"
-  skill:
-    shape: rounded
-    icon: "🛠️"
-    color: "#bae6fd"
-    border: "#38bdf8"
-  step:
-    shape: rounded
-    icon: "▶️"
-    color: "#bae6fd"
-    border: "#38bdf8"
-  switch:
-    shape: diamond
-    icon: "🔀"
-    color: "#cba6f7"
-    border: "#c084fc"
-  loop:
-    shape: rounded
-    icon: "🔁"
-    color: "#a5b4fc"
-    border: "#818cf8"
   sandbox:
     shape: rounded
     icon: "🏖️"
@@ -79,11 +95,6 @@ nodes:
     icon: "💤"
     color: "#7f849c"
     border: "#94a3b8"
-  agent:
-    shape: rounded
-    icon: "🤖"
-    color: "#a6e3a1"
-    border: "#4ade80"
   handoff:
     shape: rounded
     icon: "🤝"

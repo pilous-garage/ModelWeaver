@@ -79,18 +79,16 @@ export function outerNodeOf(c: FsmComponent, extra: Partial<FsmNode> = {}, prefi
 function componentOuterType(c: FsmComponent): string {
   if (c.kind === 'agent') return 'agent';
   if (c.kind === 'skill') return 'skill';
-  if (c.kind === 'loop') return 'loop';
-  if (c.kind === 'switch' || c.kind === 'if') return 'switch';
+  if (c.kind === 'loop') return 'flow';
+  if (c.kind === 'switch' || c.kind === 'if') return 'flow';
   return stepOuterType(c);
 }
 
 function stepOuterType(c: FsmComponent): string {
   if (c.type === 'end') return c.status === 'FAILED' ? 'exit_error' : 'exitpoint';
   if (c.type === 'llm_call') return 'llm';
-  if (c.type === 'set_variable') return 'step';
-  if (c.type === 'break' || c.type === 'continue') return 'step';
   if (c.type === 'call') return 'skill';
-  return 'step';
+  return 'fonction';
 }
 
 /** Tags d'un composant (propres + hérités). */
