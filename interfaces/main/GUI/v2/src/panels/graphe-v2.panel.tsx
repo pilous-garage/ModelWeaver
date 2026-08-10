@@ -92,6 +92,28 @@ export function GrapheV2Panel({ ctx }: { ctx: any }) {
   const gTheme = useGraphThemeControl(ctx.api.post);
   useEffect(() => { gTheme.ensureLoaded(); }, [gTheme]);
 
+  // Actions folding PÉTRI → BACKEND (graphe_utile/yaml_to_taskflow).
+  const petriAction = useCallback((numId: number, action: 'fold' | 'unfold') => {
+    if (!sel) return;
+    setLoading(true); setErr(null);
+    ctx.api.post('graphe_utile/yaml_to_taskflow', { name: sel, action, node: numId }).then((res: any) => {
+      const r = res?.result ?? res ?? {};
+      setLoading(false);
+      if (r.status === 'ok' && Array.isArray(r.nodes)) setPetri(r);
+      else setErr(r.error ?? 'action taskflow échouée');
+    }).catch((e: any) => { setLoading(false); setErr(String(e?.message ?? e)); });
+  }, [sel, ctx.api.post]);
+  const petriFoldAll = useCallback(() => {
+    if (!sel) return;
+    setLoading(true); setErr(null);
+    ctx.api.post('graphe_utile/yaml_to_taskflow', { name: sel, action: 'fold_all' }).then((res: any) => {
+      const r = res?.result ?? res ?? {};
+      setLoading(false);
+      if (r.status === 'ok' && Array.isArray(r.nodes)) setPetri(r);
+      else setErr(r.error ?? 'fold_all échoué');
+    }).catch((e: any) => { setLoading(false); setErr(String(e?.message ?? e)); });
+  }, [sel, ctx.api.post]);
+
   const shownGraph = view === 'taskflow' && petri ? petriToGraphDoc(petri) : fsm;
   const graphCount = (view === 'taskflow' ? petri?.nodes?.length : fsm?.nodes?.length) ?? 0;
   const counts = petri?.counts;
@@ -142,9 +164,15 @@ export function GrapheV2Panel({ ctx }: { ctx: any }) {
           <pre style={{ flex: 1, minHeight: 0, overflow: 'auto', margin: 0, fontSize: 10, padding: 8, borderRadius: 6,
                         border: '1px solid var(--mw-border, #1e293b)', color: '#cbd5e1' }}>{yaml}</pre>
         ) : shownGraph ? (
-          <GrapheSubPanel doc={shownGraph} theme={gTheme.obj} editable={false} engine="reactflow" height="100%"
-            autoExpandAll={view === 'taskflow'}
-            taskflowMode={view === 'taskflow'} />
+          view === 'taskflow' ? (
+            <GrapheSubPanel doc={shownGraph} theme={gTheme.obj} editable={false} engine="reactflow" height="100%"
+              autoExpandAll
+              petriMode
+              onPetriAction={petriAction}
+              onPetriFoldAll={petriFoldAll} />
+          ) : (
+            <GrapheSubPanel doc={shownGraph} theme={gTheme.obj} editable={false} engine="reactflow" height="100%" />
+          )
         ) : (
           <div style={{ color: '#475569', padding: 20, textAlign: 'center' }}>Aucun graphe</div>
         )}

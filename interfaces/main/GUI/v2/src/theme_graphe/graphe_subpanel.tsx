@@ -46,6 +46,13 @@ export interface GrapheSubPanelProps {
   taskflowMode?: boolean;        // mode taskflow : boutons Zip all / Unzip all
   onZipAll?: () => void;
   onUnzipAll?: () => void;
+  // Mode PÉTRI BACKEND (V2) : le folding est géré côté backend (graphe_utile).
+  // Les nœuds portent vars.petri (num_id, foldable, zipped) et les actions
+  // appellent onPetriAction / onPetriFoldAll.
+  petriMode?: boolean;
+  onPetriAction?: (numId: number, action: 'fold' | 'unfold') => void;
+  onPetriFoldAll?: () => void;
+  onPetriUnfoldAll?: () => void;
 }
 
 const NODE_W = 150;
@@ -343,7 +350,20 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
 
   // Graphe effectif : marque les nœuds zipables (−, via findClippable) et
   // unzipables (+, via les clips actifs), RÉCURSIVEMENT (top + boxes).
+  // Mode PÉTRI : les hints viennent du backend (vars.petri.foldable/zipped).
   const effGraph = useMemo(() => {
+    if (props.petriMode) {
+      return {
+        ...graph,
+        nodes: (graph.nodes ?? []).map((n: any) => {
+          const p = n.vars?.petri;
+          const hasZip = !!p && p.visible !== false && p.foldable && p.foldable !== 'none';
+          const hasUnzip = !!p && p.zipped === true;
+          if (!hasZip && !hasUnzip) return n;
+          return { ...n, vars: { ...(n.vars ?? {}), zipHint: hasZip, unzipHint: hasUnzip } };
+        }),
+      };
+    }
     if (!props.taskflowMode || !tfDoc) return graph;
     const possible = findClippable(tfDoc);
     const active = clipTable.clips;
@@ -394,37 +414,49 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
   }, [tfDoc, clipTable, graph, props.taskflowMode, blinkIds]);
 
   const doZip = useCallback((id: string) => {
+    if (props.petriMode) {
+      const node = graph.nodes?.find((n: any) => n.id === id);
+      if (node?.vars?.petri?.num_id != null) props.onPetriAction?.(node.vars.petri.num_id, 'fold');
+      return;
+    }
     if (!tfDoc) return;
     const clip = findClippable(tfDoc).find((c) => c.on.includes(id));
     if (!clip) return;
     zip(tfDoc, clip);
     setClipTable((t) => ({ clips: [...t.clips, clip] }));
     setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
-  }, [tfDoc]);
+  }, [tfDoc, props.petriMode, props.onPetriAction, graph.nodes]);
 
   const doUnzip = useCallback((id: string) => {
+    if (props.petriMode) {
+      const node = graph.nodes?.find((n: any) => n.id === id);
+      if (node?.vars?.petri?.num_id != null) props.onPetriAction?.(node.vars.petri.num_id, 'unfold');
+      return;
+    }
     if (!tfDoc) return;
     const clip = clipTable.clips.find((c) => c.newId === id);
     if (!clip) return;
     unzip(tfDoc, clip);
     setClipTable((t) => ({ clips: t.clips.filter((c) => c.newId !== id) }));
     setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
-  }, [tfDoc, clipTable]);
+  }, [tfDoc, clipTable, props.petriMode, props.onPetriAction, graph.nodes]);
 
   const doZipAll = useCallback(() => {
+    if (props.petriMode) { props.onPetriFoldAll?.(); return; }
     if (!tfDoc) return;
     const table = zipAll(tfDoc);
     setClipTable(table);
     setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
     console.log(`zip_all : ${table.clips.length} clip(s) appliqué(s).`);
-  }, [tfDoc]);
+  }, [tfDoc, props.petriMode, props.onPetriFoldAll]);
 
   const doUnzipAll = useCallback(() => {
+    if (props.petriMode) { props.onPetriUnfoldAll?.(); return; }
     if (!tfDoc) return;
     unzipAll(tfDoc, clipTable);
     setClipTable(createClipTable());
     setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
-  }, [tfDoc, clipTable]);
+  }, [tfDoc, clipTable, props.petriMode, props.onPetriUnfoldAll]);
 
   // ── Slow collapse : plie UN clip à la fois, blinque ~5 s avant chaque fold,
   //    log_graph à chaque étape (vérification visuelle du clipping). ──
@@ -469,11 +501,11 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     const r = buildExpandedGraph(effGraph, {
       algo, dir, theme: parsedTheme, expanded, onToggle: toggle,
       hideBoxFold: props.taskflowMode,
-      onZip: props.taskflowMode ? doZip : undefined,
-      onUnzip: props.taskflowMode ? doUnzip : undefined,
+      onZip: (props.taskflowMode || props.petriMode) ? doZip : undefined,
+      onUnzip: (props.taskflowMode || props.petriMode) ? doUnzip : undefined,
     });
     return { rfNodes: r.nodes, rfEdges: r.edges };
-  }, [effGraph, parsedTheme, algo, dir, expanded, toggle, props.taskflowMode, doZip, doUnzip]);
+  }, [effGraph, parsedTheme, algo, dir, expanded, toggle, props.taskflowMode, props.petriMode, doZip, doUnzip]);
 
   // Clé stable par graphe : force le REMOUNT du ReactFlow quand le doc change
   // (évite les edges "fantômes" d'un agent précédent qui restent affichés).
@@ -541,7 +573,7 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           ))}
         </div>
         <span style={{ flex: 1 }} />
-        {props.taskflowMode ? (
+        {props.taskflowMode || props.petriMode ? (
           <>
             <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={doUnzipAll} title="Unzip all">
               ⤢ Unzip all
