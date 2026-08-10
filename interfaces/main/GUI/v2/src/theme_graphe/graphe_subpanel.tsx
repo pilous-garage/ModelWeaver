@@ -11,7 +11,7 @@
 // Absent → layout auto (dagre). Présent → position fixe.
 // `editable` : false = lecture seule ; true = drag met à jour les pos.
 
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useEffect } from 'react';
 import { parse as yamlParse } from 'yaml';
 import {
   ReactFlow, Background, Controls, useNodesState, useEdgesState,
@@ -30,6 +30,8 @@ import {
   type LayoutAlgo, type LayoutDir,
 } from './graphLayouts.ts';
 import { buildExpandedGraph } from './graphExpand.ts';
+import { findClippable, zip, unzip, zipAll, unzipAll, createClipTable, type ClipTable, type Clip } from '../panels/taskflowClip.ts';
+import { slow_collapse } from '../panels/taskflowGraph.ts';
 
 export interface GrapheSubPanelProps {
   doc: string | Record<string, any> | null;   // graph.yaml (string) ou objet
@@ -39,6 +41,11 @@ export interface GrapheSubPanelProps {
   onGraphChange?: (g: GraphDoc) => void;       // appelé à chaque édition (pos)
   onExportSvg?: (svg: string) => void;
   height?: number | string;
+  autoExpandAll?: boolean;       // déplie TOUTES les boxes au chargement
+  onExpandDone?: () => void;     // signal : le dépliage est terminé
+  taskflowMode?: boolean;        // mode taskflow : boutons Zip all / Unzip all
+  onZipAll?: () => void;
+  onUnzipAll?: () => void;
 }
 
 const NODE_W = 150;
@@ -63,7 +70,23 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
   const hasInner = !!data?.hasInner;
   const expanded = !!data?.expanded;
   const onToggle = data?.onToggle;
+  const hideBoxFold = !!data?.hideBoxFold;   // mode taskflow : pas de boutons fold
+  const zipHint = !!n?.vars?.zipHint;        // bouton − (zipable)
+  const unzipHint = !!n?.vars?.unzipHint;    // bouton + (unzipable)
+  const blink = !!n?.vars?.blink;            // slow collapse : va disparaître
+  const basicSkill = !!(n?.tags?.includes('basic_skill'));
+  const isTransition = n?.type === 'transition';
   const hs = { width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' };
+
+  // Points de connexion OPPOSÉS selon la direction du layout (LR défaut) :
+  // entrée (target) d'un côté, sortie (source) du côté opposé.
+  const dir: string = data?.dir ?? 'LR';
+  const targetPos = dir === 'RL' ? Position.Right
+    : dir === 'TB' ? Position.Top
+    : dir === 'BT' ? Position.Bottom : Position.Left;
+  const sourcePos = dir === 'RL' ? Position.Left
+    : dir === 'TB' ? Position.Bottom
+    : dir === 'BT' ? Position.Top : Position.Right;
 
   // Déplié = container : header en haut (nom/tag + bouton fold), les sous-
   // nœuds (rendus par React Flow via parentId) occupent le reste en dessous.
@@ -84,9 +107,10 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
           boxSizing: 'border-box',
         }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {basicSkill && <span title="Skill basique (codée en Python)" style={{ color: '#fbbf24', fontWeight: 700 }}>📘 </span>}
             {`${st?.icon ?? ''} ${n?.label ?? ''}`}
           </span>
-          {hasInner && (
+          {hasInner && !hideBoxFold && (
             <button
               onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
               style={{
@@ -106,37 +130,77 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
   return (
     <div style={{
       width: '100%', height: '100%',
-      background: st?.color,
-      border: `1.5px solid ${st?.border ?? '#64748b'}`,
-      borderRadius: st?.shape === 'pill' ? 999 : (st?.shape === 'rounded' || st?.shape === 'circle') ? 8 : 3,
+      background: isTransition ? '#000' : st?.color,
+      border: `1.5px solid ${blink ? '#f59e0b' : (st?.border ?? '#64748b')}`,
+      borderRadius: isTransition ? 1 : (st?.shape === 'pill' ? 999 : (st?.shape === 'rounded' || st?.shape === 'circle') ? 8 : 3),
       color: '#0f172a', fontWeight: 600, fontSize: 11,
       display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
       position: 'relative',
+      ...(blink ? { animation: 'mw-zip-blink .7s ease-in-out infinite', zIndex: 5 } : {}),
     }}>
-      <span style={{ lineHeight: 1.2, textAlign: 'center', padding: '0 18px' }}>
-        {`${st?.icon ?? ''} ${n?.label ?? ''}`}
-      </span>
-      {/* Bouton de dépliage : + à droite */}
-      {hasInner && (
+      {isTransition ? (
+        /* Transition = barre VERTICALE noire ; le label (nom de la transition)
+           est affiché AU-DESSUS, en petit. */
+        <span style={{ position: 'absolute', top: -12, fontSize: 8, color: '#94a3b8', lineHeight: 1, whiteSpace: 'nowrap' }}>
+          {n?.label}
+        </span>
+      ) : (
+        <span style={{ lineHeight: 1.2, textAlign: 'center', padding: '0 18px', whiteSpace: 'pre-line' }}>
+          {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+        </span>
+      )}
+      {/* Badge « skill basique » : skill codée en Python (pas de workflow YAML) */}
+      {basicSkill && (
+        <span title="Skill basique (codée en Python)" style={{
+          position: 'absolute', top: 1, left: 3, fontSize: 9, lineHeight: 1,
+          color: '#fbbf24', fontWeight: 700,
+        }}>📘</span>
+      )}
+      {/* Bouton de dépliage : + à droite (au-DESSUS du nœud : z-index élevé,
+          pour ne pas être recouvert par un nœud/box qui se superpose) */}
+      {hasInner && !hideBoxFold && (
         <button
           onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
           style={{
             position: 'absolute', right: 3, top: '50%', transform: 'translateY(-50%)',
             width: 16, height: 16, lineHeight: '13px', padding: 0, fontSize: 12,
             background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
-            borderRadius: 3, cursor: 'pointer',
+            borderRadius: 3, cursor: 'pointer', zIndex: 10,
           }}
           title="Déplier"
         >+</button>
       )}
-      <Handle type="source" position={Position.Left} id="ws" style={hs} />
-      <Handle type="target" position={Position.Left} id="wt" style={hs} />
-      <Handle type="source" position={Position.Right} id="es" style={hs} />
-      <Handle type="target" position={Position.Right} id="et" style={hs} />
-      <Handle type="source" position={Position.Top} id="ns" style={hs} />
-      <Handle type="target" position={Position.Top} id="nt" style={hs} />
-      <Handle type="source" position={Position.Bottom} id="ss" style={hs} />
-      <Handle type="target" position={Position.Bottom} id="st" style={hs} />
+      {/* Clipping taskflow : − sous un nœud zipable, + sous un nœud unzipable */}
+      {zipHint && (
+        <button
+          onClick={(ev) => { ev.stopPropagation(); data?.onZip?.(n.id); }}
+          style={{
+            position: 'absolute', bottom: -16, left: '50%', transform: 'translateX(-50%)',
+            width: 14, height: 14, lineHeight: '11px', padding: 0, fontSize: 11,
+            background: '#fbbf24', color: '#0f172a', border: '1px solid #f59e0b',
+            borderRadius: 3, cursor: 'pointer',
+          }}
+          title="Zip"
+        >−</button>
+      )}
+      {unzipHint && (
+        <button
+          onClick={(ev) => { ev.stopPropagation(); data?.onUnzip?.(n.id); }}
+          style={{
+            position: 'absolute', bottom: -16, left: '50%', transform: 'translateX(-50%)',
+            width: 14, height: 14, lineHeight: '11px', padding: 0, fontSize: 11,
+            background: '#38bdf8', color: '#0f172a', border: '1px solid #0ea5e9',
+            borderRadius: 3, cursor: 'pointer',
+          }}
+          title="Unzip"
+        >+</button>
+      )}
+      {/* Points de connexion OPPOSÉS selon la direction du layout : UNE entrée
+          (target) et UNE sortie (source), pour que les arêtes soient droites.
+          Sans id, React Flow connecte TOUTES les arêtes sortantes/entrantes au
+          premier (unique) handle → pas de chevauchement en un point. */}
+      <Handle type="target" position={targetPos} style={hs} />
+      <Handle type="source" position={sourcePos} style={hs} />
     </div>
   );
 }
@@ -233,11 +297,184 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
   const [algo, setAlgo] = React.useState<LayoutAlgo>('dagre');
   const [dir, setDir] = React.useState<LayoutDir>('LR');
 
+  const onNodeDragStop = useCallback((_: any, node: Node) => {
+    if (!editable || !onGraphChange) return;
+    const g2 = setNodePos(graph, node.id, {
+      center: [node.position.x + NODE_W / 2, node.position.y + NODE_H / 2],
+    });
+    onGraphChange(g2);
+  }, [editable, graph, onGraphChange]);
+
+  const reLayout = useCallback(() => {
+    const stripped = stripPositions(graph);
+    if (onGraphChange) onGraphChange(stripped);
+    else setExpanded(new Set()); // replier tout
+  }, [graph, onGraphChange]);
+
+  // Collecte RÉCURSIVE des ids de nœuds dépliables (ayant vars.inner NON
+  // VIDE), y compris ceux des sous-graphes internes (fold/unfold récursif).
+  // Les steps atomiques (vars.inner.nodes = []) ne sont PAS dépliables.
+  const collectExpandable = useCallback((nodes: any[], acc: Set<string> = new Set()): Set<string> => {
+    for (const n of nodes) {
+      if (n.vars?.inner?.nodes?.length) acc.add(n.id);
+      if (n.vars?.inner?.nodes) collectExpandable(n.vars.inner.nodes, acc);
+    }
+    return acc;
+  }, []);
+
+  const unfoldAll = useCallback(() => {
+    const all = collectExpandable(graph.nodes);
+    if (all.size) setExpanded(new Set(all));
+  }, [graph, collectExpandable]);
+
+  const foldAll = useCallback(() => {
+    setExpanded(new Set());
+  }, []);
+
+  // ── Taskflow : clipping (zip/unzip) ───────────────────────────────
+  // tfDoc = copie du doc (modifiée par zip/unzip) ; clipTable = clips actifs.
+  const [tfDoc, setTfDoc] = React.useState<any>(null);
+  const [clipTable, setClipTable] = React.useState<ClipTable>(createClipTable());
+  // Slow collapse : ids des nœuds en cours de blink (sur le point de plier).
+  const [blinkIds, setBlinkIds] = React.useState<Set<string>>(new Set());
+  const slowCollapsing = React.useRef(false);
+  React.useEffect(() => {
+    if (props.taskflowMode) {
+      setTfDoc(JSON.parse(JSON.stringify(graph)));
+      setClipTable(createClipTable());
+      setBlinkIds(new Set());
+    }
+  }, [graph, props.taskflowMode]);
+
+  // Graphe effectif : marque les nœuds zipables (−, via findClippable) et
+  // unzipables (+, via les clips actifs), RÉCURSIVEMENT (top + boxes).
+  const effGraph = useMemo(() => {
+    if (!props.taskflowMode || !tfDoc) return graph;
+    const possible = findClippable(tfDoc);
+    const active = clipTable.clips;
+    const markLevel = (d: any, poss: Clip[], act: Clip[], path: string[]): any => {
+      const marks = new Map<string, 'zip' | 'unzip'>();
+      const nestedP = new Map<string, Clip[]>();
+      const nestedA = new Map<string, Clip[]>();
+      const route = (list: Clip[], nested: Map<string, Clip[]>, fn: (c: Clip) => void) => {
+        for (const c of list) {
+          const p = c.path ?? [];
+          if (p.join('/') === path.join('/')) fn(c);
+          else if (p.length > path.length && p.slice(0, path.length).join('/') === path.join('/')) {
+            const head = p[path.length];
+            if (!nested.has(head)) nested.set(head, []);
+            nested.get(head)!.push(c);
+          }
+        }
+      };
+      route(poss, nestedP, (c) => { for (const id of c.on) if (!marks.has(id)) marks.set(id, 'zip'); });
+      route(act, nestedA, (c) => marks.set(c.newId, 'unzip'));
+      const heads = new Set([...nestedP.keys(), ...nestedA.keys()]);
+      return {
+        ...d,
+        nodes: d.nodes.map((n: any) => {
+          let node = marks.has(n.id)
+            ? { ...n, vars: { ...(n.vars ?? {}), zipHint: marks.get(n.id) === 'zip', unzipHint: marks.get(n.id) === 'unzip' } }
+            : n;
+          if (blinkIds.has(n.id)) {
+            node = { ...node, vars: { ...(node.vars ?? {}), blink: true } };
+          }
+          if (heads.has(n.id) && node.vars?.inner?.nodes) {
+            node = {
+              ...node, vars: {
+                ...node.vars,
+                inner: markLevel(node.vars.inner, nestedP.get(n.id) ?? [], nestedA.get(n.id) ?? [], [...path, n.id]),
+              },
+            };
+          }
+          return node;
+        }),
+      };
+    };
+    return markLevel(tfDoc, possible, active, []);
+  }, [tfDoc, clipTable, graph, props.taskflowMode, blinkIds]);
+
+  const doZip = useCallback((id: string) => {
+    if (!tfDoc) return;
+    const clip = findClippable(tfDoc).find((c) => c.on.includes(id));
+    if (!clip) return;
+    zip(tfDoc, clip);
+    setClipTable((t) => ({ clips: [...t.clips, clip] }));
+    setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
+  }, [tfDoc]);
+
+  const doUnzip = useCallback((id: string) => {
+    if (!tfDoc) return;
+    const clip = clipTable.clips.find((c) => c.newId === id);
+    if (!clip) return;
+    unzip(tfDoc, clip);
+    setClipTable((t) => ({ clips: t.clips.filter((c) => c.newId !== id) }));
+    setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
+  }, [tfDoc, clipTable]);
+
+  const doZipAll = useCallback(() => {
+    if (!tfDoc) return;
+    const table = zipAll(tfDoc);
+    setClipTable(table);
+    setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
+    console.log(`zip_all : ${table.clips.length} clip(s) appliqué(s).`);
+  }, [tfDoc]);
+
+  const doUnzipAll = useCallback(() => {
+    if (!tfDoc) return;
+    unzipAll(tfDoc, clipTable);
+    setClipTable(createClipTable());
+    setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
+  }, [tfDoc, clipTable]);
+
+  // ── Slow collapse : plie UN clip à la fois, blinque ~5 s avant chaque fold,
+  //    log_graph à chaque étape (vérification visuelle du clipping). ──
+  const doSlowCollapse = useCallback(async () => {
+    if (!tfDoc || slowCollapsing.current) return;
+    slowCollapsing.current = true;
+    try {
+      const n = await slow_collapse(tfDoc, {
+        onBlink: (ids, on) => setBlinkIds(on ? new Set(ids) : new Set()),
+        onStep: (clip) => {
+          setClipTable((t) => ({ clips: [...t.clips, clip] }));
+          setTfDoc({ ...tfDoc, nodes: [...tfDoc.nodes], edges: [...tfDoc.edges] });
+        },
+      });
+      console.log(`slow_collapse : terminé — ${n} zip(s).`);
+    } finally {
+      slowCollapsing.current = false;
+      setBlinkIds(new Set());
+    }
+  }, [tfDoc]);
+
+  // Keyframes du blink (injectées une fois, partagées).
+  useEffect(() => {
+    if (document.getElementById('mw-zip-blink-style')) return;
+    const st = document.createElement('style');
+    st.id = 'mw-zip-blink-style';
+    st.textContent = '@keyframes mw-zip-blink{0%,100%{opacity:1;box-shadow:none}50%{opacity:.45;box-shadow:0 0 0 3px rgba(245,158,11,.55)}}';
+    document.head.appendChild(st);
+  }, []);
+
+  // autoExpandAll : déplie TOUTES les boxes (unfold all) et émet le signal
+  // onExpandDone quand le dépliage est déclenché — le graphe n'est pas modifié.
+  React.useEffect(() => {
+    if (!props.autoExpandAll) return;
+    const all = collectExpandable(graph.nodes);
+    if (all.size) setExpanded(new Set(all));
+    props.onExpandDone?.();
+  }, [graph, props.autoExpandAll, props.onExpandDone, collectExpandable]);
+
   // Construction du graphe étendu (déplié) à partir du doc + état.
   const { rfNodes, rfEdges } = useMemo(() => {
-    const r = buildExpandedGraph(graph, { algo, dir, theme: parsedTheme, expanded, onToggle: toggle });
+    const r = buildExpandedGraph(effGraph, {
+      algo, dir, theme: parsedTheme, expanded, onToggle: toggle,
+      hideBoxFold: props.taskflowMode,
+      onZip: props.taskflowMode ? doZip : undefined,
+      onUnzip: props.taskflowMode ? doUnzip : undefined,
+    });
     return { rfNodes: r.nodes, rfEdges: r.edges };
-  }, [graph, parsedTheme, algo, dir, expanded, toggle]);
+  }, [effGraph, parsedTheme, algo, dir, expanded, toggle, props.taskflowMode, doZip, doUnzip]);
 
   // Clé stable par graphe : force le REMOUNT du ReactFlow quand le doc change
   // (évite les edges "fantômes" d'un agent précédent qui restent affichés).
@@ -254,39 +491,6 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     setNodes(rfNodes);
     setEdges(rfEdges);
   }, [rfNodes, rfEdges, setNodes, setEdges]);
-
-  const onNodeDragStop = useCallback((_: any, node: Node) => {
-    if (!editable || !onGraphChange) return;
-    const g2 = setNodePos(graph, node.id, {
-      center: [node.position.x + NODE_W / 2, node.position.y + NODE_H / 2],
-    });
-    onGraphChange(g2);
-  }, [editable, graph, onGraphChange]);
-
-  const reLayout = useCallback(() => {
-    const stripped = stripPositions(graph);
-    if (onGraphChange) onGraphChange(stripped);
-    else setExpanded(new Set()); // replier tout
-  }, [graph, onGraphChange]);
-
-  // Collecte RÉCURSIVE des ids de nœuds dépliables (ayant vars.inner), y
-  // compris ceux des sous-graphes internes (fold/unfold récursif).
-  const collectExpandable = useCallback((nodes: any[], acc: Set<string> = new Set()): Set<string> => {
-    for (const n of nodes) {
-      if (n.vars?.inner) acc.add(n.id);
-      if (n.vars?.inner?.nodes) collectExpandable(n.vars.inner.nodes, acc);
-    }
-    return acc;
-  }, []);
-
-  const unfoldAll = useCallback(() => {
-    const all = collectExpandable(graph.nodes);
-    if (all.size) setExpanded(new Set(all));
-  }, [graph, collectExpandable]);
-
-  const foldAll = useCallback(() => {
-    setExpanded(new Set());
-  }, []);
 
   if (!doc) return <div style={{ color: '#475569', padding: 8 }}>Aucun graphe</div>;
 
@@ -338,12 +542,34 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           ))}
         </div>
         <span style={{ flex: 1 }} />
-        <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={unfoldAll} title="Tout déplier">
-          ⊕ Tout déplier
-        </button>
-        <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={foldAll} title="Tout replier">
-          ⊖ Tout replier
-        </button>
+        {props.taskflowMode ? (
+          <>
+            <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={doUnzipAll} title="Unzip all">
+              ⤢ Unzip all
+            </button>
+            <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={doZipAll} title="Zip all">
+              ⤡ Zip all
+            </button>
+            <button
+              className="mw-btn"
+              style={{ fontSize: 10, padding: '1px 8px' }}
+              onClick={doSlowCollapse}
+              disabled={slowCollapsing.current}
+              title="Slow collapse : blinque ~5 s le nœud qui va disparaître, plie un clip à la fois, log_graph à chaque étape"
+            >
+              {slowCollapsing.current ? '⏳' : '🐌'} Slow collapse
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={unfoldAll} title="Tout déplier">
+              ⊕ Tout déplier
+            </button>
+            <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={foldAll} title="Tout replier">
+              ⊖ Tout replier
+            </button>
+          </>
+        )}
         <button className="mw-btn" style={{ fontSize: 10, padding: '1px 8px' }} onClick={reLayout}>
           ⟳ Re-layout
         </button>

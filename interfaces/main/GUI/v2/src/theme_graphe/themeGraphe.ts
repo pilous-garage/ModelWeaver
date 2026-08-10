@@ -49,6 +49,12 @@ const EMBEDDED: ThemeGraphe = {
     spawn:  { shape: 'rounded', icon: '🐣', color: '#fab387', border: '#fb923c' },
     end:    { shape: 'diamond', icon: '⏹', color: '#f38ba8', border: '#fb7185' },
     token:  { shape: 'circle', icon: '●', color: '#f9e2af', border: '#fbbf24' },
+    'token-in':  { shape: 'circle', icon: '◴', color: '#89dceb', border: '#38bdf8' },
+    'token-out': { shape: 'circle', icon: '●', color: '#f9e2af', border: '#fbbf24' },
+    // Réseau de Pétri : places (cercles) et transitions (barres).
+    place:      { shape: 'circle', icon: '◯', color: '#a6e3a1', border: '#4ade80' },
+    transition: { shape: 'rect', icon: '▮', color: '#6c7086', border: '#94a3b8' },
+    'petri-box':{ shape: 'rounded', icon: '▤', color: '#89b4fa', border: '#60a5fa' },
     default:{ shape: 'rounded', icon: '●', color: '#94a3b8', border: '#64748b' },
   },
   edges: {

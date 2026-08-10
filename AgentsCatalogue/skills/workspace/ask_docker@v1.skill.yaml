@@ -1,0 +1,35 @@
+name: workspace/ask_docker@v1
+category: workspace
+description: >
+  Demande un conteneur Docker répondant à des spécifications au manager_de_docker.
+  Le manager possède des images et un budget d'espace ; il retourne soit un nouveau
+  conteneur créé selon les specs, soit une copie d'un conteneur existant qui
+  répond au moins aux specs (prise en compte des listes with/without).
+inputs:
+  specs:
+    type: dict
+    required: true
+    description: >
+      Spécifications du docker : {with: [str], without: [str], memory_mb: int,
+      cpu_cores: int, budget_limit_mb: int}. Les listes with/without sont positives
+      et négatives (ex. with=[python3, pytest], without=[gcc, node]).
+  workspace_id:
+    type: string
+    required: false
+  agent_id:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  docker_id:
+    type: string
+  docker_copy_path:
+    type: string
+  specs_matched:
+    type: dict
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspace_docker.manager_request

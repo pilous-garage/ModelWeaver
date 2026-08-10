@@ -55,6 +55,7 @@ export interface FsmComponent {
   on_error?: string;
   // skills / agents internes
   inner?: FsmComponent;    // skill référencée ou agent référencé
+  tags?: string[];         // tags déclarés dans le YAML (llm, heavy, sleep, sandbox…)
 }
 
 /** Types de nœuds ATOMIQUES (pas de sous-graphe). */
@@ -62,15 +63,23 @@ export function isAtomicNode(node: FsmNode): boolean {
   return !node.vars?.inner;
 }
 
-/** Construit le nœud externe (pliée) d'un composant dépliable. */
+/** Construit le nœud externe (pliée) d'un composant dépliable.
+ *  Les tags du parent = tags propres + tags hérités du CONTENU (bottom-up) :
+ *  un while contenant un llm_call obtient le tag llm ; un step call wait_for
+ *  obtient sleep (déjà géré par componentTags). */
 export function outerNodeOf(c: FsmComponent, extra: Partial<FsmNode> = {}, prefix = ''): FsmNode {
+  const inner = buildSubGraph(c, [], prefix);
+  // Tags bottom-up : on agrège les tags du inner (corps de boucle, sous-steps…).
+  const innerTags = inner.tags ?? [];
+  const ownTags = componentTags(c);
+  const allTags = [...new Set([...ownTags, ...innerTags])];
   return {
     id: prefix + c.id,
     type: componentOuterType(c),
     label: c.label ?? c.id,
     ref: c.fn || c.type || c.kind,
-    tags: componentTags(c),
-    vars: { inner: buildSubGraph(c, [], prefix) },
+    tags: allTags,
+    vars: { inner },
     ...extra,
   };
 }
@@ -87,17 +96,23 @@ function componentOuterType(c: FsmComponent): string {
 function stepOuterType(c: FsmComponent): string {
   if (c.type === 'end') return c.status === 'FAILED' ? 'exit_error' : 'exitpoint';
   if (c.type === 'llm_call') return 'llm';
-  if (c.type === 'call') return 'skill';
-  return 'fonction';
+  if (c.type === 'call') return c.fn ? 'skill' : 'fonction';
+  // Steps de contrôle (set_variable, break, continue, etc.) = nœuds goto.
+  if (c.type === 'set_variable' || c.type === 'break' || c.type === 'continue') return 'step';
+  return c.fn ? 'fonction' : 'step';
 }
 
-/** Tags d'un composant (propres + hérités). */
+/** Tags d'un composant (propres + hérités + déclarés YAML). */
 function componentTags(c: FsmComponent): string[] {
   const tags: string[] = [];
   if (c.type === 'llm_call') tags.push('llm');
   if (c.fn?.includes('token_task_create')) tags.push('token_create');
   if (c.fn?.includes('token_task_pick')) tags.push('token_eat');
+  if (c.fn?.includes('wait_for')) tags.push('sleep');       // wait_for = sleep (hérité par le parent)
+  if (c.fn?.includes('sleep') && !c.fn?.includes('wait_for')) tags.push('sleep'); // sablier
   if (c.kind === 'loop') tags.push('loop');
+  // Tags déclarés dans le YAML (ex. tags: [sandbox, heavy]) — propagés aussi.
+  if (c.tags) for (const t of c.tags) if (!tags.includes(t)) tags.push(t);
   return tags;
 }
 
@@ -132,8 +147,11 @@ function stepSubGraph(c: FsmComponent, inherited: string[], prefix: string): Fsm
 
 /**
  * SWITCH / IF : un nœud `condition` avec une ENTRÉE (la variable) et N
- * SORTIES (une par condition, label = la condition). L'arête externe entre
- * dans la condition ; chaque sortie de condition pointe vers le step cible.
+ * SORTIES (une par condition). Le point de branchement vit au niveau PARENT :
+ * les arêtes de sortie `box → cible` (conditions + default) sont émises par
+ * buildBodySteps. Le inner ne garde QUE la condition (entrypoint/exitpoint) —
+ * si on ajoutait aussi `condition → cible` ici, on DOUBLERAIT les transitions
+ * quand la box est dépliée (routage box → exitpoint → condition).
  */
 function switchSubGraph(c: FsmComponent, inherited: string[], prefix: string): FsmSubGraph {
   const tags = [...inherited, ...componentTags(c), 'condition'];
@@ -142,28 +160,9 @@ function switchSubGraph(c: FsmComponent, inherited: string[], prefix: string): F
     id: condId, type: 'condition', label: c.variable || c.id,
     ref: c.variable || 'switch', tags: [...tags, 'entrypoint'], vars: {},
   }];
-  const edges: FsmEdge[] = [];
-  const condVar = c.variable || '?';
-  const resolve = (ref?: string): string | null => ref ? `${prefix}${ref}` : null;
-
-  for (let i = 0; i < (c.conditions ?? []).length; i++) {
-    const cond = c.conditions![i];
-    const exitId = `${condId}/out${i}`;
-    nodes.push({ id: exitId, type: 'condition_out', label: `${condVar}=${cond.value ?? ''}`, tags: [...tags], vars: {} });
-    edges.push({ from: condId, to: exitId, label: '', type: 'next' });
-    const target = resolve(cond.next);
-    if (target) edges.push({ from: exitId, to: target, label: String(cond.value ?? ''), type: 'next' });
-  }
-  if (c.default) {
-    const exitId = `${condId}/else`;
-    const target = resolve(c.default);
-    nodes.push({ id: exitId, type: 'condition_out', label: 'else', tags: [...tags], vars: {} });
-    edges.push({ from: condId, to: exitId, label: '', type: 'next' });
-    if (target) edges.push({ from: exitId, to: target, label: 'else', type: 'next' });
-  }
+  // L'entrée ET la sortie passent par la condition (point de branchement).
   return {
-    nodes, edges, entrypoint: condId,
-    exitpoints: nodes.filter((n) => n.type === 'condition_out').map((n) => n.id),
+    nodes, edges: [], entrypoint: condId, exitpoints: [condId],
     tags,
   };
 }
@@ -190,25 +189,27 @@ function loopSubGraph(c: FsmComponent, inherited: string[], prefix: string): Fsm
   // Body : sous-graphe boxable/foldable, préfixé par la boucle.
   const bodyPrefix = `${prefix}${c.id}/body/`;
   let bodyEntry: string | null = null;
+  let bodyExitpoints: string[] = [];
   if (c.body?.steps?.length) {
     const body = buildBodySteps(c.body.steps, bodyPrefix, tags);
     nodes.push(...body.nodes);
     edges.push(...body.edges);
     bodyEntry = body.entrypoint;
+    bodyExitpoints = body.exitpoints;
   }
   // La condition pointe vers le 1er step du body (si true).
   if (bodyEntry) edges.push({ from: condId, to: bodyEntry, label: 'true', type: 'loop' });
-  // Sortie "false" de la condition → next du while (résolu au préfixe parent).
-  const condExitId = `${condId}/exit`;
-  nodes.push({ id: condExitId, type: 'condition_out', label: 'false', tags: [...tags, 'exitpoint'], vars: {} });
-  edges.push({ from: condId, to: condExitId, label: 'false', type: 'loop' });
-  const nextResolved = c.next ? `${parentOf(prefix)}${c.next}` : null;
-  if (nextResolved) edges.push({ from: condExitId, to: nextResolved, label: '', type: 'next' });
-
+  // Les SORTIES de la boucle sont SES EXITPOINTS : la condition (sortie
+  // "false" → le `next` du while) + les breaks du body. Le nœud PARENT porte
+  // l'arête `next → cible` (buildBodySteps), distribuée vers CHAQUE exitpoint
+  // au rendu (fan-out) → break_done → after_loop, condition → after_loop, etc.
+  // Pas de nœud "false" artificiel, et aucune arête interne vers l'extérieur.
   return {
     nodes, edges, entrypoint: condId,
-    exitpoints: [condExitId, ...nodes.filter((n) => n.type === 'exitpoint').map((n) => n.id)],
-    tags,
+    exitpoints: [condId, ...bodyExitpoints],
+    // Tags bottom-up : on agrège les tags des nœuds du body (llm, sleep,
+    // sandbox…) pour que le nœud outer du while les hérite.
+    tags: [...new Set([...tags, ...nodes.flatMap((n) => n.tags ?? [])])],
   };
 }
 
@@ -219,6 +220,9 @@ function loopSubGraph(c: FsmComponent, inherited: string[], prefix: string): Fsm
 function skillSubGraph(c: FsmComponent, inherited: string[], prefix: string): FsmSubGraph {
   const tags = [...inherited, ...componentTags(c), 'skill'];
   const id = `${prefix}${c.id}/skill`;
+  // Le graphe représente l'AUTOMATE (la machine à états du FSM). Les inputs
+  // du step call ne sont PAS des états : ils n'apparaissent pas dans le flux
+  // (sinon ils n'ont pas d'entrée et cassent l'ordre).
   const nodes: FsmNode[] = [{
     id, type: 'skill', label: c.fn || c.id, ref: c.fn || c.id,
     tags: [...tags, 'entrypoint'], vars: {},
@@ -246,7 +250,7 @@ function agentSubGraph(c: FsmComponent, inherited: string[], prefix: string): Fs
 /** Construit les steps d'un body (sous-graphe boxable/foldable). Chaque step
  * reçoit un préfixe (`prefix`) ; les références next/on_error/conditions sont
  * résolues relativement à ce préfixe. */
-function buildBodySteps(steps: FsmComponent[], prefix: string, inherited: string[]): FsmSubGraph {
+export function buildBodySteps(steps: FsmComponent[], prefix: string, inherited: string[]): FsmSubGraph {
   const nodes: FsmNode[] = [];
   const edges: FsmEdge[] = [];
   let entrypoint: string | null = null;
@@ -276,14 +280,26 @@ function buildBodySteps(steps: FsmComponent[], prefix: string, inherited: string
     if (nxt) edges.push({ from: id, to: nxt, label: 'next', type: 'next' });
     const oe = resolve(s.on_error);
     if (oe) edges.push({ from: id, to: oe, label: 'err', type: 'error' });
-    // switch/if : conditions + default (résolus au préfixe).
-    if (s.kind === 'switch' || s.kind === 'if') {
+    // SWITCH / IF : les branches (conditions + default) SORTENT de la BOX au
+    // niveau parent. « Plié → tout se réduit au nœud parent » : sans ces
+    // arêtes, une box switch pliée semble sans sortie, et ses cibles externes
+    // (ex. back_to_loop) semblent sans entrée (seule la branche interne
+    // `condition → cible` les relie, invisible pliée). Déplié, le routage
+    // redirige la box vers son entrypoint/exitpoint (la condition) et la
+    // dédup (buildExpandedGraph) élimine le doublon condition→cible.
+    if (s.type === 'switch' || s.type === 'if') {
+      const seen = new Set<string>();
       for (const c of s.conditions ?? []) {
         const t = resolve(c.next);
-        if (t) edges.push({ from: id, to: t, label: String(c.value ?? ''), type: 'next' });
+        if (t && !seen.has(t)) {
+          seen.add(t);
+          edges.push({ from: id, to: t, label: `${s.variable ?? '?'}${c.operator ?? ''}${c.value ?? ''}`, type: 'next' });
+        }
       }
-      const d = resolve(s.default);
-      if (d) edges.push({ from: id, to: d, label: 'else', type: 'next' });
+      const dflt = resolve(s.default);
+      if (dflt && !seen.has(dflt)) {
+        edges.push({ from: id, to: dflt, label: 'else', type: 'next' });
+      }
     }
     // continue → retourne à la condition de la boucle englobante.
     if (s.type === 'continue') {
@@ -292,12 +308,6 @@ function buildBodySteps(steps: FsmComponent[], prefix: string, inherited: string
     }
   }
   return { nodes, edges, entrypoint, exitpoints, tags: inherited };
-}
-
-/** Parent (préfixe) d'un id de sous-nœud, ex. "A/body/x" → "A". */
-function parentOf(id: string): string {
-  const i = id.lastIndexOf('/');
-  return i > 0 ? id.slice(0, i) : '';
 }
 
 /**

@@ -92,7 +92,7 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
     }
     # Champs optionnels préservés
     for k in ("description", "contexts", "default_config", "model_requirements",
-              "hooks", "permissions", "generates"):
+              "hooks", "permissions", "generates", "tags"):
         if k in normal:
             inline[k] = normal[k]
     return inline

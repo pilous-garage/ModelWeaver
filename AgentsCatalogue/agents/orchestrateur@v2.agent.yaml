@@ -91,3 +91,6 @@ entrypoints:
     - id: fail
       type: end
       status: FAILED
+    - id: end
+      type: end
+      status: SUCCESS

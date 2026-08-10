@@ -1,0 +1,68 @@
+name: manager_de_docker
+role: manager_de_docker
+description: >
+  Manager des conteneurs Docker du swarm. Gère un catalogue d'images disponibles,
+  un budget d'espace disque, et répond aux demandes de docker selon des specs
+  positives (with) et négatives (without). Quand un docker répond au moins aux specs,
+  il en fait une copie et fournit la copie au demandeur.
+personality:
+  tone: ''
+  system_prompt: >
+    Tu es le manager des conteneurs Docker du swarm. Tu possèdes des images
+    et un budget d'espace. Quand on te demande un docker avec des specs
+    (with=[...], without=[...], memory_mb, cpu_cores), soit tu crées un nouveau
+    conteneur selon ces specs, soit tu copies un conteneur existant qui répond
+    au moins aux specs. Tu renvoies toujours la copie au demandeur, jamais
+    l'original. Tu respectes le budget d'espace (si la copie dépasse le budget,
+    tu refuses ou tu demandes une réduction).
+bundles:
+  - dev
+model_requirements:
+  min_context_tokens: 8192
+  capabilities:
+  - text_generation
+contexts:
+- general
+default_config:
+  temperature: 0.2
+  max_tokens: 2048
+entrypoints:
+  main:
+    max_iterations: 15
+    steps:
+    - id: wait_request
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "docker_request"
+        agent_id: "{{agent_id}}"
+      capture:
+        docker_request: request
+      on_error: sleep
+      next: resolve_specs
+    - id: resolve_specs
+      type: call
+      fn: workspace/ask_docker@v1
+      inputs:
+        specs: "{{request.specs}}"
+        workspace_id: "{{workspace_id}}"
+        agent_id: "{{agent_id}}"
+      capture:
+        docker_result: result
+      on_error: fail
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS
+    - id: sleep
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        type: "docker_request"
+        agent_id: "{{agent_id}}"
+      next: end
+    - id: fail
+      type: end
+      status: FAILED

@@ -1416,9 +1416,9 @@ def exec(inputs: dict, home: str) -> dict:
             on_event = None
             stream_events = False
 
-    tools = resolve_bundles(bundle_names)
+    tools = resolve_bundles(bundle_names, skills=inputs.get("skills"))
     if not tools:
-        return {"signal": "error", "stdout": "", "stderr": f"aucun outil trouvé dans bundles {bundle_names}", "exit_code": 1}
+        return {"signal": "error", "stdout": "", "stderr": f"aucun outil trouvé dans bundles {bundle_names} + skills {inputs.get('skills')}", "exit_code": 1}
 
     # Bridge actif (pour le test agentic de sortie de boucle). Best-effort.
     _bridge_outer = None

@@ -61,6 +61,11 @@ nodes:
     icon: "ƒ"
     color: "#e2e8f0"
     border: "#64748b"
+  step:
+    shape: diamond
+    icon: "⤳"
+    color: "#e2e8f0"
+    border: "#64748b"
   llm:
     shape: rect
     icon: "🧠"

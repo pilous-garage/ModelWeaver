@@ -81,6 +81,11 @@ def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
         # Traducteur de fenêtre (gui/inspect, gui/act, gui/status…) : le
         # backend/agent pilote la GUI via ces routes → pas de limite.
         return
+    if route_lower.startswith("catalogue/"):
+        # Catalogue local (agents/skills/bundles…) : lecture disque locale,
+        # aucun coût réseau → pas de limite (la vue "boxed" charge tous les
+        # agents en rafale).
+        return
     base_key = f"{client_ip}:{route_lower}"
 
     # ── req/min (existant) ──

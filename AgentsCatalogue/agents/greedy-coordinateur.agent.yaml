@@ -1,22 +1,29 @@
 name: greedy-coordinateur
 role: planificateur
-description: "Coordinateur glouton intelligent — FSM: pick (pioche une tâche de
-  coordination) → allocation LLM → exploration du taskflow + actions correctives
-  (llm_call) → task_done. La mécanique est automatique."
+description: >
+  Coordinateur glouton intelligent — patron adapté : pick (tâche de coordination)
+  → allocation LLM (check_llm/ask_llm/check_error_type) → boucle (exploration du
+  taskflow + verdict task_verdict) → actions correctives automatiques.
 personality:
   tone: ''
-  system_prompt: "Tu es un coordinateur de swarm. Tu explores le taskflow, vérifies
-    que chaque mission va de chat → swarm → chat sans rester bloquée, et remets en
-    route ce qui est bloqué ou stub. Tu écris un rapport de coordination. Réponds
-    en français."
+  system_prompt: >
+    Tu es un coordinateur de swarm. Tu explores le taskflow, vérifies que chaque
+    mission avance sans blocage, et remets en route ce qui est bloqué ou stub.
+    Quand tu as fini la coordination, appelle le verdict task_verdict.
+    Réponds en français.
 bundles:
   - dev
+skills:
+  - workspace/task_verdict@v1
+  - workspace/task_create@v1
 model_requirements:
   min_context_tokens: 32768
   capabilities:
   - text_generation
+  - code_generation
 contexts:
 - general
+- project:modelweaver
 default_config:
   temperature: 0.2
   max_tokens: 4096
@@ -24,7 +31,6 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche un token analysis (AUTO) ──
     - id: pick
       type: call
       fn: workspace/token_task_pick@v1
@@ -32,13 +38,11 @@ entrypoints:
         workspace_id: "{{workspace_id}}"
         team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
-        task_types: "[{type: analysis, max_difficulty: expert}]"
+        task_types: "[{type: coordination, max_difficulty: expert}]"
       capture:
         task: task
       on_error: sleep
       next: check_llm
-
-    # ── 2. CHECK_LLM (AUTO) ──
     - id: check_llm
       type: call
       fn: workflow/check_llm@v1
@@ -48,9 +52,7 @@ entrypoints:
       capture:
         has_llm: has_llm
       on_error: ask_llm
-      next: do_coordinate
-
-    # ── 3. ASK_LLM (AUTO) ──
+      next: exec_loop
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -60,40 +62,115 @@ entrypoints:
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: fail
-      next: do_coordinate
+      on_error: llm_error
+      next: exec_loop
+    - id: llm_error
+      type: call
+      fn: workflow/check_error_type@v1
+      inputs:
+        error: "{{_last_call_error}}"
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        action: err_action
+      next: err_branch
+    - id: err_branch
+      type: switch
+      variable: "{{err_action}}"
+      conditions:
+      - operator: EQUALS
+        value: "blacklist_provider"
+        next: fail
+      - operator: EQUALS
+        value: "context_reduce"
+        next: ask_llm
+      - operator: EQUALS
+        value: "switch_model"
+        next: ask_llm
+      default: sleep
+    - id: exec_loop
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        - id: do_coordinate
+          type: llm_call
+          skill_prompt: |
+            Coordonne le workspace {{workspace_id}} (tâche {{task.task_id}}) :
+            {{task.description}}
 
-    # ── 4. DO_COORDINATE : LE SEUL LLM ──
-    - id: do_coordinate
-      type: llm_call
-      skill_prompt: |
-        Coordonne le taskflow du workspace {{workspace_id}} (tâche
-        {{task.task_id}}) :
-        {{task.description}}
-
-        1. Explore le taskflow : workspace/task_list (all=true), task_get sur
-           les clés, git status/log.
-        2. Analyse ce que font les autres : tâches bloquées, done sans livrable
-           réel (stub), agents qui tournent sans avancer.
-        3. Agis : tâche pending actionnable → vérifie qu'un agent la pioche,
-           sinon task_create corrective. Tâche done sans livrable → signaler
-           + task_create corrective.
-        4. Écris ton rapport (write_file coordination.md), puis
-           workspace/token_task_modify (task_id, workspace_id, status=done).
-      provider_ref: "{{_llm_provider}}"
-      model_ref: "{{_llm_model}}"
-      bundles: ["dev"]
-      max_tokens: 4096
-      temperature: 0.2
-      output_capture: coord_out
+            Explore le taskflow, vérifie les blocages, et agis (tâche corrective
+            si nécessaire). Quand tu as fini, appelle task_verdict (done | continue
+            | error | to_difficult, task_id={{task.task_id}}).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["dev"]
+          max_tokens: 4096
+          temperature: 0.2
+          output_capture: coord_out
+          next: check_after_coord
+        - id: check_after_coord
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_coord
+        - id: decide_after_coord
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "coordination"
+            next: break_loop
+          default: ask_verdict
+        - id: ask_verdict
+          type: llm_call
+          skill_prompt: |
+            Tu as travaillé sur la coordination sans transitionner le token.
+            Décide : task_verdict (done | continue | error | to_difficult).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["workspace_verdict"]
+          max_tokens: 1024
+          temperature: 0.2
+          output_capture: verdict_out
+          next: check_after_verdict
+        - id: check_after_verdict
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_verdict
+        - id: decide_after_verdict
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "coordination"
+            next: break_loop
+          default: continue_loop
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        - id: break
+          type: break
+        - id: continue_loop
+          type: continue
       next: end
-
-    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
-
-    # ── 6. SLEEP : rien à coordonner (AUTO) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
@@ -104,8 +181,6 @@ entrypoints:
         team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
       next: end
-
-    # ── 7. FAIL ──
     - id: fail
       type: end
       status: FAILED

@@ -33,6 +33,10 @@ skills:
   - workflow/it_is_done@v1
   - workflow/exit_loop_too_hard@v1
   - workflow/making_progress@v1
+tags:
+  main:
+    llm: true
+    heavy: true
 generates:
   - code_review
 model_requirements:
@@ -131,6 +135,8 @@ entrypoints:
     # ── 4. WORKING_LOOP : le LLM code (LE SEUL LLM) ──
     - id: working_loop
       type: while
+      tags:
+      - llm
       condition:
         variable: work_done
         operator: NOT_EQUALS
@@ -305,10 +311,12 @@ entrypoints:
       type: end
       status: SUCCESS
 
-    # ── 10. SLEEP : rien à piocher (AUTO) ──
+    # ── 10. SLEEP : rien à piocher (AUTO, sleep) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
+      tags:
+      - sleep
       inputs:
         workspace_id: "{{workspace_id}}"
         type: "task_for_role"

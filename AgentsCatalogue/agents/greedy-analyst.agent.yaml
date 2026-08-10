@@ -1,27 +1,17 @@
 name: greedy-analyst
 role: architecte
-description: "Analyste glouton intelligent — FSM: pick (pioche un token analysis
-  via token_task_pick) → allocation LLM → découpe en sous-tokens coding +
-  réaffectation en merge_split (llm_call) → done. La mécanique est automatique."
+description: >
+  Analyste glouton intelligent — patron adapté : pick (token analysis) →
+  allocation LLM (check_llm/ask_llm/check_error_type) → boucle (analyse + verdict
+  task_verdict) → réaffectation du token. La mécanique est automatique.
 personality:
   tone: ''
-  system_prompt: "Tu es un analyste dans un swarm. Tu découpes les missions en
-    sous-tokens petits et actionnables. Règles :
-    1. Lis la description du token (analysis).
-    2. DÉCOUPE en sous-tokens coding (workspace/token_task_create, task_type=
-       coding, SANS parents — les coding sont indépendants, piochés par les
-       codeurs).
-    3. RÉAFFECTE le token courant en merge_split (workspace/token_task_modify,
-       new_task_type=merge_split, status=todo, parents=[les sous-tokens créés])
-       — les coding sont les PARENTS du merge_split : il attend qu'ils soient
-       tous done, puis vérifie/merge le travail splitté.
-    4. Ne marque PAS le token analysis done (il devient merge_split).
-    Réponds en français."
+  system_prompt: >
+    Tu es un analyste dans un swarm. Tu découpes les missions en sous-tokens
+    actionnables. Quand tu as fini la découpe, appelle le verdict task_verdict.
+    Réponds en français, code en anglais.
 bundles:
   - dev
-generates:
-  - coding
-  - merge_split
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -37,7 +27,6 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche un token analysis (AUTO) ──
     - id: pick
       type: call
       fn: workspace/token_task_pick@v1
@@ -50,8 +39,6 @@ entrypoints:
         task: task
       on_error: sleep
       next: check_llm
-
-    # ── 2. CHECK_LLM (AUTO) ──
     - id: check_llm
       type: call
       fn: workflow/check_llm@v1
@@ -61,9 +48,7 @@ entrypoints:
       capture:
         has_llm: has_llm
       on_error: ask_llm
-      next: do_analyse
-
-    # ── 3. ASK_LLM (AUTO) ──
+      next: exec_loop
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -73,46 +58,118 @@ entrypoints:
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: fail
-      next: do_analyse
+      on_error: llm_error
+      next: exec_loop
+    - id: llm_error
+      type: call
+      fn: workflow/check_error_type@v1
+      inputs:
+        error: "{{_last_call_error}}"
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        action: err_action
+      next: err_branch
+    - id: err_branch
+      type: switch
+      variable: "{{err_action}}"
+      conditions:
+      - operator: EQUALS
+        value: "blacklist_provider"
+        next: fail
+      - operator: EQUALS
+        value: "context_reduce"
+        next: ask_llm
+      - operator: EQUALS
+        value: "switch_model"
+        next: ask_llm
+      default: sleep
+    - id: exec_loop
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        - id: do_analyse
+          type: llm_call
+          skill_prompt: |
+            Analyse le token {{task.task_id}} (analysis) :
+            {{task.title}}
+            {{task.description}}
 
-    # ── 4. DO_ANALYSE : LE SEUL LLM ──
-    - id: do_analyse
-      type: llm_call
-      skill_prompt: |
-        Analyse le token {{task.task_id}} (analysis) :
-        {{task.title}}
-        {{task.description}}
-
-        Découpe la mission en sous-tokens de codage :
-        - workspace/token_task_create pour CHAQUE sous-token, SANS parents :
-          { workspace_id: {{workspace_id}},
-            task: {title, description, task_type: coding, difficulty, priority,
-                   created_at: {{task.created_at}}} }
-          (les sous-tokens coding sont indépendants, piochés par les codeurs ;
-          IMPORTANT : propage created_at={{task.created_at}} — l'anti-famine
-          de priorité part de la mission primordiale, pas de la sous-tâche)
-        - Puis RÉAFFECTE le token courant en étape de vérification/merge :
-          workspace/token_task_modify (task_id={{task.task_id}},
-          workspace_id={{workspace_id}}, new_task_type=merge_split,
-          status=todo, parents=[{task_id: <chacun des coding créés>,
-          required_state: done}])
-          → les coding créés sont les PARENTS du merge_split : A attend que
-          B,C soient tous done, puis vérifie/mergera le travail splitté.
-      provider_ref: "{{_llm_provider}}"
-      model_ref: "{{_llm_model}}"
-      bundles: ["dev"]
-      max_tokens: 4096
-      temperature: 0.2
-      output_capture: analyse_out
+            Découpe la mission en sous-tokens coding (workspace/token_task_create)
+            et réaffecte le token courant en merge_split (workspace/token_task_modify).
+            Quand tu estimes avoir fini, appelle le verdict task_verdict (done | continue
+            | error | to_difficult, task_id={{task.task_id}}).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["dev"]
+          max_tokens: 4096
+          temperature: 0.2
+          output_capture: analyse_out
+          next: check_after_analyse
+        - id: check_after_analyse
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_analyse
+        - id: decide_after_analyse
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "analysis"
+            next: break_loop
+          default: ask_verdict
+        - id: ask_verdict
+          type: llm_call
+          skill_prompt: |
+            Tu as travaillé sur le token {{task.task_id}} (analysis) sans
+            le transitionner. Décide le verdict en appelant le tool task_verdict
+            avec verdict=done | continue | error | to_difficult.
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["workspace_verdict"]
+          max_tokens: 1024
+          temperature: 0.2
+          output_capture: verdict_out
+          next: check_after_verdict
+        - id: check_after_verdict
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_verdict
+        - id: decide_after_verdict
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "analysis"
+            next: break_loop
+          default: continue_loop
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        - id: break
+          type: break
+        - id: continue_loop
+          type: continue
       next: end
-
-    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
-
-    # ── 6. SLEEP : rien à analyser (AUTO) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
@@ -123,8 +180,6 @@ entrypoints:
         team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
       next: end
-
-    # ── 7. FAIL ──
     - id: fail
       type: end
       status: FAILED

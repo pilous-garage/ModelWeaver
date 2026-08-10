@@ -1,21 +1,26 @@
 name: greedy-explore
 role: explore
-description: "Explorateur glouton intelligent — FSM: pick (pioche une tâche
-  explore) → allocation LLM → exploration (llm_call, read-only) → task_done
-  (livrable = analyse). Ne modifie jamais le code."
+description: >
+  Explorateur glouton intelligent — patron adapté : pick (exploration) →
+  allocation LLM (check_llm/ask_llm/check_error_type) → boucle (exploration
+  READ-ONLY + verdict task_verdict) → done. Ne modifie jamais le code.
 personality:
   tone: ''
-  system_prompt: "Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne
-    modifies JAMAIS le code. Tu pioches une tâche d'exploration, lis le code
-    demandé, produis ton analyse. Réponds en français."
+  system_prompt: >
+    Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne modifies
+    JAMAIS le code. Quand ton analyse est prête, appelle le verdict task_verdict.
+    Réponds en français.
 bundles:
   - dev
+skills:
+  - workspace/task_verdict@v1
 model_requirements:
   min_context_tokens: 16384
   capabilities:
   - text_generation
 contexts:
 - general
+- project:modelweaver
 default_config:
   temperature: 0.2
   max_tokens: 4096
@@ -23,7 +28,6 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK : pioche un token exploration (AUTO) ──
     - id: pick
       type: call
       fn: workspace/token_task_pick@v1
@@ -36,8 +40,6 @@ entrypoints:
         task: task
       on_error: sleep
       next: check_llm
-
-    # ── 2. CHECK_LLM (AUTO) ──
     - id: check_llm
       type: call
       fn: workflow/check_llm@v1
@@ -47,9 +49,7 @@ entrypoints:
       capture:
         has_llm: has_llm
       on_error: ask_llm
-      next: do_explore
-
-    # ── 3. ASK_LLM (AUTO) ──
+      next: exec_loop
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -59,35 +59,116 @@ entrypoints:
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: fail
-      next: do_explore
+      on_error: llm_error
+      next: exec_loop
+    - id: llm_error
+      type: call
+      fn: workflow/check_error_type@v1
+      inputs:
+        error: "{{_last_call_error}}"
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        action: err_action
+      next: err_branch
+    - id: err_branch
+      type: switch
+      variable: "{{err_action}}"
+      conditions:
+      - operator: EQUALS
+        value: "blacklist_provider"
+        next: fail
+      - operator: EQUALS
+        value: "context_reduce"
+        next: ask_llm
+      - operator: EQUALS
+        value: "switch_model"
+        next: ask_llm
+      default: sleep
+    - id: exec_loop
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        - id: do_explore
+          type: llm_call
+          skill_prompt: |
+            Explore la tâche {{task.task_id}} (exploration) READ-ONLY :
+            {{task.description}}
 
-    # ── 4. DO_EXPLORE : LE SEUL LLM (read-only) ──
-    - id: do_explore
-      type: llm_call
-      skill_prompt: |
-        Explore la tâche {{task.task_id}} :
-        {{task.description}}
-
-        READ-ONLY : tu ne modifies JAMAIS le code. Utilise file/read_file,
-        file/glob, file/grep, shell/exec (ls/cat/grep) pour explorer.
-
-        Quand ton analyse est prête : workspace/token_task_modify (task_id,
-        workspace_id, status=done).
-      provider_ref: "{{_llm_provider}}"
-      model_ref: "{{_llm_model}}"
-      bundles: ["dev"]
-      max_tokens: 4096
-      temperature: 0.2
-      output_capture: explore_out
+            Utilise file/read_file, file/glob, file/grep, shell/exec (ls/cat/grep)
+            pour explorer. Ne modifie JAMAIS le code.
+            Quand ton analyse est prête : appelle le verdict task_verdict
+            (done | continue | error | to_difficult, task_id={{task.task_id}}).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["dev"]
+          max_tokens: 4096
+          temperature: 0.2
+          output_capture: explore_out
+          next: check_after_explore
+        - id: check_after_explore
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_explore
+        - id: decide_after_explore
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "exploration"
+            next: break_loop
+          default: ask_verdict
+        - id: ask_verdict
+          type: llm_call
+          skill_prompt: |
+            Tu as exploré le token {{task.task_id}} sans le transitionner.
+            Décide : task_verdict (done | continue | error | to_difficult).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["workspace_verdict"]
+          max_tokens: 1024
+          temperature: 0.2
+          output_capture: verdict_out
+          next: check_after_verdict
+        - id: check_after_verdict
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_verdict
+        - id: decide_after_verdict
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "exploration"
+            next: break_loop
+          default: continue_loop
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        - id: break
+          type: break
+        - id: continue_loop
+          type: continue
       next: end
-
-    # ── 5. FIN ──
     - id: end
       type: end
       status: SUCCESS
-
-    # ── 6. SLEEP : rien à explorer (AUTO) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
@@ -98,8 +179,6 @@ entrypoints:
         team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
       next: end
-
-    # ── 7. FAIL ──
     - id: fail
       type: end
       status: FAILED

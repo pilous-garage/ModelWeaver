@@ -1,21 +1,15 @@
 name: greedy-reviewer
 role: relecteur
-description: "Relecteur glouton intelligent — FSM: pick (pioche un token code_review
-  via token_task_pick) → clone (repo du token) → checkout (commit livré) →
-  allocation LLM → boucle de review (llm_call, lit les vrais fichiers) →
-  transition du token (code_review → merger_code). La mécanique est automatique."
+description: >
+  Relecteur glouton intelligent — patron adapté : pick (code_review) →
+  resolve_repo → clone/checkout (commit livré) → allocation LLM → boucle review
+  (llm_call + verdict task_verdict) → transition vers merger_code ou coding correctif.
 personality:
   tone: ''
-  system_prompt: "Tu es un relecteur dans un swarm. Tu valides les tokens livrés
-    en code_review. Règles :
-    1. Lis la description du token et les fichiers livrés (le clone git de ton
-       workspace contient le code au bon commit).
-    2. Relis réellement : qualités du code, respect de la description, tests.
-    3. Si OK : token_task_modify (task_id, new_task_type=merger_code,
-       status=todo) — la mécanique est automatique.
-       Si problèmes : token_task_create d'une tâche corrective, puis laisse le
-       token en code_review (ou modify vers coding pour re-travail).
-    Réponds en français."
+  system_prompt: >
+    Tu es un relecteur dans un swarm. Tu valides les tokens livrés en code_review.
+    Quand tu as fini la relecture, appelle le verdict task_verdict (done | continue | error | to_difficult).
+    Réponds en français, code en anglais.
 bundles:
   - dev
 generates:
@@ -36,7 +30,6 @@ entrypoints:
   main:
     max_iterations: 40
     steps:
-    # ── 1. PICK : pioche un token code_review (AUTO) ──
     - id: pick
       type: call
       fn: workspace/token_task_pick@v1
@@ -49,8 +42,6 @@ entrypoints:
         task: task
       on_error: sleep
       next: resolve_repo
-
-    # ── 1b. RESOLVE_REPO ──
     - id: resolve_repo
       type: switch
       variable: "{{task.repo}}"
@@ -72,8 +63,6 @@ entrypoints:
       name: repo_eff
       value: "{{task.repo}}"
       next: clone
-
-    # ── 2. CLONE (AUTO) ──
     - id: clone
       type: call
       fn: git/git_clone@v1
@@ -82,8 +71,6 @@ entrypoints:
         agent_id: "{{agent_id}}"
       on_error: fail
       next: checkout
-
-    # ── 3. CHECKOUT : le commit livré par le coder (AUTO) ──
     - id: checkout
       type: call
       fn: git/git_checkout@v1
@@ -92,8 +79,6 @@ entrypoints:
         agent_id: "{{agent_id}}"
         name: "{{task.commit_hash}}"
       next: check_llm
-
-    # ── 4. CHECK_LLM (AUTO) ──
     - id: check_llm
       type: call
       fn: workflow/check_llm@v1
@@ -103,9 +88,7 @@ entrypoints:
       capture:
         has_llm: has_llm
       on_error: ask_llm
-      next: do_review
-
-    # ── 5. ASK_LLM (AUTO) ──
+      next: exec_loop
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -115,42 +98,117 @@ entrypoints:
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: fail
-      next: do_review
+      on_error: llm_error
+      next: exec_loop
+    - id: llm_error
+      type: call
+      fn: workflow/check_error_type@v1
+      inputs:
+        error: "{{_last_call_error}}"
+        provider_ref: "{{_llm_provider}}"
+        model_ref: "{{_llm_model}}"
+      capture:
+        action: err_action
+      next: err_branch
+    - id: err_branch
+      type: switch
+      variable: "{{err_action}}"
+      conditions:
+      - operator: EQUALS
+        value: "blacklist_provider"
+        next: fail
+      - operator: EQUALS
+        value: "context_reduce"
+        next: ask_llm
+      - operator: EQUALS
+        value: "switch_model"
+        next: ask_llm
+      default: sleep
+    - id: exec_loop
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        - id: do_review
+          type: llm_call
+          skill_prompt: |
+            Relis le token {{task.task_id}} (code_review) dans le clone
+            agents/{{agent_id}}/workspace/{{repo_eff}} au commit {{task.commit_hash}}.
 
-    # ── 6. DO_REVIEW : LE SEUL LLM ──
-    - id: do_review
-      type: llm_call
-      skill_prompt: |
-        Relis le token {{task.task_id}} (code_review) :
-        {{task.title}}
-        {{task.description}}
-
-        Le code livré est dans ton clone agents/{{agent_id}}/workspace/{{repo_eff}}
-        au commit {{task.commit_hash}}.
-
-        Actions possibles (tools du bundle dev) :
-        - file/read_file : relis les vrais fichiers.
-        - workspace/task_get : statut/commit du token.
-        - Si le code est bon : workspace/token_task_modify avec task_id,
-          workspace_id, new_task_type=merger_code, status=todo (transition
-          automatique vers la fusion).
-        - Si problèmes : workspace/token_task_create (tâche corrective coding),
-          puis token_task_modify (task_id, new_task_type=coding, status=todo).
-      provider_ref: "{{_llm_provider}}"
-      model_ref: "{{_llm_model}}"
-      bundles: ["dev"]
-      max_tokens: 4096
-      temperature: 0.2
-      output_capture: review_out
+            Vérifie le code, puis appelle le verdict task_verdict (done | continue
+            | error | to_difficult, task_id={{task.task_id}}).
+            Si problèmes : crée une tâche corrective (workspace/task_create, coding)
+            et laisse le token en code_review (workspace/token_task_modify).
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["dev"]
+          max_tokens: 4096
+          temperature: 0.2
+          output_capture: review_out
+          next: check_after_review
+        - id: check_after_review
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_review
+        - id: decide_after_review
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "code_review"
+            next: break_loop
+          default: ask_verdict
+        - id: ask_verdict
+          type: llm_call
+          skill_prompt: |
+            Tu as travaillé sur le token {{task.task_id}} (code_review) sans
+            le transitionner. Décide le verdict en appelant le tool task_verdict
+            avec verdict=done | continue | error | to_difficult.
+          provider_ref: "{{_llm_provider}}"
+          model_ref: "{{_llm_model}}"
+          bundles: ["workspace_verdict"]
+          max_tokens: 1024
+          temperature: 0.2
+          output_capture: verdict_out
+          next: check_after_verdict
+        - id: check_after_verdict
+          type: call
+          fn: workspace/task_get@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+          capture:
+            task: task_now
+          next: decide_after_verdict
+        - id: decide_after_verdict
+          type: switch
+          variable: "{{task_now.task_type}}"
+          conditions:
+          - operator: NOT_EQUALS
+            value: "code_review"
+            next: break_loop
+          default: continue_loop
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        - id: break
+          type: break
+        - id: continue_loop
+          type: continue
       next: end
-
-    # ── 7. FIN ──
     - id: end
       type: end
       status: SUCCESS
-
-    # ── 8. SLEEP : rien à reviewer (AUTO) ──
     - id: sleep
       type: call
       fn: workspace/wait_for@v1
@@ -161,8 +219,6 @@ entrypoints:
         team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
       next: end
-
-    # ── 9. FAIL ──
     - id: fail
       type: end
       status: FAILED

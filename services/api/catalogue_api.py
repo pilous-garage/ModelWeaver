@@ -149,8 +149,14 @@ def op_catalogue_skills_get(params: dict) -> Dict[str, Any]:
             data = {**data, "workflow": {"steps": steps}}
             raw = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
     except Exception:
-        pass
-    return {"skill": _skill_meta(candidate), "yaml": raw}
+        data = data if 'data' in locals() else {}
+        steps = []
+    meta = _skill_meta(candidate)
+    # Expose le workflow (steps internes de la skill) au frontend pour le
+    # dépliage : steps réels si la skill est définie en YAML steps, sinon le
+    # workflow synthétique (llm) ou vide (python → métadonnées).
+    meta["workflow"] = data.get("workflow") or {"steps": steps}
+    return {"skill": meta, "yaml": raw}
 
 
 def op_catalogue_skills_save(params: dict) -> Dict[str, Any]:

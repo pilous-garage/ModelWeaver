@@ -1,0 +1,23 @@
+# Lancement / relance de la GUI ModelWeaver (Tauri v2)
+#
+# La GUI est une app DESKTOP Tauri (WebKit), PAS un navigateur. Elle charge le
+# frontend depuis le serveur de dev vite (http://localhost:5174). Quand on
+# modifie le frontend (src/*.ts/tsx), il faut RELANCER le process Tauri pour
+# recharger la fenêtre (Ctrl+Shift+R ne fonctionne pas dans l'app).
+
+# ── 1. Arrêter l'ancienne instance (si elle tourne) ─────────────────────────
+pkill -f "cargo-tauri tauri dev" ; pkill -f "target/debug/modelweaver-v2" ; pkill -f "node .*/vite"
+
+# ── 2. Lancer (depuis le dossier de la GUI) ─────────────────────────────────
+cd /home/pierreloup2/PilousGarage/ModelWeaver/interfaces/main/GUI/v2
+
+# Simple (reste attaché au terminal — coupe au Ctrl+C) :
+cargo tauri dev
+
+# Ou robuste (détaché, survit à la fermeture du terminal ; log dans /tmp) :
+#   setsid nohup cargo tauri dev >/tmp/tauri-dev.log 2>&1 </dev/null & disown
+
+# Le premier lancement compile le binaire Rust (src-tauri), puis démarre vite
+# (beforeDevCommand) sur le port 5174 et ouvre la fenêtre. Vérifier :
+#   ps aux | grep -E "vite|modelweaver-v2"
+#   curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5174/
