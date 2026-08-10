@@ -674,8 +674,11 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         # Rate limiting
         client_ip = self.client_address[0]
         try:
-            from services.ratelimit import check_rate_limit
+            from services.ratelimit import check_rate_limit, RemoteConnectionDenied
             check_rate_limit(route, client_ip)
+        except RemoteConnectionDenied as e:
+            self._send(403, {"error": "forbidden", "detail": str(e)})
+            return
         except Exception as e:
             self._send(429, {"error": "rate_limited", "detail": str(e)})
             return
@@ -758,8 +761,11 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         # Rate limiting
         client_ip = self.client_address[0]
         try:
-            from services.ratelimit import check_rate_limit
+            from services.ratelimit import check_rate_limit, RemoteConnectionDenied
             check_rate_limit(route, client_ip)
+        except RemoteConnectionDenied as e:
+            self._send(403, {"error": "forbidden", "detail": str(e)})
+            return
         except Exception as e:
             self._send(429, {"error": "rate_limited", "detail": str(e)})
             return

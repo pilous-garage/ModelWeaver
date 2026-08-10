@@ -14,6 +14,14 @@ class RateLimitExceeded(Exception):
         super().__init__(f"rate limit exceeded: {limit} {unit}/{window}s, retry in {retry_after}s")
 
 
+class RemoteConnectionDenied(Exception):
+    """Connexion NON-LOCALE refusée : le daemon n'est pas une passoire distante.
+    Aucun token de connexion distant n'a été créé pour l'instant."""
+
+    def __init__(self):
+        super().__init__("connexion distante refusée : seuls les services locaux sont autorisés")
+
+
 class RateLimiter:
     def __init__(self):
         self._buckets: Dict[str, list] = {}
@@ -71,7 +79,20 @@ def _get():
     return _INSTANCE
 
 
+def _is_local(ip: str) -> bool:
+    return ip in ("127.0.0.1", "::1", "localhost")
+
+
 def check_rate_limit(route: str, client_ip: str, tokens: int = 0) -> None:
+    # CONNECT LOCAL : tout passe, SANS limite (développement / swarm local —
+    # les connexions service/service sont ~1/ms max, local, pas un problème).
+    if _is_local(client_ip):
+        return
+    # CONNECT DISTANT : REFUSÉ pour l'instant — pas de token de connexion
+    # distant créé, le daemon ne doit pas être une passoire distante.
+    # Les limites par route ci-dessous serviront quand on autorisera des
+    # connexions distantes SÉLECTIVES (plus tard).
+    raise RemoteConnectionDenied()
     rl = _get()
     route_lower = route.lower()
     if route_lower in ("health", "gui/poll", "gui/result"):
