@@ -23,9 +23,10 @@
         "type": "group",
         "id": "pg-g-taskflow",
         "tabs": [
+          { "panel": "graphe-v2", "occId": "occ-g-v2" },
           { "panel": "agent-taskflow", "occId": "occ-g-taskflow" }
         ],
-        "active": "occ-g-taskflow"
+        "active": "occ-g-v2"
       },
       {
         "type": "group",

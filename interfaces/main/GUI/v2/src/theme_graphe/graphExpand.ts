@@ -70,12 +70,16 @@ export function pruneInvisible(graph: GraphDoc): GraphDoc {
         ? { ...n, vars: { ...n.vars, inner: { ...n.vars.inner, nodes: pruneNodes(n.vars.inner.nodes), edges: pruneEdges(n.vars.inner.nodes, n.vars.inner.edges) } } }
         : n);
   const pruneEdges = (nodes: any[], edges: any[]): any[] => {
-    const ids = new Set(nodes.map((n) => n.id));
-    // Garde une arête si au moins UNE extrémité est un nœud rendu du niveau :
-    // les arêtes TRANS-FRONTÈRES (ex. break_done → after_loop, cible externe à
-    // la box) ne doivent pas être supprimées — sinon le break semble sans
-    // sortie. Elles ne sont rendues que si la box est dépliée.
-    return edges.filter((e) => ids.has(e.from) || ids.has(e.to));
+    // On DROPE toute arête dont une extrémité est un nœud de CE niveau mais
+    // masqué (arête fantôme vers un nœud invisible). Les arêtes TRANS-FRONTÈRES
+    // (une extrémité hors du niveau, visible ailleurs) sont conservées.
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    return edges.filter((e) => {
+      const a = byId.get(e.from), b = byId.get(e.to);
+      if (a && !isShown(a)) return false;
+      if (b && !isShown(b)) return false;
+      return true;
+    });
   };
   return { ...graph, nodes: pruneNodes(graph.nodes), edges: pruneEdges(graph.nodes, graph.edges) };
 }
@@ -233,12 +237,15 @@ function addNodeRecursive(
       zIndex: -1,
     } as RFNode);
   } else {
+    // Une box PLIÉE (avec bouton +) est au-dessus des nœuds simples : son
+    // bouton + doit rester cliquable/visible (zIndex React Flow, pas CSS).
     rfNodes.push({
       id: node.id,
       type: 'flow',
       position: { x: absPos.x, y: absPos.y },
       data,
       style: { width: size.w, height: size.h },
+      zIndex: hasInner ? 100 : undefined,
     } as RFNode);
   }
 

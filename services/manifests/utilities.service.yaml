@@ -1,0 +1,21 @@
+name: utilities
+version: 0.1.0
+description: "Service utilitaire — expose les utilitaires de graphe (module agent_graph_utils) : graphe_utile/yaml_to_fsm, et (à venir) yaml_to_taskflow + actions de fold/visibilité. Logique pure, sans thème ni positions."
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - -c
+    - "import services.api.handlers, time; time.sleep(31536000)"
+  mode: once
+
+supervisor:
+  restart: false
+
+entrypoints:
+  yaml_to_fsm:
+    type: daemon-api
+    method: POST
+    path: graphe_utile/yaml_to_fsm
+    description: "Agent YAML → graphe FSM hiérarchique (nœuds + arêtes, tags hérités). params : name | yaml | data."

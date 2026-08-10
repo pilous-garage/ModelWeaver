@@ -424,6 +424,18 @@ function recountBox(box: any): void {
   box.vars = { ...(box.vars ?? {}), innerPlacesVisible: ipv, innerVisibleNodes: ivn };
 }
 
+/** Redirige l'entrypoint/exitpoints d'une box vers z quand le fold a masqué
+ *  l'ancien entry/exit — sinon le routage (fan-out) crée des arêtes fantômes
+ *  vers les nœuds internes cachés. Ne s'applique que si z vit dans CETTE box. */
+function redirectBoxEntryExit(box: any, zId: string, zipped: string[]): void {
+  const inner = box?.vars?.inner;
+  if (!inner) return;
+  if (inner.entrypoint && zipped.includes(inner.entrypoint)) inner.entrypoint = zId;
+  if ((inner.exitpoints ?? []).some((ep: string) => zipped.includes(ep))) {
+    inner.exitpoints = inner.exitpoints.map((ep: string) => (zipped.includes(ep) ? zId : ep));
+  }
+}
+
 /** ZIP TRANS-FRONTIÈRE : un clip seq dont les in/out traversent la frontière
  *  d'une box (ex. le contrat input→transition→output d'une skill). On crée z
  *  à l'EXTERIEUR, côté des entrées, branché sur main → output.
@@ -445,6 +457,12 @@ function zipAtCross(g: any, info: { parent: any; boxId: string | null }, clip: C
   zLevel.nodes.push(z);
   _byId.set(z.id, z);
   toMaj.push(z.id);
+  // z vit DANS la box englobante → rediriger son entrypoint/exitpoints si le
+  // fold a masqué l'ancien (sinon arêtes fantômes vers les nœuds cachés).
+  if (info.boxId) {
+    const box = nodeById(info.parent, info.boxId);
+    if (box && zLevel === box.vars?.inner) redirectBoxEntryExit(box, z.id, clip.zipped);
+  }
   // 2) créer les arêtes (in → z, z → out) ; 3) maj in/out des nœuds liés.
   for (const s of ins) {
     zLevel.edges.push({ from: s, to: z.id, type: 'next' });
@@ -549,6 +567,7 @@ function zipAt(g: any, ctx: any, info: { parent: any; boxId: string | null }, cl
   if (info.boxId) {
     const box = nodeById(info.parent, info.boxId);
     if (box) {
+      redirectBoxEntryExit(box, z.id, clip.zipped);
       recountBox(box);
       toMaj.push(info.boxId);
     }
@@ -562,7 +581,9 @@ function zipAt(g: any, ctx: any, info: { parent: any; boxId: string | null }, cl
  *  zippés. MAINTIENT l'état (groupes + compteurs + zippable) incrémentalement. */
 export function zip(g: { nodes: any[]; edges: any[] }, clip: Clip): void {
   if ((g as any).__mwById) _byId = (g as any).__mwById;
+  const before = debug_petri ? debugCount(g) : null;
   walkPath(g, clip.path, (ctx, info) => zipAt(g, ctx, info, clip));
+  if (debug_petri && before) debugVerify(g, 'zip', before, clip);
 }
 
 function unzipAtCross(g: any, info: { parent: any; boxId: string | null }, clip: Clip): boolean {
@@ -657,9 +678,143 @@ function unzipAt(g: any, ctx: any, info: { parent: any; boxId: string | null }, 
  *  zippés. Ne s'applique que si le nœud créé est encore visible. */
 export function unzip(g: { nodes: any[]; edges: any[] }, clip: Clip): boolean {
   if ((g as any).__mwById) _byId = (g as any).__mwById;
+  const before = debug_petri ? debugCount(g) : null;
   let ok = false;
   walkPath(g, clip.path, (ctx, info) => { if (unzipAt(g, ctx, info, clip)) ok = true; });
+  if (debug_petri && before && ok) debugVerify(g, 'unzip', before, clip);
   return ok;
+}
+
+// ── DEBUG (debug_petri) ─────────────────────────────────────────────
+// debug_petri = 1 : à chaque zip/unzip, on compte les places/transitions/
+// arêtes VISIBLES avant et après, on vérifie les invariants (deltas attendus,
+// somme in == somme out, aucune box liée, aucune arête vers un invisible) et
+// on refait une foldabilité COMPLÈTE sur une copie du graphe (state vidé +
+// rebuildState) — toute divergence est loggée.
+
+export let debug_petri = 0;
+
+function debugCount(g: any) {
+  let places = 0, transitions = 0, edges = 0, sumIn = 0, sumOut = 0;
+  const walk = (nodes: any[], levelEdges: any[]) => {
+    for (const n of nodes ?? []) {
+      if (n.vars?.visible === false) continue;
+      if (hasInner(n)) continue;                 // les box ne sont ni place ni transition
+      if (n.type === 'transition') transitions++; else places++;
+      sumIn += (n.vars?.in_group ?? []).length;
+      sumOut += (n.vars?.out_group ?? []).length;
+      if (n.vars?.inner?.nodes) walk(n.vars.inner.nodes, n.vars.inner.edges ?? []);
+    }
+    for (const e of levelEdges ?? []) {
+      const a = _byId.get(e.from), b = _byId.get(e.to);
+      if (!a || !b || !isVisible(a) || !isVisible(b)) continue;
+      if (hasInner(a) || hasInner(b)) continue;  // une box n'est jamais reliée
+      edges++;
+    }
+  };
+  walk(g.nodes, g.edges ?? []);
+  return { places, transitions, edges, sumIn, sumOut };
+}
+
+function debugExpectedDeltas(clip: Clip) {
+  let places = 0, transitions = 0;
+  for (const id of clip.zipped) {
+    const n = _byId.get(id);
+    if (!n) continue;
+    if (n.type === 'transition') transitions--; else places--;
+  }
+  const z = _byId.get(clip.newId);
+  if (z) { if (z.type === 'transition') transitions++; else places++; }
+  let edges = 0;
+  if (clip.type === 'seq') {
+    edges = -2;                                  // place -1, transition -1, arête -2
+  } else if (clip.type === 'par') {
+    const n = clip.zipped.length;
+    const k = z?.vars?.in_group?.length ?? 0;
+    const m = z?.vars?.out_group?.length ?? 0;
+    edges = -(n - 1) * (k + m);
+  } else {                                       // single : p1 remplacé par z, mêmes degrés
+    const p = clip.zipped[0] ? _byId.get(clip.zipped[0]) : null;
+    const k = p?.vars?.in_group?.length ?? 0;
+    const m = p?.vars?.out_group?.length ?? 0;
+    edges = -((k + m) - (k + m));                // = 0
+  }
+  return { places, transitions, edges };
+}
+
+function debugNoBoxEdges(g: any): string[] {
+  const bad: string[] = [];
+  const boxes = new Set<string>();
+  const walkB = (nodes: any[]) => { for (const n of nodes) { if (hasInner(n)) boxes.add(n.id); if (n.vars?.inner?.nodes) walkB(n.vars.inner.nodes); } };
+  walkB(g.nodes);
+  const walk = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (hasInner(n)) {
+        if ((n.vars?.in_group ?? []).length || (n.vars?.out_group ?? []).length) bad.push(`box ${n.id} porte des in/out`);
+      } else if (n.vars?.visible !== false) {
+        for (const u of n.vars?.in_group ?? []) if (boxes.has(u)) bad.push(`${n.id}.in contient la box ${u}`);
+        for (const w of n.vars?.out_group ?? []) if (boxes.has(w)) bad.push(`${n.id}.out contient la box ${w}`);
+      }
+      if (n.vars?.inner?.nodes) walk(n.vars.inner.nodes);
+    }
+  };
+  walk(g.nodes);
+  return bad;
+}
+
+function debugFoldability(g: any): string[] {
+  let copy: any;
+  try { copy = JSON.parse(JSON.stringify(g)); } catch { return []; }
+  const strip = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (n.vars) {
+        delete n.vars.in_group; delete n.vars.out_group; delete n.vars.in_edges; delete n.vars.out_edges;
+        delete n.vars.zippable; delete n.vars.__mwById;
+        delete n.vars.innerPlacesVisible; delete n.vars.innerVisibleNodes; delete n.vars.box;
+      }
+      if (n.vars?.inner?.nodes) strip(n.vars.inner.nodes);
+    }
+  };
+  strip(copy.nodes);
+  try { rebuildState(copy); } catch (e) { return [`rebuild échoué: ${e}`]; }
+  const idx = new Map<string, any>();
+  const idxWalk = (nodes: any[]) => { for (const n of nodes) { idx.set(n.id, n); if (n.vars?.inner?.nodes) idxWalk(n.vars.inner.nodes); } };
+  idxWalk(copy.nodes);
+  const bad: string[] = [];
+  const walk = (nodes: any[]) => {
+    for (const n of nodes) {
+      const c = idx.get(n.id);
+      if (c && c.vars?.zippable !== n.vars?.zippable) bad.push(`${n.id}: main=${n.vars?.zippable} recalculé=${c.vars?.zippable}`);
+      if (n.vars?.inner?.nodes) walk(n.vars.inner.nodes);
+    }
+  };
+  walk(g.nodes);
+  return bad;
+}
+
+function debugVerify(g: any, op: string, before: any, clip: Clip): void {
+  const after = debugCount(g);
+  const exp = debugExpectedDeltas(clip);
+  if (op === 'unzip') { exp.places = -exp.places; exp.transitions = -exp.transitions; exp.edges = -exp.edges; }
+  const dPlaces = after.places - before.places;
+  const dTrans = after.transitions - before.transitions;
+  const dEdges = after.edges - before.edges;
+  const issues: string[] = [];
+  if (dPlaces !== exp.places) issues.push(`places attendu ${exp.places}, obtenu ${dPlaces}`);
+  if (dTrans !== exp.transitions) issues.push(`transitions attendu ${exp.transitions}, obtenu ${dTrans}`);
+  if (dEdges !== exp.edges) issues.push(`arêtes attendu ${exp.edges}, obtenu ${dEdges}`);
+  if (after.sumIn !== after.sumOut) issues.push(`sum in(${after.sumIn}) != sum out(${after.sumOut})`);
+  issues.push(...debugNoBoxEdges(g));
+  const fold = debugFoldability(g);
+  if (fold.length) issues.push(`foldabilité recalculée: ${fold.slice(0, 6).join('; ')}${fold.length > 6 ? `… (+${fold.length - 6})` : ''}`);
+  if (issues.length) {
+    console.error(`[debug_petri] ${op} ${clip.type} on=[${clip.on}] zipped=[${clip.zipped}]${clip.path?.length ? ` @${clip.path.join('/')}` : ''}`);
+    console.error(`  avant: places=${before.places} trans=${before.transitions} arêtes=${before.edges}`);
+    console.error(`  après: places=${after.places} trans=${after.transitions} arêtes=${after.edges} sumIn=${after.sumIn} sumOut=${after.sumOut}`);
+    for (const i of issues) console.error(`  ✗ ${i}`);
+  } else if (debug_petri >= 2) {
+    console.log(`[debug_petri] ${op} ${clip.type} ok: places ${before.places}→${after.places} (Δ${dPlaces}), trans ${before.transitions}→${after.transitions} (Δ${dTrans}), arêtes ${before.edges}→${after.edges} (Δ${dEdges})`);
+  }
 }
 
 /** zip_all : clippe tout ce qui est clippable (nœuds visibles, tous niveaux). */

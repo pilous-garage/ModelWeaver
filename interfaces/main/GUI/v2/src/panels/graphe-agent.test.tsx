@@ -162,6 +162,35 @@ describe('GrapheAgentPanel', () => {
     expect(screen.queryByTitle('Tout déplier')).toBeNull();
     expect(screen.queryByTitle('Tout replier')).toBeNull();
   });
+
+  it('FSM : utilise le graphe du BACKEND (graphe_utile/yaml_to_fsm)', async () => {
+    const post = vi.fn(async (route: string) => {
+      if (route === 'catalogue/agents/list') {
+        return { result: { agents: [{ name: 'codeur@v2', role: 'codeur', description: 'x' }] } };
+      }
+      if (route === 'catalogue/agents/get') {
+        return { result: { status: 'ok', yaml: 'name: codeur@v2', data: { role: 'codeur', entrypoints: { main: { steps: [{ id: 'x', type: 'end', status: 'SUCCESS' }] } } } } };
+      }
+      if (route === 'graphe_utile/yaml_to_fsm') {
+        return { result: { status: 'ok', title: 'backend', nodes: [
+          { id: 'main', type: 'entrypoint', label: 'main', ref: 'entry', tags: ['entrypoint'], vars: {} },
+          { id: 'BACKEND_ONLY', type: 'skill', label: 'backend', ref: 'git/end_exec@v1', tags: ['tok_out'], vars: {} },
+          { id: 'end', type: 'exitpoint', label: 'end', ref: 'end', tags: [], vars: {} },
+        ], edges: [
+          { from: 'main', to: 'BACKEND_ONLY', label: 'entry', type: 'next' },
+          { from: 'BACKEND_ONLY', to: 'end', label: 'next', type: 'next' },
+        ] } };
+      }
+      return { result: {} };
+    });
+    const ctx = { api: { post }, t: (k: string) => k };
+    const { container } = render(<GrapheAgentPanel ctx={ctx} />);
+    await waitFor(() => screen.getByText(/codeur@v2/));
+    fireEvent.click(screen.getByText(/codeur@v2/));
+    // Le graphe vient du backend (nœud BACKEND_ONLY + tag tok_out hérité).
+    await waitFor(() => expect(container.querySelector('[data-id="BACKEND_ONLY"]')).toBeTruthy());
+    expect(post).toHaveBeenCalledWith('graphe_utile/yaml_to_fsm', { name: 'codeur@v2' });
+  });
 });
 
 describe('agentYamlToGraph — FSM hiérarchique', () => {

@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   findClippable, zip, unzip, zipAll, unzipAll, createClipTable, rebuildState, recheckNode,
 } from '../panels/taskflowClip.ts';
-import { pruneInvisible } from '../theme_graphe/graphExpand.ts';
+import { pruneInvisible, buildExpandedGraph } from '../theme_graphe/graphExpand.ts';
+import { loadTheme } from '../theme_graphe/themeGraphe.ts';
 
 function mk(visible = true) { return { vars: { visible } }; }
 
@@ -401,6 +402,25 @@ describe('taskflowClip — box transparentes (modèle utilisateur)', () => {
     expect(inner.nodes.find((n: any) => n.id === 'B/in').vars.visible).toBe(true);
     expect(inner.nodes.find((n: any) => n.id === 'tB').vars.visible).toBe(true);
     expect(inner.nodes.find((n: any) => n.id === 'B/out').vars.visible).toBe(true);
+  });
+
+  it('après fold du contrat : PAS d\'arêtes fantômes vers les nœuds cachés (rendu)', () => {
+    const g: any = mkContractGraph();
+    const tB = findClippable(g).find((c: any) => c.type === 'seq' && c.on.includes('tB'));
+    zip(g, tB!);
+    // La box B redirige son entrypoint/exitpoints vers z.
+    expect(g.nodes.find((n: any) => n.id === 'B').vars.inner.entrypoint).toBe(tB!.newId);
+    expect(g.nodes.find((n: any) => n.id === 'B').vars.inner.exitpoints).toEqual([tB!.newId]);
+    const r = buildExpandedGraph(pruneInvisible(g), {
+      theme: loadTheme(null), expanded: new Set(['B']), onToggle: () => {}, hideBoxFold: true,
+    });
+    const edges = r.edges.map((e: any) => `${e.source}->${e.target}`);
+    // A→tA → z → tB2→C ; AUCUNE arête vers B/in / B/out (cachés).
+    expect(edges).toContain('A->tA');
+    expect(edges).toContain(`tA->${tB!.newId}`);
+    expect(edges).toContain(`${tB!.newId}->tB2`);
+    expect(edges).toContain('tB2->C');
+    expect(edges.some((e: any) => e.includes('B/in') || e.includes('B/out'))).toBe(false);
   });
 });
 

@@ -1,0 +1,20 @@
+# agent_graph_utils — Logique de graphe (FSM / Pétri), pure Python
+
+Module de construction et de manipulation des GRAPHES d'agents, SANS aucune
+logique d'UI (pas de thème, pas de positions). Consommé par le GUI v2 via le
+service `utilities` (routes `graphe_utile/*`).
+
+Responsabilités :
+- `yaml_to_fsm(data)` : agent YAML → graphe FSM hiérarchique. Une liste de
+  nœuds {id, type, label, ref, tags, vars[inner]} et d'arêtes {from, to,
+  label, type}. Les composants structurels (while/for, switch/if) ont un
+  sous-graphe dans vars.inner avec entrypoint/exitpoints. Nœud `main`
+  (entrypoint) + arête vers le 1er step.
+- HÉRITAGE DE TAGS : catégories héritables (llm, sandbox, waiting, signal,
+  tok_in, tok_out, heavy_tools) propagées aux descendants ; les autres tags
+  restent propres au nœud.
+- (à venir) `yaml_to_taskflow` : transformation en réseau de Pétri.
+- (à venir) fold/unfold, visibilité, modifs — TOUTE la logique backend.
+
+Tags héritables (aujourd'hui) :
+  heavy_tools (non utilisé), llm, sandbox, waiting, signal, tok_in, tok_out.

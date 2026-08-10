@@ -42,6 +42,7 @@ import { Panel as ViewAgent } from './view-agent.panel.tsx';
 import { Panel as AgentTaskflow } from './agent-taskflow.panel.tsx';
 import { Panel as SwarmTaskflow } from './swarm-taskflow.panel.tsx';
 import { Panel as GrapheAgent } from './graphe-agent.panel.tsx';
+import { Panel as GrapheV2 } from './graphe-v2.panel.tsx';
 
 /** Enregistre tous les panels + charge leurs lang. */
 export async function initPanels(): Promise<void> {
@@ -100,6 +101,8 @@ export async function initPanels(): Promise<void> {
   registerPanel(SwarmTaskflow);
   // Graphe Agent : catalogue + YAML/graphe (lecture seule)
   registerPanel(GrapheAgent);
+  // Graphe V2 : FSM construit par le BACKEND (graphe_utile/yaml_to_fsm)
+  registerPanel(GrapheV2);
   // Monitoring LLM avancé (graphes token/min, req/min par dim)
   registerPanel(MonitoringLlmAvance);
   await loadAllPanelLangs();

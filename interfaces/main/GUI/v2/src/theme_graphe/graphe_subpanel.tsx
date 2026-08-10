@@ -15,7 +15,7 @@ import React, { useMemo, useCallback, useEffect } from 'react';
 import { parse as yamlParse } from 'yaml';
 import {
   ReactFlow, Background, Controls, useNodesState, useEdgesState,
-  Handle, Position, type Node, type Edge, type NodeProps,
+  Handle, Position, NodeToolbar, type Node, type Edge, type NodeProps,
 } from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
@@ -77,6 +77,20 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
   const basicSkill = !!(n?.tags?.includes('basic_skill'));
   const isTransition = n?.type === 'transition';
   const hs = { width: 6, height: 6, background: '#64748b', border: '1px solid #0f172a' };
+  // Boutons − (zip) / + (unzip) INLINE dans le label (marchent pour places ET
+  // transitions — le label est au-dessus de la barre de transition).
+  const labelBtn: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 12, height: 12, marginLeft: 4, padding: 0, fontSize: 10, lineHeight: 1,
+    cursor: 'pointer', borderRadius: 2, verticalAlign: 'middle', zIndex: 5,
+  };
+  const clipBtn = (onClick: () => void, bg: string, border: string, t: string, glyph: string) => (
+    <button
+      onClick={(ev) => { ev.stopPropagation(); onClick(); }}
+      style={{ ...labelBtn, background: bg, color: '#0f172a', border: `1px solid ${border}` }}
+      title={t}
+    >{glyph}</button>
+  );
 
   // Points de connexion OPPOSÉS selon la direction du layout (LR défaut) :
   // entrée (target) d'un côté, sortie (source) du côté opposé.
@@ -140,13 +154,17 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
     }}>
       {isTransition ? (
         /* Transition = barre VERTICALE noire ; le label (nom de la transition)
-           est affiché AU-DESSUS, en petit. */
+           est affiché AU-DESSUS, en petit, avec les boutons −/+ inline. */
         <span style={{ position: 'absolute', top: -12, fontSize: 8, color: '#94a3b8', lineHeight: 1, whiteSpace: 'nowrap' }}>
           {n?.label}
+          {zipHint && clipBtn(() => data?.onZip?.(n.id), '#fbbf24', '#f59e0b', 'Zip', '−')}
+          {unzipHint && clipBtn(() => data?.onUnzip?.(n.id), '#38bdf8', '#0ea5e9', 'Unzip', '+')}
         </span>
       ) : (
         <span style={{ lineHeight: 1.2, textAlign: 'center', padding: '0 18px', whiteSpace: 'pre-line' }}>
           {`${st?.icon ?? ''} ${n?.label ?? ''}`}
+          {zipHint && clipBtn(() => data?.onZip?.(n.id), '#fbbf24', '#f59e0b', 'Zip', '−')}
+          {unzipHint && clipBtn(() => data?.onUnzip?.(n.id), '#38bdf8', '#0ea5e9', 'Unzip', '+')}
         </span>
       )}
       {/* Badge « skill basique » : skill codée en Python (pas de workflow YAML) */}
@@ -156,44 +174,21 @@ function FlowNode({ data }: NodeProps & { data?: any }) {
           color: '#fbbf24', fontWeight: 700,
         }}>📘</span>
       )}
-      {/* Bouton de dépliage : + à droite (au-DESSUS du nœud : z-index élevé,
-          pour ne pas être recouvert par un nœud/box qui se superpose) */}
+      {/* Bouton de dépliage : + via le NodeToolbar OFFICIEL de React Flow —
+          rendu dans une couche AU-DESSUS de tous les nœuds (jamais rogné ni
+          recouvert), positionné EN HAUT du nœud */}
       {hasInner && !hideBoxFold && (
-        <button
-          onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
-          style={{
-            position: 'absolute', right: 3, top: '50%', transform: 'translateY(-50%)',
-            width: 16, height: 16, lineHeight: '13px', padding: 0, fontSize: 12,
-            background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
-            borderRadius: 3, cursor: 'pointer', zIndex: 10,
-          }}
-          title="Déplier"
-        >+</button>
-      )}
-      {/* Clipping taskflow : − sous un nœud zipable, + sous un nœud unzipable */}
-      {zipHint && (
-        <button
-          onClick={(ev) => { ev.stopPropagation(); data?.onZip?.(n.id); }}
-          style={{
-            position: 'absolute', bottom: -16, left: '50%', transform: 'translateX(-50%)',
-            width: 14, height: 14, lineHeight: '11px', padding: 0, fontSize: 11,
-            background: '#fbbf24', color: '#0f172a', border: '1px solid #f59e0b',
-            borderRadius: 3, cursor: 'pointer',
-          }}
-          title="Zip"
-        >−</button>
-      )}
-      {unzipHint && (
-        <button
-          onClick={(ev) => { ev.stopPropagation(); data?.onUnzip?.(n.id); }}
-          style={{
-            position: 'absolute', bottom: -16, left: '50%', transform: 'translateX(-50%)',
-            width: 14, height: 14, lineHeight: '11px', padding: 0, fontSize: 11,
-            background: '#38bdf8', color: '#0f172a', border: '1px solid #0ea5e9',
-            borderRadius: 3, cursor: 'pointer',
-          }}
-          title="Unzip"
-        >+</button>
+        <NodeToolbar isVisible position={Position.Top} offset={6}>
+          <button
+            onClick={(ev) => { ev.stopPropagation(); onToggle?.(n.id); }}
+            style={{
+              width: 16, height: 16, lineHeight: '13px', padding: 0, fontSize: 12,
+              background: '#0f172a', color: '#e2e8f0', border: '1px solid #475569',
+              borderRadius: 3, cursor: 'pointer', zIndex: 20,
+            }}
+            title="Déplier"
+          >+</button>
+        </NodeToolbar>
       )}
       {/* Points de connexion OPPOSÉS selon la direction du layout : UNE entrée
           (target) et UNE sortie (source), pour que les arêtes soient droites.
@@ -353,7 +348,8 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
     const possible = findClippable(tfDoc);
     const active = clipTable.clips;
     const markLevel = (d: any, poss: Clip[], act: Clip[], path: string[]): any => {
-      const marks = new Map<string, 'zip' | 'unzip'>();
+      const zipSet = new Set<string>();
+      const unzipSet = new Set<string>();
       const nestedP = new Map<string, Clip[]>();
       const nestedA = new Map<string, Clip[]>();
       const route = (list: Clip[], nested: Map<string, Clip[]>, fn: (c: Clip) => void) => {
@@ -367,14 +363,17 @@ export function GrapheSubPanel(props: GrapheSubPanelProps) {
           }
         }
       };
-      route(poss, nestedP, (c) => { for (const id of c.on) if (!marks.has(id)) marks.set(id, 'zip'); });
-      route(act, nestedA, (c) => marks.set(c.newId, 'unzip'));
+      route(poss, nestedP, (c) => { for (const id of c.on) zipSet.add(id); });
+      route(act, nestedA, (c) => unzipSet.add(c.newId));
       const heads = new Set([...nestedP.keys(), ...nestedA.keys()]);
       return {
         ...d,
         nodes: d.nodes.map((n: any) => {
-          let node = marks.has(n.id)
-            ? { ...n, vars: { ...(n.vars ?? {}), zipHint: marks.get(n.id) === 'zip', unzipHint: marks.get(n.id) === 'unzip' } }
+          // zipHint ET unzipHint peuvent cohabiter sur le MÊME nœud (ex. un z
+          // créé par un fold ET encore foldable) — deux Set, pas un Map.
+          const hasZip = zipSet.has(n.id), hasUnzip = unzipSet.has(n.id);
+          let node = hasZip || hasUnzip
+            ? { ...n, vars: { ...(n.vars ?? {}), zipHint: hasZip, unzipHint: hasUnzip } }
             : n;
           if (blinkIds.has(n.id)) {
             node = { ...node, vars: { ...(node.vars ?? {}), blink: true } };

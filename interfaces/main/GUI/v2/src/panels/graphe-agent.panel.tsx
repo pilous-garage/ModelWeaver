@@ -441,6 +441,8 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
   const [err, setErr] = useState<string | null>(null);
   // Définitions des skills référencées par l'agent (inline/dépliage).
   const [skillsMap, setSkillsMap] = useState<Record<string, any>>({});
+  // FSM graph depuis le BACKEND (graphe_utile/yaml_to_fsm) — logique pure.
+  const [graphFsmRemote, setGraphFsmRemote] = useState<any>(null);
   // Données de TOUS les agents (vues boxed) + skills globales.
   const [allAgentsData, setAllAgentsData] = useState<Record<string, any> | null>(null);
   const [allSkills, setAllSkills] = useState<Record<string, any>>({});
@@ -478,6 +480,19 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
     });
     return () => { alive = false; };
   }, [agentData, sel, ctx.api.post]);
+
+  // FSM graph V2 : construit par le BACKEND (graphe_utile/yaml_to_fsm) — logique
+  // pure (pas de thème/positions). Fallback TS si la route échoue.
+  useEffect(() => {
+    if (!sel) { setGraphFsmRemote(null); return; }
+    let alive = true;
+    ctx.api.post('graphe_utile/yaml_to_fsm', { name: sel }).then((res: any) => {
+      if (!alive) return;
+      const r = res?.result ?? res ?? {};
+      setGraphFsmRemote(r.status === 'ok' && r.nodes ? r : null);
+    }).catch(() => { if (alive) setGraphFsmRemote(null); });
+    return () => { alive = false; };
+  }, [sel, ctx.api.post]);
 
   // ── Vues BOXED : charge TOUS les agents (une fois par liste stable) ──
   // Best-effort : si un get échoue (500/429/timeout), on continue avec les
@@ -521,15 +536,18 @@ export function GrapheAgentPanel({ ctx }: { ctx: any }) {
 
   // Calcul en MÉMOIRE des graphes : recalculé UNIQUEMENT quand agentData ou sel
   // change (pas à chaque poll du catalogue → pas de blip/re-layout).
-  // - graphFsm      : le FSM hiérarchique (steps dépliables).
+  // - graphFsm      : le FSM hiérarchique — depuis le BACKEND (graphe_utile) si
+  //                   dispo, sinon fallback TS (agentYamlToGraph).
   // - graphTaskflow : ÉTAPE 1 — le FSM copié et TOUT déplié (pas encore de
   //                   tokens ni de transformation Pétri).
   const { graphFsm, graphTaskflow } = useMemo(() => {
+    const fsm = graphFsmRemote
+      ?? (agentData ? agentYamlToGraph(agentData, sel, skillsMap) : null);
     return {
-      graphFsm: agentData ? agentYamlToGraph(agentData, sel, skillsMap) : null,
+      graphFsm: fsm,
       graphTaskflow: agentData ? buildTaskflowDoc(agentYamlToGraph(agentData, sel, skillsMap), sel, agentData) : null,
     };
-  }, [agentData, sel, skillsMap]);
+  }, [agentData, sel, skillsMap, graphFsmRemote]);
 
   // Graphe BOXED :
   //  - FSM boxed : chaque agent est une box contenant son FSM.
