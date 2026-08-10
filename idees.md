@@ -120,3 +120,16 @@ niveau : pending_user (humain). Design voulu :
   lui-même (check commande dans sa whitelist / path dans ses allowed_roots).
 
 
+
+## Accès distant : PAS de connexion directe au daemon (idée 2026-08-11)
+
+On n'autorisera PAS les connexions distantes (même LAN) directement au daemon
+— il ne doit pas être une passoire. À la place, on créera un SERVICE RELAIS qui
+reçoit les requêtes distantes, les TRIE (auth, rate limit, whitelist…), puis
+les transmet au daemon local. Le daemon ne voit que du local.
+
+- Connexions distantes = via le service relais uniquement (auth + filtrage).
+- Connexions service/service locales : tout passe, sans limite (~1/ms max,
+  pas un problème en local).
+- Implémentation : PLUS TARD (carnet d'idées). Aujourd'hui : local tout passe,
+  non-local refusé (403).

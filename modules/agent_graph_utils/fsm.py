@@ -179,8 +179,20 @@ def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str]) -> SubGraph:
         return {"nodes": nodes, "edges": edges, "entrypoint": cond_id,
                 "exitpoints": exitpoints, "tags": inherited + ["loop"]}
     # call avec skill interne / steps simples : sous-graphe vide.
-    if kind == "skill" and s.get("inner"):
-        return _build_inner(s["inner"], sid, inherited)
+    if kind == "skill":
+        if s.get("inner"):
+            return _build_inner(s["inner"], sid, inherited)
+        # SKILL : nœud interne dépliable [sid/skill] (entrypoint) — comme le
+        # skillSubGraph historique. Permet à la GUI de déplier la skill.
+        skill_id = f"{sid}/skill"
+        return {
+            "nodes": [{"id": skill_id, "type": "skill",
+                       "label": s.get("fn") or s.get("id", ""),
+                       "ref": s.get("fn") or "",
+                       "tags": ["entrypoint"], "vars": {}}],
+            "edges": [], "entrypoint": skill_id, "exitpoints": [skill_id],
+            "tags": ["skill"],
+        }
     return {"nodes": [], "edges": [], "entrypoint": None, "exitpoints": [], "tags": []}
 
 
