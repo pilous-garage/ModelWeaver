@@ -57,6 +57,7 @@ class PetriNode:
     foldable: str = "none"
     in_group: List[int] = field(default_factory=list)
     out_group: List[int] = field(default_factory=list)
+    anciens: List[int] = field(default_factory=list)  # num_ids remplacés par ce fold
 
 
 @dataclass
@@ -192,7 +193,7 @@ def fold_seq(net: PetriNet, num: int) -> PetriNode:
     outs = list(y.out_group)
     z = net.add_node(f"z:{n.id}",
                      CLASS_PLACE if n.class_ == CLASS_TRANSITION else CLASS_TRANSITION,
-                     parent=n.parent, zipped=True)
+                     parent=n.parent, zipped=True, anciens=[x.num_id, num, y.num_id])
     for k in ins:
         net.add_edge(k, z.num_id)
     for m in outs:
@@ -207,7 +208,7 @@ def fold_par(net: PetriNet, nums: List[int]) -> PetriNode:
     """zip parallèle : N transitions mêmes in/out → 1 transition."""
     first = net.node(nums[0])
     z = net.add_node(f"p:{first.id}", CLASS_TRANSITION,
-                     parent=first.parent, zipped=True,
+                     parent=first.parent, zipped=True, anciens=list(nums),
                      in_group=list(first.in_group), out_group=list(first.out_group))
     for k in first.in_group:
         net.add_edge(k, z.num_id)
@@ -226,7 +227,7 @@ def fold_single(net: PetriNet, num: int) -> PetriNode:
              and c.class_ != CLASS_TRANSITION]
     place = net.node(inner[0])
     z = net.add_node(f"s:{box.id}", CLASS_TRANSITION,
-                     parent=num, zipped=True,
+                     parent=num, zipped=True, anciens=[place.num_id],
                      in_group=list(place.in_group), out_group=list(place.out_group))
     for k in place.in_group:
         net.add_edge(k, z.num_id)

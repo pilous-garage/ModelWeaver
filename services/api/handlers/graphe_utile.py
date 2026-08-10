@@ -130,7 +130,8 @@ def op_yaml_to_taskflow(params: dict) -> Dict[str, Any]:
                            "specialty": n.specialty, "type": n.type, "label": n.label,
                            "parent": n.parent, "visible": n.visible, "zipped": n.zipped,
                            "foldable": n.foldable, "in_group": n.in_group,
-                           "out_group": n.out_group, "vars": n.vars}
+                           "out_group": n.out_group, "anciens": n.anciens,
+                           "vars": n.vars}
                           for n in net.nodes],
                 "edges": [{"num_id": e.num_id, "from": e.from_, "to": e.to,
                            "type": e.type, "label": e.label, "visible": e.visible}
