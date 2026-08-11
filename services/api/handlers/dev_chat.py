@@ -157,7 +157,8 @@ def _resolve_pilot(mgr, session: str, params: dict) -> tuple:
 
 
 def _run_pilot(aid: int, mode: str, message: str, workspace_id: str, home: str,
-               provider_ref: str = "", model_ref: str = "", db=None) -> Dict[str, Any]:
+               provider_ref: str = "", model_ref: str = "", db=None,
+               exclude_models: Optional[list] = None) -> Dict[str, Any]:
     """Exécute le pilote de dev-chat (workflow autonomous bundles pilot).
 
     Sérialisé par un verrou PAR AGENT : si le pilote est déjà en cours
@@ -180,6 +181,7 @@ def _run_pilot(aid: int, mode: str, message: str, workspace_id: str, home: str,
             "messages": [{"role": "user", "content": message}],
             "request": {"mode": mode, "message": message},
             "workspace_id": workspace_id, "home": home,
+            "exclude_models": list(exclude_models or []),
         })
         res = agent.execute(
             _json.dumps({"mode": mode, "message": message, "workspace_id": workspace_id}),
@@ -238,7 +240,8 @@ def op_dev_chat_send(params: dict) -> Dict[str, Any]:
     try:
         result = _run_pilot(aid, mode, message, workspace_id, home,
                             params.get("provider_ref", ""),
-                            params.get("model_ref", ""))
+                            params.get("model_ref", ""),
+                            exclude_models=params.get("exclude_models"))
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -312,7 +315,8 @@ def op_dev_chat_stream(params, wfile) -> None:
             result.update(_run_pilot(aid, mode, message, workspace_id, home,
                                      params.get("provider_ref", ""),
                                      params.get("model_ref", ""),
-                                     db=mgr.db))
+                                     db=mgr.db,
+                                     exclude_models=params.get("exclude_models")))
         except Exception as e:
             result["status"] = "error"
             result["error"] = str(e)
