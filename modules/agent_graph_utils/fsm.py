@@ -85,9 +85,10 @@ def _heritable(tags: List[str]) -> List[str]:
 
 
 def _build_body(steps: List[Dict[str, Any]], prefix: str,
-                inherited: List[str]) -> SubGraph:
+                inherited: List[str], skills_map: Optional[Dict[str, Any]] = None) -> SubGraph:
     """Sous-graphe d'une liste de steps. ``inherited`` = tags HÉRITABLES
-    provenant des ancêtres."""
+    provenant des ancêtres. ``skills_map`` = {ref skill → déf catalogue} pour
+    déplier les skills (workflow → steps, sinon contrat in/out)."""
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
     entrypoint: Optional[str] = None
@@ -106,7 +107,7 @@ def _build_body(steps: List[Dict[str, Any]], prefix: str,
             "label": s.get("id", ""),
             "ref": s.get("fn") or s.get("type") or _kind(s),
             "tags": node_tags,
-            "vars": {"inner": _build_inner(s, sid, list(dict.fromkeys(inherited + _heritable(own))))},
+            "vars": {"inner": _build_inner(s, sid, list(dict.fromkeys(inherited + _heritable(own))), skills_map)},
         }
         # 1er step top-level = ENTRYPOINT (tag hérité).
         if entrypoint is None and prefix == "" and "entrypoint" not in node_tags:
@@ -148,8 +149,9 @@ def _build_body(steps: List[Dict[str, Any]], prefix: str,
             "exitpoints": exitpoints, "tags": inherited}
 
 
-def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str]) -> SubGraph:
-    """Sous-graphe dépliable d'un step structurel (loop / switch / if)."""
+def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str],
+                 skills_map: Optional[Dict[str, Any]] = None) -> SubGraph:
+    """Sous-graphe dépliable d'un step structurel (loop / switch / if / skill)."""
     kind = _kind(s)
     if kind in ("switch", "if"):
         cond_id = f"{sid}/condition"
@@ -168,7 +170,7 @@ def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str]) -> SubGraph:
         }]
         edges: List[Dict[str, Any]] = []
         body_prefix = f"{sid}/body/"
-        body = _build_body(s.get("body", {}).get("steps", []) or [], body_prefix, inherited)
+        body = _build_body(s.get("body", {}).get("steps", []) or [], body_prefix, inherited, skills_map)
         nodes.extend(body["nodes"])
         edges.extend(body["edges"])
         body_entry = body["entrypoint"]
@@ -178,12 +180,39 @@ def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str]) -> SubGraph:
         exitpoints = [cond_id] + body["exitpoints"]
         return {"nodes": nodes, "edges": edges, "entrypoint": cond_id,
                 "exitpoints": exitpoints, "tags": inherited + ["loop"]}
-    # call avec skill interne / steps simples : sous-graphe vide.
+    # SKILL : déplier l'arborescence complète depuis l'INLINE (step['skill']),
+    # ou depuis skills_map en fallback. workflow → steps ; sinon contrat in/out.
     if kind == "skill":
         if s.get("inner"):
-            return _build_inner(s["inner"], sid, inherited)
-        # SKILL : nœud interne dépliable [sid/skill] (entrypoint) — comme le
-        # skillSubGraph historique. Permet à la GUI de déplier la skill.
+            return _build_inner(s["inner"], sid, inherited, skills_map)
+        sk = s.get("skill") or (skills_map or {}).get(s.get("fn") or "")
+        if sk:
+            wf_steps = (sk.get("workflow") or {}).get("steps") or []
+            if wf_steps:
+                # Skill workflow → ses steps internes, préfixés.
+                body = _build_body(wf_steps, f"{sid}/", inherited + ["skill"], skills_map)
+                return {"nodes": body["nodes"], "edges": body["edges"],
+                        "entrypoint": body["entrypoint"], "exitpoints": body["exitpoints"],
+                        "tags": inherited + ["skill"]}
+            # Skill atomique → contrat input → output.
+            inputs = sk.get("inputs") or {}
+            outputs = sk.get("outputs") or {}
+            in_id, out_id = f"{sid}/in", f"{sid}/out"
+            in_label = '\n'.join(["input"] + [f"{k}: {v.get('type', 'any')}{' *' if v.get('required') else ''}"
+                                              for k, v in inputs.items()])
+            out_label = '\n'.join(["output"] + [f"{k}: {v.get('type', 'any')}"
+                                                for k, v in outputs.items()])
+            return {
+                "nodes": [
+                    {"id": in_id, "type": "skill_input", "label": in_label, "ref": "input",
+                     "tags": ["entrypoint"], "vars": {}},
+                    {"id": out_id, "type": "skill_output", "label": out_label, "ref": "output",
+                     "tags": [], "vars": {}},
+                ],
+                "edges": [{"from": in_id, "to": out_id, "label": "", "type": "next"}],
+                "entrypoint": in_id, "exitpoints": [out_id], "tags": inherited + ["skill"],
+            }
+        # SKILL inconnue : nœud interne dépliable [sid/skill] (entrypoint).
         skill_id = f"{sid}/skill"
         return {
             "nodes": [{"id": skill_id, "type": "skill",
@@ -196,14 +225,35 @@ def _build_inner(s: Dict[str, Any], sid: str, inherited: List[str]) -> SubGraph:
     return {"nodes": [], "edges": [], "entrypoint": None, "exitpoints": [], "tags": []}
 
 
-def yaml_to_fsm(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def load_skills_map(skills_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Charge toutes les définitions de skills du catalogue ({ref → déf})."""
+    import yaml as _yaml
+    if skills_dir is None:
+        from pathlib import Path as _P
+        skills_dir = _P(__file__).resolve().parent.parent.parent / "AgentsCatalogue" / "skills"
+    result: Dict[str, Any] = {}
+    for y in sorted(Path(skills_dir).rglob("*.skill.yaml")):
+        try:
+            data = _yaml.safe_load(y.read_text())
+            if data and data.get("name"):
+                result[data["name"]] = data
+        except Exception:
+            pass
+    return result
+
+
+def yaml_to_fsm(data: Optional[Dict[str, Any]],
+                skills_map: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Construit le graphe FSM hiérarchique d'un agent.
 
     ``data`` : dict parsé du .agent.yaml (role, entrypoints.main.steps).
+    ``skills_map`` : {ref skill → déf catalogue} — déplie les skills en
+    arborescence complète (workflow → steps, sinon contrat in/out). Si None,
+    les skills restent des nœuds [sid/skill] repliables.
     Retourne {"nodes": [...], "edges": [...], "title": ...}.
     """
     steps = (data or {}).get("entrypoints", {}).get("main", {}).get("steps", []) or []
-    body = _build_body(steps, prefix="", inherited=[])
+    body = _build_body(steps, prefix="", inherited=[], skills_map=skills_map)
     nodes: List[Dict[str, Any]] = [{
         "id": "main", "type": "entrypoint", "label": "main", "ref": "entry",
         "tags": ["entrypoint"], "vars": {},
