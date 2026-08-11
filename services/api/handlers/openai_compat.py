@@ -44,10 +44,15 @@ def _mode_from_model(model: str) -> str:
 
 
 def op_openai_chat_completions(params: Dict[str, Any]) -> Dict[str, Any]:
-    """/v1/chat/completions — envoie le prompt au swarm et retourne le
-    format OpenAI.
+    """/v1/chat/completions — le swarm répond comme un vrai LLM.
 
-    params (payload OpenAI) : {model, messages, stream?, ...}.
+    Le fake-api-llm-manager (orchestration swarm_llm_manager) reçoit la prompt
+    telle quelle, crée un dépôt local + branche vierge, y dépose la prompt et
+    les éventuels fichiers fournis (tool_calls/JSON), l'analyste découpe en
+    tâches par rôle, les greedy travaillent, puis on renvoie les fichiers
+    produits + résumé AU FORMAT LLM (choices[0].message.content).
+
+    params (payload OpenAI) : {model, messages, tool_calls?, ...}.
     """
     model = params.get("model", "mw-swarm")
     messages = params.get("messages", [])
@@ -55,40 +60,36 @@ def op_openai_chat_completions(params: Dict[str, Any]) -> Dict[str, Any]:
     if not prompt:
         return {"ok": False,
                 "error": {"message": "aucun message user", "type": "invalid_request_error"}}
-    mode = _mode_from_model(model)
+    # Fichiers fournis par le benchmark (tool_calls / JSON) → déposés dans la
+    # branche. On supporte : messages[].tool_calls (fichiers à créer) et un
+    # éventuel param files (dict name→content).
+    files: Dict[str, Any] = {}
+    for m in (messages or []):
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function", {})
+            if fn.get("name") in ("write_file", "create_file"):
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                    path = args.get("path") or args.get("filename") or args.get("file")
+                    content = args.get("content", "")
+                    if path:
+                        files[str(path)] = str(content)
+                except Exception:
+                    pass
+    if isinstance(params.get("files"), dict):
+        files.update(params.get("files"))
     try:
-        from services.api.handlers.dev_chat import op_dev_chat_send
-        res = op_dev_chat_send({
-            "message": prompt,
-            "mode": mode,
-            "session": params.get("user", "") or None,
-            "workspace_id": params.get("workspace_id", ""),
-            "provider_ref": params.get("provider_ref", ""),
-            "model_ref": params.get("model_ref", ""),
-            # restrict_llm (allowlist) → exclusions du allocate_llm
-            "exclude_models": params.get("restrict_llm") or params.get("exclude_models") or [],
-        })
+        from services.swarm_llm_manager import run_completion
+        res = run_completion(prompt, files=files or None)
     except Exception as e:  # noqa: BLE001
         return {"ok": False,
                 "error": {"message": str(e), "type": "server_error"}}
-
-    # résultat du swarm → contenu assistant
-    content = res.get("content") or res.get("reply") or res.get("result") or ""
-    if isinstance(content, (dict, list)):
-        content = json.dumps(content, ensure_ascii=False)
-    status = res.get("status")
-    finish = "stop" if status in ("ok", "success") else "error"
-    return {"ok": True, "id": f"chatcmpl-{abs(hash(prompt)) & 0xffffff:x}",
-            "object": "chat.completion",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": str(content)},
-                "finish_reason": finish,
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0,
-                      "total_tokens": 0},
-            "swarm": {"mode": mode, "status": status}}
+    if not res.get("ok"):
+        return {"ok": False,
+                "error": {"message": res.get("error", "swarm échoué"),
+                          "type": "server_error"}}
+    res["model"] = model
+    return res
 
 
 register("chat/completions", op_openai_chat_completions)
