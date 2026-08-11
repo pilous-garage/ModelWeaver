@@ -19,7 +19,9 @@ délègue au ToolExecutor.
 
 import json
 import logging
+import threading
 import time
+import queue as _queue
 from typing import Any, Dict, List, Optional
 
 from modules.llm_manager.llm_manager import LLMManager
@@ -129,6 +131,27 @@ class FSMResult:
         }
 
 
+class SubAgentLink:
+    """Liaison directe parent ↔ sub-agent.
+
+    Un sub-agent est une THREAD ENFANT semi-autonome : il partage le home de
+    son propriétaire (aucun nouveau home), a son propre parcours FSM et son
+    propre log. La communication passe par DEUX files de messages :
+      - request : parent → sub-agent (bloquant : attend l'ack du sub-agent ;
+        non-bloquant : fire-and-forget)
+      - respond : sub-agent → parent (bloquant : attend la réponse avec
+        timeout ; non-bloquant : lecture immédiate sans attendre)
+    """
+
+    def __init__(self) -> None:
+        self.request_q: "_queue.Queue" = _queue.Queue()
+        self.respond_q: "_queue.Queue" = _queue.Queue()
+        self.request_ack = threading.Event()   # posé quand le sub-agent a consommé la request
+        self.done = threading.Event()          # posé quand le FSM du sub-agent est terminé
+        self.result: Optional["FSMResult"] = None
+        self.error: Optional[str] = None
+
+
 class FSMInterpreter:
     """Exécute un workflow d'agent étape par étape.
 
@@ -150,6 +173,10 @@ class FSMInterpreter:
         self.bridge = bridge or LLMManager(cat=None).get_bridge()
         self.tool_executor = tool_executor or ToolExecutor(home_root="/tmp")
         self.max_iterations = max_iterations
+        # Sub-agents : {ref → déf inline} fourni au run() ; et la liaison
+        # (files request/respond) quand on exécute EN TANT QUE sub-agent.
+        self._sub_agents: Dict[str, Dict[str, Any]] = {}
+        self._sub_link: Optional[SubAgentLink] = None
 
     def run(
         self,
@@ -165,6 +192,9 @@ class FSMInterpreter:
         handoff_handler: Optional[Any] = None,
         agent_call_handler: Optional[Any] = None,
         lifecycle_mgr: Optional[Any] = None,
+        sub_agents: Optional[Dict[str, Dict[str, Any]]] = None,
+        sub_link: Optional[SubAgentLink] = None,
+        home: str = "",
     ) -> FSMResult:
         """Exécute le workflow."""
         result = FSMResult()
@@ -175,6 +205,19 @@ class FSMInterpreter:
         self._handoff_handler = handoff_handler
         self._agent_call_handler = agent_call_handler
         self._lifecycle_mgr = lifecycle_mgr
+        self._sub_agents = dict(sub_agents or {})
+        self._sub_link = sub_link
+        self._home = home
+        # Pile de scopes hiérarchiques ($var, agent.var=). Le scope racine
+        # porte les variables du run ; les skills/subskills poussent le leur.
+        from modules.agent_graph_utils.scopes import ScopeStack
+        self._scopes = ScopeStack()
+        self._scopes.push("agent", result.variables)
+        # Expose le home aux steps ({{home}}) — les skills en ont besoin.
+        if home:
+            result.variables.setdefault("home", home)
+        elif self.tool_executor and self.tool_executor.home_root:
+            result.variables.setdefault("home", self.tool_executor.home_root)
 
         steps = workflow.get("steps", [])
         steps_by_id = {s["id"]: s for s in steps}
@@ -574,9 +617,13 @@ class FSMInterpreter:
             result.status = "failed"
             result.end_reason = "call: 'fn' requis"
             return False
+        # Résolution $var (scope hiérarchique) au niveau du STEP : fn ET
+        # inputs. Ex. fn: catalogue.$lib.data, inputs: {$var_x: 'v'}.
+        fn = self._scopes.resolve_text(fn)
         inputs = step.get("inputs", {})
+        resolved = {k: self._scopes.resolve_value(v) for k, v in inputs.items()}
         resolved = {k: self._resolve(v, result.variables) if isinstance(v, str) else v
-                    for k, v in inputs.items()}
+                    for k, v in resolved.items()}
         # Les templates de workspace restants ({{workspace_id}} etc.) : le
         # workspace du chat de dev est le défaut connu. Sans cette résolution,
         # les membres greedy appellent task_claim_next avec la chaîne littérale
@@ -610,13 +657,31 @@ class FSMInterpreter:
             elif "agent_id" not in resolved:
                 resolved["agent_id"] = agent_id
         try:
-            from services.skill_manager import call_skill
             from services._common import mw_home
             if agent_id:
                 home = str(mw_home() / "agent_home" / str(agent_id))
             else:
                 home = self.tool_executor.home_root if self.tool_executor else "/tmp"
-            out = call_skill(fn, resolved, home)
+            # Scope skill : poussé autour de l'appel (le skill écrit dans SON
+            # scope ; $var du skill remonte ensuite vers l'agent).
+            self._scopes.push(f"skill:{fn}")
+            try:
+                # Sub-skill inline attachée au step → exécutée directement
+                # (pas de lookup catalogue). Sinon skill du catalogue.
+                if step.get("skill"):
+                    from services.skill_manager import call_skill_spec
+                    out = call_skill_spec(step["skill"], resolved, home,
+                                          agent_id=str(agent_id),
+                                          entrypoint=step.get("entrypoint", "main"))
+                else:
+                    # Foncteur : entrypoint par défaut 'main' (f() == f.main()),
+                    # sinon step.entrypoint (ex. f.second()) — instance par agent.
+                    from services.skill_manager import call_skill
+                    out = call_skill(fn, resolved, home,
+                                     agent_id=str(agent_id),
+                                     entrypoint=step.get("entrypoint", "main"))
+            finally:
+                self._scopes.pop()
         except Exception as e:
             result.status = "failed"
             result.end_reason = f"call {fn}: {e}"
@@ -784,6 +849,9 @@ class FSMInterpreter:
 
         for cond in step.get("conditions", []):
             operator = cond.get("operator", "EQUALS")
+            # Alias symboliques (cohérence avec _eval_condition)
+            operator = {"==": "EQUALS", "!=": "NOT_EQUALS", "contains": "CONTAINS",
+                        ">": "GREATER", "<": "LESS"}.get(operator, operator)
             cond_value = str(cond.get("value", ""))
             matched = False
 
@@ -853,10 +921,101 @@ class FSMInterpreter:
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Définit une variable."""
+        """Définit une variable (scope hiérarchique).
+
+        - name = "var_x"      → scope courant (feuille).
+        - name = "agent.var_x" → scope nommé remonté (préfixe requis pour
+          toucher les niveaux supérieurs).
+        La valeur est résolue ($var + {{var}})."""
         name = step.get("name", "")
         value = self._resolve(step.get("value", ""), result.variables)
-        result.variables[name] = value
+        try:
+            self._scopes.set_scoped(name, value)
+        except Exception as e:  # noqa: BLE001
+            result.status = "failed"
+            result.end_reason = f"set_variable: {e}"
+            return False
+        # reflète dans les variables du résultat (scope racine = agent)
+        result.variables.update(self._scopes.snapshot())
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_obj_call(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """Appelle un OBJET RUNTIME via le langage de résolution typée.
+
+        step: {type: obj_call, path, capture, next, on_error}.
+
+        ``path`` : une chaîne de résolution, résolue au niveau du step :
+            team.chatroom.send({{msg}})          → envoie via l'objet team
+            team.members.reduce_pattern(name=*)  → filtre les membres
+            daemon.info()                        → infos du daemon restreint
+            catalogue.$lib.check_home@v1         → skill du catalogue
+        L'agent_id est pris du scope (variables) pour construire la racine
+        `team`. Retourne None.return si le récepteur était vide (no-op)."""
+        path = step.get("path", "")
+        if not path:
+            result.status = "failed"
+            result.end_reason = "obj_call: 'path' requis"
+            return False
+        # résout {{var}} et $var dans le path (scope hiérarchique)
+        try:
+            path = self._resolve(path, result.variables)
+        except Exception as e:  # noqa: BLE001
+            result.status = "failed"
+            result.end_reason = f"obj_call: résolution path: {e}"
+            return False
+        agent_id = result.variables.get("agent_id", "")
+        # PERMISSIONS DAEMON uniquement : l'accès au daemon (daemon.*) est
+        # borné par privileges (fail-safe). Les objets internes
+        # (team.*, catalogue.*) n'ont PAS besoin de permission.
+        try:
+            from services.runtime_permissions import check_access
+            if not check_access(agent_id, path):
+                if step.get("on_error"):
+                    return self._branch_on_error(
+                        step, result, f"obj_call: accès daemon refusé ({path})")
+                result.status = "failed"
+                result.end_reason = f"obj_call: accès daemon refusé ({path})"
+                return False
+        except Exception:
+            pass
+        try:
+            from services.catalogue_objects import build_resolution_namespace
+            from modules.agent_graph_utils.resolution import PathEvaluator
+            rns = build_resolution_namespace(
+                int(agent_id) if str(agent_id).isdigit() else None)
+            root = None
+            if path.startswith("team."):
+                root = rns["team"]
+            elif path.startswith("daemon."):
+                root = rns["daemon"]
+            elif path.startswith("catalogue."):
+                from services.catalogue_runtime import make_catalogue
+                root = make_catalogue(agent_id=str(agent_id))
+            else:
+                root = rns["team"]   # défaut : contexte team de l'agent
+            out = PathEvaluator(root).evaluate(path)
+        except Exception as e:  # noqa: BLE001
+            if step.get("on_error"):
+                return self._branch_on_error(step, result, f"obj_call: {e}")
+            result.status = "failed"
+            result.end_reason = f"obj_call {path}: {e}"
+            return False
+
+        # capture du résultat dans les variables
+        capture = step.get("capture", {})
+        if capture and out is not None:
+            for out_key, var_name in capture.items():
+                result.variables[var_name] = out
+        result.messages.append({
+            "role": "system",
+            "content": f"[obj_call:{path}] "
+                       f"{json.dumps(out, ensure_ascii=False, default=str)[:500]}",
+        })
         result.next_step_id = step.get("next")
         return True
 
@@ -984,6 +1143,189 @@ class FSMInterpreter:
         result.next_step_id = step.get("next")
         return True
 
+    # ── Sub-agents : thread enfant semi-autonome, home partagé ──
+
+    def _step_sub_agent(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        stream_sink: Optional[Any] = None, **kwargs: Any,
+    ) -> bool:
+        """Lance un SUB-AGENT en thread enfant, home partagé.
+
+        step: {type: sub_agent, agent, entrypoint, request, request_mode,
+               respond_mode, timeout, capture, next}.
+
+        Le sub-agent est un agent INLINE (déf dans self._sub_agents) exécuté
+        dans une thread daemon : il a son propre parcours FSM + son propre log
+        (même home que le parent), et communique via 2 files :
+          - request  : message envoyé au sub-agent (bloquant : attend son ack ;
+            non-bloquant : fire-and-forget)
+          - respond  : réponse attendue du sub-agent (bloquant : timeout ;
+            non-bloquant : lecture immédiate, peut être None)
+
+        Le sub-agent peut utiliser SON propre LLM ou celui de son propriétaire :
+        si la def du sub-agent déclare `provider_ref`/`model_ref`, elle prime ;
+        sinon le sub-agent hérite de ceux du parent (provider_ref/model_ref).
+        """
+        agent = step.get("agent", "")
+        sub = (self._sub_agents or {}).get(agent)
+        if not sub:
+            result.status = "failed"
+            result.end_reason = f"sub_agent: '{agent}' introuvable dans sub_agents"
+            return False
+        ep_name = step.get("entrypoint", "main")
+        ep = (sub.get("entrypoints") or {}).get(ep_name)
+        steps = (ep or {}).get("steps") or []
+        if not steps:
+            result.status = "failed"
+            result.end_reason = f"sub_agent '{agent}': entrypoint '{ep_name}' vide"
+            return False
+
+        # Provider/model : ceux du sub-agent s'ils sont déclarés, sinon hérités.
+        sub_provider = sub.get("provider_ref") or step.get("provider_ref") or provider_ref
+        sub_model = sub.get("model_ref") or step.get("model_ref") or model_ref
+        request = self._resolve(step.get("request", ""), result.variables)
+        request_mode = step.get("request_mode", "blocking")
+        respond_mode = step.get("respond_mode", "blocking")
+        timeout = step.get("timeout", 30)
+        # Home : PARTAGÉ avec le parent (le sub-agent n'a pas de nouveau home).
+        home = getattr(self, "_home", "") or (
+            self.tool_executor.home_root if self.tool_executor else "")
+
+        link = SubAgentLink()
+
+        def _run_child():
+            child = FSMInterpreter(bridge=self.bridge,
+                                   tool_executor=self.tool_executor,
+                                   max_iterations=self.max_iterations)
+            try:
+                child_result = child.run(
+                    workflow=ep,
+                    messages=[{"role": "system",
+                               "content": f"[sub_agent:{agent}] {request[:500]}"}],
+                    variables={**result.variables,
+                               **{"_sub_parent": agent, "agent_id":
+                                  result.variables.get("agent_id", "")}},
+                    provider_ref=sub_provider, model_ref=sub_model,
+                    stream_sink=stream_sink,
+                    sub_agents=self._sub_agents,
+                    sub_link=link,
+                    home=home,
+                )
+                link.result = child_result
+            except Exception as e:  # noqa: BLE001
+                link.error = str(e)
+            finally:
+                link.done.set()
+
+        t = threading.Thread(target=_run_child, daemon=True)
+        t.start()
+
+        # Envoyer la request (bloquante : attendre l'ack de consommation).
+        link.request_q.put(request)
+        if request_mode == "blocking":
+            if not link.request_ack.wait(timeout):
+                result.status = "failed"
+                result.end_reason = f"sub_agent '{agent}': request non consommée (timeout {timeout}s)"
+                return False
+
+        # Attendre la respond (bloquante : timeout ; non-bloquante : immédiate).
+        response = None
+        try:
+            if respond_mode == "blocking":
+                response = link.respond_q.get(timeout=timeout)
+            else:
+                try:
+                    response = link.respond_q.get_nowait()
+                except _queue.Empty:
+                    response = None
+        except _queue.Empty:
+            result.status = "failed"
+            result.end_reason = f"sub_agent '{agent}': pas de respond (timeout {timeout}s)"
+            return False
+
+        capture = step.get("capture", {})
+        if capture and response is not None:
+            if isinstance(response, dict):
+                for out_key, var_name in capture.items():
+                    result.variables[var_name] = response.get(out_key, "")
+            else:
+                # capture: {result: nom_var} → la valeur brute
+                for _ok, var_name in capture.items():
+                    result.variables[var_name] = response
+        result.messages.append({
+            "role": "system",
+            "content": f"[sub_agent:{agent}] respond: "
+                       f"{json.dumps(response, ensure_ascii=False)[:500]}",
+        })
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_sub_await_request(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """(côté SUB-AGENT) Attend/reçoit la request du parent depuis la file.
+
+        step: {type: sub_await_request, mode: blocking|non_blocking, timeout,
+               capture: {message: var}}.
+        Ack automatique au parent quand la request est consommée.
+        """
+        if self._sub_link is None:
+            result.status = "failed"
+            result.end_reason = "sub_await_request: pas de liaison sub-agent"
+            return False
+        mode = step.get("mode", "blocking")
+        timeout = step.get("timeout", 30)
+        try:
+            if mode == "blocking":
+                request = self._sub_link.request_q.get(timeout=timeout)
+            else:
+                try:
+                    request = self._sub_link.request_q.get_nowait()
+                except _queue.Empty:
+                    request = None
+        except _queue.Empty:
+            result.status = "failed"
+            result.end_reason = f"sub_await_request: pas de request (timeout {timeout}s)"
+            return False
+        self._sub_link.request_ack.set()   # le parent peut continuer
+        for out_key, var_name in (step.get("capture") or {}).items():
+            result.variables[var_name] = request
+        result.next_step_id = step.get("next")
+        return True
+
+    def _step_sub_respond(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """(côté SUB-AGENT) Envoie la réponse au parent via la file respond.
+
+        step: {type: sub_respond, data, mode: blocking|non_blocking}.
+        """
+        if self._sub_link is None:
+            result.status = "failed"
+            result.end_reason = "sub_respond: pas de liaison sub-agent"
+            return False
+        data = self._resolve(step.get("data", ""), result.variables)
+        mode = step.get("mode", "blocking")
+        try:
+            if mode == "blocking":
+                self._sub_link.respond_q.put(data)
+            else:
+                try:
+                    self._sub_link.respond_q.put_nowait(data)
+                except _queue.Full:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            result.status = "failed"
+            result.end_reason = f"sub_respond: {e}"
+            return False
+        result.next_step_id = step.get("next")
+        return True
+
     # ── Gestion d'erreur commune (llm_call / call / tool_call) ──
 
     def _branch_on_error(self, step: Dict, result: "FSMResult", msg: str) -> bool:
@@ -1019,13 +1361,17 @@ class FSMInterpreter:
     def _eval_condition(cond: Dict, variables: Dict) -> bool:
         """Évalue une condition {variable, operator, value}.
 
-        operator ∈ EQUALS | NOT_EQUALS | CONTAINS | GREATER | LESS | TRUTHY.
+        operator ∈ EQUALS | NOT_EQUALS | CONTAINS | GREATER | LESS | TRUTHY
+        (+ alias symboliques == | != | > | < | contains).
         TRUTHY (défaut si pas de value) : la variable est non vide / non nulle.
         """
         if not cond:
             return False
         raw = variables.get(cond.get("variable", "").strip("{}").strip(), "")
         operator = cond.get("operator", "TRUTHY" if "value" not in cond else "EQUALS")
+        # Alias symboliques → équivalents textuels (cohérence avec _step_switch)
+        operator = {"==": "EQUALS", "!=": "NOT_EQUALS", "contains": "CONTAINS",
+                    ">": "GREATER", "<": "LESS"}.get(operator, operator)
         if operator == "TRUTHY":
             return bool(raw) and str(raw).lower() not in ("false", "0", "")
         var_value = str(raw)
@@ -1206,13 +1552,14 @@ class FSMInterpreter:
     # ── Utils ──────────────────────────────────────────
 
     def _resolve(self, value: str, variables: Dict) -> str:
-        """Remplace {{variable}} dans une chaîne par sa valeur.
+        """Remplace {{variable}} et $var dans une chaîne par leurs valeurs.
 
         Supporte les accès dict/attributs : {{issue.description}},
         {{task.task_id}}, {{task.title}}... Retourne la valeur str ou laisse
         le placeholder si introuvable.
         """
         import re
+
         def _lookup(path: str):
             parts = path.split(".")
             cur = variables
@@ -1224,7 +1571,14 @@ class FSMInterpreter:
                 else:
                     return None
             return cur
+
         def _repl(m):
             val = _lookup(m.group(1))
             return str(val) if val is not None else m.group(0)
+
+        # $var (scope hiérarchique) résolu en premier, puis {{var}}
+        try:
+            value = self._scopes.resolve_text(value)
+        except Exception:
+            pass
         return re.sub(r"\{\{([\w.]+)\}\}", _repl, value)
