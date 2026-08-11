@@ -1,0 +1,1 @@
+Ce projet est en cours de développement et n'est absolument pas utilisable en l'état. le dépot est publique uniquement pour tester les fonctionnalité dont j'ai besoins. n'hésitez pas à suivre le projet, mais franchement, attendez que je le migre complètement avant la release publique;
