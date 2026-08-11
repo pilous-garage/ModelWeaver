@@ -1421,6 +1421,16 @@ class AgentManager:
                     # Branche auto_code pour les pushes du swarm : ne JAMAIS
                     # pousser sur la branche principale du repo central.
                     vars_j["branch_name"] = f"auto_code_{vars_j['team_id']}"
+                    # RESET des variables LOGIQUES de boucle à chaque réveil :
+                    # un flag résiduel (ex. work_done='1' laissé par un run
+                    # précédent) fait sauter le working_loop immédiatement →
+                    # le greedy ne code jamais (bug observé). On remet les
+                    # flags de contrôle à leur valeur initiale, SANS toucher
+                    # aux compteurs/tokens (agent_id, tokens accumulés).
+                    for _logical in ("work_done", "has_llm", "work_out",
+                                     "check_out", "verif_files"):
+                        if _logical in vars_j:
+                            del vars_j[_logical]
                     agent.db.conn.execute(
                         "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
                         (_json.dumps(vars_j), agent_id))
