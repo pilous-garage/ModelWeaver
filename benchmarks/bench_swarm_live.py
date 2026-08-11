@@ -175,7 +175,24 @@ def main() -> int:
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--workspace", default=DEFAULT_WS)
     p.add_argument("--task-type", default="coding")
+    p.add_argument("--create", action="store_true",
+                   help="crée la tâche, retourne son id, ne bloque pas")
+    p.add_argument("--status", type=int, default=None,
+                   help="statut d'une tâche (supervision)")
     args = p.parse_args()
+    if args.status is not None:
+        st = task_status(args.workspace, args.status)
+        print(f"[bench_swarm_live] task={args.status} status={st}")
+        return 0 if st == "done" else (1 if st in ("doing", "todo") else 2)
+    if args.create:
+        ensure_team()
+        reset_workspace_tasks(args.workspace)
+        tid = create_task(args.workspace, f"bench-{uuid.uuid4().hex[:6]}",
+                          "Benchmark auto : écris bench/OK.txt avec SWARM_OK "
+                          "puis marque la tâche done.", args.task_type)
+        wake_team_greedy()
+        print(f"[bench_swarm_live] created task={tid}")
+        return 0
     report = run(args.timeout, args.workspace, args.task_type)
     print(f"[bench_swarm_live] status={report.get('status')} "
           f"task={report.get('task_id')} "

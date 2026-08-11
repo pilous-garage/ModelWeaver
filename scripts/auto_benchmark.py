@@ -135,31 +135,68 @@ def purge_wait_for(team_prefix: str) -> None:
         db.close()
 
 
-def reset_agents_homes(team_prefix: str) -> None:
-    """Reset les homes des agents de la team (vide agent_home/{id})."""
+def stop_team_agents(team_prefix: str) -> None:
+    """ARRÊTE tous les agents de la team (kill → déshydratation)."""
     from modules.sql.agents_repo import AgentsDB
     db = AgentsDB()
     try:
         rows = db.conn.execute(
             "SELECT agent_id FROM agents WHERE name LIKE ?", (team_prefix,)).fetchall()
-        for r in rows:
-            home = Path.home() / ".modelweaver" / "agent_home" / str(r["agent_id"])
-            if home.is_dir():
-                import shutil
-                shutil.rmtree(home, ignore_errors=True)
-        log(f"  homes reset ({len(rows)} agents)")
+        ids = [r["agent_id"] for r in rows]
     finally:
         db.close()
+    try:
+        from services.agent_manager.service import AgentManager
+        mgr = AgentManager()
+        for aid in ids:
+            try:
+                mgr.kill(aid)
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"  stop agents ERREUR: {e}")
+    log(f"  {len(ids)} agents arrêtés")
+
+
+def recreate_team(team: str) -> None:
+    """Supprime et RECRÉE les agents de la team (homes propres).
+
+    Supprimer un agent BDD + son home, puis le re-booter via TeamManager →
+    entrée propre (variables, config, home). C'est la bonne façon de « reset » :
+    vider juste les fichiers laissait un agent RUNNING sans log."""
+    from modules.sql.agents_repo import AgentsDB
+    import shutil
+    db = AgentsDB()
+    try:
+        rows = db.conn.execute(
+            "SELECT agent_id, name FROM agents WHERE name LIKE ?",
+            (f"team:{team}%",)).fetchall()
+        for r in rows:
+            home = Path.home() / ".modelweaver" / "agent_home" / str(r["agent_id"])
+            shutil.rmtree(home, ignore_errors=True)
+            db.conn.execute("DELETE FROM agents WHERE agent_id = ?", (r["agent_id"],))
+        db.conn.commit()
+        log(f"  {len(rows)} agents supprimés (BDD + homes)")
+    finally:
+        db.close()
+    # re-boot la team (recrée les agents avec homes propres)
+    try:
+        from services.team_manager import TeamManager
+        mgr = TeamManager()
+        mgr.register(f"services/manifests/teams/{team}.team.yaml")
+        log(f"  team {team} recréée")
+    except Exception as e:
+        log(f"  recreate team ERREUR: {e}")
 
 
 def recovery(team: str, reason: str) -> None:
     log(f"RECOVERY ({reason}) :")
     team_prefix = f"team:{team}%"
+    # 1. ARRÊTER les agents AVANT tout (jamais de reset d'un agent actif)
+    stop_team_agents(team_prefix)
+    # 2. pause la team (le waker ne les réveille pas pendant la remise en état)
     pause_team(team)
-    # kill les threads résiduels via restart
-    restart_service("agent-manager")
-    time.sleep(2)
-    # purge agent_runtime orphelins + wait_for
+    # 3. purge runtime orphelins + wait_for
     from modules.sql.agents_repo import AgentsDB
     db = AgentsDB()
     try:
@@ -169,63 +206,104 @@ def recovery(team: str, reason: str) -> None:
     finally:
         db.close()
     purge_wait_for(team_prefix)
-    reset_agents_homes(team_prefix)
-    # restart api aussi (le pilote dev-chat y vit)
+    # 4. supprime + recrée les agents (homes propres)
+    recreate_team(team)
+    # 5. restart services pour repartir propre
+    restart_service("agent-manager")
     restart_service("api")
     time.sleep(3)
+    # 6. dé-pause (les agents recréés peuvent travailler)
     unpause_team(team)
 
 
 # ── Boucle principale ────────────────────────────────────────────────────
 
-def run_bench(timeout_s: int) -> dict:
-    """Lance bench_swarm_live, retourne son rapport."""
+def create_task() -> int:
+    """Crée une tâche de benchmark, retourne son id."""
+    r = subprocess.run([sys.executable, str(BENCH), "--create"],
+                       capture_output=True, text=True, timeout=60)
+    out = r.stdout or ""
+    for line in out.splitlines():
+        if "created task=" in line:
+            return int(line.split("task=")[1].strip())
+    log(f"  create_task échec: {out[-200:]}")
+    return -1
+
+
+def check_task(task_id: int) -> str:
+    """Statut d'une tâche : 'todo' | 'doing' | 'done' | 'absent'."""
+    r = subprocess.run([sys.executable, str(BENCH), "--status", str(task_id)],
+                       capture_output=True, text=True, timeout=60)
+    out = r.stdout or ""
+    for line in out.splitlines():
+        if "status=" in line:
+            return line.split("status=")[1].strip()
+    return "absent"
+
+
+def supervise_cycle(team: str, interval_s: int, stagnant_cycles: int) -> None:
+    """Crée UNE tâche, puis supervise toutes les `interval_s` secondes.
+
+    Ne relance PAS de benchmark : on laisse le swarm terminer. Recovery si la
+    tâche stagne (même statut pendant `stagnant_cycles` contrôles)."""
+    log("  création tâche…")
+    tid = create_task()
+    if tid < 0:
+        recovery(team, "création tâche échouée")
+        return
+    log(f"  tâche {tid} créée — supervision toutes les {interval_s}s")
+    last_status = "todo"
+    last_change = time.monotonic()
+    stale = 0
     try:
-        r = subprocess.run(
-            [sys.executable, str(BENCH), "--timeout", str(timeout_s)],
-            capture_output=True, text=True, timeout=timeout_s + 20)
-        out = r.stdout or ""
-        log(f"  bench stdout: {out.strip()[-200:]}")
-        if r.returncode == 0:
-            return {"status": "ok"}
-        if "ok_pick" in out:
-            return {"status": "ok_pick"}
-        if "timeout" in out:
-            return {"status": "timeout"}
-        return {"status": "error", "detail": out[-300:]}
-    except subprocess.TimeoutExpired:
-        return {"status": "timeout"}
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        while True:
+            time.sleep(interval_s)
+            st = check_task(tid)
+            log(f"  supervise #{tid}: {st}")
+            if st == "done":
+                log(f"  ✓ tâche {tid} TERMINÉE (done) — swarm a livré")
+                return
+            if st == "absent":
+                recovery(team, f"tâche {tid} disparue")
+                return
+            if st != last_status:
+                last_status = st
+                last_change = time.monotonic()
+                stale = 0
+                continue
+            # STAGNATION : seulement si la tâche est bloquée en 'doing' (le
+            # todo → doing est rapide, ~5s). Un 'doing' qui ne bouge pas =
+            # greedy coincé sur la finalisation → recovery.
+            if st == "doing":
+                stale += 1
+                if stale >= stagnant_cycles:
+                    log(f"  ✗ tâche {tid} bloquée en doing depuis "
+                        f"{stagnant_cycles}x{interval_s}s — recovery")
+                    recovery(team, f"stagnation {st}")
+                    return
+    except KeyboardInterrupt:
+        raise
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--cycles", type=int, default=0, help="0 = infini")
-    p.add_argument("--timeout", type=int, default=300)
-    p.add_argument("--sleep-between", type=int, default=30)
+    p.add_argument("--interval", type=int, default=300,
+                   help="secondes entre chaque contrôle (5 min)")
+    p.add_argument("--stagnant-cycles", type=int, default=3,
+                   help="nb de contrôles identiques avant recovery")
     p.add_argument("--team", default="llm-code")
     args = p.parse_args()
 
     log(f"auto_benchmark start — team={args.team} cycles={args.cycles or '∞'} "
-        f"timeout={args.timeout}s")
+        f"interval={args.interval}s stagnant={args.stagnant_cycles}")
     cycle = 0
     try:
         while args.cycles == 0 or cycle < args.cycles:
             cycle += 1
             log(f"── cycle {cycle} ──")
-            report = run_bench(args.timeout)
-            diag = diagnose(report)
-            log(f"  diagnostic: {diag} | report={report.get('status')}")
-
-            if diag == "ok":
-                log("  ✓ swarm fonctionne (pick/done)")
-            elif diag in ("bloque", "pas_lance"):
-                recovery(args.team, diag)
-            else:  # lent
-                log("  ~ swarm lent (activité mais pas d'aboutissement)")
-
-            time.sleep(args.sleep_between)
+            supervise_cycle(args.team, args.interval, args.stagnant_cycles)
+            time.sleep(args.interval)   # respiration entre cycles
     except KeyboardInterrupt:
         log("auto_benchmark arrêté (Ctrl-C)")
     log("auto_benchmark terminé")
