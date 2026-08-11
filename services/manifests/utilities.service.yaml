@@ -1,6 +1,6 @@
 name: utilities
 version: 0.1.0
-description: "Service utilitaire — expose les utilitaires de graphe (module agent_graph_utils) : graphe_utile/yaml_to_fsm, et (à venir) yaml_to_taskflow + actions de fold/visibilité. Logique pure, sans thème ni positions."
+description: "Service utilitaire — expose les utilitaires de graphe (module agent_graph_utils). Chaîne : yaml_simple → compile_yaml (inline self-contained) → yaml_to_fsm → yaml_to_taskflow. Logique pure, sans thème ni positions."
 parent: ""
 
 launch:
@@ -14,8 +14,23 @@ supervisor:
   restart: false
 
 entrypoints:
+  yaml-inline:
+    type: daemon-api
+    method: POST
+    path: utils/compile/yaml-inline
+    description: "Inline un yaml_simple (skill/agent/team) en document self-contained : déclarations catalogue remontées au plus haut niveau, intérieur résolu récursivement. params : data | yaml | name (+ kind)."
+  graph_fsm:
+    type: daemon-api
+    method: POST
+    path: utils/graph/fsm
+    description: "Graphe FSM hiérarchique d'un agent INLINE (inline auto si yaml_simple). params : data | yaml | name."
+  graph_taskflow:
+    type: daemon-api
+    method: POST
+    path: utils/graph/taskflow
+    description: "Pétri PLAT d'un agent INLINE, via le FSM. params : data | yaml | name (+ action/node pour fold/unfold)."
   yaml_to_fsm:
     type: daemon-api
     method: POST
     path: graphe_utile/yaml_to_fsm
-    description: "Agent YAML → graphe FSM hiérarchique (nœuds + arêtes, tags hérités). params : name | yaml | data."
+    description: "(rétro-compat) Agent YAML → graphe FSM hiérarchique. Délégué à utils/graph/fsm."

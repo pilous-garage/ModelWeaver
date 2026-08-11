@@ -21,3 +21,6 @@ from services.api.handlers import dev_chat
 from services.api.handlers import auth
 from services.api.handlers import windows_store
 from services.api.handlers import graphe_utile
+from services.api.handlers import utils
+from services.api.handlers import catalogue_local
+from services.api.handlers import openai_compat

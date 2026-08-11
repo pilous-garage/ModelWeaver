@@ -11,8 +11,9 @@ Usage:
     db.close()
 """
 
+import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -131,7 +132,7 @@ class WorkspaceRepository:
 
     def create(self, workspace_id: str, name: str, description: str = "",
                director: Optional[str] = None, git_shared: str = "") -> Dict[str, Any]:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         self.conn.execute("""
             INSERT INTO workspaces (workspace_id, name, description, director,
                                     git_shared, created_at, last_activity_at)
@@ -143,7 +144,7 @@ class WorkspaceRepository:
     def touch(self, workspace_id: str) -> None:
         self.conn.execute(
             "UPDATE workspaces SET last_activity_at = ? WHERE workspace_id = ?",
-            (datetime.utcnow().isoformat(), workspace_id))
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), workspace_id))
         self.conn.commit()
 
     def delete(self, workspace_id: str) -> None:
@@ -216,7 +217,7 @@ class TaskRepository:
                primordial: int = 0,
                deadline: str = "", estimated_minutes: int = 0,
                created_at_iso: str = None) -> Dict[str, Any]:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         # created_at au format SQLite (YYYY-MM-DD HH:MM:SS) pour que
         # strftime('%s') du score de priorité le parse (le format iso avec T
         # + microsecondes renvoie NULL). Une sous-tâche (split) hérite du
@@ -405,7 +406,7 @@ class TaskRepository:
         cur = self.conn.execute(
             "UPDATE tasks SET status = 'doing', assigned_to = ?, updated_at = ? "
             "WHERE task_id = ? AND workspace_id = ? AND status = 'todo'",
-            (assigned_to, datetime.utcnow().isoformat(),
+            (assigned_to, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
              row["task_id"], self.wid))
         self.conn.commit()
         return self.get(row["task_id"]) if cur.rowcount else None
@@ -419,7 +420,7 @@ class TaskRepository:
         if not sets:
             return self.get(task_id)
         sets.append("updated_at = ?")
-        vals.append(datetime.utcnow().isoformat())
+        vals.append(datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
         vals.extend([task_id, self.wid])
         self.conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -431,7 +432,7 @@ class TaskRepository:
         cur = self.conn.execute(
             "UPDATE tasks SET status = 'running', assigned_to = ?, updated_at = ? "
             "WHERE task_id = ? AND workspace_id = ? AND status = 'pending'",
-            (agent_name, datetime.utcnow().isoformat(), task_id, self.wid))
+            (agent_name, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), task_id, self.wid))
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -441,7 +442,7 @@ class TaskRepository:
             UPDATE tasks SET status = 'done', branch = ?, commit_hash = ?,
                             updated_at = ?
             WHERE task_id = ? AND workspace_id = ?
-        """, (branch, commit_hash, datetime.utcnow().isoformat(),
+        """, (branch, commit_hash, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
               task_id, self.wid))
         self.conn.commit()
         return self.get(task_id)
@@ -451,7 +452,7 @@ class TaskRepository:
                    assigned_to: str = "") -> Optional[Dict[str, Any]]:
         """Passe un token à un statut arbitraire (todo/doing/done/merged...)."""
         sets = ["status = ?", "updated_at = ?"]
-        vals = [status, datetime.utcnow().isoformat()]
+        vals = [status, datetime.now(timezone.utc).replace(tzinfo=None).isoformat()]
         if branch:
             sets.append("branch = ?")
             vals.append(branch)
@@ -524,7 +525,7 @@ class TaskRepository:
         if not sets:
             return self.get(task_id)
         sets.append("updated_at = ?")
-        vals.append(datetime.utcnow().isoformat())
+        vals.append(datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
         vals.extend([task_id, self.wid])
         self.conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -541,7 +542,7 @@ class TaskRepository:
             "UPDATE tasks SET status = 'todo', assigned_to = '', "
             "freedby = ?, updated_at = ? "
             "WHERE task_id = ? AND workspace_id = ?",
-            (freedby, datetime.utcnow().isoformat(), task_id, self.wid))
+            (freedby, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), task_id, self.wid))
         self.conn.commit()
         return self.get(task_id)
 
@@ -581,7 +582,7 @@ class IssueRepository:
     def create(self, title: str, description: str = "",
                priority: int = 0, parent_id: int = None,
                team_id: int = -1) -> Dict[str, Any]:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         cur = self.conn.execute("""
             INSERT INTO issues (workspace_id, title, description, priority,
                                 parent_id, team_id, created_at, updated_at)
@@ -599,7 +600,7 @@ class IssueRepository:
         if not sets:
             return self.get(issue_id)
         sets.append("updated_at = ?")
-        vals.append(datetime.utcnow().isoformat())
+        vals.append(datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
         vals.extend([issue_id, self.wid])
         self.conn.execute(
             f"UPDATE issues SET {', '.join(sets)} "
@@ -611,7 +612,7 @@ class IssueRepository:
         cur = self.conn.execute(
             "UPDATE issues SET status = 'analysing', assigned_to = ?, updated_at = ? "
             "WHERE issue_id = ? AND workspace_id = ? AND status = 'open'",
-            (agent_name, datetime.utcnow().isoformat(), issue_id, self.wid))
+            (agent_name, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), issue_id, self.wid))
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -664,7 +665,7 @@ class UsageFileRepository:
         self.wid = workspace_id
 
     def touch_read(self, path: str) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         self.conn.execute("""
             INSERT INTO usage_files (path, workspace_id, access_count,
                                      last_read_at)
@@ -676,7 +677,7 @@ class UsageFileRepository:
         self.conn.commit()
 
     def touch_write(self, path: str) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         self.conn.execute("""
             INSERT INTO usage_files (path, workspace_id, access_count,
                                      last_write_at)
@@ -858,3 +859,36 @@ class WorkspaceScope:
         self.issues = IssueRepository(conn, workspace_id)
         self.chat = ChatroomRepository(conn, workspace_id)
         self.usage = UsageFileRepository(conn, workspace_id)
+
+
+def chatroom_send_message(team_id=None, agent_id="", msg="",
+                          workspace_id="") -> Dict[str, Any]:
+    """(pont résolution runtime) Envoie un message à la chatroom.
+
+    workspace_id explicite si fourni ; sinon résolu via les variables de
+    l'agent (variables_json.workspace_id, défaut mw-dev-chat). team_id est
+    accepté pour compat (le workspace reste la clé de la chatroom)."""
+    try:
+        wid = workspace_id or ""
+        if not wid and agent_id:
+            try:
+                from modules.sql.agents_repo import AgentsDB
+                db = AgentsDB()
+                row = db.conn.execute(
+                    "SELECT variables_json FROM agents WHERE agent_id = ?",
+                    (int(str(agent_id).split("_")[-1]),)).fetchone()
+                db.close()
+                if row:
+                    wid = (json.loads(row["variables_json"] or "{}")
+                           .get("workspace_id", ""))
+            except Exception:
+                pass
+        wid = wid or "mw-dev-chat"
+        wdb = WorkspaceDB()
+        try:
+            scope = wdb.for_workspace(wid)
+            return scope.chat.post(int(agent_id), str(msg))
+        finally:
+            wdb.close()
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}

@@ -1,0 +1,76 @@
+name: llm-code
+version: 0.1.0
+description: >-
+  Team llm-code : le swarm exposé comme un modèle LLM (swarm-as-llm).
+  L'endpoint /v1/chat/completions branche cette team (workspace mw-llm-code) :
+  le pilote planifie/découpe, les greedy (analyse/code/test/review/merge)
+  exécutent. Voir docs/swarm_as_llm.md + route test-benchmark-auto.
+workspace_id: mw-llm-code
+topology: flat
+
+# Pilote (team_leader) : planifie + découpe en tâches workspace, surveille.
+# occupation noncontinue : il tourne à la demande (via swarm-as-llm), pas en
+# boucle greedy.
+director:
+  agent_name: chat-pilot
+  ref: chat-pilot
+  role: team_leader
+  occupation: noncontinue
+  resources:
+    llm: true
+  provider_ref: ""
+  model_ref: ""
+
+members:
+  # ── ANALYSTE / PLANIFICATEUR : découpe les demandes en tâches ──
+  - agent_name: analyst
+    ref: greedy-analyst
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: planner
+    ref: greedy-coordinateur
+    role: planificateur
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── CODEURS : produisent le code (difficulté variable) ──
+  - agent_name: coder-junior
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: coder-senior
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+
+  # ── TEST / REVIEW / MERGE : validations et intégration ──
+  - agent_name: tester
+    ref: greedy-tester
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: reviewer
+    ref: greedy-reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+  - agent_name: merger
+    ref: greedy-merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+
+resources:
+  budget_per_hour: 100
+  max_concurrent: 8
+  llm_quota_per_day: 1000

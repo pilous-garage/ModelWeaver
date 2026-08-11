@@ -29,11 +29,49 @@ def exec(inputs: dict, home: str) -> dict:
     agent_id = inputs.get("agent_id", "") or _agent_id_from_home(home)
     min_window = int(inputs.get("min_window", 0) or 0)
     min_score = float(inputs.get("min_score", 0) or 0)
+    # restrict_llm : allowlist de modèles → exclusions (tout le reste).
+    # exclusions explicites (exclude_models) ajoutées.
+    exclude_models = list(inputs.get("exclude_models") or [])
+    allow = inputs.get("restrict_llm") or []
+    if isinstance(allow, str):
+        allow = [m.strip() for m in allow.split(",") if m.strip()]
+    # Si non fourni dans inputs, relire depuis les variables de l'agent BDD
+    # (injectées par dev-chat / swarm-as-llm via _run_pilot).
+    if not exclude_models and not allow:
+        try:
+            from modules.sql.agents_repo import AgentsDB
+            import json as _json
+            _aid = _agent_id_from_home(home)
+            if _aid:
+                db = AgentsDB()
+                row = db.conn.execute(
+                    "SELECT variables_json FROM agents WHERE agent_id = ?",
+                    (int(_aid),)).fetchone()
+                db.close()
+                if row:
+                    _vars = _json.loads(row["variables_json"] or "{}")
+                    exclude_models = list(_vars.get("exclude_models") or [])
+                    allow = _vars.get("restrict_llm") or []
+                    if isinstance(allow, str):
+                        allow = [m.strip() for m in allow.split(",") if m.strip()]
+        except Exception:
+            pass
+    if allow:
+        try:
+            from modules.sql.catalogue_repo import CatalogueDB
+            cat = CatalogueDB()
+            all_models = [r["ref"] for r in cat.conn.execute(
+                "SELECT ref FROM provider_models").fetchall()]
+            exclude_models = list(set(exclude_models) |
+                                  (set(all_models) - set(allow)))
+        except Exception:
+            pass
 
     try:
         llm_mgr = LLMManager(CatalogueDB())
         llm = llm_mgr.assign_llm(use_case=use_case, agent_id=agent_id or None,
-                                 min_window=min_window)
+                                 min_window=min_window,
+                                 exclude_models=exclude_models or None)
     except Exception as e:
         return {"ok": False, "provider_ref": "", "model_ref": "",
                 "use_case": use_case, "error": f"assign_llm: {e}"}

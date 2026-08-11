@@ -794,6 +794,12 @@ class MWAPIHandler(BaseHTTPRequestHandler):
             return
         try:
             result = handler(params)
+            # Endpoint OpenAI-compatible : le payload /chat/completions est
+            # renvoyé BRUT (pas enveloppé dans {ok, route, result}) pour que
+            # les SDK de benchmark le parsent directement.
+            if route == "chat/completions":
+                self._send(result.get("status") if False else 200, result)
+                return
             self._send(200, {"ok": True, "route": route, "result": result})
         except Exception as e:
             import traceback

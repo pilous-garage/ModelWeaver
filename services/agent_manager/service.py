@@ -253,11 +253,16 @@ class Agent:
 
         # Créer l'entrée runtime (thread actif)
         thread_id = f"agent:{self.name}:{int(time.time())}"
+        # Le propriétaire / la team survivent à la déshydratation (colonnes
+        # persistées dans `agents`) ; on les reflète dans agent_runtime.
+        owner = row["id_proprietaire"] if "id_proprietaire" in row.keys() else None
+        team = row["id_team"] if "id_team" in row.keys() else None
         db.conn.execute("""
             INSERT INTO agent_runtime
-                (agent_id, thread_id, pid, heartbeat_at, started_at, current_step)
-            VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated')
-        """, (agent_id, thread_id, os.getpid()))
+                (agent_id, thread_id, pid, heartbeat_at, started_at, current_step,
+                 id_proprietaire, id_team)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated', ?, ?)
+        """, (agent_id, thread_id, os.getpid(), owner, team))
         db.conn.commit()
 
         # Initialiser le shell interne de l'agent
@@ -1241,27 +1246,32 @@ class AgentManager:
             return False
 
     def _reclaim_stale_tasks(self) -> int:
-        """Remet les tasks 'running' à 'pending' si plus aucun agent n'est en
-        cours d'exécution légitime.
+        """Remet les tasks 'doing'/'running' à 'todo' si plus aucun agent n'est
+        en cours d'exécution légitime.
 
         Un agent "légitimement actif" = présent dans agent_runtime ET de statut
         RUNNING/IDLE (les reliquats de runs morts ont un statut INIT/None après
-        redémarrage). Si aucun agent ne tourne, toutes les tasks 'running' sont
-        orphelines → on les libère pour qu'un agent les reprenne.
+        redémarrage). Si aucun agent ne tourne, toutes les tasks 'doing'/
+        'running' sont orphelines → on les libère pour qu'un agent les reprenne
+        (sinon le waker/amorce ne voit que des 'todo' et ne réveille personne).
         """
         try:
-            n_active = self.db.conn.execute("""
+            n_active_runtime = self.db.conn.execute("""
                 SELECT COUNT(*) FROM agent_runtime r
                 JOIN agents a ON a.agent_id = r.agent_id
                 WHERE a.status IN ('RUNNING', 'IDLE')
             """).fetchone()[0]
+            # Les greedy tournent en THREADS (enregistrés dans _LIVE_AGENT_THREADS,
+            # parfois pas encore dans agent_runtime) → ils comptent comme actifs.
+            n_active = max(n_active_runtime, _live_agent_threads_count())
             if n_active > 0:
                 return 0
             from modules.sql.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             n = wdb.conn.execute(
-                "UPDATE tasks SET status = 'pending', updated_at = datetime('now') "
-                "WHERE status = 'running'").rowcount
+                "UPDATE tasks SET status = 'todo', assigned_to = '', "
+                "updated_at = datetime('now') "
+                "WHERE status IN ('doing', 'running')").rowcount
             wdb.conn.commit()
             wdb.close()
             return n or 0
@@ -1947,6 +1957,8 @@ class AgentManager:
         config: Optional[Dict[str, Any]] = None,
         provider_ref: str = "", model_ref: str = "",
         keep_sleeping: bool = True,
+        id_proprietaire: Optional[str] = None,
+        id_team: Optional[int] = None,
     ) -> Dict[str, Any]:
         if occupation not in ("continue", "noncontinue", "disparate"):
             return {"status": "error", "error": f"occupation invalide: {occupation}"}
@@ -1986,10 +1998,12 @@ class AgentManager:
         try:
             self.db.conn.execute("""
                 INSERT INTO agents (name, ref, role_type, occupation, config_json,
-                                    resources_json, variables_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    resources_json, variables_json,
+                                    id_proprietaire, id_team)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (name, ref, role, occupation,
-                  json.dumps(config or {}), json.dumps(resources or {}), "{}"))
+                  json.dumps(config or {}), json.dumps(resources or {}), "{}",
+                  id_proprietaire, id_team))
             self.db.conn.commit()
             agent_id = self.db.conn.execute(
                 "SELECT agent_id FROM agents WHERE name = ?", (name,)
@@ -1997,6 +2011,13 @@ class AgentManager:
             # V0.6.8 : espace disque proprio
             from AgentFrameWork.agent_storage import AgentStorage
             AgentStorage(agent_id, self.db.conn).ensure()
+            # Autorisations par défaut : privilèges member (level 1000) dans
+            # le catalogue local (home + workspace). Best-effort.
+            try:
+                from services.catalogue_privileges_defaults import grant_agent
+                grant_agent(agent_id, team_id=id_team)
+            except Exception:
+                pass
         except Exception as e:
             return {"status": "error", "error": f"création agent: {e}"}
 

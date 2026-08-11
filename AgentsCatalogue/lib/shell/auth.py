@@ -306,6 +306,15 @@ class ShellAuth:
                 return resolved
             except ValueError:
                 continue
+        # Hors VFS : un privilège du catalogue (chemin autorisé) peut lever
+        # la restriction — résolution par (agent_id|-1) × (team|-1), level max.
+        try:
+            if self.check_privilege_path(resolved, op="read",
+                                         agent_id=self.agent_id,
+                                         team_id=self._team_int()):
+                return resolved
+        except Exception:
+            pass
         # Hors VFS : un grant accordé peut lever la restriction.
         try:
             from .auth_request import request_handler
@@ -317,11 +326,53 @@ class ShellAuth:
             f"chemin '{resolved}' hors du VFS autorisé : {self.allowed_roots}"
         )
 
+    def _team_int(self) -> Optional[int]:
+        try:
+            return int(self.team_id) if self.team_id is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def is_within_home(self, target: Path) -> bool:
         try:
             target.resolve().relative_to(self.home_root)
             return True
         except ValueError:
+            return False
+
+    # ── résolution des privilèges via le catalogue_local ──────────────
+
+    def _catalogue_privileges(self):
+        """Accès au résolveur de privilèges du catalogue local (best-effort)."""
+        try:
+            from services.api.handlers.catalogue_local import _get
+            return _get()
+        except Exception:
+            return None
+
+    def check_privilege_path(self, target: Path, op: str = "read",
+                             agent_id: Optional[str] = None,
+                             team_id: Optional[int] = None) -> bool:
+        """Vrai si un privilège du catalogue autorise `op` sur `target`.
+
+        Niveau demandé = agent_with_root (les agents passent par le mini_shell
+        avec éventuellement root_privilege). Résolution : lignes
+        (agent_id|-1) × (team|-1) qui matchent le chemin, level max,
+        intersection. MAX_UINT32 = toujours.
+
+        Le rôle shell détermine le niveau : member → 'agent',
+        leader/owner → 'agent_with_root' (privilèges team_leader)."""
+        db = self._catalogue_privileges()
+        if db is None:
+            return False
+        path_str = str(target.resolve())
+        # Niveau privilège demandé selon le rôle shell.
+        level = "agent_with_root" if self.role in ("leader", "owner") else "agent"
+        try:
+            return db.check_privilege(
+                path_str, level=level, op=op, kind="path",
+                agent_id=int(agent_id) if agent_id else -1,
+                team=int(team_id) if team_id else -1)
+        except Exception:
             return False
 
     # ── command whitelist (backward-compatible API) ──────────────────

@@ -34,6 +34,54 @@ class SkillInputError(ValueError):
     pass
 
 
+class SkillProxy:
+    """Référence runtime à un skill du catalogue (objet-foncteur).
+
+    Permet d'avoir une variable OBJET dans un foncteur :
+        this.sort = catalogue.utils.bubble_sort   # SkillProxy
+        this.sort([3, 1, 2])                      # → call_skill main
+        this.sort.second(x)                       # → entrypoint second
+
+    L'appel avec une liste/objet non-dict est converti en
+    inputs = {"value": <arg>} (entrée unique par défaut) ; un dict est passé
+    tel quel. Le proxy se comporte comme un callable, pas une fonction simple.
+    """
+
+    def __init__(self, ref: str, agent_id: str = ""):
+        self._ref = ref
+        self._agent_id = agent_id
+
+    def __call__(self, *args, **kwargs):
+        entrypoint = kwargs.pop("entrypoint", "main")
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            inputs = dict(args[0])
+        else:
+            inputs = dict(kwargs)
+            if args:
+                inputs["value"] = args[0] if len(args) == 1 else list(args)
+        return call_skill(self._ref, inputs, "/tmp",
+                          agent_id=self._agent_id, entrypoint=entrypoint)
+
+    def __getattr__(self, entrypoint: str):
+        if entrypoint.startswith("_"):
+            raise AttributeError(entrypoint)
+        return _ProxyEntrypoint(self, entrypoint)
+
+    def __repr__(self):
+        return f"<skill-proxy:{self._ref}>"
+
+
+class _ProxyEntrypoint:
+    """f.second(x) → appelle l'entrypoint `second` du skill référencé."""
+
+    def __init__(self, proxy: "SkillProxy", entrypoint: str):
+        self._proxy = proxy
+        self._entrypoint = entrypoint
+
+    def __call__(self, *args, **kwargs):
+        return self._proxy(*args, entrypoint=self._entrypoint, **kwargs)
+
+
 class SkillManager:
     def __init__(self, home_root: str = "/tmp"):
         self.home_root = home_root
@@ -41,6 +89,12 @@ class SkillManager:
         self._categories: Dict[str, List[str]] = {}
         self._lock = threading.Lock()
         self._loaded = False
+        # Instances de foncteurs vivantes : {(agent_id, skill_ref) -> instance}
+        # L'état de chaque instance vit en MÉMOIRE (thread) ; c'est le FSM qui
+        # le persiste (save_step / instant_mem JSON) à chaque step.
+        self._functors: Dict[Tuple[str, str], Any] = {}
+        self._functor_classes: Dict[str, Any] = {}   # skill_ref -> classe compilée
+        self._functor_ns: Dict[str, Dict[str, Any]] = {}  # skill_ref -> ns exec
 
     def load_all(self) -> None:
         with self._lock:
@@ -224,9 +278,82 @@ class SkillManager:
                 if oc and "capture" in step:
                     step["capture"][out_name] = cap_var
 
+    def _get_functor_class(self, fn: str, inline_code: str) -> Optional[type]:
+        """Compile et cache la CLASSE foncteur d'un skill (clé = skill_ref).
+
+        La classe est compilée une seule fois ; les INSTANCES sont créées par
+        _get_functor_instance (une par agent_id). Un skill inline peut définir :
+          - une fonction `run(inputs, home)` (ancien contrat, sans état) ;
+          - une classe `Skill` (ou `skill`) avec entrypoints : `main` (f()),
+            et tout autre entrypoint (f.second(), f.run_shell()...).
+        """
+        if fn in self._functor_classes:
+            return self._functor_classes[fn]
+        from services.catalogue_runtime import build_namespace
+        ns: Dict[str, Any] = build_namespace()   # injecte `catalogue`
+        try:
+            exec(inline_code, ns)
+        except Exception as e:
+            raise SkillInputError(f"skill '{fn}' : erreur compilation code inline : {e}")
+        cls = None
+        for name in ("Skill", "skill", "Functor", "Foncteur"):
+            cand = ns.get(name)
+            if isinstance(cand, type):
+                cls = cand
+                break
+        self._functor_classes[fn] = cls
+        self._functor_ns[fn] = ns
+        return cls
+
+    def _get_functor_instance(self, fn: str, cls: type, agent_id: str,
+                              home: str) -> Any:
+        """Retourne l'instance vivante du foncteur pour (agent_id, skill_ref).
+
+        L'état est conservé en mémoire entre les appels (variables `self.*`).
+        Le FSM le persiste à chaque step (save_step / instant_mem JSON)."""
+        key = (str(agent_id), fn)
+        inst = self._functors.get(key)
+        if inst is None:
+            # Rebinde `catalogue` dans les globales de la classe (résolution
+            # runtime par agent : self.sort = catalogue.utils.bubble_sort).
+            ns = self._functor_ns.get(fn)
+            if ns is not None:
+                from services.catalogue_runtime import (
+                    make_catalogue, call_skill as _cs,
+                )
+                ns["catalogue"] = make_catalogue(agent_id=str(agent_id))
+                ns["call_skill"] = _cs
+                # team/daemon/eval_path — objets racines par agent.
+                try:
+                    from services.catalogue_objects import build_resolution_namespace
+                    rns = build_resolution_namespace(
+                        int(agent_id) if str(agent_id).isdigit() else None)
+                    ns.update(rns)
+                except Exception:
+                    pass
+            try:
+                inst = cls()   # __init__(self)
+            except TypeError:
+                inst = cls.__new__(cls)
+            self._functors[key] = inst
+        return inst
+
     def call(self, fn: str, inputs: Dict[str, Any],
-             home_root: Optional[str] = None) -> Dict[str, Any]:
+             home_root: Optional[str] = None,
+             agent_id: str = "",
+             entrypoint: str = "main") -> Dict[str, Any]:
         spec = self.get(fn)
+        return self.call_spec(spec, inputs, home_root=home_root,
+                              agent_id=agent_id, entrypoint=entrypoint)
+
+    def call_spec(self, spec: Dict[str, Any], inputs: Dict[str, Any],
+                  home_root: Optional[str] = None,
+                  agent_id: str = "",
+                  entrypoint: str = "main") -> Dict[str, Any]:
+        """Exécute une définition de skill (spec dict) — y compris une
+        SUB-SKILL inline (définie au plus haut niveau de l'agent), sans
+        passer par le catalogue de fichiers."""
+        fn = spec.get("name") or "?"
         impl = spec.get("implementation", {}) or {}
         impl_type = impl.get("type", "")
         func_name = impl.get("function", "")
@@ -235,14 +362,25 @@ class SkillManager:
         home = home_root or self.home_root
 
         # 1. Code inline dans le YAML (sandboxé par l'agent hôte) :
-        #    le YAML fournit une fonction `run(inputs, home) -> dict`.
+        #    fonction `run(inputs, home)` (ancien contrat) OU classe foncteur
+        #    (entrypoints main/second/... + état via self.*).
         if inline_code and impl_type == "python":
             try:
+                cls = self._get_functor_class(fn, inline_code)
+                if cls is not None:
+                    inst = self._get_functor_instance(fn, cls, agent_id, home)
+                    entry = getattr(inst, entrypoint, None)
+                    if not callable(entry):
+                        raise SkillInputError(
+                            f"skill '{fn}' : entrypoint '{entrypoint}' introuvable "
+                            f"sur le foncteur (disponibles: {[m for m in dir(inst) if not m.startswith('_')]})")
+                    return entry(inputs, home)
+                # Fonction simple (contrat historique)
                 ns: Dict[str, Any] = {}
                 exec(inline_code, ns)
                 run_fn = ns.get("run")
                 if not callable(run_fn):
-                    raise SkillInputError(f"skill '{fn}' : fonction `run` introuvable dans le code inline")
+                    raise SkillInputError(f"skill '{fn}' : ni classe foncteur ni fonction `run` dans le code inline")
                 return run_fn(inputs, home)
             except SkillInputError:
                 raise
@@ -530,8 +668,65 @@ def expand_workflow(workflow: dict) -> dict:
     return _get().expand(workflow)
 
 
-def call_skill(fn: str, inputs: dict, home: str = "/tmp") -> dict:
-    return _get(home).call(fn, inputs)
+def call_skill(fn: str, inputs: dict, home: str = "/tmp",
+               agent_id: str = "", entrypoint: str = "main") -> dict:
+    return _get(home).call(fn, inputs, agent_id=agent_id, entrypoint=entrypoint)
+
+
+def call_skill_spec(spec: dict, inputs: dict, home: str = "/tmp",
+                    agent_id: str = "", entrypoint: str = "main") -> dict:
+    """Exécute une SUB-SKILL inline (spec dict, sans passer par le catalogue)."""
+    return _get(home).call_spec(spec, inputs, home_root=home,
+                                agent_id=agent_id, entrypoint=entrypoint)
+
+
+def functor_state(agent_id: str, fn: str) -> dict:
+    """État actuel (en mémoire) d'un foncteur → dict JSON-sérialisable.
+
+    Retourne les attributs `self.*` de l'instance vivante. Vides si le
+    foncteur n'a pas encore été instancié. Le FSM persiste cet état à chaque
+    step (save_step / instant_mem)."""
+    mgr = _get()
+    key = (str(agent_id), fn)
+    inst = mgr._functors.get(key)
+    if inst is None:
+        return {}
+    return dict(getattr(inst, "__dict__", {}))
+
+
+def functor_restore_state(agent_id: str, fn: str, state: dict) -> None:
+    """Restaure l'état d'un foncteur au démarrage (hydratation instant_mem).
+
+    Crée l'instance si nécessaire puis injecte les attributs sauvegardés."""
+    mgr = _get()
+    key = (str(agent_id), fn)
+    if key not in mgr._functors:
+        # force l'instance (défaut) pour pouvoir injecter l'état
+        try:
+            spec = mgr.get(fn)
+            impl = spec.get("implementation", {}) or {}
+            code = impl.get("code", "")
+            if code:
+                cls = mgr._get_functor_class(fn, code)
+                if cls is not None:
+                    inst = mgr._get_functor_instance(fn, cls, str(agent_id), "/tmp")
+                    mgr._functors[key] = inst
+        except Exception:
+            pass
+    inst = mgr._functors.get(key)
+    if inst is not None:
+        for k, v in (state or {}).items():
+            setattr(inst, k, v)
+
+
+def functor_state_all(agent_id: str) -> dict:
+    """État de TOUS les foncteurs d'un agent → {skill_ref: {attr: val}}."""
+    mgr = _get()
+    out = {}
+    for (aid, fn), inst in mgr._functors.items():
+        if aid == str(agent_id):
+            out[fn] = dict(getattr(inst, "__dict__", {}))
+    return out
 
 
 def list_skills() -> List[dict]:
