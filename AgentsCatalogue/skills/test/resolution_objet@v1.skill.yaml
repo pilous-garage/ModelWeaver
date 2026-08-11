@@ -1,0 +1,14 @@
+name: test/resolution_objet@v1
+category: test
+description: >-
+  Skill foncteur qui utilise le langage de résolution typé depuis Python :
+  daemon.info(), eval_path("team.chatroom.read()"), et team.* via eval_path.
+implementation:
+  type: python
+  code: |
+    class Skill:
+        def main(self, inputs, home):
+            info = daemon.info()
+            chat = eval_path("team.chatroom.read()")
+            return {"status": "ok", "daemon_status": info.get("status"),
+                    "chat": chat, "ok": True}

@@ -1,0 +1,54 @@
+name: test/base@v1
+role: test
+namespace: test/atelier
+description: >-
+  Agent de base (héritage) : définit les méthodes communes dont les
+  descendants héritent par `extends`. Le descendant peut override certaines
+  méthodes (langage OO : héritage simple, public, override).
+
+methods:
+  analyse:
+    description: Analyse le travail demandé (implémentation de BASE).
+    inputs:
+      demande:
+        type: string
+        required: true
+    outputs:
+      plan:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            demande = inputs.get("demande", "")
+            return {"plan": f"base-plan({demande})", "ok": True}
+  hello:
+    description: Renvoie un message d'accueil (hérité tel quel).
+    inputs:
+      nom:
+        type: string
+        required: true
+    outputs:
+      message:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            nom = inputs.get("nom", "monde")
+            return {"message": f"bonjour {nom}", "ok": True}
+
+entrypoints:
+  main:
+    steps:
+    - id: bonjour
+      type: call
+      fn: test/methode_hello@v1
+      inputs:
+        nom: "{{request}}"
+      capture:
+        message: message
+      next: fin
+    - id: fin
+      type: end
+      status: SUCCESS

@@ -1,0 +1,24 @@
+name: test/verifier_syntaxe@v1
+category: test
+description: Vérifie la syntaxe Python d'un snippet via compile() (pur Python).
+inputs:
+  snippet:
+    type: string
+    required: true
+outputs:
+  valide:
+    type: boolean
+  erreur:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        snippet = inputs.get("snippet", "")
+        try:
+            compile(snippet, "<test>", "exec")
+            return {"valide": True, "erreur": "", "ok": True}
+        except SyntaxError as e:
+            # valide=false est un RÉSULTAT légitime (pas une erreur d'exécution) :
+            # pas de exit_code != 0, sinon le FSM le traite comme un échec.
+            return {"valide": False, "erreur": str(e), "ok": True}

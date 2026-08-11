@@ -1,0 +1,27 @@
+name: test/compteur@v1
+category: test
+description: >-
+  Skill FONCTEUR avec état : `main` incrémente un compteur (f() == f.main()),
+  `second` lit le compteur. L'état (self.*) vit en mémoire, scoped par agent.
+inputs:
+  pas:
+    type: integer
+    required: false
+outputs:
+  compteur:
+    type: integer
+  entrypoint:
+    type: string
+implementation:
+  type: python
+  code: |
+    class Skill:
+        def __init__(self):
+            self.compteur = 0
+
+        def main(self, inputs, home):
+            self.compteur += int(inputs.get("pas", 1))
+            return {"compteur": self.compteur, "entrypoint": "main", "ok": True}
+
+        def second(self, inputs, home):
+            return {"compteur": self.compteur, "entrypoint": "second", "ok": True}

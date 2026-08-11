@@ -1,0 +1,28 @@
+name: test/forge@v1
+category: test
+description: >-
+  Skill foncteur qui stocke un AUTRE foncteur en variable-objet (self.sort =
+  catalogue.utils.bubble_sort) puis l'appelle. Prouve qu'un skill n'est pas
+  une fonction mais un objet-foncteur (variables = objets).
+inputs:
+  items:
+    type: array
+    required: true
+outputs:
+  triee:
+    type: array
+  compteur:
+    type: integer
+implementation:
+  type: python
+  code: |
+    class Skill:
+        def __init__(self):
+            # Variable OBJET : un autre foncteur du catalogue.
+            self.sort = catalogue.utils.bubble_sort
+            self.appels = 0
+
+        def main(self, inputs, home):
+            self.appels += 1
+            items = list(inputs.get("items") or [])
+            return self.sort(items)

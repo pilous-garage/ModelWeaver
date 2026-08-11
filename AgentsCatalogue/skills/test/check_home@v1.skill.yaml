@@ -1,0 +1,21 @@
+name: test/check_home@v1
+category: test
+description: Vérifie que le home existe et est accessible (pur Python).
+inputs:
+  home:
+    type: string
+    required: true
+outputs:
+  ok:
+    type: boolean
+  message:
+    type: string
+implementation:
+  type: python
+  code: |
+    import os
+
+    def run(inputs, home):
+        h = inputs.get("home") or home or "/tmp"
+        ok = os.path.isdir(h)
+        return {"ok": ok, "message": f"home={h} exist={ok}", "exit_code": 0 if ok else 1}

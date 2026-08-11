@@ -1,0 +1,6 @@
+# Dépendances des benchmarks du swarm (installées dans .venv-bench).
+# Frameworks « plug & play » compatibles endpoint OpenAI (voir swarm_as_llm).
+#
+# Installation : uv pip install -r benchmarks/requirements.txt
+inspect-ai>=0.3
+openai>=2.0

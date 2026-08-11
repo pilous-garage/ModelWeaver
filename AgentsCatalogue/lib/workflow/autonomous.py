@@ -549,6 +549,23 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
         pass
     from services.skill_manager import call_skill
 
+    # ── Troncature des résultats d'outils ─────────────────────────────────
+    # Un résultat d'outil trop gros (ex. task_list avec des centaines de
+    # tâches) accumulé dans l'historique LLM fait exploser le contexte
+    # (« maximum context length is … however you requested … »). On borne
+    # chaque résultat à TOOL_RESULT_MAX chars, en conservant la fin (souvent
+    # la plus informative). Les petits résultats passent intacts.
+    TOOL_RESULT_MAX = 3000
+
+    def _tool_result_text(result) -> str:
+        try:
+            text = json.dumps(result, default=str)
+        except Exception:
+            text = str(result)
+        if len(text) <= TOOL_RESULT_MAX:
+            return text
+        return "[…truncé…] " + text[-TOOL_RESULT_MAX:]
+
     # Initialiser un shell pour le home (nécessaire pour les skills shell/exec)
     from services.agent_shell_manager import agent_shell_manager
     agent_shell_manager.init()
@@ -1221,7 +1238,7 @@ def _chat_with_tools(request: str, context: str, tools: List[Dict],
                 return signals
 
             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                             "name": fn_name, "content": json.dumps(tool_result, default=str)})
+                             "name": fn_name, "content": _tool_result_text(tool_result)})
 
             finish_signal = {"signal": "tool_finish", "tool": fn_name, "stdout": tool_result.get("stdout", ""), "stderr": tool_result.get("stderr", ""), "exit_code": tool_result.get("exit_code", 1)}
             signals.append(finish_signal)

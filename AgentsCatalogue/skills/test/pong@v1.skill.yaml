@@ -1,0 +1,16 @@
+name: test/pong@v1
+category: test
+description: Répond pong:<msg> (entrypoint ping).
+inputs:
+  msg:
+    type: string
+    required: true
+outputs:
+  reponse:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        msg = inputs.get("msg", "")
+        return {"reponse": f"pong:{msg}", "ok": True, "exit_code": 0}

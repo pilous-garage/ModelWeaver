@@ -1,0 +1,16 @@
+name: test/methode_analyse@v1
+category: test
+description: Raccourci exécutable vers la méthode `analyse` (héritage+override).
+inputs:
+  demande:
+    type: string
+    required: true
+outputs:
+  plan:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        demande = inputs.get("demande", "")
+        return {"plan": f"plan({demande})", "ok": True, "exit_code": 0}

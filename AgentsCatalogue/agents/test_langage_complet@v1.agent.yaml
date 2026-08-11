@@ -1,0 +1,260 @@
+name: test/langage_complet@v1
+role: test
+namespace: test/atelier
+description: >-
+  Agent de TEST qui exerce TOUTES les features du langage inline :
+    - namespace (test/atelier)
+    - héritage (extends) + overrides (methods)
+    - sub-agents (thread enfant, home partagé, 2 files request/respond)
+      avec LLM propre ou hérité du propriétaire
+    - sub-skills (skills définies au plus haut niveau de l'inline)
+    - entrypoints multiples + loops + switch + on_error
+  Utilisable SANS LLM : toutes les skills sont des implémentations inline
+  pures Python (pas d'appel réseau). Vérifie qu'on obtient un log FSM
+  cohérent (steps, transitions, capture).
+
+extends: test/base@v1
+
+methods:
+  # Override d'une méthode héritée (test/base@v1.analyse) : le descendant
+  # précise son implémentation. Les autres méthodes héritées restent.
+  analyse:
+    description: Analyse le travail demandé et le décompose.
+    inputs:
+      demande:
+        type: string
+        required: true
+    outputs:
+      plan:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            demande = inputs.get("demande", "")
+            return {"plan": f"plan({demande})", "ok": True}
+
+sub_agents:
+  # Sub-agent avec SON PROPRE LLM (léger/rapide) : réconcilie la syntaxe.
+  - name: test/reconcilieur@v1
+    namespace: test/atelier/tools
+    description: Vérifie la syntaxe d'un snippet puis le réconcilie.
+    provider_ref: "fast/lite"    # son propre LLM (léger et rapide)
+    model_ref: "reconcile-1b"
+    methods:
+      verifier:
+        description: Vérifie la syntaxe d'un snippet Python.
+        inputs:
+          snippet:
+            type: string
+            required: true
+        outputs:
+          valide:
+            type: boolean
+        implementation:
+          type: python
+          code: |
+            def run(inputs, home):
+                snippet = inputs.get("snippet", "")
+                try:
+                    compile(snippet, "<test>", "exec")
+                    return {"valide": True}
+                except SyntaxError:
+                    return {"valide": False}
+      reconcilier:
+        description: Réconcilie la syntaxe (utilise SON LLM).
+        inputs:
+          snippet:
+            type: string
+            required: true
+        outputs:
+          corrige:
+            type: string
+        implementation:
+          type: python
+          code: |
+            def run(inputs, home):
+                snippet = inputs.get("snippet", "")
+                if snippet.count("(") != snippet.count(")"):
+                    snippet = snippet + ")"
+                return {"corrige": snippet, "ok": True}
+    entrypoints:
+      main:
+        steps:
+        - id: recv
+          type: sub_await_request
+          mode: blocking
+          capture:
+            message: snippet
+          next: verifier
+        - id: verifier
+          type: call
+          fn: test/verifier_syntaxe@v1
+          inputs:
+            snippet: "{{snippet}}"
+          capture:
+            valide: valide
+          next: switch_syntaxe
+        - id: switch_syntaxe
+          type: switch
+          variable: valide
+          conditions:
+          - operator: "=="
+            value: "True"
+            next: repondre
+          - operator: "=="
+            value: "False"
+            next: reconcilier
+          default: repondre
+        - id: reconcilier
+          type: llm_call
+          provider_ref: "fast/lite"     # SON propre LLM
+          model_ref: "reconcile-1b"
+          system_prompt: "Corrige la syntaxe Python : {{snippet}}"
+          output_capture: _corrige
+          next: repondre
+        - id: repondre
+          type: set_variable
+          name: reponse
+          value: "{{valide}}"
+          next: repondre_reel
+        - id: repondre_reel
+          type: sub_respond
+          data: "{{reponse}}"
+          mode: blocking
+          next: end
+        - id: end
+          type: end
+          status: SUCCESS
+
+  # Sub-agent SANS LLM déclaré → hérite du LLM de son propriétaire.
+  - name: test/verificateur@v1
+    namespace: test/atelier/tools
+    description: Vérificateur binaire simple (aucun LLM) — hérite du parent.
+    entrypoints:
+      main:
+        steps:
+        - id: recv
+          type: sub_await_request
+          mode: blocking
+          capture:
+            message: valeur
+          next: double
+        - id: double
+          type: call
+          fn: test/double@v1
+          inputs:
+            valeur: "{{valeur}}"
+          capture:
+            doubl: doubl
+          next: repondre
+        - id: repondre
+          type: sub_respond
+          data: "{{doubl}}"
+          mode: blocking
+          next: end
+        - id: end
+          type: end
+          status: SUCCESS
+
+entrypoints:
+  main:
+    steps:
+    - id: start
+      type: set_variable
+      name: accueil
+      value: "démarrage atelier {{namespace}}"
+      next: verifier_base
+    - id: verifier_base
+      type: call
+      fn: test/check_home@v1
+      inputs:
+        home: "{{home}}"
+      capture:
+        ok: home_ok
+      on_error: echec
+      next: demander
+    - id: demander
+      type: set_variable
+      name: snippet
+      value: "def foo():\n    pass"
+      next: deleguer
+    - id: deleguer
+      type: sub_agent
+      agent: test/reconcilieur@v1
+      request: "{{snippet}}"
+      request_mode: blocking
+      respond_mode: blocking
+      timeout: 15
+      capture:
+        result: verdict_reconcilieur
+      on_error: echec
+      next: verifier_herite
+    - id: verifier_herite
+      type: sub_agent
+      agent: test/verificateur@v1
+      request: "{{accueil}}"
+      request_mode: non_blocking
+      respond_mode: blocking
+      timeout: 10
+      capture:
+        result: verdict_verificateur
+      on_error: echec
+      next: analyse
+    - id: analyse
+      type: call
+      fn: test/methode_analyse@v1
+      inputs:
+        demande: "{{snippet}}"
+      capture:
+        plan: plan
+      next: boucle
+    - id: boucle
+      type: for
+      variable: i
+      start: 0
+      end: 3
+      step: 1
+      body:
+        steps:
+        - id: doublon
+          type: call
+          fn: test/double@v1
+          inputs:
+            valeur: "{{i}}"
+          capture:
+            doubl: doubl
+          next: doublon_suiv
+        - id: doublon_suiv
+          type: continue
+      next: condition
+    - id: condition
+      type: if
+      condition:
+        variable: home_ok
+        operator: "=="
+        value: "True"
+      body:
+        steps:
+        - id: succes
+          type: end
+          status: SUCCESS
+      next: echec
+    - id: echec
+      type: end
+      status: FAILED
+
+  # Second entrypoint : peut être appelé directement ou par un autre agent.
+  ping:
+    steps:
+    - id: pong
+      type: call
+      fn: test/pong@v1
+      inputs:
+        msg: "{{request}}"
+      capture:
+        reponse: reponse
+      next: fin_ping
+    - id: fin_ping
+      type: end
+      status: SUCCESS

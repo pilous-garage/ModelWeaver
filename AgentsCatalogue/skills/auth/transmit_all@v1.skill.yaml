@@ -1,0 +1,41 @@
+name: auth/transmit_all@v1
+category: auth
+description: >-
+  Skill d'AUTORISATION : TRANSmet une demande au niveau supérieur de la
+  cascade (membre → team_leader → humain). Si le décideur courant ne peut pas
+  approuver (bornage par la matrice de délégation) ou choisit de ne pas
+  trancher, la demande est escaladée.
+
+  usage :
+    - inputs.request_id : id de la demande auth_requests.
+    - inputs.agent_id   : l'agent demandeur.
+    - inputs.to_level   : 'leader' (défaut) | 'human' — niveau cible.
+outputs:
+  ok:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        request_id = inputs.get("request_id", "")
+        to_level = inputs.get("to_level", "leader")
+        try:
+            from AgentsCatalogue.lib.shell.auth_request import request_handler
+            req = None
+            if request_id in getattr(request_handler, "_requests", {}):
+                req = request_handler._requests[request_id]
+            if req is None:
+                return {"ok": False, "error": f"demande {request_id} introuvable"}
+            # escalade : passe en file d'attente du niveau supérieur
+            if to_level == "human":
+                req.approver_level = "human"
+                request_handler._pending_user_list.append(request_id)
+            else:
+                req.approver_level = "leader"
+                request_handler._pending_leader_list.append(request_id)
+            request_handler._persist(req)
+            return {"ok": True, "request_id": request_id, "to_level": to_level}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}

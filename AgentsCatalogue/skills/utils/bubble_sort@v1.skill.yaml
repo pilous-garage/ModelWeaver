@@ -1,0 +1,22 @@
+name: utils/bubble_sort@v1
+category: utils
+description: Trie une liste par bulles (foncteur) — value peut être une liste.
+inputs:
+  value:
+    type: array
+    required: true
+outputs:
+  triee:
+    type: array
+implementation:
+  type: python
+  code: |
+    class Skill:
+        def main(self, inputs, home):
+            items = list(inputs.get("value") or [])
+            n = len(items)
+            for i in range(n):
+                for j in range(0, n - i - 1):
+                    if items[j] > items[j + 1]:
+                        items[j], items[j + 1] = items[j + 1], items[j]
+            return {"triee": items, "ok": True}

@@ -1,0 +1,5 @@
+implementation:
+  code: "\nclass Skill:\n    def main(self, inputs, home):\n        return {\"ok\"\
+    : True, \"doubl\": int(inputs.get(\"base\", 0)) * 2}\n"
+  type: python
+name: test/scope_skill@v1

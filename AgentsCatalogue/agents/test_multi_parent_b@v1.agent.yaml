@@ -1,0 +1,21 @@
+name: test/multi_parent_b@v1
+role: test
+namespace: test/heritage
+description: >-
+  Parent B (héritage multiple) — définit la méthode m_b. Pas d'entrypoint :
+  évite le conflit d'héritage sur main avec le parent A.
+methods:
+  m_b:
+    description: Méthode de B.
+    inputs:
+      x:
+        type: string
+        required: true
+    outputs:
+      out:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            return {"out": "B:" + str(inputs.get("x", "")), "ok": True}

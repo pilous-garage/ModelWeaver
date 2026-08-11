@@ -1,0 +1,54 @@
+name: auth/allow_all@v1
+category: auth
+description: >-
+  Skill d'AUTORISATION pour les DÉCIDEURS (team_leader, humain). Approuve une
+  demande d'accès pour un bénéficiaire, bornée par la matrice de délégation et
+  l'intersection décideur∩demande.
+
+  usage :
+    - inputs.request_id : id de la demande auth_requests à approuver (sinon
+      construit depuis chemin_ref + bénéficiaire).
+    - inputs.chemin_ref  : cible (path / ref / cmd).
+    - inputs.kind        : ref | path | cmd.
+    - inputs.beneficiary_agent_id : l'agent qui reçoit l'autorisation.
+    - inputs.beneficiary_level   : humain_with_root | humain | agent_with_root | agent.
+    - inputs.deadline    : expiration (date ISO) ou vide.
+    - inputs.conditions  : [{type: nb_times|lastcall|until_date|ref_id, valeur}].
+  Retourne {ok, id_auth} ou une erreur (délégation refusée / bornage).
+
+  Le DÉCIDEUR est l'agent appelant (agent_id du contexte) ; son niveau est
+  passé dans inputs.decider_level.
+outputs:
+  ok:
+    type: boolean
+  id_auth:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        from services.api.handlers.catalogue_local import op_priv_approve
+        decider = inputs.get("decider_agent_id") or inputs.get("agent_id")
+        if not decider:
+            return {"ok": False, "error": "decider_agent_id requis (agent appelant)"}
+        r = op_priv_approve({
+            "decider_agent_id": int(decider),
+            "decider_level": inputs.get("decider_level", "agent_with_root"),
+            "beneficiary_agent_id": int(inputs.get("beneficiary_agent_id", -1)),
+            "beneficiary_level": inputs.get("beneficiary_level", "agent"),
+            "chemin_ref": inputs.get("chemin_ref", ""),
+            "kind": inputs.get("kind", "path"),
+            "read": inputs.get("read", ""),
+            "write": inputs.get("write", ""),
+            "exec": inputs.get("exec", ""),
+            "privileged": inputs.get("privileged", ""),
+            "deadline": inputs.get("deadline", ""),
+            "conditions": inputs.get("conditions"),
+            "team": int(inputs.get("team", -1)),
+            "token": "write_catalogue_priv",
+        })
+        if r.get("status") != "ok":
+            return {"ok": False, "error": r.get("error", "approbation refusée")}
+        return {"ok": True, "id_auth": r.get("id_auth"), "level": r.get("level")}

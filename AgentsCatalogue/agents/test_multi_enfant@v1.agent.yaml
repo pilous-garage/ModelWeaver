@@ -1,0 +1,31 @@
+name: test/multi_enfant@v1
+role: test
+namespace: test/heritage
+description: >-
+  Héritage MULTIPLE SANS recouvrement : extends [test/multi_parent_a@v1,
+  test/multi_parent_b@v1]. Hérite m_a et m_b (aucun conflit), et définit sa
+  propre méthode m_enfant. Si B et A définissaient le même champ, il faudrait
+  le redéfinir ici (conflit sinon).
+extends: [test/multi_parent_a@v1, test/multi_parent_b@v1]
+methods:
+  m_enfant:
+    description: Méthode propre de l'enfant.
+    inputs:
+      x:
+        type: string
+        required: true
+    outputs:
+      out:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            return {"out": "enfant:" + str(inputs.get("x", "")), "ok": True}
+
+entrypoints:
+  main:
+    steps:
+    - id: fin
+      type: end
+      status: SUCCESS

@@ -1,0 +1,33 @@
+name: auth/deny_all@v1
+category: auth
+description: >-
+  Skill d'AUTORISATION pour les DÉCIDEURS : REFUSE une demande d'accès.
+  Marque la demande comme refusée (auth_requests.status='denied',
+  rejection_reason) et mémorise un deny grant pour l'agent demandeur (ne plus
+  re-demander sans fin).
+
+  usage :
+    - inputs.request_id  : id de la demande auth_requests à refuser.
+    - inputs.reason      : justification (optionnel).
+    - inputs.agent_id    : l'agent DEMANDEUR (celui qui reçoit le deny grant).
+outputs:
+  ok:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        request_id = inputs.get("request_id", "")
+        reason = inputs.get("reason", "refusé par le décideur")
+        try:
+            from AgentsCatalogue.lib.shell.auth_request import request_handler
+            # refus la demande si connue
+            if request_id and request_id in getattr(request_handler, "_requests", {}):
+                req = request_handler._requests[request_id]
+                req.deny(inputs.get("agent_id", ""), reason)
+                request_handler._persist(req)
+            return {"ok": True, "request_id": request_id, "reason": reason}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}

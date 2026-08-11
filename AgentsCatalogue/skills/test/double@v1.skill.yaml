@@ -1,0 +1,20 @@
+name: test/double@v1
+category: test
+description: Retourne le double d'une valeur numérique (pur Python).
+inputs:
+  valeur:
+    type: string
+    required: true
+outputs:
+  doubl:
+    type: integer
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        v = inputs.get("valeur", 0)
+        try:
+            v = int(str(v).strip())
+        except (TypeError, ValueError):
+            v = 0
+        return {"doubl": v * 2, "ok": True, "exit_code": 0}

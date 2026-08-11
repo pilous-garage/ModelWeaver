@@ -1,0 +1,26 @@
+name: test/multi_parent_a@v1
+role: test
+namespace: test/heritage
+description: Parent A (héritage multiple) — définit la méthode `m_a`.
+methods:
+  m_a:
+    description: Méthode de A.
+    inputs:
+      x:
+        type: string
+        required: true
+    outputs:
+      out:
+        type: string
+    implementation:
+      type: python
+      code: |
+        def run(inputs, home):
+            return {"out": "A:" + str(inputs.get("x", "")), "ok": True}
+
+entrypoints:
+  main:
+    steps:
+    - id: a_main
+      type: end
+      status: SUCCESS

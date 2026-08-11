@@ -1,0 +1,16 @@
+name: test/methode_hello@v1
+category: test
+description: Raccourci exécutable vers la méthode `hello` (héritée).
+inputs:
+  nom:
+    type: string
+    required: true
+outputs:
+  message:
+    type: string
+implementation:
+  type: python
+  code: |
+    def run(inputs, home):
+        nom = inputs.get("nom", "monde")
+        return {"message": f"bonjour {nom}", "ok": True, "exit_code": 0}
