@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS agents (
     state_json    TEXT,                              -- état FSM courant
     storage_json  TEXT,                              -- stockage disque proprio (quota/path/used_bytes)
     successor_id  INTEGER REFERENCES agents(agent_id),
+    id_proprietaire TEXT,                            -- uint64 (décimal) : agent propriétaire
+                                                   --   MAX_UINT64 = agent humain ; NULL = maître racine
+    id_team       INTEGER,                           -- team_id stable (MIN(agent_id) de la team)
     created_at    TEXT DEFAULT (datetime('now')),
     last_active_at TEXT                              -- dernière déshydratation
 );
@@ -40,12 +43,15 @@ CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 -- 3. AGENT_RUNTIME — Threads actifs (heartbeat)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS agent_runtime (
-    agent_id      INTEGER PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
-    thread_id     TEXT UNIQUE,                       -- identifiant OS du thread
-    pid           INTEGER,                           -- process ID
-    heartbeat_at  TEXT,                              -- dernier heartbeat
-    started_at    TEXT,                              -- début d'hydration
-    current_step  TEXT                               -- étape FSM en cours (ou NULL)
+    agent_id        INTEGER PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+    thread_id       TEXT UNIQUE,                       -- identifiant OS du thread
+    pid             INTEGER,                           -- process ID
+    heartbeat_at    TEXT,                              -- dernier heartbeat
+    started_at      TEXT,                              -- début d'hydration
+    current_step    TEXT,                              -- étape FSM en cours (ou NULL)
+    id_proprietaire TEXT,                              -- uint64 (décimal) : agent propriétaire
+                                                       -- (NULL = maître racine)
+    id_team         INTEGER                            -- team_id stable de l'agent
 );
 
 -- ============================================================

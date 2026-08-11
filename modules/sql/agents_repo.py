@@ -20,6 +20,12 @@ from modules.sql.schema import (
 )
 from services._common import mw_home
 
+# Agent « humain » = MAX_UINT64 (2^64 - 1). Un agent maître n'a pas de
+# propriétaire (NULL) ; un sub-agent a id_proprietaire = son agent maître
+# (ou MAX_UINT64 si la chaîne remonte jusqu'à l'humain). Stocké en TEXTE
+# (décimal) car 2^64-1 dépasse l'INTEGER signé 64 bits de SQLite.
+HUMAN_AGENT_ID = str((1 << 64) - 1)
+
 
 class WaitForRepository:
     """Agents endormis en attente d'une condition (wait_for).
@@ -118,6 +124,12 @@ class AgentsDB:
             self.conn.executescript(schema.read_text())
         # Migration V0.6.8 : storage_json (espace disque proprio par agent)
         _add_column_if_missing(self.conn, "agents", "storage_json", "TEXT")
+        # Migration V0.9.x : id_proprietaire (uint64 décimal, agent maître ou
+        # MAX_UINT64=humain) + id_team (team_id stable) — sub-agents.
+        _add_column_if_missing(self.conn, "agents", "id_proprietaire", "TEXT")
+        _add_column_if_missing(self.conn, "agents", "id_team", "INTEGER")
+        _add_column_if_missing(self.conn, "agent_runtime", "id_proprietaire", "TEXT")
+        _add_column_if_missing(self.conn, "agent_runtime", "id_team", "INTEGER")
         # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
         _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
         # Migration V0.8.9 : wait_for — agents endormis en attente d'une

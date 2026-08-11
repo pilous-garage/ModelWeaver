@@ -38,6 +38,10 @@ def _default_catalogue_db() -> Path:
     return mw_home() / "catalogue.db"
 
 
+def _default_local_catalogue_db() -> Path:
+    return mw_home() / "local_catalogue.db"
+
+
 def _default_agents_db() -> Path:
     return mw_home() / "agents.db"
 
