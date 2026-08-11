@@ -100,6 +100,29 @@ def create_token(inputs: dict, home: str) -> dict:
     }, home)
 
 
+def _finalize_pick(scope, task: dict, home: str) -> dict:
+    """Finalise un pick : déduit commit_start/branch_start si absents, et
+    retourne la tâche. Utilisé par pick_token (pick neuf + reprise)."""
+    try:
+        if not task.get("commit_start") or not task.get("branch_start"):
+            _repo = task.get("repo") or ""
+            _clone = str(home) + "/workspace/" + str(_repo) if _repo else ""
+            _cs, _bs = task.get("commit_start"), task.get("branch_start")
+            if _clone:
+                import os
+                if os.path.isdir(_clone + "/.git"):
+                    _cs = _cs or _git_quiet(_clone, ["rev-parse", "HEAD"])
+                    _bs = _bs or _git_quiet(_clone, ["branch", "--show-current"])
+            if _cs != task.get("commit_start") or _bs != task.get("branch_start"):
+                scope.tasks.modify(task["task_id"],
+                                   commit_start=_cs or task.get("commit_start"),
+                                   branch_start=_bs or task.get("branch_start"))
+                task = scope.tasks.get(task["task_id"])
+    except Exception:
+        pass
+    return {"ok": True, "task": task, "task_id": task["task_id"]}
+
+
 def pick_token(inputs: dict, home: str) -> dict:
     """token_task_pick — seule façon d'OBTENIR un token de tâche.
 
@@ -108,8 +131,10 @@ def pick_token(inputs: dict, home: str) -> dict:
         traiter, avec le niveau de difficulté maximal piochable par type
         (le niveau de l'agent borne la difficulté). Ex. un coder senior :
         [{type: 'coding', max_difficulty: 'expert'}].
-      - workspace_id, team_id (agent_id injecté → assigned_to)
-    Pioche le token le plus prioritaire compatible, le passe en 'doing'.
+      - workspace_id, team_id (agent_id injecté → assigned_to).
+    REPRISE d'abord : si l'agent a déjà une tâche 'doing' assignée (run coupé),
+    la recharger avant de piocher une nouvelle. Sinon pioche le token le plus
+    prioritaire compatible et le passe en 'doing'.
     """
     workspace_id = inputs.get("workspace_id", "")
     team_id = int(inputs.get("team_id", -1))
@@ -146,26 +171,23 @@ def pick_token(inputs: dict, home: str) -> dict:
                 max_diff[tt] = mx
     try:
         db, scope = _scope(workspace_id)
+        # REPRISE : si l'agent a DÉJÀ une tâche 'doing' assignée (pioche du run
+        # précédent, run coupé/redémarré), on la RECHARGE au lieu d'en piocher
+        # une nouvelle. Sans ça, un greedy réveillé re-pioche → échoue (sa tâche
+        # est déjà doing) → dort → sa tâche reste doing pour toujours.
+        try:
+            resume = scope.tasks.claim_resume(
+                task_types=task_types, assigned_to=agent_id)
+            if resume:
+                task = resume
+                return _finalize_pick(scope, task, home)
+        except Exception:
+            pass   # le skill claim_resume n'existe pas / erreur → pick normal
         task = scope.tasks.claim_next(task_types, max_diff, team_id=team_id,
                                       assigned_to=agent_id,
                                       accept_external_work=accept_external)
         if task:
-            # 1er picker : déduire commit_start/branch_start depuis le clone si
-            # la tâche ne les avait pas (elle pointe un repo/branche cibles).
-            if not task.get("commit_start") or not task.get("branch_start"):
-                _repo = task.get("repo") or ""
-                _clone = str(home) + "/workspace/" + str(_repo) if _repo else ""
-                _cs, _bs = task.get("commit_start"), task.get("branch_start")
-                if _clone:
-                    import os
-                    if os.path.isdir(_clone + "/.git"):
-                        _cs = _cs or _git_quiet(_clone, ["rev-parse", "HEAD"])
-                        _bs = _bs or _git_quiet(_clone, ["branch", "--show-current"])
-                if _cs != task.get("commit_start") or _bs != task.get("branch_start"):
-                    scope.tasks.modify(task["task_id"],
-                                       commit_start=_cs or task.get("commit_start"),
-                                       branch_start=_bs or task.get("branch_start"))
-                    task = scope.tasks.get(task["task_id"])
+            return _finalize_pick(scope, task, home)
         db.close()
         if not task:
             return {"ok": False,

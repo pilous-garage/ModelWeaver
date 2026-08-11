@@ -319,6 +319,27 @@ class TaskRepository:
             )
         """)
 
+    def claim_resume(self, task_types: List[str] = (),
+                     assigned_to: str = "") -> Optional[Dict[str, Any]]:
+        """Recharge une tâche 'doing' DÉJÀ assignée à l'agent (reprise de run).
+
+        Un greedy réveillé peut avoir pioché une tâche au run précédent puis
+        avoir été coupé (crash/redémarrage) : la tâche reste 'doing' assignée.
+        Sans reprise, il re-pioche → échoue (déjà doing) → dort → la tâche
+        reste bloquée en doing pour toujours. Ici on la recharge telle quelle."""
+        if not task_types or not assigned_to:
+            return None
+        ph = ",".join("?" for _ in task_types)
+        row = self.conn.execute(
+            f"SELECT * FROM tasks WHERE workspace_id = ? "
+            f"AND status = 'doing' AND assigned_to = ? "
+            f"AND task_type IN ({ph}) "
+            f"ORDER BY task_id LIMIT 1",
+            (self.wid, str(assigned_to), *task_types)).fetchone()
+        if row is None:
+            return None
+        return dict(row) if hasattr(row, "keys") else None
+
     def claim_next(self, task_types: List[str] = (),
                    max_difficulty: Dict[str, str] = None,
                    exclude_assigned: tuple = (),

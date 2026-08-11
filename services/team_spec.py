@@ -61,6 +61,7 @@ class TeamSpec:
     version: str = "0.1.0"
     description: str = ""
     workspace_id: str = ""
+    project_id: str = ""   # repo git central cloné par les greedy (ex mw-swarm)
     topology: str = "hierarchical"  # hierarchical | peer | dag
     team_leader: Optional[TeamLeaderSpec] = None
     members: List[TeamMemberSpec] = field(default_factory=list)
@@ -118,6 +119,7 @@ class TeamSpec:
             version=raw.get("version", "0.1.0"),
             description=raw.get("description", ""),
             workspace_id=raw.get("workspace_id", ""),
+            project_id=raw.get("project_id", raw.get("repo", "")),
             topology=raw.get("topology", "hierarchical"),
             team_leader=team_leader,
             members=members,

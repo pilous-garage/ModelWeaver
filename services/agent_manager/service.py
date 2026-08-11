@@ -1312,8 +1312,33 @@ class AgentManager:
         # l'accumulation de clones bloqués sur des appels LLM lents.
         if _agent_thread_alive(agent_id):
             return
+        # RÉSERVATION ATOMIQUE : on inscrit le thread DANS le lock AVANT la
+        # purge et hydrate. Sans ça, deux réveils concurrents passent tous les
+        # deux le garde alive=False puis l'un échoue sur UNIQUE agent_runtime
+        # (course observée). Le premier réservé gagne ; le second sort.
+        # NB : on vérifie _LIVE_AGENT_THREADS DIRECTEMENT (pas via
+        # _agent_thread_alive qui re-prend le lock → deadlock).
         with _LIVE_LOCK:
+            _existing = _LIVE_AGENT_THREADS.get(agent_id)
+            if _existing is not None and _existing.is_alive():
+                return
             _LIVE_AGENT_THREADS[agent_id] = threading.current_thread()
+        # Nettoyage des agent_runtime ORPHELINS : si une entrée runtime existe
+        # mais que le thread de l'agent est MORT (invisible en mémoire), c'est
+        # un résidu d'un run tué/crashé → hydrate lèverait « déjà hydraté »
+        # pour toujours et le waker bouclerait (réveil → échec → réveil).
+        # On purge l'entrée orpheline avant de relancer proprement.
+        try:
+            alive_rt = self.db.conn.execute(
+                "SELECT agent_id FROM agent_runtime WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            if alive_rt and not _agent_thread_alive(agent_id):
+                self.db.conn.execute(
+                    "DELETE FROM agent_runtime WHERE agent_id = ?",
+                    (agent_id,))
+                self.db.conn.commit()
+        except Exception:
+            pass
         agent = None
         thread_db = None
         try:
@@ -1344,7 +1369,9 @@ class AgentManager:
                         try:
                             _spec = TeamSpec.from_yaml(
                                 f"services/manifests/teams/{_team_name}.team.yaml")
-                            _manifest_proj = _spec.workspace_id or ""
+                            # project_id git = le REPO central de la team
+                            # (manifest project_id/repo), sinon le workspace.
+                            _manifest_proj = _spec.project_id or _spec.workspace_id or ""
                             _manifest_ws = _spec.workspace_id or ""
                         except Exception:
                             _manifest_ws = ""

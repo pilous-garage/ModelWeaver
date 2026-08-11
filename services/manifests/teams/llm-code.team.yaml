@@ -6,6 +6,7 @@ description: >-
   le pilote planifie/découpe, les greedy (analyse/code/test/review/merge)
   exécutent. Voir docs/swarm_as_llm.md + route test-benchmark-auto.
 workspace_id: mw-llm-code
+project_id: mw-swarm
 topology: flat
 
 # Pilote (team_leader) : planifie + découpe en tâches workspace, surveille.
