@@ -1,0 +1,50 @@
+name: workspace/review_verdict@v1
+category: workspace
+description: >
+  VERDICT de relecture (UNIQUE outil de décision du reviewer). Le reviewer
+  reçoit le diff + fichiers + description dans son prompt et DOIT conclure avec
+  UN de ces choix :
+    - approve(detail)        : le livrable est conforme → marque la tâche done
+    - disapprove(detail)     : le livrable ne convient pas (rework) → la tâche
+                               reste en cours / est renvoyée
+    - ask_more_intel(list)   : le contexte fourni ne suffit pas → liste précise
+                               des fichiers/infos supplémentaires nécessaires
+                               (le FSM les lit et relance une review bornée)
+  Contrairement à l'ancien task_verdict + outils libres, le reviewer ne peut
+  PAS explorer (pas de read_file/shell) : il conclut ou demande de l'intel.
+inputs:
+  decision:
+    type: string
+    required: true
+    description: "approve | disapprove | ask_more_intel"
+  detail:
+    type: string
+    required: false
+    default: ""
+    description: "Justification (approve/disapprove) ou question (ask_more_intel)"
+  intel_needed:
+    type: array
+    required: false
+    default: []
+    description: "Pour ask_more_intel : fichiers/chemins exacts dont le reviewer a besoin"
+  task_id:
+    type: integer
+    required: true
+  workspace_id:
+    type: string
+    required: true
+outputs:
+  ok:
+    type: boolean
+  decision:
+    type: string
+  applied:
+    type: boolean
+    description: "True si la tâche a été effectivement transitionnée (approve→done)"
+  intel_needed:
+    type: array
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.review_verdict

@@ -19,6 +19,7 @@ délègue au ToolExecutor.
 
 import json
 import logging
+import os
 import threading
 import time
 import queue as _queue
@@ -173,6 +174,12 @@ class FSMInterpreter:
         self.bridge = bridge or LLMManager(cat=None).get_bridge()
         self.tool_executor = tool_executor or ToolExecutor(home_root="/tmp")
         self.max_iterations = max_iterations
+        # Mapping tool_name (format OpenAI, ex. file_write_file_v1) → nom de
+        # skill catalogue (ex. file/write_file@v1), construit par
+        # `_build_llm_tools`. La conversion inverse naive `_ → /` casse les
+        # underscores internes des noms de skill (file_write_file_v1 → file/
+        # write/file@v1), donc on mémorise le mapping exact.
+        self._tool_to_skill: Dict[str, str] = {}
         # Sub-agents : {ref → déf inline} fourni au run() ; et la liaison
         # (files request/respond) quand on exécute EN TANT QUE sub-agent.
         self._sub_agents: Dict[str, Dict[str, Any]] = {}
@@ -400,6 +407,9 @@ class FSMInterpreter:
             if name in seen:
                 continue
             seen.add(name)
+            # Mapping exact tool → skill (la conversion inverse naive _ → /
+            # est perdue pour les noms à underscores internes).
+            self._tool_to_skill[name] = skill.get("name", "") or ref
             desc = skill.get("description", "")
             inputs = skill.get("inputs", {})
             props = {}
@@ -419,6 +429,72 @@ class FSMInterpreter:
                 },
             })
         return tools
+
+    def _resolve_tool_skill(self, fn_name: str) -> str:
+        """Convertit un nom de tool OpenAI (file_write_file_v1) en nom de
+        skill catalogue (file/write_file@v1).
+
+        Priorité au mapping exact construit par `_build_llm_tools` (le seul
+        fiable : la conversion inverse naive `_ → /` casse les underscores
+        internes des noms de skill). Fallbacks :
+          1. nom déjà complet (contient / ou @) → tel quel ;
+          2. mapping exact ;
+          3. tentative naive (file/write/file@v1 → inexploitable) + candidats
+             en scindant sur le premier préfixe de catégorie
+             (git_clone_v1 → git/clone@v1).
+        """
+        if "/" in fn_name or "@" in fn_name:
+            return fn_name
+        if fn_name in self._tool_to_skill:
+            return self._tool_to_skill[fn_name]
+        no_v = fn_name.replace("_v1", "")
+        # Candidats : préfixe de catégorie (git_clone_v1 → git/clone@v1), puis
+        # split à chaque underscore pour les skills à préfixe multi-segments.
+        cands = [no_v + "@v1"]
+        parts = fn_name.replace("_v1", "").split("_")
+        for k in range(1, len(parts)):
+            cands.append("/".join(parts[:k]) + "/" + "_".join(parts[k:]) + "@v1")
+        # Plus longue correspondance dans le mapping connu (le plus spécifique).
+        known = sorted(self._tool_to_skill.values(),
+                       key=len, reverse=True)
+        for k in known:
+            if k.replace("/", "_").replace("@", "_").replace(".", "_") == fn_name:
+                return k
+        for cand in cands:
+            if cand in self._tool_to_skill.values():
+                return cand
+        return cands[0]
+
+    def _agent_home(self, agent_id) -> str:
+        """Home du workspace d'un agent (agent_home/<agent_id>), fallback sur
+        le home_root de l'exécuteur."""
+        try:
+            from services._common import mw_home
+            if agent_id:
+                return str(mw_home() / "agent_home" / str(agent_id))
+        except Exception:
+            pass
+        return (self.tool_executor.home_root
+                if self.tool_executor else "/tmp")
+
+    def _agent_work_home(self, agent_id, variables: Dict) -> str:
+        """Home de travail pour les tool_calls d'un step llm_call.
+
+        Si le step a cloné un repo (variable `repo_eff` non vide), les skills
+        file (write_file/append_file/…) doivent écrire DANS le clone
+        (agent_home/<aid>/workspace/<repo_eff>), pas dans le home racine —
+        sinon le code produit n'apparaît jamais dans le dépôt et la vérif git
+        ne voit aucun diff. Sans repo → home agent (comportement historique).
+        """
+        _a_id = str(agent_id or "")
+        try:
+            repo_eff = str(variables.get("repo_eff", "") or "").strip()
+        except Exception:
+            repo_eff = ""
+        if repo_eff and _a_id:
+            base = self._agent_home(_a_id)
+            return os.path.join(base, "workspace", repo_eff)
+        return self._agent_home(agent_id)
 
     def _step_llm_call(
         self, step: Dict, result: FSMResult,
@@ -459,10 +535,17 @@ class FSMInterpreter:
         try:
             content = ""
             tokens = 0
+            _trace_tools: List[str] = []
             # agent_id disponible pour le journal d'usage (si l'agent l'a
             # fourni via {{agent_id}} ou le contexte d'exécution).
             _agent_id = result.variables.get("agent_id", "")
-            if stream_sink is not None:
+            # Steps AVEC tools (skills/bundles) : le streaming assemble les
+            # tool_calls par deltas et peut les corrompre selon le provider
+            # (ex. Opencode Zen en échec, llama en tool_call tronqué) → on
+            # force `chat` (non-stream) pour fiabiliser les tool_calls. Le
+            # streaming reste pour les steps texte purs (stream_sink).
+            has_tools = bool(step.get("skills") or step.get("bundles"))
+            if stream_sink is not None and not has_tools:
                 # Streaming : diffusion chunk par chunk
                 for delta in self.bridge.chat_stream(
                     provider_ref=p_ref, model_ref=m_ref,
@@ -513,6 +596,7 @@ class FSMInterpreter:
                     result.variables["_llm_fallbacks"] = getattr(response, "fallbacks", 0)
                 else:
                     # Boucle tool_calls : LLM → tool → LLM → ... → text
+                    _trace_tools = []
                     for _tool_round in range(15):
                         response = self.bridge.chat(
                             provider_ref=p_ref, model_ref=m_ref,
@@ -525,7 +609,34 @@ class FSMInterpreter:
 
                         tool_calls = getattr(response, "tool_calls", None)
                         if not tool_calls:
+                            # debug : trace le contenu texte du round final
+                            logger.debug(
+                                "llm/round_text provider=%s model=%s content=%s",
+                                p_ref, m_ref,
+                                (getattr(response, "content", "") or "")[:80])
                             break  # réponse textuelle → on sort
+
+                        # Trace des tools appelés : le output_capture (work_out)
+                        # est analysé par check_work_state qui cherche
+                        # it_is_done / exit_loop_too_hard dans le TEXTE. Sans
+                        # trace, un round qui appelle it_is_done (content vide)
+                        # laisse work_out vide → state=continue → boucle infinie.
+                        # On inclut les ARGUMENTS (JSON) pour que les skills de
+                        # décision (review_decision → approve/disapprove) puissent
+                        # lire le choix exact depuis la trace.
+                        for _tc in tool_calls:
+                            _fn = _tc.get("function", {})
+                            _nm = _fn.get("name", "")
+                            _args = _fn.get("arguments", "") or ""
+                            if _args:
+                                _trace_tools.append(f"{_nm}({_args[:200]})")
+                            else:
+                                _trace_tools.append(_nm)
+                        logger.debug(
+                            "llm/tool_round provider=%s model=%s tools=%s",
+                            p_ref, m_ref,
+                            ",".join(_tc.get("function", {}).get("name", "")
+                                    for _tc in tool_calls))
 
                         # Ajouter la réponse assistant avec tool_calls
                         asst_msg = {"role": "assistant", "content": response.content or ""}
@@ -551,10 +662,20 @@ class FSMInterpreter:
                                 raw_args = json.loads(tc["function"]["arguments"])
                             except json.JSONDecodeError:
                                 raw_args = {}
-                            conv_name = fn_name.replace("_v1", "@v1").replace("_", "/")
+                            conv_name = self._resolve_tool_skill(fn_name)
+                            # Le skill doit s'exécuter dans le home de l'agent
+                            # (sinon write_file écrit dans /tmp) et connaître son
+                            # agent_id (journal d'usage, scopes, mémoire).
                             try:
                                 from services.skill_manager import call_skill
-                                tool_result = call_skill(conv_name, raw_args)
+                                _a_id = result.variables.get("agent_id", "")
+                                if str(_a_id).startswith("agent_"):
+                                    _a_id = str(_a_id).split("_")[-1]
+                                _home = self._agent_work_home(_a_id, result.variables)
+                                tool_result = call_skill(
+                                    conv_name, raw_args, home=_home,
+                                    agent_id=str(_a_id),
+                                )
                             except Exception as e2:
                                 tool_result = {"ok": False, "error": str(e2)}
                             msgs.append({
@@ -563,9 +684,12 @@ class FSMInterpreter:
                                 "content": json.dumps(tool_result, default=str),
                             })
 
-                        # Un seul tool_calls round supprime les tools suivants
-                        # pour éviter les boucles infinies
-                        tool_kwargs = {}
+                        # On GARDE les tools d'un round à l'autre : après un
+                        # write_file, le LLM doit pouvoir appeler it_is_done au
+                        # round suivant. La boucle est bornée par range(15).
+                        # (Ancien comportement : tool_kwargs={} → le LLM ne
+                        # pouvait jamais clôturer → boucle do_work sans fin.)
+                        # tool_kwargs = {}
                     else:
                         # 15 rounds sans réponse textuelle → erreur
                         content = "Tool call limit exceeded"
@@ -588,6 +712,13 @@ class FSMInterpreter:
 
         if step.get("strip_fences"):
             content = _strip_code_fences(content)
+        # Inclure la trace des tools appelés dans le contenu capturé (les
+        # check_work_state qui suivent cherchent it_is_done/too_hard dans le
+        # texte ; un round tool_call pur a un content vide sinon).
+        if _trace_tools and content.strip():
+            content = content + "\n[tools appelés: " + ", ".join(_trace_tools) + "]"
+        elif _trace_tools:
+            content = "[tools appelés: " + ", ".join(_trace_tools) + "]"
         if output_capture:
             result.variables[output_capture] = content
         result.messages.append({"role": "assistant", "content": content})
@@ -845,7 +976,15 @@ class FSMInterpreter:
     ) -> bool:
         """Branchement conditionnel."""
         var_name = step.get("variable", "")
-        var_value = str(result.variables.get(var_name.strip("{}").strip(), ""))
+        raw_key = var_name.strip("{}").strip()
+        _missing = object()
+        raw = result.variables.get(raw_key, _missing)
+        # Variable à accès dict imbriqué ({{task.repo}} avec task = dict) :
+        # la clé "task.repo" n'existe pas dans variables (la clé "task" pointe
+        # sur le dict) → on résout via _resolve qui navigue dans les dicts.
+        if raw is _missing and "." in raw_key:
+            raw = self._resolve(f"{{{{{raw_key}}}}}", result.variables)
+        var_value = str(raw if raw is not _missing else "")
 
         for cond in step.get("conditions", []):
             operator = cond.get("operator", "EQUALS")

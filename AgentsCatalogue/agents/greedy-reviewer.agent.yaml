@@ -8,10 +8,10 @@ personality:
   tone: ''
   system_prompt: >
     Tu es un relecteur dans un swarm. Tu valides les tokens livrés en code_review.
-    Quand tu as fini la relecture, appelle le verdict task_verdict (done | continue | error | to_difficult).
+    Tu N'ÉCRIS AUCUN code, tu ne lances AUCUNE commande shell : tu analyses le
+    livrable (tâche + diff) et tu conclues avec le verdict task_verdict
+    (done | continue | error | to_difficult).
     Réponds en français, code en anglais.
-bundles:
-  - dev
 generates:
   - merger_code
   - coding
@@ -28,7 +28,7 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
-    max_iterations: 40
+    max_iterations: 120
     steps:
     - id: pick
       type: call
@@ -78,17 +78,7 @@ entrypoints:
         project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
         name: "{{task.commit_hash}}"
-      next: check_llm
-    - id: check_llm
-      type: call
-      fn: workflow/check_llm@v1
-      inputs:
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        has_llm: has_llm
-      on_error: ask_llm
-      next: exec_loop
+      next: ask_llm
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -99,6 +89,30 @@ entrypoints:
         provider_ref: _llm_provider
         model_ref: _llm_model
       on_error: llm_error
+      next: compute_review_diff
+    # ── 3b. COMPUTE_REVIEW_DIFF (AUTO, pas de LLM) ──
+    # Calcule mécaniquement le diff commit_start..commit_current de la tâche
+    # + la liste des fichiers. Le reviewer le reçoit DANS son prompt : il n'a
+    # PAS d'outils git, il analyse et conclut (task_verdict).
+    - id: compute_review_diff
+      type: call
+      fn: git/git_review_diff@v1
+      inputs:
+        project_id: "{{repo_eff}}"
+        agent_id: "{{agent_id}}"
+        commit_start: "{{task.commit_start}}"
+        commit_end: "{{task.commit_current}}"
+      capture:
+        diff: review_diff
+        files: review_files
+        stat: review_stat
+      on_error: llm_error
+      next: init_rounds
+    # ── 3c. INIT_ROUNDS (AUTO) : compteur de re-reviews (ask_more_intel max 2) ──
+    - id: init_rounds
+      type: set_variable
+      name: review_rounds
+      value: "0"
       next: exec_loop
     - id: llm_error
       type: call
@@ -127,25 +141,41 @@ entrypoints:
     - id: exec_loop
       type: while
       condition:
-        variable: task_state
+        variable: need_more_intel
         operator: NOT_EQUALS
-        value: "done"
+        value: "false"
       body:
         steps:
+        # DO_REVIEW : UN appel LLM avec UNIQUEMENT le tool review_verdict
+        # (approve | disapprove | ask_more_intel). Le diff + fichiers +
+        # description sont fournis dans le prompt → le reviewer conclut en
+        # 1 appel, pas de boucle d'exploration.
         - id: do_review
           type: llm_call
           skill_prompt: |
-            Relis le token {{task.task_id}} (code_review) dans le clone
-            agents/{{agent_id}}/workspace/{{repo_eff}} au commit {{task.commit_hash}}.
+            RELECTURE — token {{task.task_id}} (code_review).
+            Tâche : {{task.title}}
+            {{task.description}}
 
-            Vérifie le code, puis appelle le verdict task_verdict (done | continue
-            | error | to_difficult, task_id={{task.task_id}}).
-            Si problèmes : crée une tâche corrective (workspace/task_create, coding)
-            et laisse le token en code_review (workspace/token_task_modify).
+            LIVRABLE (diff commit {{task.commit_start}} → {{task.commit_current}})
+            Fichiers modifiés : {{review_files}}
+            --- DIFF ---
+            {{review_diff}}
+            --- FIN DIFF ---
+
+            Tu es un relecteur. Juge si le livrable répond à la tâche (code
+            présent, correct, cohérent). Conclus avec LE tool review_verdict :
+              - approve(detail)      : livrable conforme → la tâche sera done.
+              - disapprove(detail)   : livrable NON conforme → précise EXACTEMENT
+                                       dans detail ce qu'il faut corriger
+                                       (le coder s'en servira pour le rework).
+              - ask_more_intel([...]): le contexte ne suffit pas → liste les
+                                       fichiers/infos exacts nécessaires.
+            N'utilise AUCUN autre outil. Conclus systématiquement.
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
-          bundles: ["dev"]
-          max_tokens: 4096
+          skills: ["workspace/review_verdict@v1"]
+          max_tokens: 2048
           temperature: 0.2
           output_capture: review_out
           next: check_after_review
@@ -158,6 +188,10 @@ entrypoints:
           capture:
             task: task_now
           next: decide_after_review
+        # DÉCISION DU REVIEWER. review_verdict a UNIQUEMENT 3 issues :
+        #  - approve    → la tâche passe done (task_now.task_type ≠ code_review)
+        #  - disapprove → une tâche CORRECTIVE est créée (tâche reste code_review)
+        #  - ask_more_intel → rien n'a changé (ni done, ni corrective)
         - id: decide_after_review
           type: switch
           variable: "{{task_now.task_type}}"
@@ -165,41 +199,88 @@ entrypoints:
           - operator: NOT_EQUALS
             value: "code_review"
             next: break_loop
-          default: ask_verdict
-        - id: ask_verdict
-          type: llm_call
-          skill_prompt: |
-            Tu as travaillé sur le token {{task.task_id}} (code_review) sans
-            le transitionner. Décide le verdict en appelant le tool task_verdict
-            avec verdict=done | continue | error | to_difficult.
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["workspace_verdict"]
-          max_tokens: 1024
-          temperature: 0.2
-          output_capture: verdict_out
-          next: check_after_verdict
-        - id: check_after_verdict
+          default: check_decision
+        # CHECK_DECISION : extrait la décision réelle depuis la trace des tools
+        # (review_out) : approved | disapproved | more_intel | unknown.
+        - id: check_decision
           type: call
-          fn: workspace/task_get@v1
+          fn: workflow/review_decision@v1
+          inputs:
+            review_text: "{{review_out}}"
+          capture:
+            decision: review_decision
+          next: decide_decision
+        - id: decide_decision
+          type: switch
+          variable: "{{review_decision}}"
+          conditions:
+          - operator: EQUALS
+            value: "disapproved"
+            next: break_loop
+          - operator: EQUALS
+            value: "more_intel"
+            next: check_intel_request
+          - operator: EQUALS
+            value: "unknown"
+            next: review_error
+          default: break_loop
+        # CHECK_INTEL_REQUEST : bornage des re-reviews (ask_more_intel max 2).
+        - id: check_intel_request
+          type: switch
+          variable: "{{review_rounds}}"
+          conditions:
+          - operator: EQUALS
+            value: "2"
+            next: force_conclude
+          default: fetch_intel
+        # FETCH_INTEL : lit les fichiers demandés (mécanique) et les ajoute
+        # au contexte pour une 2e review bornée.
+        - id: fetch_intel
+          type: call
+          fn: git/git_read_files@v1
+          inputs:
+            project_id: "{{repo_eff}}"
+            agent_id: "{{agent_id}}"
+            commit: "{{task.commit_current}}"
+            paths: "{{review_files}}"
+          capture:
+            content: review_intel
+          next: inc_review_round
+        - id: inc_review_round
+          type: call
+          fn: workflow/inc_counter@v1
+          inputs:
+            value: "{{review_rounds}}"
+          capture:
+            value: review_rounds
+          next: do_review
+        # FORCE_CONCLUDE : après 2 rounds d'ask_more_intel sans conclure, on
+        # libère la tâche (elle reste piochable) — pas de done arbitraire.
+        - id: force_conclude
+          type: call
+          fn: workspace/token_task_release@v1
           inputs:
             workspace_id: "{{workspace_id}}"
             task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_verdict
-        - id: decide_after_verdict
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "code_review"
-            next: break_loop
-          default: continue_loop
+            freedby: "{{agent_id}}"
+            error: "reviewer: trop de demandes d'intel sans conclure (2 rounds)"
+          next: break_loop
+        # REVIEW_ERROR : le reviewer n'a pas appelé review_verdict (réponse
+        # texte) → la review n'a pas abouti. On libère la tâche pour un autre
+        # reviewer, sans boucler.
+        - id: review_error
+          type: call
+          fn: workspace/token_task_release@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+            freedby: "{{agent_id}}"
+            error: "reviewer: pas de verdict (review_verdict non appelé)"
+          next: break_loop
         - id: break_loop
           type: set_variable
-          name: task_state
-          value: "done"
+          name: need_more_intel
+          value: "false"
           next: break
         - id: break
           type: break

@@ -93,6 +93,9 @@ docker/
 **/tauri_dev.log
 **/tauri_build.log
 
+# Résultats de benchmarks générés (inspect_ai .eval)
+logs/
+
 # nouveaux binaires Rust (headless + bootstrap)
 projetadmin/main-cli/target/
 projetadmin/bootstrap-cli/target/

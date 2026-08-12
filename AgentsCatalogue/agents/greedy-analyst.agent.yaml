@@ -38,17 +38,7 @@ entrypoints:
       capture:
         task: task
       on_error: sleep
-      next: check_llm
-    - id: check_llm
-      type: call
-      fn: workflow/check_llm@v1
-      inputs:
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        has_llm: has_llm
-      on_error: ask_llm
-      next: exec_loop
+      next: ask_llm
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1

@@ -1,0 +1,37 @@
+name: workspace/apply_verdict@v1
+category: workspace
+description: >
+  APPLIQUE le verdict de review de façon MÉCANIQUE (pas de LLM). Analyse le
+  texte produit par le reviewer (review_out) et applique le verdict via
+  task_verdict :
+    - done          : si le texte indique livrable conforme (done/DONE/OK/conforme)
+    - continue      : sinon (rework demandé)
+    - error         : si le texte signale une erreur/échec
+  Certains modèles répondent le verdict en TEXTE au lieu d'appeler le tool
+  task_verdict → sans ce parsing, le reviewer boucle indéfiniment.
+inputs:
+  review_text:
+    type: string
+    required: true
+    description: Texte du reviewer (review_out / verdict_out)
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  agent_id:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  verdict:
+    type: string
+  applied:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.apply_verdict

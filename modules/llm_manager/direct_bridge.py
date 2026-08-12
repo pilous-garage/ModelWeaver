@@ -36,8 +36,8 @@ _USER_AGENT = "ModelWeaver/1.0 (+https://github.com/ModelWeaver)"
 # Quand un appel échoue, on marque le modèle « unavailable » et on ne le
 # retente pas avant noretryuntil. La durée d'interdiction croît à chaque
 # échec consécutif : notrytime = TIME_NO_RESTART_INIT × multiply^n.
-TIME_NO_RESTART_INIT = 5.0          # durée initiale de repos (secondes)
-TIME_NO_RESTART_MULTIPLY = 1.5      # croissance ×1.5 à chaque échec consécutif
+TIME_NO_RESTART_INIT = 60.0         # durée initiale de repos (secondes)
+TIME_NO_RESTART_MULTIPLY = 2.0      # croissance ×2 à chaque échec consécutif
 TIME_NO_RESTART_MAX = 24 * 3600     # plafond (24 h)
 # Repos pour crédit insuffisant (402) posé sur TOUT le provider : 1h au lieu
 # de 24h — les crédits se rechargent souvent plus vite, et on préfère un

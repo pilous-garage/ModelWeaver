@@ -32,6 +32,7 @@ def exec(inputs: dict, home: str) -> dict:
     # restrict_llm : allowlist de modèles → exclusions (tout le reste).
     # exclusions explicites (exclude_models) ajoutées.
     exclude_models = list(inputs.get("exclude_models") or [])
+    exclude_providers = list(inputs.get("exclude_providers") or [])
     allow = inputs.get("restrict_llm") or []
     if isinstance(allow, str):
         allow = [m.strip() for m in allow.split(",") if m.strip()]
@@ -60,10 +61,38 @@ def exec(inputs: dict, home: str) -> dict:
         try:
             from modules.sql.catalogue_repo import CatalogueDB
             cat = CatalogueDB()
-            all_models = [r["ref"] for r in cat.conn.execute(
-                "SELECT ref FROM provider_models").fetchall()]
+            # refs complètes (catalogue_models.ref, ex. nvidia/meta/llama-…):
+            # la colonne provider_models.ref n'existe pas (seulement
+            # provider_model_name) → l'ancienne requête `SELECT ref` levait
+            # une exception silencieuse → restrict_llm ignoré → allocation
+            # d'un modèle non fiable (mimo/longcat/… rate-limités).
+            all_models = [m["ref"] for m in cat.conn.execute(
+                "SELECT DISTINCT m.ref "
+                "FROM provider_models pm "
+                "JOIN catalogue_models m ON m.id = pm.model_id").fetchall()]
+            allow_norm = [m.split("/", 1)[-1] for m in allow]
+            allowed = set()
+            for am in all_models:
+                if am in allow or am.split("/", 1)[-1] in allow_norm:
+                    allowed.add(am)
             exclude_models = list(set(exclude_models) |
-                                  (set(all_models) - set(allow)))
+                                  (set(all_models) - allowed))
+            # Exclure TOUS les providers hors allowlist (l'allocation peut
+            # sinon choisir un modèle du même nom sur un autre provider).
+            allowed_providers = set()
+            for am in allowed:
+                ap = am.split("/", 1)[0]
+                if ap:
+                    allowed_providers.add(ap)
+            if allowed_providers:
+                from modules.sql.catalogue_repo import CatalogueDB as _C
+                _cat = _C()
+                all_prov = [r["ref"] for r in _cat.conn.execute(
+                    "SELECT ref FROM catalogue_providers").fetchall()]
+                _cat.close()
+                exclude_providers = list(
+                    set(exclude_providers) |
+                    (set(all_prov) - allowed_providers))
         except Exception:
             pass
 
@@ -71,7 +100,8 @@ def exec(inputs: dict, home: str) -> dict:
         llm_mgr = LLMManager(CatalogueDB())
         llm = llm_mgr.assign_llm(use_case=use_case, agent_id=agent_id or None,
                                  min_window=min_window,
-                                 exclude_models=exclude_models or None)
+                                 exclude_models=exclude_models or None,
+                                 exclude_providers=exclude_providers or None)
     except Exception as e:
         return {"ok": False, "provider_ref": "", "model_ref": "",
                 "use_case": use_case, "error": f"assign_llm: {e}"}

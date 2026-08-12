@@ -1,0 +1,25 @@
+name: workspace/task_has_corrective@v1
+category: workspace
+description: >
+  Vérifie si une tâche CORRECTIVE (coding) a été créée pour la tâche reviewée
+  (via review_verdict disapprove). Utilisé par le FSM reviewer pour distinguer
+  disapprove (→ conclure, corrective créée) de ask_more_intel (→ re-review).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  has_corrective:
+    type: boolean
+  corrective_task_id:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.task_has_corrective

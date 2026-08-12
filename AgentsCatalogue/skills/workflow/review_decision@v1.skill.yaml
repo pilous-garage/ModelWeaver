@@ -1,0 +1,22 @@
+name: workflow/review_decision@v1
+category: workflow
+description: >
+  Détecte la décision du reviewer depuis la trace des tools appelés (review_out).
+  Le do_review expose UNIQUEMENT review_verdict_v1 → la trace indique ce que le
+  reviewer a décidé : approved | disapproved | more_intel. Si AUCUN tool_call
+  review_verdict n'a eu lieu (réponse texte), retourne unknown → le FSM doit
+  traiter comme une erreur (pas boucler).
+inputs:
+  review_text:
+    type: string
+    required: true
+    description: review_out (trace des tools + éventuel texte du reviewer)
+outputs:
+  ok:
+    type: boolean
+  decision:
+    type: string
+    description: approved | disapproved | more_intel | unknown
+implementation:
+  type: python
+  function: workflow.review_decision.exec

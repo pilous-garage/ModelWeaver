@@ -190,6 +190,20 @@ def resolve_tools(
     return result
 
 
+def _tool_to_skill(name: str, registry: Optional[Registry] = None) -> str:
+    """Convertit un nom de tool (file_write_file_v1) en nom de skill
+    catalogue (file/write_file@v1).
+
+    La conversion naive `_ → /` casse les underscores internes
+    (file_write_file_v1 → file/write/file@v1). Le catalogue résout le format
+    sans catégorie (file_write_file@v1 → file/write_file@v1) via le suffixe :
+    on retire donc juste le suffixe _v1 et on laisse la résolution au manager.
+    """
+    if "/" in name or "@" in name:
+        return name
+    return name.replace("_v1", "") + "@v1"
+
+
 def make_dispatcher(
     registry: Optional[Registry] = None,
     ws: str = "",
@@ -213,7 +227,7 @@ def make_dispatcher(
 
         # Fallback skills YAML
         try:
-            conv_name = name.replace("_v1", "@v1").replace("_", "/")
+            conv_name = _tool_to_skill(name, registry=registry)
             result = call_skill(conv_name, inputs, home=ws)
             if isinstance(result, dict):
                 return result

@@ -1263,15 +1263,29 @@ class AgentManager:
             """).fetchone()[0]
             # Les greedy tournent en THREADS (enregistrés dans _LIVE_AGENT_THREADS,
             # parfois pas encore dans agent_runtime) → ils comptent comme actifs.
-            n_active = max(n_active_runtime, _live_agent_threads_count())
+            # Un agent marqué RUNNING (même sans thread runtime encore visible)
+            # est aussi actif — sinon le reclaim re-claim les tâches d'un run
+            # fraîchement lancé et le coupe (boucle reviewer).
+            n_running = self.db.conn.execute(
+                "SELECT COUNT(*) FROM agents WHERE status = 'RUNNING'"
+            ).fetchone()[0]
+            n_active = max(n_active_runtime, _live_agent_threads_count(),
+                           n_running)
             if n_active > 0:
                 return 0
             from modules.sql.workspace import WorkspaceDB
             wdb = WorkspaceDB()
+            # Ne re-claimer que les tâches doing 'STALES' (assignées depuis
+            # plus de RECLAIM_MIN_AGE_MIN) : une tâche fraîchement assignée
+            # peut être entre deux steps d'un run (runtime pas encore visible)
+            # — la re-claimer la couperait en boucle (reviewer re-pick).
+            reclaim_age = getattr(self, "RECLAIM_MIN_AGE_MIN", 15)
             n = wdb.conn.execute(
                 "UPDATE tasks SET status = 'todo', assigned_to = '', "
                 "updated_at = datetime('now') "
-                "WHERE status IN ('doing', 'running')").rowcount
+                "WHERE status IN ('doing', 'running') "
+                "AND (julianday('now') - julianday(updated_at)) * 1440 >= ?",
+                (reclaim_age,)).rowcount
             wdb.conn.commit()
             wdb.close()
             return n or 0
@@ -1564,7 +1578,8 @@ class AgentManager:
                 (t["workspace_id"], t["team_id"], t["task_type"])
                 for t in wdb.conn.execute(
                     "SELECT workspace_id, team_id, task_type FROM tasks "
-                    "WHERE status = 'todo' AND task_type != ''"
+                    "WHERE status = 'todo' AND task_type != '' "
+                    "AND COALESCE(cancelled, 0) = 0"
                 ).fetchall()}
             # Tokens à l'étape suivante (code_review, merger_code...) : les
             # agents capables du task_type doivent être réveillés.
@@ -1573,7 +1588,8 @@ class AgentManager:
                 for t in wdb.conn.execute(
                     "SELECT workspace_id, team_id FROM tasks "
                     "WHERE status = 'todo' AND task_type IN "
-                    "('code_review','merger_code','testing_code','merge_split')"
+                    "('code_review','merger_code','testing_code','merge_split') "
+                    "AND COALESCE(cancelled, 0) = 0"
                 ).fetchall()}
             # Workspaces "terminés" : au moins 1 tâche ET toutes done → le
             # manager peut faire le push de fin sur auto_code_<team_id>.

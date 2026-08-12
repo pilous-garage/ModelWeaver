@@ -19,13 +19,51 @@ def _git_quiet(clone: str, args) -> str:
         return ""
 
 
+_ROLE_TO_TYPE = {
+    "coder": "coding",
+    "coder_senior": "coding",
+    "coder_junior": "coding",
+    "codeur": "coding",
+    "coding": "coding",
+    "tester": "testing_code",
+    "test_runner": "testing_code",
+    "testeur": "testing_code",
+    "testing_code": "testing_code",
+    "reviewer": "code_review",
+    "relecteur": "code_review",
+    "code_review": "code_review",
+    "merger": "merge",
+    "orchestrateur": "merge",
+    "merge": "merge",
+    "analyst": "analysis",
+    "architecte": "analysis",
+    "analysis": "analysis",
+}
+
+
+def _normalize_task_type(task_type: str) -> str:
+    """Normalise un type/role de tâche vers un type de pipeline connu.
+
+    Le pilote LLM (chat-pilot) crée parfois des tâches avec des RÔLES
+    (coder_senior, tester, reviewer) au lieu des types de pipeline (coding,
+    testing_code, code_review). Les greedy piochant par type (task_types
+    [{type: coding}]), une tâche 'coder_senior' n'est jamais piochée → le
+    swarm stagne. Le mapping ci-dessous aligne rôle → type.
+    """
+    key = str(task_type or "").strip().lower()
+    if not key:
+        return str(task_type or "")
+    return _ROLE_TO_TYPE.get(key, str(task_type or ""))
+
+
 def create(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     title = inputs.get("title", "")
     description = inputs.get("description", "")
     priority = int(inputs.get("priority", 0))
     difficulty = inputs.get("difficulty", "medium")
-    task_type = inputs.get("task_type", inputs.get("role_required", ""))
+    task_type = _normalize_task_type(
+        inputs.get("task_type", inputs.get("role_required", "")))
     team_id = int(inputs.get("team_id", -1))
     repo = inputs.get("repo", "")
     branch = inputs.get("branch", "")
@@ -285,6 +323,9 @@ def release_token(inputs: dict, home: str) -> dict:
                 "freedby": freedby}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _group_of(scope, task_id, include_self_primordial: bool = False):
     """Groupe de la tâche pour clear/cancel = la tâche + ses ANCÊTRES
     secondaires (les travaux splittés B,C dont un merge_split dépend).
     Les primordiales (racines) ne sont jamais incluses sauf si
@@ -690,6 +731,150 @@ def verdict(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def apply_verdict(inputs: dict, home: str) -> dict:
+    """APPLIQUE le verdict de review de façon MÉCANIQUE (parse le texte).
+
+    Certains modèles répondent le verdict en TEXTE (« Verdict : DONE ») au lieu
+    d'appeler le tool task_verdict → le reviewer boucle. On analyse le texte
+    (review_out / verdict_out) et on applique via verdict() :
+      - done      si le texte indique conforme (done/DONE/ok/conforme/valide)
+      - error     si le texte indique échec/erreur/bloqué
+      - continue  sinon (rework, problèmes)
+    Retourne {verdict, applied, ...} ; `applied` False si le texte ne permet
+    pas de trancher (le FSM garde ask_verdict comme secours)."""
+    import re
+    text = str(inputs.get("review_text") or inputs.get("verdict_text") or "")
+    low = text.lower()
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if not text.strip():
+        return {"ok": True, "verdict": "", "applied": False,
+                "note": "texte vide — verdict non applicable"}
+    # done : marqueurs positifs (priorité haute : éviter un « not done »).
+    done_hit = bool(re.search(
+        r"(verdict\s*[:=]?\s*done|done\b|conforme|conformité ok|"
+        r"livrable ok|valide\b|accepté|validé|review[:\s]*ok|\bok\b)",
+        low))
+    error_hit = bool(re.search(
+        r"(error\b|erreur|échec|échoué|bloqué|failed|bug\b|crash\b|"
+        r"non conforme|invalide|rej[ée]t|ne compile)", low))
+    # « not done / non conforme » → pas un done malgré la présence de "ok".
+    neg = bool(re.search(r"(not\s+done|non\s+conforme|pas\s+ok|n'?est\s+pas\s+ok)", low))
+    if done_hit and not neg and not error_hit:
+        v_result = "done"
+    elif error_hit and not done_hit:
+        v_result = "error"
+    elif error_hit and done_hit:
+        v_result = "error"   # ambigu mais signale un problème → pas done
+    else:
+        return {"ok": True, "verdict": "", "applied": False,
+                "note": "verdict non détecté dans le texte"}
+    if v_result in ("done", "error") and workspace_id and task_id is not None:
+        r = verdict({"workspace_id": workspace_id, "task_id": task_id,
+                     "verdict": v_result,
+                     "reason": (inputs.get("reason") or "").strip() or
+                               f"verdict extrait du texte du reviewer: {text[:200]}"},
+                    home)
+        r["verdict"] = v_result
+        r["applied"] = bool(r.get("ok"))
+        return r
+    return {"ok": True, "verdict": v_result, "applied": False,
+            "note": "verdict détecté mais workspace/task_id manquants"}
+
+
+def review_verdict(inputs: dict, home: str) -> dict:
+    """review_verdict — verdict de relecture : approve | disapprove | ask_more_intel.
+
+    Le reviewer ne dispose QUE de ce tool pour conclure (pas d'exploration) :
+      - approve(detail)      → la tâche passe `done` (livrable conforme). Le
+                               détail (optionnel) est conservé en traçabilité.
+      - disapprove(detail)   → le livrable ne convient pas : le DÉTAIL (les
+                               corrections à apporter) est transmis au coder
+                               sous forme d'une tâche corrective (coding)
+                               rattachée à la tâche, qui reste en code_review.
+      - ask_more_intel(list) → le contexte ne suffit pas : retourne la liste
+                               exacte des fichiers/infos à fournir (le FSM les
+                               lit et relance une review bornée).
+    """
+    decision = (inputs.get("decision") or "").strip().lower()
+    detail = (inputs.get("detail") or "").strip()
+    intel_needed = list(inputs.get("intel_needed") or [])
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if decision not in ("approve", "disapprove", "ask_more_intel"):
+        return {"ok": False, "error": "decision invalide (approve|disapprove|ask_more_intel)"}
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    if decision == "ask_more_intel":
+        return {"ok": True, "decision": decision, "applied": False,
+                "intel_needed": intel_needed,
+                "note": "le reviewer demande plus de contexte"}
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if decision == "approve":
+            # La tâche passe done (via task_done).
+            result = done({"workspace_id": workspace_id, "task_id": int(task_id),
+                           "branch": (task or {}).get("branch", ""),
+                           "commit_hash": (task or {}).get("commit_hash", "")},
+                          home)
+            db.close()
+            result["decision"] = "approve"
+            result["applied"] = bool(result.get("ok"))
+            result["detail"] = detail
+            return result
+        # disapprove : transmettre le détail au coder via une tâche corrective.
+        # La tâche reste en code_review (le retour du coder la re-mettra).
+        corrections = detail or "livrable non conforme (le reviewer n'a pas détaillé)"
+        corrective = scope.tasks.create(
+            title=f"correction: {task.get('title', '')}" if task else "correction",
+            description=corrections,
+            difficulty="easy",
+            task_type="coding",
+            team_id=(task or {}).get("team_id", -1),
+            repo=(task or {}).get("repo", ""),
+            primordial=0,
+            priority=100)
+        # La tâche corrective dépend de la tâche revue (faite → correctif).
+        try:
+            scope.tasks.add_dependency(corrective["task_id"], int(task_id), "done")
+        except Exception:
+            pass
+        db.close()
+        return {"ok": True, "decision": "disapprove", "applied": False,
+                "detail": corrections,
+                "corrective_task_id": corrective["task_id"],
+                "note": "correction demandée — tâche corrective créée"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def task_has_corrective(inputs: dict, home: str) -> dict:
+    """Vérifie si une tâche corrective (coding) dépend de la tâche reviewée.
+
+    `review_verdict(disapprove)` crée une corrective → présente → le reviewer a
+    conclu (disapprove). Si aucune corrective : soit approve (done), soit
+    ask_more_intel (à re-reviewer). Retourne {has_corrective, corrective_id}."""
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    try:
+        db, scope = _scope(workspace_id)
+        descendants = scope.tasks.get_descendants(int(task_id))
+        corrective_id = None
+        for did in descendants:
+            t = scope.tasks.get(did)
+            if t and t.get("task_type") == "coding":
+                corrective_id = did
+                break
+        db.close()
+        return {"ok": True, "has_corrective": corrective_id is not None,
+                "corrective_task_id": corrective_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def add_file(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
@@ -736,5 +921,6 @@ def list_tasks(inputs: dict, home: str) -> dict:
 
 __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
-              "get_files", "verdict", "create_token", "pick_token",
+              "get_files", "verdict", "apply_verdict", "review_verdict",
+              "task_has_corrective", "create_token", "pick_token",
               "modify_token", "clear_task", "cancel_task", "release_token"]

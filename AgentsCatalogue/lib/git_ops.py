@@ -90,14 +90,37 @@ def _git_run(root: Path, args: List[str], timeout: int = 60) -> dict:
     if not Path(root).exists():
         return {"stdout": "", "stderr": "chemin inexistant", "exit_code": -1,
                 "ok": False}
+    # Retry sur les erreurs de LOCK git (index.lock concurrent) : des runs
+    # peuvent se chevaucher sur le clone (reviewer re-pick) → git échoue
+    # « Unable to create index ». On attend et on re-tente quelques fois.
+    import time as _time
+    for attempt in range(4):
+        try:
+            stdout, stderr, rc = Sandbox().run(
+                ["git", "-C", str(root)] + args, cwd=str(root),
+                shell=False, timeout=timeout)
+            if rc == 0 or "index.lock" not in stderr:
+                return {"stdout": stdout, "stderr": stderr, "exit_code": rc,
+                        "ok": rc == 0}
+            # lock conflict → attendre et re-tenter
+            _time.sleep(0.5 * (attempt + 1))
+        except SandboxError as e:
+            return {"stdout": "", "stderr": str(e), "exit_code": -1, "ok": False}
+    # Lock persistant (résidu de process mort probable) → supprimer le lock
+    # obsolète et re-tenter UNE dernière fois.
     try:
+        lock = Path(root) / ".git" / "index.lock"
+        if lock.exists():
+            lock.unlink(missing_ok=True)
         stdout, stderr, rc = Sandbox().run(
             ["git", "-C", str(root)] + args, cwd=str(root),
             shell=False, timeout=timeout)
         return {"stdout": stdout, "stderr": stderr, "exit_code": rc,
                 "ok": rc == 0}
-    except SandboxError as e:
-        return {"stdout": "", "stderr": str(e), "exit_code": -1, "ok": False}
+    except Exception:
+        pass
+    return {"stdout": "", "stderr": "git lock persistant (index.lock)",
+            "exit_code": -1, "ok": False}
 
 
 def _git_identity(root: Path, agent_id: str) -> None:
@@ -217,7 +240,14 @@ def git_clone(inputs: dict, home: str) -> dict:
     dest = _agent_clone(aid, pid)
     if (dest / ".git").exists():
         r = _git_run(dest, ["fetch", "-q", "origin"])
-        return {"ok": True, "path": str(dest), "note": "déjà cloné (fetch)",
+        # CLEAN du working tree : un run précédent a pu laisser des fichiers
+        # non commités (write_file hors git, bench/, work/…) qui pollueraient
+        # le prochain travail et casseraient la vérif git (faux diffs).
+        # On repart d'un état PROPRE au HEAD du clone, sans toucher aux
+        # commits.
+        _git_run(dest, ["reset", "-q", "--hard", "HEAD"])
+        _git_run(dest, ["clean", "-fdq"])
+        return {"ok": True, "path": str(dest), "note": "déjà cloné (fetch+clean)",
                 "exit_code": r["exit_code"]}
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -303,6 +333,150 @@ def git_diff(inputs: dict, home: str) -> dict:
         return err
     target = inputs.get("target", "")
     return _git_run(root, ["diff"] + ([target] if target else []))
+
+
+def git_review_diff(inputs: dict, home: str) -> dict:
+    """git_review_diff — DIFF d'une plage de commits d'une tâche (MÉCANIQUE).
+
+    Plage = `commit_start..commit_end` :
+      - commit_start : point de départ (partagé en cas de split A→B,C) ;
+      - commit_end   : livrable (commit_current / commit_hash).
+    Si commit_start est vide, on diff vs le PARENT de commit_end (le travail
+    du dernier commit). Retourne {diff, files, stat} pour que le reviewer
+    examine le livrable SANS outils git LLM.
+
+    NB : on lit le diff depuis le DÉPÔT CENTRAL BARE (lecture pure), PAS le
+    clone de l'agent — évite les locks index.lock concurrents quand plusieurs
+    runs partagent le clone (re-pick reviewer).
+    """
+    start = (inputs.get("commit_start") or "").strip()
+    end = (inputs.get("commit_end") or "").strip()
+    pid = inputs.get("project_id", "")
+    if not pid:
+        root, err = _clone_or_err(inputs)
+        if err:
+            return err
+        bare = None
+    else:
+        bare = _central_repo(pid)
+        if not bare.exists():
+            return {"ok": False, "error": "dépôt central inexistant"}
+        root = None
+    if not end:
+        if root is not None:
+            r = _git_run(root, ["rev-parse", "-q", "HEAD"])
+        else:
+            r = _git_run(bare, ["rev-parse", "-q", "HEAD"])
+        end = (r.get("stdout") or "").strip() or "HEAD"
+    # Si pas de start : diff du dernier commit (parent → livré).
+    if not start:
+        if root is not None:
+            r = _git_run(root, ["rev-parse", "-q", f"{end}~1"])
+        else:
+            r = _git_run(bare, ["rev-parse", "-q", f"{end}~1"])
+        start = (r.get("stdout") or "").strip()
+        if not start:
+            return {"ok": True, "diff": "", "files": [], "stat": "",
+                    "note": "aucun parent (commit racine) — pas de diff"}
+    if root is not None:
+        diff = _git_run(root, ["diff", "--stat", start, end])
+        full = _git_run(root, ["diff", start, end])
+        names = _git_run(root, ["diff", "--name-status", start, end])
+    else:
+        diff = _git_run(bare, ["diff", "--stat", start, end])
+        full = _git_run(bare, ["diff", start, end])
+        names = _git_run(bare, ["diff", "--name-status", start, end])
+    files = [ln.split("\t")[-1].strip()
+             for ln in (names.get("stdout") or "").splitlines() if "\t" in ln]
+    return {
+        "ok": diff.get("exit_code", 1) == 0,
+        "diff": full.get("stdout", ""),
+        "stat": diff.get("stdout", ""),
+        "files": files,
+        "error": full.get("stderr", "") or None,
+        "commit_start": start,
+        "commit_end": end,
+    }
+
+
+def git_snapshot_start(inputs: dict, home: str) -> dict:
+    """git_snapshot_start — POSE commit_start = HEAD du clone (MÉCANIQUE).
+
+    Appelé par le greedy-coder après le clone/checkout, AVANT le travail. Le
+    reviewer pourra ensuite diff commit_start → commit livré. Idempotent :
+    si commit_start est déjà posé sur la tâche, ne change rien (les splits
+    partagent le même point de départ).
+    """
+    root, err = _clone_or_err(inputs)
+    if err:
+        return err
+    head = _git_run(root, ["rev-parse", "-q", "HEAD"])
+    commit = (head.get("stdout") or "").strip()
+    branch = _git_run(root, ["branch", "--show-current"])
+    br = (branch.get("stdout") or "").strip()
+    task_id = inputs.get("task_id")
+    workspace_id = inputs.get("workspace_id", "")
+    if commit and task_id is not None and workspace_id:
+        try:
+            from modules.sql.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            row = wdb.conn.execute(
+                "SELECT commit_start, branch_start FROM tasks "
+                "WHERE task_id = ? AND workspace_id = ?",
+                (int(task_id), workspace_id)).fetchone()
+            if row is not None:
+                if not (row["commit_start"] or "").strip():
+                    wdb.conn.execute(
+                        "UPDATE tasks SET commit_start = ?, branch_start = ? "
+                        "WHERE task_id = ? AND workspace_id = ?",
+                        (commit, br, int(task_id), workspace_id))
+                    wdb.conn.commit()
+            wdb.close()
+        except Exception:
+            pass
+    return {"ok": True, "commit_start": commit, "branch": br}
+
+
+def git_read_files(inputs: dict, home: str) -> dict:
+    """git_read_files — lit le contenu de fichiers à un commit (MÉCANIQUE).
+
+    `git show <commit>:<path>` pour chaque fichier demandé. Utilisé par le
+    reviewer (ask_more_intel) pour examiner les fichiers du livrable quand le
+    diff seul ne suffit pas. Lit depuis le DÉPÔT CENTRAL BARE (lecture pure,
+    pas de lock). Retourne {content} avec en-têtes --- path ---."""
+    pid = inputs.get("project_id", "")
+    if not pid:
+        root, err = _clone_or_err(inputs)
+        if err:
+            return err
+        target = root
+    else:
+        bare = _central_repo(pid)
+        if not bare.exists():
+            return {"ok": False, "error": "dépôt central inexistant"}
+        target = bare
+    commit = (inputs.get("commit") or "").strip() or "HEAD"
+    paths = inputs.get("paths") or []
+    if isinstance(paths, str):
+        import json as _json
+        try:
+            paths = _json.loads(paths)
+        except Exception:
+            paths = [p for p in paths.split(",") if p.strip()]
+    if not paths:
+        return {"ok": True, "content": "", "note": "aucun fichier demandé"}
+    parts = []
+    for p in paths:
+        p = str(p).strip()
+        if not p:
+            continue
+        r = _git_run(target, ["show", f"{commit}:{p}"])
+        if r.get("exit_code", 1) == 0:
+            parts.append(f"--- {p} ---\n{r.get('stdout', '')}")
+        else:
+            parts.append(f"--- {p} ---\n<absent ou non trouvé>")
+    return {"ok": True, "content": "\n\n".join(parts),
+            "paths": [str(p).strip() for p in paths if str(p).strip()]}
 
 
 def git_log(inputs: dict, home: str) -> dict:
@@ -684,4 +858,5 @@ __skills__ = [
     "git_commit", "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
     "git_push_remote", "end_exec", "git_verify",
+    "git_review_diff", "git_snapshot_start", "git_read_files",
 ]

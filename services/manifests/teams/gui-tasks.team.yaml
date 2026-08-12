@@ -8,7 +8,7 @@ members:
   # ── Analyste : pioche une issue, analyse le code V1/V2, découpe en tâches ──
   - agent_name: analyst
     role: architecte
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config:
@@ -32,7 +32,7 @@ members:
   # ── Codeurs : écrivent les panels / modifications ──
   - agent_name: coder-a
     role: codeur
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config: &coder_cfg
@@ -54,13 +54,13 @@ members:
             status: SUCCESS
   - agent_name: coder-b
     role: codeur
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config: *coder_cfg
   - agent_name: coder-c
     role: codeur
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config:
@@ -84,7 +84,7 @@ members:
   # ── Testeurs : typecheck + tests unitaires sur ce qui a été modifié ──
   - agent_name: tester-a
     role: test_runner
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config: &tester_cfg
@@ -106,7 +106,7 @@ members:
             status: SUCCESS
   - agent_name: tester-b
     role: test_runner
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config: *tester_cfg
@@ -114,7 +114,7 @@ members:
   # ── Reviewer : relit les changements, bloque si problème ──
   - agent_name: reviewer
     role: relecteur
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config:
@@ -138,7 +138,7 @@ members:
   # ── Merger : intègre les branches une fois les tâches terminées ──
   - agent_name: integrator
     role: orchestrateur
-    occupation: continue
+    occupation: noncontinue
     resources:
       llm: true
     config:

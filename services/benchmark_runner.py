@@ -144,8 +144,20 @@ def run_benchmark(team: str, benchmark_name: str,
         notes.append({"type": "result", "task": t["id"], "ok": ok})
 
     usage["time_s"] = round(time.monotonic() - t_start, 3)
-    return _build_report(team, workspace, benchmark_name, restrict,
-                         usage, per_provider, steps, notes, per_task)
+    report = _build_report(team, workspace, benchmark_name, restrict,
+                           usage, per_provider, steps, notes, per_task)
+    # LOG du résultat (timestampé, BDD + JSONL) pour l'historique des runs.
+    try:
+        from services.benchmark_results import log_result
+        passed = sum(1 for s in steps if s["status"] == "pass")
+        total = len(steps)
+        log_result(benchmark_name, task="", score=report.get("score", 0.0),
+                   passed=passed, total=total,
+                   meta={"status": "ok", "team": team, "workspace": workspace,
+                         "usage": usage, "steps": steps})
+    except Exception:
+        pass
+    return report
 
 
 def _chat(workspace: str, prompt: str, base_url: str, api_key: str,

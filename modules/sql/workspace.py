@@ -333,6 +333,7 @@ class TaskRepository:
         row = self.conn.execute(
             f"SELECT * FROM tasks WHERE workspace_id = ? "
             f"AND status = 'doing' AND assigned_to = ? "
+            f"AND COALESCE(cancelled, 0) = 0 "
             f"AND task_type IN ({ph}) "
             f"ORDER BY task_id LIMIT 1",
             (self.wid, str(assigned_to), *task_types)).fetchone()
@@ -377,7 +378,8 @@ class TaskRepository:
         sel_args = [self.wid]
         ph = ",".join("?" for _ in task_types)
         sel = ("SELECT t.* FROM tasks t WHERE t.workspace_id = ? "
-               "AND t.status = 'todo' AND t.task_type IN (" + ph + ")")
+               "AND t.status = 'todo' AND COALESCE(t.cancelled, 0) = 0 "
+               "AND t.task_type IN (" + ph + ")")
         sel_args.extend(task_types)
         # Difficulté maximale piochable par type (le niveau de l'agent).
         diff_conds = []

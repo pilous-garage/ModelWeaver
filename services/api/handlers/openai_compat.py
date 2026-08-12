@@ -92,7 +92,89 @@ def op_openai_chat_completions(params: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
+def _responses_last_input_text(input_data: Any) -> str:
+    """Extrait le dernier texte utilisateur d'un payload /v1/responses.
+
+    input peut être : une str, une liste de messages ({role, content}) ou une
+    liste de blocs ({type: 'message', content: [...]}) — formats OpenAI.
+    """
+    if isinstance(input_data, str):
+        return input_data
+    if not isinstance(input_data, list):
+        return ""
+    for item in reversed(input_data):
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                for blk in reversed(content):
+                    if isinstance(blk, dict):
+                        txt = blk.get("text")
+                        if isinstance(txt, str):
+                            return txt
+            role = item.get("role")
+            if role == "user" and isinstance(item.get("input"), list):
+                for blk in reversed(item["input"]):
+                    if isinstance(blk, dict) and isinstance(blk.get("text"), str):
+                        return blk["text"]
+    return ""
+
+
+def op_openai_responses(params: Dict[str, Any]) -> Dict[str, Any]:
+    """/v1/responses — compatibilité API OpenAI Responses (inspect_ai utilise
+    cette route par défaut en 0.3+). Traduit le payload Responses → prompt,
+    délègue au swarm (même pipeline que chat/completions), et renvoie une
+    réponse Responses minimale valide ({output: [{type, content: [{type:
+    output_text, text}]}]})."""
+    model = params.get("model", "mw-swarm")
+    prompt = _responses_last_input_text(params.get("input"))
+    if not prompt:
+        return {"ok": False,
+                "error": {"message": "aucun input utilisateur", "type": "invalid_request_error"}}
+    files: Dict[str, Any] = {}
+    if isinstance(params.get("files"), dict):
+        files.update(params.get("files"))
+    try:
+        from services.swarm_llm_manager import run_completion
+        res = run_completion(prompt, files=files or None)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False,
+                "error": {"message": str(e), "type": "server_error"}}
+    if not res.get("ok"):
+        return {"ok": False,
+                "error": {"message": res.get("error", "swarm échoué"),
+                          "type": "server_error"}}
+    # Construire une réponse Responses valide.
+    choices = res.get("choices") or []
+    text = ""
+    if choices:
+        text = (choices[0].get("message", {}).get("content") or "")
+    text = str(text)
+    return {
+        "id": "resp_swarm",
+        "object": "response",
+        "created_at": 0,
+        "model": model,
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        }],
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": max(1, len(text) // 4),
+            "total_tokens": 0,
+            "input_tokens_details": {},
+            "output_tokens_details": {},
+        },
+        "swarm": res.get("swarm", {}),
+    }
+
+
 register("chat/completions", op_openai_chat_completions)
+register("responses", op_openai_responses)
 
 
 def _bench_db():

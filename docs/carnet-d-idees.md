@@ -273,3 +273,152 @@ Les `$$` servent aussi à manipuler des GROSSES données de façon optimisée :
 - Permet de décharger/récharger sans que l'agent ait à s'en soucier
   (transparent pour le code du skill).
 
+---
+
+## Idée 7 — Benchmarks de code pour swarm (évaluation automatique)
+
+**Statut** : idée notée, NON implémenté. Source : discussion Gemini.
+
+Le swarm est taillé pour le COMPLEXE, pas pour `addition(a,b)`. Deux familles
+d'évaluation automatique :
+
+### Évaluation fonctionnelle (boîte noire) — la seule fiable
+- L'évaluateur exécute le code généré avec des jeux d'entrées cachés et
+  vérifie des égalités strictes. Verdict binaire Pass/Fail.
+- Zéro coût, millisecondes, reproductible. C'est le « juge de paix ».
+- **Tiny-HumanEval** : 10-15 problèmes ciblés (5 faciles/5 moyens/5 complexes).
+- **SWE-bench Lite maison** : 5-10 micro-projets cassés → le swarm doit
+  modifier le code pour faire passer les tests unitaires (succès binaire).
+- **Mini-GAIA** : questions multi-étapes avec réponse unique (format strict) —
+  parfait pour démontrer la valeur du swarm (délégation d'étapes).
+
+### LLM-as-a-Judge — à éviter pour du benchmark rapide
+- Coût/lenteur : chaque éval = un appel LLM puissant → double le temps.
+- Variance : même à temp 0, un LLM peut changer d'avis (voir Idée 11).
+  Biais : sur-note le code qui ressemble à son style.
+- Réservé à des critères qualitatifs (lisibilité, sécurité) en complément.
+
+### Ordres de grandeur (HumanEval/MBPP)
+- Modèles standards : ~80-88%. Reasoning natifs : ~92-95%. Open-source
+  légers : ~45-65%. Un swarm auto-correctif peut transformer 60% → 90%+.
+- Sur SWE-bench, les meilleurs swarms (Devin/Factory) ne font que 20-40%.
+- Le « plafond » : rigidité des assertions, timeouts, hallucinations longues.
+
+### Benchmarks lourds (complexité réelle)
+- **SWE-bench (Verified)** : vraies issues GitHub, patch → tests officiels du
+  dépôt. Un run = 5-30 min par problème. Le boss final des swarms.
+- **GAIA** : assistants multi-étapes multi-modales, réponse unique.
+- **AIME** : maths compétition, réponse = entier 0-999, évaluation instantanée
+  mais réflexion longue (o1/o3).
+
+---
+
+## Idée 8 — Routage cognitif par niveau (matrice role/level/llm)
+
+**Statut** : idée notée, NON implémenté. Source : discussion Gemini.
+
+Ne pas demander un modèle frontière pour du formatage. Cascade de coûts :
+
+1. **Filtrage de contexte** : modèle économique/rapide ingère les logs/greps et
+   extrait le snippet pertinent → transforme 100k tokens en ~3k avant que le
+   manager ne lise.
+2. **Découpage par niveau** : le modèle semi-frontière découpe en tâches avec
+   difficulté (débutant, junior, intermédiaire, senior).
+3. **Matrice de routage** : chaque (rôle, niveau) → LLM adapté. Junior =
+   modèle flash/distillé (~0.15$/M), intermédiaire = standard (~2$/M), senior
+   = frontière (~15$/M). La boucle codeur↔reviewer tourne sur du pas cher.
+4. Le frontière n'intervient qu'au merge/validation finale.
+
+### Apprentissage empirique (traces)
+- Stocker la trace complète des transitions : [découpeur:LLM_A] → [codeur:LLM_B]
+  → [reviewer:LLM_C] → [échec test] → [retour codeur] …
+- **Taux de frottement** d'un couple d'agents : 1.2-1.5 cycle = bon ; 4-5 =
+  prompts/reviewer mauvais.
+- **Goulots** : une transition `error` systématique après un nœud LLM_X =
+  facteur limitant.
+- **Matrice de confiance locale** : fichier `llm_performance_matrix.json`,
+  incrémenté à chaque convergence réussie, décrémenté sinon.
+
+---
+
+## Idée 9 — Communauté d'apprentissage (scores role/level/llm + réputation)
+
+**Statut** : idée notée, NON implémenté. Source : discussion Gemini.
+
+### Partage à granularité variable (3 niveaux)
+1. **Signal statistique pur (IP-safe)** : triplet isolé (rôle, niveau, llm_id)
+   + métriques de succès. Zéro contexte. Parfait pour entreprises.
+2. **Topologie d'équipe** : [(rôle, niveau, llm) × n] pour un type de tâche —
+   la « recette » macro, sans les prompts.
+3. **Précision absolue** : l'agent clé-en-main (prompt système + grille) —
+   open-science pour hobbyistes/étudiants.
+
+### Réputation anonyme (User × Data_type × LLM)
+- **Identité par clé publique** (pas de compte/email) : clé privée signe les
+  envois, clé publique = l'ID anonyme (`0x7a2b…`). Anonymat garanti, plusieurs
+  ID possibles.
+- **Matrice de confiance** : score par `data_type` (security_audit,
+  llm_benchmark, swarm_team_recipe…) — un utilisateur peut être 95% en sécu
+  mais 40% en benchmark. La pénalité ne touche que la colonne fautive.
+- **Pondération** : poids final = score[user, data_type] × modificateur[llm]
+  (frontière ×1.2, petit local ×0.5).
+- **Auto-ajustement** : écart au consensus (la « vérité du terrain ») →
+  récompense/pénalité par data_type.
+- **Filtre de sécurité** : n'importer des agents/recettes que si l'auteur a un
+  trust > seuil. Certification 🟢 par consensus pondéré (≥ X audits frontière).
+
+### Partage d'objets
+- Partager agent / skill / recette d'installation / team_complète, choix
+  individuel par objet (un super-agent privé, un résumeur de mail partagé).
+- **Autocodage communautaire** : les utilisateurs allouent ~5% de leur budget
+  LLM inutilisé pour améliorer le projet (voir Idée 10).
+
+---
+
+## Idée 10 — Autocodage collaboratif (branches par ID + GitHub gratuit)
+
+**Statut** : idée notée, NON implémenté. Source : discussion Gemini.
+
+### Branches par identifiant
+- Convention : `autocode/user-<ID_anonyme>/task-<id_tache>`. Chaque instance
+  locale travaille en isolation stricte sur sa branche nommée d'après son ID.
+- **Merge local uniquement** : fetch dev-auto → checkout sa branche → swarm
+  code/test → rebase local sur dev-auto (résolution de conflits en local par
+  un agent git-fixer) → push UNIQUEMENT si les tests passent.
+- GitHub devient un hub de réception de PR, pas une zone de merge robot.
+
+### GitHub comme backend gratuit (pas de serveur relais)
+- **GitHub App token restreint** : droits uniquement sur les branches
+  `autocode/*` + PR. Si volé, pire cas = branche spam.
+- **GitHub Actions comme « serveur relais virtuel »** : au push, un workflow
+  vérifie la signature du commit (clé privée de l'utilisateur), interroge le
+  trust score, merge dans dev-auto si valide, supprime la branche sinon.
+  Scalable à 0€ (infra GitHub), même avec des milliers de connexions.
+- **Git-as-backend pour la confiance** : une branche `database` orpheline
+  contient `trust_scores.json` — les Actions lisent/écrivent via git (verrous
+  et stockage gérés par GitHub).
+- **Signature des commits** : `git commit -S` avec la clé privée anonyme →
+  le badge « Verified » par clé, pas par compte GitHub. Zéro compte à
+  configurer pour les utilisateurs.
+
+### Contrôle humain
+- `main` = branches protégées GitHub : PR obligatoire + approbation humaine.
+- `dev-auto` = le swarm a les pleins pouvoirs (merge auto si CI verte).
+- Une fois par semaine, un humain merge dev-auto → main.
+
+---
+
+## Idée 11 — Non-déterminisme des LLM et benchmarks
+
+**Statut** : idée notée, NON implémenté. Source : discussion Gemini.
+
+Un LLM n'est pas déterministe même à même prompt : température/sampling
+(choix probabiliste) ET parallélisme GPU (erreurs d'arrondi, ordre des
+calculs). Impact direct sur les benchmarks : reproductibilité.
+
+- Pour des évaluations comparables, imposer `temperature: 0` + `seed: 42` +
+  `top_p: 1` sur tous les nœuds de test/audit.
+- Si deux utilisateurs testent la même recette avec le même modèle, même
+  configuration → même score à soumettre à la matrice de confiance.
+- Un audit à température 0.7 peut rater une faille qu'un modèle frontière
+  (temp 0) voit — d'où la pondération par modificateur LLM (Idée 9).

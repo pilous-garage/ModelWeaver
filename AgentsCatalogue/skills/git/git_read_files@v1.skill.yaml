@@ -1,0 +1,36 @@
+name: git/git_read_files@v1
+category: git
+description: >
+  Lit le CONTENU de fichiers à un commit précis (MÉCANIQUE, pas de LLM).
+  Utilisé par le reviewer pour examiner les fichiers clés du livrable quand le
+  diff seul ne suffit pas (ask_more_intel). Retourne {paths: [contenu]}.
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du projet (repo central)
+  agent_id:
+    type: string
+    required: false
+    description: Agent propriétaire du clone
+  commit:
+    type: string
+    required: false
+    default: HEAD
+    description: Commit sur lequel lire les fichiers (le livrable)
+  paths:
+    type: array
+    required: false
+    default: []
+    description: Fichiers à lire (chemins relatifs au repo)
+outputs:
+  ok:
+    type: boolean
+  content:
+    type: string
+    description: "Contenu des fichiers concaténés (avec en-têtes --- path ---)"
+  error:
+    type: string
+implementation:
+  type: python
+  function: git.git_read_files

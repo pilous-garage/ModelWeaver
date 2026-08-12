@@ -1,0 +1,20 @@
+name: workflow/inc_counter@v1
+category: workflow
+description: >
+  Incrémente un compteur de boucle (MÉCANIQUE, pas de LLM). Retourne la
+  nouvelle valeur. Utilisé pour borner les re-reviews (ex. ask_more_intel max 2).
+inputs:
+  value:
+    type: string
+    required: false
+    default: "0"
+    description: Valeur actuelle (chaîne) — vide/traité comme 0
+outputs:
+  ok:
+    type: boolean
+  value:
+    type: integer
+    description: Nouvelle valeur incrémentée
+implementation:
+  type: python
+  function: workflow.inc_counter.exec

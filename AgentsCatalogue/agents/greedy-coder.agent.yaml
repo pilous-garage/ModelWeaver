@@ -107,19 +107,26 @@ entrypoints:
         project_id: "{{repo_eff}}"
         agent_id: "{{agent_id}}"
         name: "{{task.branch}}"
-      next: check_llm
+      next: snapshot_start
+    # ── 2b. SNAPSHOT_START (AUTO, pas de LLM) ──
+    # Pose commit_start = HEAD du clone AVANT le travail (point de départ du
+    # diff pour le reviewer). En split, chaque sous-tâche partage ce start.
+    - id: snapshot_start
+      type: call
+      fn: git/git_snapshot_start@v1
+      inputs:
+        project_id: "{{repo_eff}}"
+        agent_id: "{{agent_id}}"
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task.task_id}}"
+      on_error: ask_llm
+      next: ask_llm
 
     # ── 3. ALLOCATION LLM (AUTO) ──
-    - id: check_llm
-      type: call
-      fn: workflow/check_llm@v1
-      inputs:
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        has_llm: has_llm
-      on_error: ask_llm
-      next: working_loop
+    # TOUJOURS s'allouer un LLM (ask_llm coding_high → agentic garanti).
+    # Pas de check_llm : les variables _llm_provider/_llm_model héritées du
+    # spawner/pilote peuvent pointer un modèle non-agentic (ex. mimo-v2.5-free
+    # d'opencode-zen) qui ne fait pas les tool_calls → le coder n'écrit rien.
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
@@ -151,12 +158,20 @@ entrypoints:
             {{task.title}}
             {{task.description}}
 
-            Projet : {{repo_eff}} (clone dans ton workspace agents/{{agent_id}}/workspace/{{repo_eff}})
+            Projet : {{repo_eff}}
+            IMPORTANT : ton home de travail EST le clone (agents/{{agent_id}}/
+            workspace/{{repo_eff}}). Écris les fichiers avec des chemins
+            RELATIFS À CE CLONE (ex. 'bench/OK.txt'), SANS préfixer par le
+            nom du projet. Lis via read_file avec ces chemins relatifs.
             Branche cible : {{task.branch}}
 
-            Implémente le token. Quand tu as fini (code écrit, syntaxe vérifiée),
-            appelle IMMÉDIATEMENT le tool it_is_done. Si c'est réellement trop
-            difficile, appelle exit_loop_too_hard.
+            Implémente le token :
+            1. Vérifie si le livrable demandé existe déjà (read_file / list).
+            2. S'il existe avec le bon contenu, NE réécris PAS : passe à l'étape 3.
+            3. Appelle le tool it_is_done dès que le travail est en place
+               (fichier écrit ou déjà présent). N'explore pas inutilement le
+               projet, ne lance pas de commandes shell sauf nécessité.
+            Si c'est réellement trop difficile, appelle exit_loop_too_hard.
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
           skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1", "shell/exec@v1", "workflow/it_is_done@v1", "workflow/exit_loop_too_hard@v1", "workflow/making_progress@v1"]

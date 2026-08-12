@@ -64,6 +64,18 @@ def task_status(workspace: str, task_id: int) -> str:
         wdb.close()
 
 
+def task_type_of(workspace: str, task_id: int) -> str:
+    """task_type courant d'une tâche ('' si absente)."""
+    wdb = _wdb()
+    try:
+        row = wdb.conn.execute(
+            "SELECT task_type FROM tasks WHERE task_id = ?",
+            (task_id,)).fetchone()
+        return (row["task_type"] or "") if row else ""
+    finally:
+        wdb.close()
+
+
 def agents_running() -> int:
     """Nb d'agents hydratés (RUNNING) — signale une activité du swarm."""
     try:
@@ -88,13 +100,58 @@ def ensure_team(team: str = "llm-code") -> None:
 
 
 def reset_workspace_tasks(workspace: str) -> None:
-    """Supprime les tâches d'un workspace (reset propre avant benchmark)."""
-    wdb = _wdb()
+    """Annule proprement les tâches d'un workspace avant benchmark.
+
+    PHASE CANCELLATION (non destructif) : chaque tâche de benchmark active est
+    annulée via cancel_task (signal KILL aux agents + branche canceled_<id> +
+    flag cancelled), puis les repos de session orphelins sont nettoyés. Les
+    tâches restent en base (archivées, réversibles) mais ne sont plus
+    piochées/réveillées."""
     try:
-        wdb.conn.execute("DELETE FROM tasks WHERE workspace_id = ?", (workspace,))
-        wdb.conn.commit()
-    finally:
-        wdb.close()
+        from services.benchmark_cancel import cancel_workspace
+        # Annule TOUTES les tâches actives du workspace (benchmarks via
+        # sessions/ ET tâches de test à repo vide) — chaque cancel_task gère
+        # l'absence de repo (pas de branche de protection, flag cancelled seul).
+        r = cancel_workspace(workspace, repo_prefix="",
+                             reason="reset benchmark (phase cancellation)")
+        if r.get("errors"):
+            for e in r["errors"]:
+                print(f"  [cancel] tâche {e.get('task_id')}: {e.get('error')}",
+                      flush=True)
+        if r.get("count"):
+            print(f"  [cancel] {r['count']} tâches annulées "
+                  f"({r.get('cleaned_repos', 0)} repos nettoyés)", flush=True)
+    except Exception as e:
+        print(f"  [cancel] échec phase cancellation: {e}", flush=True)
+    # Réinitialiser les variables de run des greedy (task/repo_eff/LLM) pour
+    # qu'ils re-piochent proprement au prochain run — sinon un greedy conserve
+    # une ancienne tâche annulée dans ses variables persistées et la resume
+    # sur des tâches mortes (boucle pick échoué).
+    try:
+        from modules.sql.agents_repo import AgentsDB
+        import json as _json
+        db = AgentsDB()
+        rows = db.conn.execute(
+            "SELECT agent_id, variables_json FROM agents "
+            "WHERE occupation = 'continue' AND name LIKE 'team:%'").fetchall()
+        for r in rows:
+            try:
+                v = _json.loads(r["variables_json"] or "{}")
+                dirty = False
+                for k in ("task", "repo_eff", "_last_call_error"):
+                    if k in v:
+                        v.pop(k, None)
+                        dirty = True
+                if dirty:
+                    db.conn.execute(
+                        "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
+                        (_json.dumps(v), r["agent_id"]))
+            except Exception:
+                continue
+        db.conn.commit()
+        db.close()
+    except Exception as e:
+        print(f"  [cancel] réinit greedy: {e}", flush=True)
 
 
 def wake_team_greedy(team_prefix: str = "team:llm-code%") -> int:
@@ -140,11 +197,17 @@ def run(timeout_s: int, workspace: str, task_type: str) -> dict:
 
     picked_at = None
     done_at = None
+    # Le greedy transitionne le token coding → code_review quand il a livré
+    # (commit + finalisation). `done` complet (review/merge) peut ne jamais
+    # arriver pour une tâche de test synthétique : on considère FINI dès que la
+    # tâche n'est plus `coding` active (transitionnée) ou passée `done`.
+    done_statuses = ("done", "cancelled")
     while time.monotonic() - t0 < timeout_s:
         status = task_status(workspace, tid)
+        ttype = task_type_of(workspace, tid)
         if status == "doing" and picked_at is None:
             picked_at = time.monotonic() - t0
-        if status == "done":
+        if status in done_statuses or (ttype and ttype != task_type):
             done_at = time.monotonic() - t0
             break
         time.sleep(5)
@@ -172,7 +235,9 @@ def run(timeout_s: int, workspace: str, task_type: str) -> dict:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--timeout", type=int, default=7200,
+                   help="durée max d'attente en secondes (défaut 2h — le greedy "
+                        "peut prendre plusieurs minutes pour finaliser)")
     p.add_argument("--workspace", default=DEFAULT_WS)
     p.add_argument("--task-type", default="coding")
     p.add_argument("--create", action="store_true",
@@ -193,7 +258,15 @@ def main() -> int:
         wake_team_greedy()
         print(f"[bench_swarm_live] created task={tid}")
         return 0
-    report = run(args.timeout, args.workspace, args.task_type)
+    try:
+        report = run(args.timeout, args.workspace, args.task_type)
+    except KeyboardInterrupt:
+        # Ctrl-C : phase cancellation propre (signal aux agents + flag
+        # cancelled) pour libérer le swarm proprement.
+        print("\n[bench_swarm_live] interruption — phase cancellation…",
+              flush=True)
+        reset_workspace_tasks(args.workspace)
+        return 130
     print(f"[bench_swarm_live] status={report.get('status')} "
           f"task={report.get('task_id')} "
           f"last={report.get('last_status', report.get('status'))} "
@@ -202,6 +275,20 @@ def main() -> int:
           f"agents_running={report.get('agents_running')}")
     if report.get("status") == "error":
         print(f"  raison: {report.get('reason')}")
+    # LOG du résultat (timestampé, BDD + JSONL) pour l'historique des runs.
+    try:
+        from services.benchmark_results import log_report
+        bid = log_report("bench_swarm_live", report)
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        print(f"[bench_swarm_live] résultat loggué à {ts} (id={bid})")
+    except Exception as e:
+        print(f"[bench_swarm_live] échec log résultat: {e}")
+    # PHASE CANCELLATION UNIQUEMENT en cas d'échec réel (timeout sans pick,
+    # erreur). Si la tâche est done ou encore en cours (ok/ok_pick), on la
+    # LAISSE tourner : le greedy continue et finalisera. Annuler ici casserait
+    # un benchmark qui progresse.
+    if report.get("status") in ("timeout", "error"):
+        reset_workspace_tasks(args.workspace)
     return 0 if report.get("status") == "ok" else 1
 
 
