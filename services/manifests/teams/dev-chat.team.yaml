@@ -104,15 +104,6 @@ members:
     resources:
       llm: true
 
-  # ── COORDINATEUR : explore le taskflow, analyse ce que font les autres,
-  #    et garantit que le chemin chat → swarm → chat est complété. ──
-  - agent_name: surveillant
-    ref: greedy-coordinateur
-    role: planificateur
-    occupation: continue
-    resources:
-      llm: true
-
 resources:
   budget_per_hour: 100
   max_concurrent: 9

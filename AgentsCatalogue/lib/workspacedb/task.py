@@ -74,6 +74,7 @@ def _normalize_repo_ref(repo: str) -> str:
     return r
 
 
+# DEPRECATED (taskflow V0.15) — remplacé par workspacedb.taskflow.decoupe / sub_task_done
 def create_sous_tache(inputs: dict, home: str) -> dict:
     """create_sous_tache — découpage par l'ANALYSTE en UN batch du MÊME type.
 
@@ -144,6 +145,7 @@ def create_sous_tache(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+# DEPRECATED (taskflow V0.15) — remplacé par workspacedb.taskflow.decoupe / sub_task_done
 def assign_difficulte(inputs: dict, home: str) -> dict:
     """assign_difficulte — fixe la difficulté d'une tâche (ou la fait avancer).
 
@@ -1101,4 +1103,4 @@ __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "get_files", "verdict", "apply_verdict", "review_verdict",
               "task_has_corrective", "create_token", "pick_token",
               "modify_token", "clear_task", "cancel_task", "release_token",
-              "create_sous_tache", "assign_difficulte", "report_read_only"]
+              "report_read_only"]
