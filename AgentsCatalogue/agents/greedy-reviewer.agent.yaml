@@ -178,6 +178,7 @@ entrypoints:
           max_tokens: 2048
           temperature: 0.2
           output_capture: review_out
+          on_error: review_error
           next: check_after_review
         - id: check_after_review
           type: call

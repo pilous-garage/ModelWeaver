@@ -319,6 +319,23 @@ class TaskRepository:
             )
         """)
 
+    def assigned_to_agent(self, assigned_to: str,
+                          task_types: Optional[list] = None) -> List[Dict[str, Any]]:
+        """Toutes les tâches (todo/doing/done/cancelled) actuellement assignées
+        à un agent, filtrées par task_types si fourni. Utilisé par le picker
+        pour libérer les tâches terminées/annulées encore assignées."""
+        if not assigned_to:
+            return []
+        ph = ",".join("?" for _ in (task_types or [])) if task_types else None
+        sql = ("SELECT * FROM tasks WHERE workspace_id = ? "
+               "AND assigned_to = ?")
+        args: list = [self.wid, str(assigned_to)]
+        if ph:
+            sql += f" AND task_type IN ({ph})"
+            args.extend(task_types or [])
+        rows = self.conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows] if rows else []
+
     def claim_resume(self, task_types: List[str] = (),
                      assigned_to: str = "") -> Optional[Dict[str, Any]]:
         """Recharge une tâche 'doing' DÉJÀ assignée à l'agent (reprise de run).

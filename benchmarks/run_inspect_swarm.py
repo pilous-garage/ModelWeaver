@@ -72,6 +72,8 @@ def _build_task(bench: str, n: int):
 
 
 def main() -> None:
+    import sys
+    sys.path.insert(0, str(REPO))
     from inspect_ai import eval as inspect_eval
     from inspect_ai.model import get_model
 
@@ -100,6 +102,11 @@ def main() -> None:
                       base_url=base_url, api_key=token)
 
     task = _build_task(args.bench, args.n)
+    # PHASE CANCELLATION préalable : annule les vieilles tâches du workspace
+    # pour que le swarm ne traite QUE le benchmark (les tâches résiduelles
+    # polluent le picker et détournent les greedy).
+    _cancel_workspace("mw-llm-code",
+                      reason="reset avant benchmark inspect (phase cancellation)")
     print(f"→ évaluation {args.bench} x{args.n} (sandbox={args.sandbox}, peut "
           "être long : le swarm orchestre des agents réels)…")
     try:

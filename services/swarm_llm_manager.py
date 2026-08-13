@@ -109,7 +109,14 @@ def ask_analyst(session: Dict[str, Any]) -> Dict[str, Any]:
     L'analyste découpe en tâches workspace par rôle. Retourne {ok, ...}."""
     prompt = (session.get("_prompt") or "")
     repo = session.get("repo", "")
-    message = ANALYST_PROMPT.format(prompt=prompt, repo=repo)
+    # project_id RELATIF (sessions/<id>) pour git_clone : le chemin absolu
+    # cassait la résolution _central_repo (mw_home()/repos//abs/path/…).
+    session_id = session.get("session_id", "")
+    if session_id:
+        repo_rel = f"sessions/{session_id}"
+    else:
+        repo_rel = repo
+    message = ANALYST_PROMPT.format(prompt=prompt, repo=repo_rel)
     try:
         from services.api.handlers.dev_chat import op_dev_chat_send
         res = op_dev_chat_send({

@@ -604,6 +604,24 @@ class Agent:
         # sorties des membres dans ses variables finales.
         for _k in [k for k in variables if k.startswith("_member_")]:
             del variables[_k]
+        # RESET des variables de RUN greedy à chaque exécution : l'ancienne
+        # tâche (task/repo_eff/work_out/review_out/…) ne doit jamais polluer le
+        # nouveau run — c'est le picker qui repart d'un état propre. On GARDE
+        # les variables « logiques » persistantes : _llm_provider/_llm_model/
+        # _llm_fallbacks (LLM assigné), workspace_id/team_id/project_id/
+        # role_required, agent_id, home.
+        _KEEP = ("agent_id", "home", "workspace_id", "team_id", "project_id",
+                 "role_required", "_llm_provider", "_llm_model", "_llm_fallbacks",
+                 "request", "exclude_models", "restrict_llm")
+        for _k in [k for k in variables
+                   if k not in _KEEP
+                   and not k.startswith("_")
+                   and k != "messages"]:
+            del variables[_k]
+        for _k in [k for k in variables
+                   if k.startswith("_") and k not in _KEEP
+                   and k not in ("_last_call_ok", "_last_call_error")]:
+            del variables[_k]
         # Injecte agent_id pour les skills (memory, log) via {{agent_id}}.
         variables.setdefault("agent_id", self.agent_id)
         # Injecte la requête utilisateur (dernier message user) via {{request}}.

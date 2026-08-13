@@ -56,6 +56,24 @@ def _normalize_task_type(task_type: str) -> str:
     return _ROLE_TO_TYPE.get(key, str(task_type or ""))
 
 
+def _normalize_repo_ref(repo: str) -> str:
+    """Normalise la référence d'un repo pour git_clone.
+
+    Le pilote/analyste met parfois un CHEMIN ABSOLU (ex.
+    /home/…/.modelweaver/repos/sessions/swarm-xxx) au lieu de l'identifiant
+    relatif que git_clone attend (sessions/swarm-xxx). On convertit tout
+    chemin absolu sous .../repos/ en identifiant relatif."""
+    r = str(repo or "").strip()
+    if not r:
+        return ""
+    import re as _re
+    # .../repos/sessions/swarm-xxx ou .../repos/sessions/swarm-xxx.git
+    m = _re.search(r"(?:repos/)(sessions/[^/\s]+?)(?:\.git)?$", r)
+    if m:
+        return m.group(1)
+    return r
+
+
 def create(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     title = inputs.get("title", "")
@@ -65,7 +83,7 @@ def create(inputs: dict, home: str) -> dict:
     task_type = _normalize_task_type(
         inputs.get("task_type", inputs.get("role_required", "")))
     team_id = int(inputs.get("team_id", -1))
-    repo = inputs.get("repo", "")
+    repo = _normalize_repo_ref(inputs.get("repo", ""))
     branch = inputs.get("branch", "")
     base_commit = inputs.get("base_commit", "")
     commit_start = inputs.get("commit_start", "")
@@ -209,10 +227,26 @@ def pick_token(inputs: dict, home: str) -> dict:
                 max_diff[tt] = mx
     try:
         db, scope = _scope(workspace_id)
-        # REPRISE : si l'agent a DÉJÀ une tâche 'doing' assignée (pioche du run
-        # précédent, run coupé/redémarré), on la RECHARGE au lieu d'en piocher
-        # une nouvelle. Sans ça, un greedy réveillé re-pioche → échoue (sa tâche
-        # est déjà doing) → dort → sa tâche reste doing pour toujours.
+        # ── 0. NETTOYAGE des tâches assignées à l'agent ──
+        # Boucle : tant qu'une tâche assignée à cet agent est DONE ou
+        # CANCELLED, on la LIBÈRE (release → todo) et on recommence. Un run
+        # précédent a pu terminer/annuler la tâche mais laisser l'assignation :
+        # la relâcher garantit un état propre et récupère les tâches
+        # mal attribuées. (Si elle est 'doing' active → reprise ci-dessous.)
+        while True:
+            stale = scope.tasks.assigned_to_agent(
+                agent_id, task_types=task_types)
+            if not stale:
+                break
+            _released_any = False
+            for t in stale:
+                st = (t.get("status") or "")
+                if st in ("done", "cancelled") or t.get("cancelled"):
+                    scope.tasks.release(t["task_id"], freedby=agent_id)
+                    _released_any = True
+            if not _released_any:
+                break  # toutes les assignées sont 'doing' → on les reprend
+        # ── 1. REPRISE : une tâche 'doing' active assignée (run coupé) ──
         try:
             resume = scope.tasks.claim_resume(
                 task_types=task_types, assigned_to=agent_id)
@@ -221,6 +255,7 @@ def pick_token(inputs: dict, home: str) -> dict:
                 return _finalize_pick(scope, task, home)
         except Exception:
             pass   # le skill claim_resume n'existe pas / erreur → pick normal
+        # ── 2. PIOCHE d'une nouvelle tâche ──
         task = scope.tasks.claim_next(task_types, max_diff, team_id=team_id,
                                       assigned_to=agent_id,
                                       accept_external_work=accept_external)
