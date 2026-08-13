@@ -90,6 +90,16 @@ entrypoints:
       type: break
     - id: continue_loop
       type: continue
+    - id: register_wait
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        agent_id: "{{agent_id}}"
+        team_id: "{{team_id}}"
+        type: sub_task_available
+        types: "[{{type: merge, level_max: expert}}]"
+      next: sleep
     - id: sleep
       type: call
       fn: host/sleep@v1
