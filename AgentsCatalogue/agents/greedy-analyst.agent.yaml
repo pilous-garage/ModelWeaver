@@ -111,6 +111,7 @@ entrypoints:
         le nom de la tâche analysée dans le rapport.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
+      agentic: always
       skills: ["workspace/sub_task_get@v1", "workspace/decoupe@v1",
                "workspace/sub_task_done@v1", "workspace/sub_task_release@v1",
                "workspace/analysis_report@v1"]

@@ -428,6 +428,32 @@ class FSMInterpreter:
                     "parameters": {"type": "object", "properties": props, "required": required},
                 },
             })
+        # ── tool_as_text : échappatoire pour les modèles NON-agentic ──
+        # Le modèle appelle UN tool (tool_as_text) avec {tool_name, arguments_json}
+        # en texte ; le FSM le résout et exécute le tool réel. Permet à un modèle
+        # qui ne maîtrise pas le function-calling (ex. hy3:free) de piloter les
+        # skills sans bloc ###tool_call### dans le prompt (génère un tool_call
+        # API standard → satisfait agentic:always).
+        if tools and not any(t["function"]["name"] == "tool_as_text" for t in tools):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "tool_as_text",
+                    "description": (
+                        "Appelle n'importe quel outil du contexte en passant son "
+                        "nom et ses arguments en JSON texte. Usage : "
+                        '{"tool_name": "<nom_de_l_outil>", "arguments_json": "{\\"key\\": \\"value\\"}"}. '
+                        "Utilise-le si tu ne peux pas appeler directement les fonctions."),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tool_name": {"type": "string", "description": "Nom exact de l'outil à appeler (ex. workspace_decoupe_v1)."},
+                            "arguments_json": {"type": "string", "description": "Arguments JSON (string) de l'outil."},
+                        },
+                        "required": ["tool_name", "arguments_json"],
+                    },
+                },
+            })
         return tools
 
     def _capability_confidence(self, model_ref: str, provider_ref: str,
@@ -716,6 +742,15 @@ class FSMInterpreter:
                 # Si mode translation (pas de tools API) → forcer _need_translation
                 if _agentic_mode == "translation":
                     _need_translation = True
+                # agentic:always → le LLM DOIT produire un tool. Pour être sûr
+                # qu'il connaît les outils (et qu'il puisse appeler tool_as_text
+                # / écrire le bloc ###tool_call###), on fournit TOUJOURS la
+                # tool_list en TEXTE CLAIR dans le prompt, même en mode native.
+                if _agentic_req == "always" and tools and not _translation_prompt:
+                    from modules.llm_manager.capacites import (
+                        _translation_prompt as _mk_tool_list)
+                    _translation_prompt = _mk_tool_list(tools)
+                    _need_translation = True
 
                 # Boucle tool_calls : LLM → tool → LLM → ... → text.
                 # Le PREMIER appel (round 0) passe par resilient_chat (retry +
@@ -772,7 +807,7 @@ class FSMInterpreter:
                     result.variables["_llm_model"] = m_ref
                     result.variables["_llm_fallbacks"] = 0
 
-                    if _need_translation:
+                    if _need_translation and not getattr(response, "tool_calls", None):
                             # Parser les ###tool_call:nom:"args"### du texte.
                             _parsed = self._parse_translation_tools(
                                 (getattr(response, "content", "") or ""))
@@ -855,6 +890,18 @@ class FSMInterpreter:
                             raw_args = json.loads(tc["function"]["arguments"])
                         except json.JSONDecodeError:
                             raw_args = {}
+                        # ── tool_as_text : le modèle délègue un tool en texte ──
+                        if fn_name == "tool_as_text":
+                            _target = raw_args.get("tool_name", "") or ""
+                            _args_txt = raw_args.get("arguments_json", "") or "{}"
+                            try:
+                                _target_args = json.loads(_args_txt)
+                            except json.JSONDecodeError:
+                                _target_args = {}
+                            if _target:
+                                fn_name = _target
+                                raw_args = _target_args
+                                _trace_tools.append(f"{_target}(via text)")
                         conv_name = self._resolve_tool_skill(fn_name)
                         # Le skill doit s'exécuter dans le home de l'agent
                         # (sinon write_file écrit dans /tmp) et connaître son
