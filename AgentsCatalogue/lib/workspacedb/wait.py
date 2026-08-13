@@ -28,6 +28,7 @@ def registrer(inputs: dict, home: str) -> dict:
         "workspace_id": workspace_id,
         "role": inputs.get("role", ""),
         "team_id": int(inputs.get("team_id", -1)),
+        "types": inputs.get("types") or [],
     }
     try:
         db = AgentsDB()

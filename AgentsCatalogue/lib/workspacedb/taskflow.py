@@ -146,6 +146,22 @@ def ask_new_task(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     agent_id = inputs.get("agent_id", "")
     types = inputs.get("types") or []
+    if isinstance(types, str):
+        # FSM : "[{type: analysis, level_max: expert}]" (littéral yaml)
+        import re
+        parsed = []
+        for m in re.finditer(r"\{([^}]*)\}", types):
+            body = m.group(1)
+            t = re.search(r"type\s*:\s*[\"']?([\w]+)[\"']?", body)
+            d = re.search(r"level_max\s*:\s*[\"']?([\w]+)[\"']?", body)
+            entry = {}
+            if t:
+                entry["type"] = t.group(1)
+            if d:
+                entry["level_max"] = d.group(1)
+            if entry:
+                parsed.append(entry)
+        types = parsed
     if not workspace_id or not agent_id:
         return {"ok": False, "error": "workspace_id + agent_id requis"}
     try:
@@ -174,10 +190,39 @@ def ask_new_task(inputs: dict, home: str) -> dict:
                     "sub_task_id": res["sub_task_id"],
                     "task_id": res["task_id"], "type": res["type"],
                     "ask_id": ask_id}
+        # Rien de dispo → l'agent se déshydrate, mais on l'enregistre en
+        # wait_for (sub_task_available) pour que le waker le réveille quand une
+        # sub_task de son type devient dispo.
+        _register_wait(workspace_id, aid, types)
         return {"ok": False, "reason": "wait", "ask_id": ask_id,
                 "note": res.get("note", "aucune sub_task dispo")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _register_wait(workspace_id: str, agent_id: int, types: list) -> None:
+    """Enregistre l'agent en attente d'une sub_task de son type (wait_for)."""
+    try:
+        from modules.sql.db import AgentsDB
+        adb = AgentsDB()
+        team_id = -1
+        try:
+            import json as _json
+            row = adb.conn.execute(
+                "SELECT variables_json FROM agents WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            if row:
+                _v = _json.loads(row["variables_json"] or "{}")
+                team_id = int(_v.get("team_id", -1) or -1)
+        except Exception:
+            pass
+        adb.close()
+        from AgentsCatalogue.lib.workspacedb.wait import registrer
+        registrer({"agent_id": agent_id, "type": "sub_task_available",
+                   "workspace_id": workspace_id, "team_id": team_id,
+                   "types": types}, "")
+    except Exception:
+        pass
 
 
 # ── sub_task lifecycle ────────────────────────────────────────────────────

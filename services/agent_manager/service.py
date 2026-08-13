@@ -1717,6 +1717,39 @@ class AgentManager:
                 if not ws:
                     return bool(all_done)
                 return False
+            if ctype == "sub_task_available":
+                # Taskflow V0.15 : l'agent greedy attend une sub_task
+                # unattributed (dépendances satisfaites) d'un de ses types.
+                types = cond.get("types") or []
+                if not types:
+                    return False
+                stypes = [t.get("type") if isinstance(t, dict) else str(t)
+                          for t in types]
+                stypes = [s for s in stypes if s]
+                if not stypes:
+                    return False
+                try:
+                    from modules.sql.workspace import WorkspaceDB
+                    wdb = WorkspaceDB()
+                    ph = ",".join("?" for _ in stypes)
+                    row = wdb.conn.execute(
+                        f"SELECT s.sub_task_id FROM sub_tasks s "
+                        f"WHERE s.workspace_id = ? AND s.team_id = ? "
+                        f"AND s.status = 'unattributed' AND s.supervised = 0 "
+                        f"AND s.sub_task_type IN ({ph}) "
+                        f"AND NOT EXISTS ("
+                        f"  SELECT 1 FROM sub_task_dependencies d "
+                        f"  JOIN sub_tasks p ON p.sub_task_id = d.parent_id "
+                        f"  WHERE d.child_id = s.sub_task_id "
+                        f"    AND (p.status != d.required_state "
+                        f"      OR (d.required_tag != '' "
+                        f"          AND p.tag != d.required_tag))) "
+                        f"LIMIT 1",
+                        (ws, team, *stypes)).fetchone()
+                    wdb.close()
+                    return row is not None
+                except Exception:
+                    return False
             return False
 
         # Vraie activité : threads greedy vivants (réels) + agent_runtime.
