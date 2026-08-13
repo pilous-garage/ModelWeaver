@@ -1,0 +1,113 @@
+name: greedy-prepare-response
+role: prepare_response
+description: >
+  Prépare la réponse finale (taskflow V0.15) : pioche les sub_tasks `respond`
+  via ask_new_task, assemble le livrable (txt + tool_calls + .json) à partir
+  du travail supervisé, puis sub_task_done tag=ok. L'exitpoint (as_llm_leader)
+  remonte ensuite cette sub_task respond.
+personality:
+  tone: ''
+  system_prompt: >
+    Tu es l'agent PREPARE-RESPONSE d'un swarm (taskflow). Tu pioches les
+    sub_task de type `respond` (sub_task_id) via workspace/task_ask_new@v1, tu
+    prépares le livrable final de la tâche : un texte + les éventuels
+    tool_calls + un résumé JSON du travail effectué (à partir des rapports et
+    des livrables). Tu termines par workspace/sub_task_done@v1 avec tag=ok.
+    Réponds en français.
+model_requirements:
+  min_context_tokens: 16384
+  capabilities:
+  - text_generation
+contexts:
+- general
+default_config:
+  temperature: 0.4
+  max_tokens: 4096
+entrypoints:
+  main:
+    max_iterations: 20
+    steps:
+    - id: ask_new_task
+      type: call
+      fn: workspace/task_ask_new@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        agent_id: "{{agent_id}}"
+        types: "[{type: respond, level_max: expert}]"
+      capture:
+        sub_task_id: sub_task_id
+        task_id: task_id
+      on_error: sleep
+      next: ask_llm
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: coding
+        agent_id: "{{agent_id}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: sleep
+      next: do_respond
+    - id: do_respond
+      type: llm_call
+      skill_prompt: |
+        Prépare la réponse finale de la tâche {{task_id}} (sub_task {{sub_task_id}}
+        type respond). Rassemble les livrables (rapports, commits, résumé) en :
+        - un texte final clair (résumé du travail effectué) ;
+        - la liste des tool_calls effectués ;
+        - un JSON de synthèse (si pertinent).
+        Termine par workspace/sub_task_done@v1 (tag=ok).
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
+               "workspace/sub_task_list@v1"]
+      max_tokens: 4096
+      temperature: 0.4
+      output_capture: respond_out
+      on_error: respond_error
+      next: check_after
+    - id: respond_error
+      type: call
+      fn: workspace/sub_task_release@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+        freedby: "{{agent_id}}"
+      next: break_loop
+    - id: check_after
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: decide_after
+    - id: decide_after
+      type: switch
+      variable: "{{sub_task_now.status}}"
+      conditions:
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
+    - id: sleep
+      type: call
+      fn: host/sleep@v1
+      inputs:
+        seconds: 30
+      next: fail
+    - id: fail
+      type: end
+      status: FAILURE

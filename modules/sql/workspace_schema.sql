@@ -71,9 +71,95 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Espace de travail : -1 = projet (partagé), sinon team_id de la team qui
     -- traite la tâche (une team peut travailler sur plusieurs projets).
     team_id      INTEGER DEFAULT -1,
+    -- Tag du SUJET (terminal, posé par le supervisor) : résultat qualifié du
+    -- pipeline complet (ex. done/ok, done/failure…). Champs du nouveau
+    -- taskflow (V0.15) : le workflow vit dans sub_tasks, tasks = le sujet.
+    tag          TEXT DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── Sub_tasks : le RELAIS (une ligne par étape du pipeline) ─────────────
+-- V0.15 — taskflow : le workflow est porté par la création de nouvelles
+-- sub_tasks + dépendances, PAS par des mutations de type. Chaque étape
+-- (analysis, coding, testing, review, merge, respond…) est une ligne.
+-- États : waiting_dependencies → unattributed → doing → done/cancelled → supervised.
+CREATE TABLE IF NOT EXISTS sub_tasks (
+    sub_task_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    task_id      INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    team_id      INTEGER DEFAULT -1,
+    sub_task_type TEXT NOT NULL,          -- analysis | coding | testing | review | merge | respond
+    status       TEXT DEFAULT 'unattributed',
+    tag          TEXT DEFAULT '',          -- posé par l'agent d'exécution, contraint par type
+    difficulty   TEXT DEFAULT 'medium',
+    assigned_to  TEXT DEFAULT '',
+    freedby      TEXT DEFAULT '',
+    supervised   INTEGER DEFAULT 0,        -- groupe complet clos par le supervisor
+    repo         TEXT DEFAULT '',
+    branch       TEXT DEFAULT '',
+    commit_hash  TEXT DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subtasks_team_status
+    ON sub_tasks(team_id, status, supervised, sub_task_type);
+CREATE INDEX IF NOT EXISTS idx_subtasks_assigned
+    ON sub_tasks(assigned_to, status);
+CREATE INDEX IF NOT EXISTS idx_subtasks_task
+    ON sub_tasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_subtasks_workspace_status
+    ON sub_tasks(workspace_id, status, supervised);
+
+-- ── Dépendances entre sub_tasks (relais) ────────────────────────────────
+-- V0.15 — une sub_task enfant attend que ses parents (sub_tasks) soient à
+-- l'état + tag requis (ex. parent coding en done/ok). Le supervisor lève le
+-- waiting_dependencies quand toutes les lignes sont satisfaites.
+CREATE TABLE IF NOT EXISTS sub_task_dependencies (
+    child_id       INTEGER NOT NULL,
+    parent_id      INTEGER NOT NULL,
+    required_state TEXT DEFAULT 'done',
+    required_tag   TEXT DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (child_id, parent_id),
+    FOREIGN KEY (child_id)  REFERENCES sub_tasks(sub_task_id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_id) REFERENCES sub_tasks(sub_task_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sub_task_deps_child ON sub_task_dependencies(child_id);
+CREATE INDEX IF NOT EXISTS idx_sub_task_deps_parent ON sub_task_dependencies(parent_id);
+
+-- ── Ask_new_task : file d'attribution (greedy) ───────────────────────────-- V0.15 — l'agent greedy demande du travail au supervisor (remplace
+-- sleep + pick). La demande est écrite en BDD (traçabilité + file de secours
+-- pour le tick failsafe), puis le supervisor répond en synchrone.
+CREATE TABLE IF NOT EXISTS ask_new_task (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    agent_id     INTEGER NOT NULL,
+    types        TEXT DEFAULT '[]',        -- JSON: [{type, level_max}]
+    status       TEXT DEFAULT 'pending',   -- pending | served | answered_wait
+    requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+    served_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ask_new_task_status ON ask_new_task(status, workspace_id);
+
+-- ── Task_supervisor_rules : tableau de règles par team ───────────────────
+-- V0.15 — (type_entrant, tag_entrant) → (type_sortant, tag_sortant).
+-- Le supervisor est généraliste par défaut ; chaque team PEUT surcharger
+-- (le champ est obligatoire dans la déclaration d'une team).
+CREATE TABLE IF NOT EXISTS task_supervisor_rules (
+    rule_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT DEFAULT '',
+    team_id      INTEGER DEFAULT -1,
+    in_type      TEXT NOT NULL,            -- sub_task_type entrant ('' = tous)
+    in_tag       TEXT DEFAULT '',          -- tag entrant ('' = tous)
+    out_type     TEXT NOT NULL,            -- sub_task_type créé ('' = none → supervised)
+    out_tag      TEXT DEFAULT '',          -- tag posé sur la nouvelle sub_task
+    priority     INTEGER DEFAULT 0,        -- règle la plus spécifique gagne
+    enabled      INTEGER DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_supervisor_rules
+    ON task_supervisor_rules(workspace_id, team_id, in_type, in_tag);
 
 -- Parenté des tâches (dépendances). Une tâche enfant n'est PIOCHABLE que si
 -- TOUS ses parents sont dans l'état requis (dépendance totale). Chaque ligne

@@ -1,24 +1,39 @@
 name: greedy-analyst
 role: architecte
 description: >
-  Analyste glouton intelligent — patron adapté : pick (token analysis) →
-  allocation LLM (check_llm/ask_llm/check_error_type) → boucle (analyse + verdict
-  task_verdict) → réaffectation du token. La mécanique est automatique.
+  Analyste glouton (analysis-planning) — taskflow V0.15 : ask_new_task (pioche
+  une sub_task analysis attribuée par le supervisor) → allocation LLM →
+  analyse + découpe (decoupe@v1 : A → B,C + merge auto) ou clôture
+  (sub_task_done analysis). READ-ONLY : produit uniquement l'analysis-report et
+  les sub_tasks découpées.
 personality:
   tone: ''
   system_prompt: >
-    Tu es un ANALYSTE-DÉCOUPEUR dans un swarm. Tu es READ-ONLY : tu analyses
-    et découpes, tu n'écris JAMAIS de code ni de fichier. Tu découpes les
-    missions en sous-tokens actionnables. Quand tu as fini la découpe, appelle
-    le verdict task_verdict. Réponds en français.
+    Tu es un ANALYSTE-DÉCOUPEUR dans un swarm (taskflow). Tu es READ-ONLY :
+    tu analyses et découpes, tu n'écris JAMAIS de code ni de fichier.
+
+    Tu travailles sur une SUB_TASK de type `analysis` (sub_task_id) rattachée à
+    une tâche (task_id). Ton livrable est TOUJOURS un analysis-report
+    (workspace/analysis_report@v1) dont le nom reprend la tâche analysée.
+
+    DÉCOUPE (workspace/decoupe@v1) quand la tâche est décomposable :
+      - sous_taches = [{title, description, difficulty, type}] — le `type` est
+        le NIVEAU DE NÉCESSITÉ de la sous-tâche : analysis, coding, testing,
+        review… (chaque sous-tâche déclare ce qu'elle nécessite).
+      - Le skill génère AUTOMATIQUEMENT le noeud merge(B,C,…) : ne le déclare
+        jamais. Ta sub_task analysis passe en waiting_dependencies du merge et
+        sera reprise en re-analysis post-merge.
+
+    CLÔTURE (workspace/sub_task_done@v1) quand l'analyse est terminée :
+      - tag=ok si l'analyse est complète et sans découpe nécessaire ;
+      - tag=done/need_split si une re-découpe sera nécessaire ;
+      - tag=done/failure si l'analyse est impossible (manque d'info, etc.).
+
     RÈGLES :
-    - create_sous_tache crée un BATCH du MÊME type (rejette les types mixtes).
-      Pour construire un pipeline, émis UN appel PAR type.
-    - Si découper ne sert à rien (tâche simple), utilise assign_difficulte
-      (fixe le niveau, éventuellement next_type).
-    - Type 'to_analyse' : crée des tâches à re-analyse (découpage itératif).
-    - Le mini-shell est READ-ONLY : une commande non flaggée est refusée →
-      report_read_only, et continue sans elle.
+      - Lis d'abord la sub_task (workspace/sub_task_get@v1) pour le titre/descr.
+      - Une tâche simple (pas de découpe utile) : sub_task_done tag=ok.
+      - En cas d'impossibilité : workspace/sub_task_release@v1 (freedby=toi).
+      - Réponds en français.
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -34,16 +49,17 @@ entrypoints:
   main:
     max_iterations: 30
     steps:
-    - id: pick
+    - id: ask_new_task
       type: call
-      fn: workspace/token_task_pick@v1
+      fn: workspace/task_ask_new@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
-        task_types: "[{type: analysis, max_difficulty: expert}]"
+        types: "[{type: analysis, level_max: expert}]"
       capture:
-        task: task
+        sub_task_id: sub_task_id
+        task_id: task_id
+        type: sub_task_type
       on_error: sleep
       next: ask_llm
     - id: ask_llm
@@ -56,7 +72,7 @@ entrypoints:
         provider_ref: _llm_provider
         model_ref: _llm_model
       on_error: llm_error
-      next: exec_loop
+      next: do_analyse
     - id: llm_error
       type: call
       fn: workflow/check_error_type@v1
@@ -81,136 +97,70 @@ entrypoints:
         value: "switch_model"
         next: ask_llm
       default: sleep
-    - id: exec_loop
-      type: while
-      condition:
-        variable: task_state
-        operator: NOT_EQUALS
-        value: "done"
-      body:
-        steps:
-        - id: do_analyse
-          type: llm_call
-          skill_prompt: |
-            Analyse le token {{task.task_id}} (analysis) :
-            {{task.title}}
-            {{task.description}}
-
-            RÉSEAU D'AUTOMATE de transformation d'une tâche dans le swarm :
-              analysis → coding → code_review → testing_code → merge → (fin)
-              branches possibles : to_analyse (re-découper), coordination,
-              exploration, merger_code, erreur_agent.
-            Tu es à l'étape `analysis` : tu décides du OU des types à créer.
-
-            Découpe via workspace/create_sous_tache@v1 :
-              - UN batch = UN SEUL type (le tool rejette les mix).
-              - Pour plusieurs types (ex. coding + testing), émis UN appel PAR
-                type (les sous-tâches codings d'abord).
-              - Chaque sous-tâche : {title, description, difficulty,
-                task_to_do_before} (index 0-based du batch pour l'ordre).
-              - Le type 'to_analyse' crée des tâches à re-découper plus tard.
-            Si la tâche est simple (pas besoin de découper) : workspace/
-            assign_difficulte@v1 (difficulty + éventuellement next_type).
-
-            Tu peux attacher un `rapport_analysis` (create_sous_tache/
-            assign_difficulte) transmis aux étapes suivantes. Si le token reçu
-            est déjà un sous-token (découpage itératif), analyse LE sous-token.
-
-            Quand tu as fini la découpe, appelle le verdict task_verdict (done |
-            continue | error | to_difficult, task_id={{task.task_id}}).
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          skills: ["file/read_file@v1", "file/list_dir@v1", "file/glob@v1",
-                   "file/grep@v1", "git/lite@v1", "shell/exec_readonly@v1",
-                   "workspace/task_get@v1", "workspace/create_sous_tache@v1",
-                   "workspace/assign_difficulte@v1",
-                   "workspace/report_read_only@v1",
-                   "workspace/task_verdict@v1"]
-          max_tokens: 4096
-          temperature: 0.2
-          output_capture: analyse_out
-          on_error: analyse_error
-          next: check_after_analyse
-        - id: analyse_error
-          type: call
-          fn: workspace/token_task_release@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-            freedby: "{{agent_id}}"
-            error: "analyst: échec analyse LLM ({{_last_error}})"
-          next: break_loop
-        - id: check_after_analyse
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_analyse
-        - id: decide_after_analyse
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "analysis"
-            next: break_loop
-          default: ask_verdict
-        - id: ask_verdict
-          type: llm_call
-          skill_prompt: |
-            Tu as travaillé sur le token {{task.task_id}} (analysis) sans
-            le transitionner. Décide le verdict en appelant le tool task_verdict
-            avec verdict=done | continue | error | to_difficult.
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["workspace_verdict"]
-          max_tokens: 1024
-          temperature: 0.2
-          output_capture: verdict_out
-          on_error: analyse_error
-          next: check_after_verdict
-        - id: check_after_verdict
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_verdict
-        - id: decide_after_verdict
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "analysis"
-            next: break_loop
-          default: continue_loop
-        - id: break_loop
-          type: set_variable
-          name: task_state
-          value: "done"
-          next: break
-        - id: break
-          type: break
-        - id: continue_loop
-          type: continue
-      next: end
-    - id: end
-      type: end
-      status: SUCCESS
-    - id: sleep
+    - id: do_analyse
+      type: llm_call
+      skill_prompt: |
+        Analyse la sub_task {{sub_task_id}} (analysis) de la tâche {{task_id}}.
+        Lis-la d'abord (workspace/sub_task_get@v1), puis décide :
+        - DÉCOUPE (workspace/decoupe@v1) : sous_taches=[{title, description,
+          difficulty, type}] avec type = niveau de nécessité (analysis, coding,
+          testing, review…). Le merge(B,C,…) est généré automatiquement.
+        - CLÔTURE (workspace/sub_task_done@v1) : tag=ok si terminée, tag=
+          done/need_split si re-découpe, tag=done/failure si impossible.
+        Produis TOUJOURS l'analysis-report (workspace/analysis_report@v1) avec
+        le nom de la tâche analysée dans le rapport.
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      skills: ["workspace/sub_task_get@v1", "workspace/decoupe@v1",
+               "workspace/sub_task_done@v1", "workspace/sub_task_release@v1",
+               "workspace/analysis_report@v1"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: analyse_out
+      on_error: analyse_error
+      next: check_after_analyse
+    - id: analyse_error
       type: call
-      fn: workspace/wait_for@v1
+      fn: workspace/sub_task_release@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "{{role_required}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-      next: end
+        sub_task_id: "{{sub_task_id}}"
+        freedby: "{{agent_id}}"
+        tag: done/failure
+      on_error: break_loop
+      next: break_loop
+    - id: check_after_analyse
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: decide_after_analyse
+    - id: decide_after_analyse
+      type: switch
+      variable: "{{sub_task_now.status}}"
+      conditions:
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
+    - id: sleep
+      type: call
+      fn: host/sleep@v1
+      inputs:
+        seconds: 30
+      next: fail
     - id: fail
       type: end
-      status: FAILED
+      status: FAILURE

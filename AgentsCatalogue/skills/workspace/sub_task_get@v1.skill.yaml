@@ -1,0 +1,20 @@
+name: workspace/sub_task_get@v1
+category: workspace
+description: >
+  LIT une sub_task (relais d'une tâche : analysis, coding, testing, review,
+  merge, respond…) — état, tag, dépendances satisfaites.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  sub_task_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  sub_task:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.taskflow.sub_task_get

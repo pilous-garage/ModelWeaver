@@ -1034,6 +1034,12 @@ class AgentManager:
         # tâches à piocher.
         woken_coord = self._wake_coordinator()
 
+        # V0.15 taskflow : tick FAILSAFE du task_supervisor (léger, rythme
+        # lent). Le chemin nominal est synchrone (skill task_ask_new → assign) ;
+        # ici on rattrape les cas passifs (dépendances satisfaites, règles à
+        # appliquer, tâches à finaliser) quand personne n'a demandé.
+        supervised = self._supervise_taskflow()
+
         active = len(self.list_active())
         # ACTIVITÉ RÉELLE : les agents greedy s'exécutent dans des threads
         # daemon enregistrés dans _LIVE_AGENT_THREADS. Un agent qui travaille
@@ -1088,7 +1094,39 @@ class AgentManager:
             "woken_coordinator": woken_coord,
             "tasks_reclaimed": reclaimed,
             "issues_completed": issues_completed,
+            "supervised": supervised,
         }
+
+    _SUPERVISE_INTERVAL = 15.0   # tick failsafe du taskflow (s)
+    _supervise_last: float = 0.0
+
+    def _supervise_taskflow(self, force: bool = False) -> int:
+        """Tick FAILSAFE du task_supervisor (léger).
+
+        Une passe de supervision pour chaque (workspace, team) présent dans
+        sub_tasks, à intervalle lent. Le chemin nominal reste synchrone
+        (task_ask_new). Retourne le nombre total de sub_tasks traitées."""
+        import time as _t
+        now = _t.time()
+        if not force and now - self._supervise_last < self._SUPERVISE_INTERVAL:
+            return 0
+        self._supervise_last = now
+        try:
+            from services.task_supervisor.service import TaskSupervisor
+            from modules.sql.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            rows = wdb.conn.execute(
+                "SELECT DISTINCT workspace_id, team_id FROM sub_tasks "
+                "WHERE team_id != -1").fetchall()
+            sup = TaskSupervisor(wdb)
+            total = 0
+            for r in rows:
+                res = sup.supervise_team(r["workspace_id"], r["team_id"])
+                total += (res["created"] + res["released"]
+                          + res["supervised"] + res["tasks_finalized"])
+            return total
+        except Exception:
+            return 0
 
     _COORD_INTERVAL = 90.0     # réveil périodique du coordinateur (s)
     _coord_last: float = 0.0   # timestamp du dernier réveil

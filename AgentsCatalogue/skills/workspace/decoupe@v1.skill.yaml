@@ -1,0 +1,42 @@
+name: workspace/decoupe@v1
+category: workspace
+description: >
+  DÉCOUPE une tâche (skill de l'analyste, remplace create_sous_tache). A → B,C…
+  L'analyste déclare les sous-tâches avec leur TYPE = niveau de nécessité
+  (analysis, coding, testing, review…). Le skill génère AUTOMATIQUEMENT le
+  noeud merge(B,C,…) (le merge n'est jamais déclaré explicitement). La
+  sub_task analysis courante de la tâche passe en waiting_dependencies du
+  merge → elle ne redevient traitable (re-analysis post-merge) que quand le
+  merge est terminé. Le rapport d'analyse est attaché à la tâche.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+    description: "La tâche (sujet) dont on découpe la sub_task analysis courante"
+  sous_taches:
+    type: list
+    required: true
+    description: >
+      [{title, description, difficulty, type}] — type = niveau de nécessité
+      (analysis|coding|testing|review…). Une entrée par sous-tâche découpée.
+  rapport_analysis:
+    type: string
+    required: false
+    default: ""
+    description: "Analysis-report de la tâche analysée (toujours produit)"
+outputs:
+  ok:
+    type: boolean
+  created:
+    type: list
+    description: "sub_task_id des sous-tâches créées"
+  merge_sub_task_id:
+    type: integer
+  analysis_sub_task_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.decoupe

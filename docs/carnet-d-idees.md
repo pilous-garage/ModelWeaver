@@ -422,3 +422,35 @@ calculs). Impact direct sur les benchmarks : reproductibilité.
   configuration → même score à soumettre à la matrice de confiance.
 - Un audit à température 0.7 peut rater une faille qu'un modèle frontière
   (temp 0) voit — d'où la pondération par modificateur LLM (Idée 9).
+
+## Idée 12 — ModelWeaver en Docker : tout passe par le bridge hôte
+
+**Statut** : idée notée, NON implémenté. Source : session taskflow (2026-08-13).
+
+Un ModelWeaver lancé en Docker (ex. tests d'un selfimprove, environnements
+isolés) ne doit **jamais appeler les LLM directement** : tous les `llm_call`
+doivent passer par le **bridge de l'hôte**.
+
+### Pourquoi
+- **Perte de log calls** : les appels LLM du conteneur ne seraient pas comptés
+  dans `model_call_log` de l'hôte → métriques d'usage incomplètes.
+- **Dépenses de budget non comptées** : le budget (money/tokens) serait
+  consommé hors du compteur → dépassement invisible, pas de disjoncteur.
+- **Cohérence d'allocation** : l'allocation LLM (capacités, backoff, quota)
+  vit sur l'hôte ; un conteneur isolé aurait une vision tronquée et pourrait
+  choisir un modèle en backoff ou hors budget.
+
+### Principe
+- Le conteneur se déclare `mode=remote-bridge` : `direct_bridge.chat()` (et
+  `resilient_chat`, `test_agentic`, etc.) envoie la requête à un endpoint RPC
+  de l'hôte au lieu d'appeler le provider.
+- L'hôte exécute l'appel réel, enregistre `model_call_log` / `capacite_log` /
+  budget, et retourne la réponse (voire les chunks streaming).
+- Aucune clé API dans le conteneur : le KeyManager reste sur l'hôte.
+
+### Prochaines étapes
+- Endpoint RPC du bridge hôte (`bridge/chat`, `bridge/chat_stream`,
+  `bridge/test_agentic`, `bridge/get_capabilities`).
+- Flag d'environnement `MW_BRIDGE_REMOTE=http://host:port/...` lu au boot.
+- Validation : deux modelweaver (hôte + docker) → les appels du conteneur
+  apparaissent dans `model_call_log` de l'hôte avec `caller_id` du conteneur.

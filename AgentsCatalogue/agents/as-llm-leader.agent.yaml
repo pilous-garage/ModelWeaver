@@ -1,0 +1,84 @@
+name: as-llm-leader
+role: team_leader
+description: >
+  Leader du swarm-as-llm — SANS LLM (entrypoint/exitpoint). Crée la TASK
+  d'entrée selon le type demandé (chat_entry, completion_entry…) via
+  workspace/entry_create@v1, puis attend que le taskflow soit supervisé et
+  remonte le livrable final (sub_task respond : txt + tool_calls + .json) via
+  workspace/entry_result@v1. Aucun appel LLM : pure mécanique.
+personality:
+  tone: ''
+  system_prompt: >
+    Tu es l'ENTRYPOINT/EXITPOINT du swarm-as-llm (sans LLM). Tu crées la tâche
+    d'entrée, attends la complétion du taskflow, et remontes le résultat.
+model_requirements:
+  min_context_tokens: 4096
+  capabilities:
+  - text_generation
+entrypoints:
+  main:
+    max_iterations: 500
+    steps:
+    - id: create_entry
+      type: call
+      fn: workspace/entry_create@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        title: "{{request}}"
+        entry_type: "{{entry_type}}"
+        team_id: "{{team_id}}"
+      capture:
+        task_id: task_id
+        sub_task_id: entry_sub_task_id
+      on_error: fail
+      next: poll_result
+    - id: poll_result
+      type: while
+      condition:
+        variable: task_state
+        operator: NOT_EQUALS
+        value: "done"
+      body:
+        steps:
+        - id: get_result
+          type: call
+          fn: workspace/entry_result@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task_id}}"
+          capture:
+            task_status: task_status
+            response: entry_response
+          next: decide_result
+        - id: decide_result
+          type: switch
+          variable: "{{task_status}}"
+          conditions:
+          - operator: EQUALS
+            value: "supervised"
+            next: break_loop
+          - operator: EQUALS
+            value: "done"
+            next: break_loop
+          - operator: EQUALS
+            value: "cancelled"
+            next: break_loop
+          default: wait_tick
+        - id: wait_tick
+          type: call
+          fn: host/sleep@v1
+          inputs:
+            seconds: 5
+          next: continue_loop
+        - id: break_loop
+          type: set_variable
+          name: task_state
+          value: "done"
+          next: break
+        - id: break
+          type: break
+        - id: continue_loop
+          type: continue
+    - id: end
+      type: end
+      status: SUCCESS

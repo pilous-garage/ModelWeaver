@@ -1,218 +1,101 @@
 name: greedy-merger
 role: orchestrateur
 description: >
-  Merger glouton intelligent — patron adapté : pick (token merger_code)
-  → allocation LLM (check_llm/ask_llm/check_error_type) → boucle (do_merge,
-  demande docker via ask_docker si nécessaire, verdict task_verdict) → transition.
-  La mécanique est automatique.
+  Mergeur glouton (try simple merge → resolve conflict) — taskflow V0.15 : ask_new_task (pioche une sub_task merge attribuée
+  par le supervisor) → allocation LLM → do_work (travail + sub_task_done
+  tag) → re-boucle si nécessaire. sub_task_release en cas d'échec.
 personality:
   tone: ''
-  system_prompt: >
-    Tu es un mergeur dans un swarm. Tu regroupes les livrables des membres.
-    Règles :
-    1. Lis la description du token et récupère les livrables (agent_home/*/, repo central).
-    2. Si nécessaire, demande un docker adapté via ask_docker.
-    3. Fusionne dans un dossier consolidé, puis appelle task_verdict (done | continue | error | to_difficult).
-    Réponds en français, code en anglais.
-bundles:
-  - dev
-skills:
-  - workspace/task_verdict@v1
-  - workspace/ask_docker@v1
-  - workspace/task_create@v1
-  - workspace/task_get@v1
-generates:
-  - done
+  system_prompt: "Tu es un mergeur dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (merge) de la tâche {{{{task_id}}}} : tente le merge simple (git le gère bien sans conflit), puis en cas de conflit résous-le ; termine par workspace/sub_task_done@v1 avec tag=ok (merge réussi) ou tag=conflict (conflit non résolu → release). Réponds en français."
 model_requirements:
-  min_context_tokens: 32768
+  min_context_tokens: 16384
   capabilities:
   - text_generation
-  - code_generation
 contexts:
 - general
-- project:modelweaver
 default_config:
-  temperature: 0.2
+  temperature: 0.3
   max_tokens: 4096
 entrypoints:
   main:
     max_iterations: 30
     steps:
-    # ── 1. PICK (AUTO) ──
-    - id: pick
+    - id: ask_new_task
       type: call
-      fn: workspace/token_task_pick@v1
+      fn: workspace/task_ask_new@v1
       inputs:
-        workspace_id: "{{workspace_id}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-        task_types: "[{type: merger_code, max_difficulty: expert}]"
+        workspace_id: "{workspace_id}"
+        agent_id: "{agent_id}"
+        types: "[{{type: merge, level_max: expert}}]"
       capture:
-        task: task
+        sub_task_id: sub_task_id
+        task_id: task_id
       on_error: sleep
       next: ask_llm
-
-    # ── 2. ASK_LLM (AUTO) ──
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
       inputs:
-        use_case: analysis
-        agent_id: "{{agent_id}}"
+        use_case: coding
+        agent_id: "{agent_id}"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: llm_error
-      next: exec_loop
-
-    # ── 3. LLM_ERROR → CLASSIFIER (AUTO) ──
-    - id: llm_error
+      on_error: sleep
+      next: do_work
+    - id: do_work
+      type: llm_call
+      skill_prompt: |
+        Traite la sub_task {{sub_task_id}} (merge) de la tâche {{task_id}} : try simple merge (git auto), sinon resolve conflict ; puis workspace/sub_task_done@v1 (tag=ok | conflict). Si impossible : workspace/sub_task_release@v1.
+      provider_ref: "{_llm_provider}"
+      model_ref: "{_llm_model}"
+      skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
+               "workspace/sub_task_release@v1"]
+      max_tokens: 4096
+      temperature: 0.3
+      output_capture: work_out
+      on_error: work_error
+      next: check_after
+    - id: work_error
       type: call
-      fn: workflow/check_error_type@v1
+      fn: workspace/sub_task_release@v1
       inputs:
-        error: "{{_last_call_error}}"
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
+        workspace_id: "{workspace_id}"
+        sub_task_id: "{sub_task_id}"
+        freedby: "{agent_id}"
+      next: break_loop
+    - id: check_after
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{workspace_id}"
+        sub_task_id: "{sub_task_id}"
       capture:
-        action: err_action
-      next: err_branch
-    - id: err_branch
+        sub_task: sub_task_now
+      next: decide_after
+    - id: decide_after
       type: switch
-      variable: "{{err_action}}"
+      variable: "{sub_task_now.status}"
       conditions:
-      - operator: EQUALS
-        value: "blacklist_provider"
-        next: fail
-      - operator: EQUALS
-        value: "context_reduce"
-        next: ask_llm
-      - operator: EQUALS
-        value: "switch_model"
-        next: ask_llm
-      default: sleep
-
-    # ── 4. EXEC_LOOP : boucle fusion (LE SEUL LLM) ──
-    - id: exec_loop
-      type: while
-      condition:
-        variable: task_state
-        operator: NOT_EQUALS
-        value: "done"
-      body:
-        steps:
-        - id: ask_docker_step
-          type: call
-          fn: workspace/ask_docker@v1
-          inputs:
-            specs:
-              with: ["python3", "gcc"]
-              without: ["node"]
-              memory_mb: 1024
-              cpu_cores: 1
-            workspace_id: "{{workspace_id}}"
-            agent_id: "{{agent_id}}"
-          capture:
-            docker_result: docker_result
-          on_error: ignore_docker
-          next: do_merge
-        - id: ignore_docker
-          type: set_variable
-          name: docker_result
-          value: ""
-          next: do_merge
-        - id: do_merge
-          type: llm_call
-          skill_prompt: |
-            Fusionne les livrables du token {{task.task_id}} (merger_code) :
-            {{task.title}}
-            {{task.description}}
-
-            Récupère les livrables des membres (agent_home/*/, repo central),
-            fusionne dans un dossier consolidé (utilise docker_result si présent : {{docker_result}}),
-            puis appelle task_verdict (done | continue | error | to_difficult, task_id={{task.task_id}}).
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["dev"]
-          max_tokens: 4096
-          temperature: 0.2
-          output_capture: merge_out
-          next: check_after_merge
-        - id: check_after_merge
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_merge
-        - id: decide_after_merge
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "merger_code"
-            next: break_loop
-          default: ask_verdict
-        - id: ask_verdict
-          type: llm_call
-          skill_prompt: |
-            Tu as travaillé sur le token {{task.task_id}} (merger_code) sans
-            le transitionner. Décide le verdict en appelant le tool task_verdict
-            avec verdict=done | continue | error | to_difficult.
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["workspace_verdict"]
-          max_tokens: 1024
-          temperature: 0.2
-          output_capture: verdict_out
-          next: check_after_verdict
-        - id: check_after_verdict
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_verdict
-        - id: decide_after_verdict
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "merger_code"
-            next: break_loop
-          default: continue_loop
-        - id: break_loop
-          type: set_variable
-          name: task_state
-          value: "done"
-          next: break
-        - id: break
-          type: break
-        - id: continue_loop
-          type: continue
-      next: end
-
-    # ── 5. FIN ──
-    - id: end
-      type: end
-      status: SUCCESS
-
-    # ── 6. SLEEP ──
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
     - id: sleep
       type: call
-      fn: workspace/wait_for@v1
+      fn: host/sleep@v1
       inputs:
-        workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "{{role_required}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-      next: end
-
-    # ── 7. FAIL ──
+        seconds: 30
+      next: fail
     - id: fail
       type: end
-      status: FAILED
+      status: FAILURE

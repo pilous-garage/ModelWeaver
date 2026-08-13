@@ -1,26 +1,23 @@
 name: greedy-coder
 role: codeur
-description: "Codeur glouton intelligent — FSM: pick (pioche un token coding via
-  token_task_pick) → git_step (clone/checkout) → allocation LLM → working_loop
-  (do_work LLM, tools it_is_done/exit_loop_too_hard, max_loop → making_progress)
-  → git_verif (AUTO) → check_with_llm si échec → finalisation (commit/push +
-  transition coding→code_review). too_hard → bump/split ; erreur → release.
-  La mécanique est automatique, le LLM ne fait que coder."
+description: >
+  Codeur glouton — taskflow V0.15 : ask_new_task (pioche une sub_task coding
+  attribuée par le supervisor) → git_step (clone/checkout) → allocation LLM →
+  working_loop (do_work : code réel + sub_task_done tag=done/ok avec
+  branch/commit, ou sub_task_release). La finalisation git est automatique.
 personality:
   tone: ''
-  system_prompt: "Tu es un codeur dans un swarm parallèle. Tu implémentes la
-    description de ton token dans le clone git de ton workspace. Règles :
-    1. Lis la description du token et les fichiers du projet.
+  system_prompt: "Tu es un codeur dans un swarm parallèle (taskflow). Tu
+    implémentes la description de ta sub_task (sub_task_id) dans le clone git
+    de ton workspace. Règles :
+    1. Lis la description de la sub_task (workspace/sub_task_get@v1) et les
+       fichiers du projet.
     2. Écris réellement le code (file_write_file_v1), vérifie la syntaxe.
-    3. Quand tu as fini : appelle le tool it_is_done (la vérification git et la
-       finalisation sont automatiques). Si c'est vraiment trop difficile :
-       exit_loop_too_hard.
+    3. Quand tu as fini : committe/pousse (git/commit@v1) puis appelle
+       workspace/sub_task_done@v1 avec tag=done/ok (branch + commit_hash). Si
+       c'est trop difficile : workspace/sub_task_release@v1 (tag=done/failure).
     4. Ne supprime jamais de fichiers existants sans raison.
     Réponds en français, code en anglais."
-bundles:
-  - dev
-# Skills DIRECTES de l'agent (définies inline, chargées depuis le catalogue des
-# skills sans bundle) — utilisées par les steps llm_call via `skills:`.
 skills:
   - file/read_file@v1
   - file/write_file@v1
@@ -30,15 +27,10 @@ skills:
   - file/list_dir@v1
   - system/check_syntax@v1
   - shell/exec@v1
-  - workflow/it_is_done@v1
-  - workflow/exit_loop_too_hard@v1
-  - workflow/making_progress@v1
-tags:
-  main:
-    llm: true
-    heavy: true
-generates:
-  - code_review
+  - git/commit@v1
+  - workspace/sub_task_get@v1
+  - workspace/sub_task_done@v1
+  - workspace/sub_task_release@v1
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -52,295 +44,92 @@ default_config:
   max_tokens: 4096
 entrypoints:
   main:
-    max_iterations: 80
+    max_iterations: 60
     steps:
-    # ── 1. PICK : pioche un token coding (AUTO) ──
-    - id: pick
+    - id: ask_new_task
       type: call
-      fn: workspace/token_task_pick@v1
+      fn: workspace/task_ask_new@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
-        task_types: "[{type: coding, max_difficulty: expert}]"
+        types: "[{type: coding, level_max: expert}]"
       capture:
-        task: task
+        sub_task_id: sub_task_id
+        task_id: task_id
       on_error: sleep
-      next: resolve_repo
-
-    # ── 1b. RESOLVE_REPO : repo du token, fallback sur project_id ──
-    - id: resolve_repo
-      type: switch
-      variable: "{{task.repo}}"
-      conditions:
-      - operator: CONTAINS
-        value: "{{"
-        next: repo_default
-      - operator: EQUALS
-        value: ""
-        next: repo_default
-      default: repo_task
-    - id: repo_default
-      type: set_variable
-      name: repo_eff
-      value: "{{project_id}}"
-      next: git_step
-    - id: repo_task
-      type: set_variable
-      name: repo_eff
-      value: "{{task.repo}}"
-      next: git_step
-
-    # ── 2. GIT_STEP : clone + checkout (AUTO) ──
-    - id: git_step
-      type: call
-      fn: git/git_clone@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-      on_error: fail
-      next: git_checkout
-    - id: git_checkout
-      type: call
-      fn: git/git_checkout@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        name: "{{task.branch}}"
-      next: snapshot_start
-    # ── 2b. SNAPSHOT_START (AUTO, pas de LLM) ──
-    # Pose commit_start = HEAD du clone AVANT le travail (point de départ du
-    # diff pour le reviewer). En split, chaque sous-tâche partage ce start.
-    - id: snapshot_start
-      type: call
-      fn: git/git_snapshot_start@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        workspace_id: "{{workspace_id}}"
-        task_id: "{{task.task_id}}"
-      on_error: ask_llm
       next: ask_llm
-
-    # ── 3. ALLOCATION LLM (AUTO) ──
-    # TOUJOURS s'allouer un LLM (ask_llm coding_high → agentic garanti).
-    # Pas de check_llm : les variables _llm_provider/_llm_model héritées du
-    # spawner/pilote peuvent pointer un modèle non-agentic (ex. mimo-v2.5-free
-    # d'opencode-zen) qui ne fait pas les tool_calls → le coder n'écrit rien.
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
       inputs:
-        use_case: coding_high
+        use_case: coding
         agent_id: "{{agent_id}}"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: release
-      next: working_loop
-
-    # ── 4. WORKING_LOOP : le LLM code (LE SEUL LLM) ──
-    - id: working_loop
-      type: while
-      tags:
-      - llm
-      condition:
-        variable: work_done
-        operator: NOT_EQUALS
-        value: "1"
-      body:
-        steps:
-        # Le LLM code ; il appelle it_is_done (fini) ou exit_loop_too_hard.
-        - id: do_work
-          type: llm_call
-          skill_prompt: |
-            Token à implémenter :
-            {{task.title}}
-            {{task.description}}
-
-            Projet : {{repo_eff}}
-            IMPORTANT : ton home de travail EST le clone (agents/{{agent_id}}/
-            workspace/{{repo_eff}}). Écris les fichiers avec des chemins
-            RELATIFS À CE CLONE (ex. 'bench/OK.txt'), SANS préfixer par le
-            nom du projet. Lis via read_file avec ces chemins relatifs.
-            Branche cible : {{task.branch}}
-
-            Implémente le token :
-            1. Vérifie si le livrable demandé existe déjà (read_file / list).
-            2. S'il existe avec le bon contenu, NE réécris PAS : passe à l'étape 3.
-            3. Appelle le tool it_is_done dès que le travail est en place
-               (fichier écrit ou déjà présent). N'explore pas inutilement le
-               projet, ne lance pas de commandes shell sauf nécessité.
-            Si c'est réellement trop difficile, appelle exit_loop_too_hard.
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1", "shell/exec@v1", "workflow/it_is_done@v1", "workflow/exit_loop_too_hard@v1", "workflow/making_progress@v1"]
-          max_tokens: 4096
-          temperature: 0.3
-          output_capture: work_out
-          next: check_done
-        # Vérifier : le LLM a-t-il dit it_is_done / exit_loop_too_hard ?
-        - id: check_done
-          type: call
-          fn: workflow/check_work_state@v1
-          inputs:
-            last_work: "{{work_out}}"
-          capture:
-            state: work_state
-          next: decide_work
-        - id: decide_work
-          type: switch
-          variable: "{{work_state}}"
-          conditions:
-          - operator: EQUALS
-            value: "done"
-            next: exit_done
-          - operator: EQUALS
-            value: "too_hard"
-            next: exit_too_hard
-          default: continue_work
-        - id: exit_done
-          type: set_variable
-          name: work_done
-          value: "1"
-          next: break_done
-        - id: break_done
-          type: break
-        - id: exit_too_hard
-          type: set_variable
-          name: work_done
-          value: "2"
-          next: break_hard
-        - id: break_hard
-          type: break
-        - id: continue_work
-          type: continue
-      next: after_loop
-
-    # ── 4b. APRÈS BOUCLE : done → verif ; too_hard → handling ; sinon abandon ──
-    - id: after_loop
-      type: switch
-      variable: "{{work_done}}"
-      conditions:
-      - operator: EQUALS
-        value: "1"
-        next: git_verif
-      - operator: EQUALS
-        value: "2"
-        next: too_hard
-      default: release
-
-    # ── 5. GIT_VERIF : vérification automatique (pas de LLM) ──
-    - id: git_verif
-      type: call
-      fn: git/verify@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        base_commit: "{{task.commit_start}}"
-      capture:
-        files_modified: verif_files
-      on_error: check_with_llm
-      next: finalisation
-
-    # ── 5b. CHECK_WITH_LLM : la vérif a échoué — le LLM décide ──
-    - id: check_with_llm
+      on_error: sleep
+      next: do_work
+    - id: do_work
       type: llm_call
       skill_prompt: |
-        La vérification git a échoué sur le token {{task.task_id}} :
-        {{_last_call_error}}
-
-        Décide : soit le travail est en fait bon (appelle it_is_done → je
-        finalise), soit il faut retravailler (appelle making_progress avec
-        answer=making_progress → je relance la boucle), soit c'est trop dur
-        (making_progress answer=too_hard).
+        Code la sub_task {{sub_task_id}} (coding) de la tâche {{task_id}} :
+        lis la description (workspace/sub_task_get@v1), écris le code,
+        committe/pousse (git/commit@v1), puis termine par
+        workspace/sub_task_done@v1 avec tag=done/ok (branch + commit_hash).
+        Si impossible : workspace/sub_task_release@v1 (tag=done/failure).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
-      skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1", "shell/exec@v1", "workflow/it_is_done@v1", "workflow/exit_loop_too_hard@v1", "workflow/making_progress@v1"]
-      max_tokens: 1024
-      temperature: 0.2
-      output_capture: check_out
-      next: redecide
-
-    - id: redecide
+      skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1",
+               "file/glob@v1", "file/grep@v1", "file/list_dir@v1",
+               "system/check_syntax@v1", "shell/exec@v1", "git/commit@v1",
+               "workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
+               "workspace/sub_task_release@v1"]
+      max_tokens: 4096
+      temperature: 0.3
+      output_capture: work_out
+      on_error: work_error
+      next: check_after
+    - id: work_error
       type: call
-      fn: workflow/check_work_state@v1
-      inputs:
-        last_work: "{{check_out}}"
-      capture:
-        state: work_state
-      next: decide_retry
-    - id: decide_retry
-      type: switch
-      variable: "{{work_state}}"
-      conditions:
-      - operator: EQUALS
-        value: "done"
-        next: finalisation
-      - operator: EQUALS
-        value: "too_hard"
-        next: too_hard
-      default: back_to_loop
-    - id: back_to_loop
-      type: set_variable
-      name: work_done
-      value: "0"
-      next: working_loop
-
-    # ── 6. FINALISATION : commit + push + transition coding→code_review ──
-    - id: finalisation
-      type: call
-      fn: git/end_exec@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        task_id: "{{task.task_id}}"
-        workspace_id: "{{workspace_id}}"
-        new_task_type: "code_review"
-      on_error: release
-      next: end
-
-    # ── 7. TOO_HARD : bump difficulty ou re-découpe (AUTO) ──
-    - id: too_hard
-      type: call
-      fn: workflow/exit_loop_too_hard@v1
+      fn: workspace/sub_task_release@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        task_id: "{{task.task_id}}"
-        reason: "{{work_out}}"
-      next: end
-
-    # ── 8. RELEASE : échec → libérer le token + token erreur_agent ──
-    - id: release
-      type: call
-      fn: workspace/token_task_release@v1
-      inputs:
-        workspace_id: "{{workspace_id}}"
-        task_id: "{{task.task_id}}"
+        sub_task_id: "{{sub_task_id}}"
         freedby: "{{agent_id}}"
-        error: "{{_last_call_error}}"
-      next: end
-
-    # ── 9. FIN ──
-    - id: end
-      type: end
-      status: SUCCESS
-
-    # ── 10. SLEEP : rien à piocher (AUTO, sleep) ──
+        tag: done/failure
+      next: break_loop
+    - id: check_after
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: decide_after
+    - id: decide_after
+      type: switch
+      variable: "{{sub_task_now.status}}"
+      conditions:
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
     - id: sleep
       type: call
-      fn: workspace/wait_for@v1
-      tags:
-      - sleep
+      fn: host/sleep@v1
       inputs:
-        workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "{{role_required}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-      next: end
-
-    # ── 11. FAIL ──
+        seconds: 30
+      next: fail
     - id: fail
       type: end
-      status: FAILED
+      status: FAILURE

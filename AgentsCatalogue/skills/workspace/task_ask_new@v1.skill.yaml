@@ -1,0 +1,37 @@
+name: workspace/task_ask_new@v1
+category: workspace
+description: >
+  CYCLE GREEDY (remplace sleep + pick) : l'agent demande du travail au
+  supervisor. 1) sub_tasks déjà attribuées à l'agent (faux départ/relaunch) →
+  on reprend la plus ancienne. 2) Sinon : écrit la demande en BDD (file de
+  secours) puis appelle le supervisor EN SYNCHRONE — attribution directe
+  (doing) ou réponse "en attente" (l'agent se déshydrate).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  agent_id:
+    type: integer
+    required: true
+  types:
+    type: list
+    required: true
+    description: >
+      [{type, level_max}] — types de sub_task traitables par l'agent + niveau
+      max de difficulté (easy|medium|hard|expert). Un agent peut gérer
+      plusieurs types.
+outputs:
+  ok:
+    type: boolean
+  sub_task:
+    type: object
+  sub_task_id:
+    type: integer
+  type:
+    type: string
+  reason:
+    type: string
+    description: "wait si rien de dispo (l'agent se désydrate)"
+implementation:
+  type: python
+  function: workspacedb.taskflow.ask_new_task

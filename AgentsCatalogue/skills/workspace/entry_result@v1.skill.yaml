@@ -1,0 +1,23 @@
+name: workspace/entry_result@v1
+category: workspace
+description: >
+  EXITPOINT du swarm (as_llm_leader, SANS LLM) : récupère le livrable final de
+  la tâche (la sub_task `respond` terminale : txt + tool_calls + .json) et
+  l'état de la tâche.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  task_status:
+    type: string
+  response:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.taskflow.entry_result

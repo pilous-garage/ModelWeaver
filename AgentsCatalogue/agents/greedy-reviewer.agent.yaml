@@ -1,307 +1,101 @@
 name: greedy-reviewer
 role: relecteur
 description: >
-  Relecteur glouton intelligent — patron adapté : pick (code_review) →
-  resolve_repo → clone/checkout (commit livré) → allocation LLM → boucle review
-  (llm_call + verdict task_verdict) → transition vers merger_code ou coding correctif.
+  Reviewer glouton — taskflow V0.15 : ask_new_task (pioche une sub_task review attribuée
+  par le supervisor) → allocation LLM → do_work (travail + sub_task_done
+  tag) → re-boucle si nécessaire. sub_task_release en cas d'échec.
 personality:
   tone: ''
-  system_prompt: >
-    Tu es un relecteur dans un swarm. Tu valides les tokens livrés en code_review.
-    Tu N'ÉCRIS AUCUN code, tu ne lances AUCUNE commande shell : tu analyses le
-    livrable (tâche + diff) et tu conclues avec le verdict task_verdict
-    (done | continue | error | to_difficult).
-    Réponds en français, code en anglais.
-generates:
-  - merger_code
-  - coding
+  system_prompt: "Tu es un reviewer dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (review) de la tâche {{{{task_id}}}} : lis les livrables, vérifie la conformité, puis workspace/sub_task_done@v1 avec tag=ok (conforme) ou tag=fail (problèmes). Si impossible : workspace/sub_task_release@v1. Réponds en français."
 model_requirements:
-  min_context_tokens: 32768
+  min_context_tokens: 16384
   capabilities:
   - text_generation
-  - code_generation
 contexts:
 - general
-- project:modelweaver
 default_config:
-  temperature: 0.2
+  temperature: 0.3
   max_tokens: 4096
 entrypoints:
   main:
-    max_iterations: 120
+    max_iterations: 30
     steps:
-    - id: pick
+    - id: ask_new_task
       type: call
-      fn: workspace/token_task_pick@v1
+      fn: workspace/task_ask_new@v1
       inputs:
-        workspace_id: "{{workspace_id}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-        task_types: "[{type: code_review, max_difficulty: expert}]"
+        workspace_id: "{workspace_id}"
+        agent_id: "{agent_id}"
+        types: "[{{type: review, level_max: expert}}]"
       capture:
-        task: task
+        sub_task_id: sub_task_id
+        task_id: task_id
       on_error: sleep
-      next: resolve_repo
-    - id: resolve_repo
-      type: switch
-      variable: "{{task.repo}}"
-      conditions:
-      - operator: CONTAINS
-        value: "{{"
-        next: repo_default
-      - operator: EQUALS
-        value: ""
-        next: repo_default
-      default: repo_task
-    - id: repo_default
-      type: set_variable
-      name: repo_eff
-      value: "{{project_id}}"
-      next: clone
-    - id: repo_task
-      type: set_variable
-      name: repo_eff
-      value: "{{task.repo}}"
-      next: clone
-    - id: clone
-      type: call
-      fn: git/git_clone@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-      on_error: fail
-      next: checkout
-    - id: checkout
-      type: call
-      fn: git/git_checkout@v1
-      inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        name: "{{task.commit_hash}}"
       next: ask_llm
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
       inputs:
-        use_case: coding_high
-        agent_id: "{{agent_id}}"
+        use_case: coding
+        agent_id: "{agent_id}"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: llm_error
-      next: compute_review_diff
-    # ── 3b. COMPUTE_REVIEW_DIFF (AUTO, pas de LLM) ──
-    # Calcule mécaniquement le diff commit_start..commit_current de la tâche
-    # + la liste des fichiers. Le reviewer le reçoit DANS son prompt : il n'a
-    # PAS d'outils git, il analyse et conclut (task_verdict).
-    - id: compute_review_diff
+      on_error: sleep
+      next: do_work
+    - id: do_work
+      type: llm_call
+      skill_prompt: |
+        Traite la sub_task {{sub_task_id}} (review) de la tâche {{task_id}} : lis les livrables (workspace/sub_task_get@v1), vérifie la conformité, puis workspace/sub_task_done@v1 (tag=ok | fail). Si impossible : workspace/sub_task_release@v1.
+      provider_ref: "{_llm_provider}"
+      model_ref: "{_llm_model}"
+      skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
+               "workspace/sub_task_release@v1"]
+      max_tokens: 4096
+      temperature: 0.3
+      output_capture: work_out
+      on_error: work_error
+      next: check_after
+    - id: work_error
       type: call
-      fn: git/git_review_diff@v1
+      fn: workspace/sub_task_release@v1
       inputs:
-        project_id: "{{repo_eff}}"
-        agent_id: "{{agent_id}}"
-        commit_start: "{{task.commit_start}}"
-        commit_end: "{{task.commit_current}}"
-      capture:
-        diff: review_diff
-        files: review_files
-        stat: review_stat
-      on_error: llm_error
-      next: init_rounds
-    # ── 3c. INIT_ROUNDS (AUTO) : compteur de re-reviews (ask_more_intel max 2) ──
-    - id: init_rounds
-      type: set_variable
-      name: review_rounds
-      value: "0"
-      next: exec_loop
-    - id: llm_error
+        workspace_id: "{workspace_id}"
+        sub_task_id: "{sub_task_id}"
+        freedby: "{agent_id}"
+      next: break_loop
+    - id: check_after
       type: call
-      fn: workflow/check_error_type@v1
+      fn: workspace/sub_task_get@v1
       inputs:
-        error: "{{_last_call_error}}"
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
+        workspace_id: "{workspace_id}"
+        sub_task_id: "{sub_task_id}"
       capture:
-        action: err_action
-      next: err_branch
-    - id: err_branch
+        sub_task: sub_task_now
+      next: decide_after
+    - id: decide_after
       type: switch
-      variable: "{{err_action}}"
+      variable: "{sub_task_now.status}"
       conditions:
-      - operator: EQUALS
-        value: "blacklist_provider"
-        next: fail
-      - operator: EQUALS
-        value: "context_reduce"
-        next: ask_llm
-      - operator: EQUALS
-        value: "switch_model"
-        next: ask_llm
-      default: sleep
-    - id: exec_loop
-      type: while
-      condition:
-        variable: need_more_intel
-        operator: NOT_EQUALS
-        value: "false"
-      body:
-        steps:
-        # DO_REVIEW : UN appel LLM avec UNIQUEMENT le tool review_verdict
-        # (approve | disapprove | ask_more_intel). Le diff + fichiers +
-        # description sont fournis dans le prompt → le reviewer conclut en
-        # 1 appel, pas de boucle d'exploration.
-        - id: do_review
-          type: llm_call
-          skill_prompt: |
-            RELECTURE — token {{task.task_id}} (code_review).
-            Tâche : {{task.title}}
-            {{task.description}}
-
-            LIVRABLE (diff commit {{task.commit_start}} → {{task.commit_current}})
-            Fichiers modifiés : {{review_files}}
-            --- DIFF ---
-            {{review_diff}}
-            --- FIN DIFF ---
-
-            Tu es un relecteur. Juge si le livrable répond à la tâche (code
-            présent, correct, cohérent). Conclus avec LE tool review_verdict :
-              - approve(detail)      : livrable conforme → la tâche sera done.
-              - disapprove(detail)   : livrable NON conforme → précise EXACTEMENT
-                                       dans detail ce qu'il faut corriger
-                                       (le coder s'en servira pour le rework).
-              - ask_more_intel([...]): le contexte ne suffit pas → liste les
-                                       fichiers/infos exacts nécessaires.
-            N'utilise AUCUN autre outil. Conclus systématiquement.
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          skills: ["workspace/review_verdict@v1"]
-          agentic: always
-          max_tokens: 2048
-          temperature: 0.2
-          output_capture: review_out
-          on_error: review_error
-          next: check_after_review
-        - id: check_after_review
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_review
-        # DÉCISION DU REVIEWER. review_verdict a UNIQUEMENT 3 issues :
-        #  - approve    → la tâche passe done (task_now.task_type ≠ code_review)
-        #  - disapprove → une tâche CORRECTIVE est créée (tâche reste code_review)
-        #  - ask_more_intel → rien n'a changé (ni done, ni corrective)
-        - id: decide_after_review
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "code_review"
-            next: break_loop
-          default: check_decision
-        # CHECK_DECISION : extrait la décision réelle depuis la trace des tools
-        # (review_out) : approved | disapproved | more_intel | unknown.
-        - id: check_decision
-          type: call
-          fn: workflow/review_decision@v1
-          inputs:
-            review_text: "{{review_out}}"
-          capture:
-            decision: review_decision
-          next: decide_decision
-        - id: decide_decision
-          type: switch
-          variable: "{{review_decision}}"
-          conditions:
-          - operator: EQUALS
-            value: "disapproved"
-            next: break_loop
-          - operator: EQUALS
-            value: "more_intel"
-            next: check_intel_request
-          - operator: EQUALS
-            value: "unknown"
-            next: review_error
-          default: break_loop
-        # CHECK_INTEL_REQUEST : bornage des re-reviews (ask_more_intel max 2).
-        - id: check_intel_request
-          type: switch
-          variable: "{{review_rounds}}"
-          conditions:
-          - operator: EQUALS
-            value: "2"
-            next: force_conclude
-          default: fetch_intel
-        # FETCH_INTEL : lit les fichiers demandés (mécanique) et les ajoute
-        # au contexte pour une 2e review bornée.
-        - id: fetch_intel
-          type: call
-          fn: git/git_read_files@v1
-          inputs:
-            project_id: "{{repo_eff}}"
-            agent_id: "{{agent_id}}"
-            commit: "{{task.commit_current}}"
-            paths: "{{review_files}}"
-          capture:
-            content: review_intel
-          next: inc_review_round
-        - id: inc_review_round
-          type: call
-          fn: workflow/inc_counter@v1
-          inputs:
-            value: "{{review_rounds}}"
-          capture:
-            value: review_rounds
-          next: do_review
-        # FORCE_CONCLUDE : après 2 rounds d'ask_more_intel sans conclure, on
-        # libère la tâche (elle reste piochable) — pas de done arbitraire.
-        - id: force_conclude
-          type: call
-          fn: workspace/token_task_release@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-            freedby: "{{agent_id}}"
-            error: "reviewer: trop de demandes d'intel sans conclure (2 rounds)"
-          next: break_loop
-        # REVIEW_ERROR : le reviewer n'a pas appelé review_verdict (réponse
-        # texte) → la review n'a pas abouti. On libère la tâche pour un autre
-        # reviewer, sans boucler.
-        - id: review_error
-          type: call
-          fn: workspace/token_task_release@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-            freedby: "{{agent_id}}"
-            error: "reviewer: pas de verdict (review_verdict non appelé)"
-          next: break_loop
-        - id: break_loop
-          type: set_variable
-          name: need_more_intel
-          value: "false"
-          next: break
-        - id: break
-          type: break
-        - id: continue_loop
-          type: continue
-      next: end
-    - id: end
-      type: end
-      status: SUCCESS
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
     - id: sleep
       type: call
-      fn: workspace/wait_for@v1
+      fn: host/sleep@v1
       inputs:
-        workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "{{role_required}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-      next: end
+        seconds: 30
+      next: fail
     - id: fail
       type: end
-      status: FAILED
+      status: FAILURE

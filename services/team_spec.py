@@ -66,6 +66,9 @@ class TeamSpec:
     team_leader: Optional[TeamLeaderSpec] = None
     members: List[TeamMemberSpec] = field(default_factory=list)
     resources: TeamResourcesSpec = field(default_factory=TeamResourcesSpec)
+    # Tableau de règles du task_supervisor : (in_type, in_tag) → (out_type,
+    # out_tag). OBLIGATOIRE à la déclaration d'une team (V0.15 taskflow).
+    supervisor_rules: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def team_name(self) -> str:
@@ -114,6 +117,29 @@ class TeamSpec:
             llm_quota_per_day=int(res_raw.get("llm_quota_per_day", 0)),
         )
 
+        # Tableau de règles du task_supervisor — OBLIGATOIRE (V0.15).
+        # Format : liste de {in_type, in_tag, out_type, out_tag}.
+        supervisor_rules = raw.get("supervisor_rules")
+        if supervisor_rules is None:
+            raise ValueError(
+                f"Team {raw.get('name', path)}: `supervisor_rules` manquant — "
+                "le tableau de règles (in_type, in_tag) → (out_type, out_tag) "
+                "est obligatoire à la déclaration d'une team (taskflow V0.15).")
+        if not isinstance(supervisor_rules, list):
+            raise ValueError(f"Team {raw.get('name', path)}: supervisor_rules doit être une liste")
+        norm_rules = []
+        for i, r in enumerate(supervisor_rules):
+            if not isinstance(r, dict) or "in_type" not in r or "out_type" not in r:
+                raise ValueError(
+                    f"Team {raw.get('name', path)}: règle {i} invalide — "
+                    "{in_type, in_tag, out_type, out_tag} requis")
+            norm_rules.append({
+                "in_type": r.get("in_type", ""),
+                "in_tag": r.get("in_tag", ""),
+                "out_type": r.get("out_type", ""),
+                "out_tag": r.get("out_tag", ""),
+            })
+
         return TeamSpec(
             name=raw["name"],
             version=raw.get("version", "0.1.0"),
@@ -124,6 +150,7 @@ class TeamSpec:
             team_leader=team_leader,
             members=members,
             resources=resources,
+            supervisor_rules=norm_rules,
         )
 
     def to_dict(self) -> dict:
@@ -148,4 +175,5 @@ class TeamSpec:
                 "max_concurrent": self.resources.max_concurrent,
                 "llm_quota_per_day": self.resources.llm_quota_per_day,
             },
+            "supervisor_rules": self.supervisor_rules,
         }

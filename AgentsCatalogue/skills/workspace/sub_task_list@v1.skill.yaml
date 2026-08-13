@@ -1,0 +1,25 @@
+name: workspace/sub_task_list@v1
+category: workspace
+description: >
+  LISTE les sub_tasks d'une tâche ou attribuées à un agent (faux
+  départ/relaunch → reprise).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: false
+  agent_id:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  sub_tasks:
+    type: list
+  count:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.sub_task_list

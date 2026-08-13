@@ -621,6 +621,270 @@ class TaskRepository:
             (task_id,)).fetchall())
 
 
+class SubTaskRepository:
+    """Sub_tasks : le RELAIS d'une tâche (une ligne par étape du pipeline).
+
+    États : waiting_dependencies → unattributed → doing → done/cancelled →
+    supervised. Le tag est posé par l'agent d'exécution (contraint par type) ;
+    le supervisor lève waiting_dependencies → unattributed quand les
+    dépendances sont satisfaites, et passe supervised quand le groupe complet
+    est clos.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, workspace_id: str):
+        self.conn = conn
+        self.wid = workspace_id
+
+    def create(self, task_id: int, sub_task_type: str,
+               difficulty: str = "medium", status: str = "unattributed",
+               tag: str = "", repo: str = "", branch: str = "",
+               team_id: int = -1, assigned_to: str = "") -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        cur = self.conn.execute("""
+            INSERT INTO sub_tasks (workspace_id, task_id, team_id, sub_task_type,
+                                   status, tag, difficulty, assigned_to,
+                                   repo, branch, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (self.wid, task_id, team_id, sub_task_type, status, tag,
+              difficulty, assigned_to, repo, branch, now, now))
+        self.conn.commit()
+        return self.get(cur.lastrowid)
+
+    def get(self, sub_task_id: int) -> Optional[Dict[str, Any]]:
+        return _row(self.conn.execute(
+            "SELECT * FROM sub_tasks WHERE sub_task_id = ? AND workspace_id = ?",
+            (sub_task_id, self.wid)).fetchone())
+
+    def list_for_task(self, task_id: int) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM sub_tasks WHERE task_id = ? AND workspace_id = ? "
+            "ORDER BY sub_task_id", (task_id, self.wid)).fetchall())
+
+    def list_by_team_status(self, team_id: int, statuses: List[str],
+                            limit: int = 50) -> List[Dict[str, Any]]:
+        """Sub_tasks d'une team dans un ensemble de statuts (non supervisées) —
+        requête ciblée indexée (le ticker ne scanne jamais toute la table)."""
+        ph = ",".join("?" for _ in statuses)
+        args = tuple([team_id] + statuses + [limit])
+        return _rows(self.conn.execute(
+            f"SELECT * FROM sub_tasks WHERE team_id = ? AND status IN ({ph}) "
+            f"AND supervised = 0 ORDER BY sub_task_id LIMIT ?", args).fetchall())
+
+    def list_assigned_to(self, agent_name: str) -> List[Dict[str, Any]]:
+        """Sub_tasks déjà attribuées à un agent — le greedy les reprend en
+        priorité (faux départ / relaunch / attribution directe du supervisor)."""
+        return _rows(self.conn.execute(
+            "SELECT * FROM sub_tasks WHERE assigned_to = ? AND workspace_id = ? "
+            "AND status = 'doing' ORDER BY updated_at", (agent_name, self.wid)).fetchall())
+
+    def list_by_type(self, sub_task_type: str, status: str = "unattributed",
+                     limit: int = 20) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM sub_tasks WHERE sub_task_type = ? AND status = ? "
+            "AND workspace_id = ? AND supervised = 0 "
+            "ORDER BY sub_task_id LIMIT ?",
+            (sub_task_type, status, self.wid, limit)).fetchall())
+
+    def update(self, sub_task_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+        sets, vals = [], []
+        for k, v in kwargs.items():
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return self.get(sub_task_id)
+        sets.append("updated_at = ?")
+        vals.append(datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
+        vals.extend([sub_task_id, self.wid])
+        self.conn.execute(
+            f"UPDATE sub_tasks SET {', '.join(sets)} "
+            "WHERE sub_task_id = ? AND workspace_id = ?", vals)
+        self.conn.commit()
+        return self.get(sub_task_id)
+
+    def set_status(self, sub_task_id: int, status: str,
+                   assigned_to: str = "", tag: str = "",
+                   commit_hash: str = "") -> Optional[Dict[str, Any]]:
+        """Transition d'état d'une sub_task (une seule fois, linéaire)."""
+        kwargs = {"status": status}
+        if assigned_to:
+            kwargs["assigned_to"] = assigned_to
+        if tag:
+            kwargs["tag"] = tag
+        if commit_hash:
+            kwargs["commit_hash"] = commit_hash
+        return self.update(sub_task_id, **kwargs)
+
+    def claim(self, sub_task_id: int, agent_name: str) -> bool:
+        """Attribution par le supervisor : unattributed → doing."""
+        cur = self.conn.execute(
+            "UPDATE sub_tasks SET status = 'doing', assigned_to = ?, updated_at = ? "
+            "WHERE sub_task_id = ? AND workspace_id = ? AND status = 'unattributed'",
+            (agent_name, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+             sub_task_id, self.wid))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def release(self, sub_task_id: int, freedby: str = "",
+                tag: str = "") -> Optional[Dict[str, Any]]:
+        """Libère une sub_task (échec agent) : unattributed, freedby, tag."""
+        self.conn.execute(
+            "UPDATE sub_tasks SET status = 'unattributed', assigned_to = '', "
+            "freedby = ?, tag = ?, updated_at = ? "
+            "WHERE sub_task_id = ? AND workspace_id = ?",
+            (freedby, tag, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+             sub_task_id, self.wid))
+        self.conn.commit()
+        return self.get(sub_task_id)
+
+    def mark_supervised(self, sub_task_id: int) -> Optional[Dict[str, Any]]:
+        """Supervised : groupe complet clos par le supervisor (terminal)."""
+        return self.update(sub_task_id, supervised=1, status="supervised")
+
+    def waiting_dependencies(self, sub_task_id: int) -> Optional[Dict[str, Any]]:
+        """Passe une sub_task en waiting_dependencies (avant unattributed)."""
+        return self.update(sub_task_id, status="waiting_dependencies")
+
+    def add_dependency(self, child_id: int, parent_id: int,
+                       required_state: str = "done",
+                       required_tag: str = "") -> bool:
+        """Dépendance sub_task enfant → parent (état + tag requis). Idempotent."""
+        self.conn.execute("""
+            INSERT OR IGNORE INTO sub_task_dependencies
+                (child_id, parent_id, required_state, required_tag)
+            VALUES (?, ?, ?, ?)
+        """, (child_id, parent_id, required_state, required_tag))
+        self.conn.commit()
+        return True
+
+    def get_parents(self, sub_task_id: int) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM sub_task_dependencies WHERE child_id = ?",
+            (sub_task_id,)).fetchall())
+
+    def get_children(self, sub_task_id: int) -> List[Dict[str, Any]]:
+        return _rows(self.conn.execute(
+            "SELECT * FROM sub_task_dependencies WHERE parent_id = ?",
+            (sub_task_id,)).fetchall())
+
+    def dependencies_satisfied(self, sub_task_id: int) -> bool:
+        """Toutes les dépendances du noeud sont satisfaites (état + tag).
+
+        Un parent en 'supervised' (traité par le supervisor après done/
+        cancelled) reste un livrable valide → satisfait 'done'."""
+        deps = self.get_parents(sub_task_id)
+        if not deps:
+            return True
+        for dep in deps:
+            p = _row(self.conn.execute(
+                "SELECT * FROM sub_tasks WHERE sub_task_id = ?",
+                (dep["parent_id"],)).fetchone())
+            if not p:
+                continue
+            req = dep.get("required_state", "done")
+            ok_state = p["status"] == req or (p["status"] == "supervised"
+                                              and req == "done")
+            ok_tag = (not dep.get("required_tag")
+                      or p.get("tag") == dep.get("required_tag"))
+            if not (ok_state and ok_tag):
+                return False
+        return True
+
+
+class AskNewTaskRepository:
+    """File d'attribution des greedy (remplace sleep + pick).
+
+    L'agent écrit sa demande (agent_id + types), le supervisor répond en
+    synchrone. La ligne sert de traçabilité et de file de secours pour le
+    tick failsafe.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, workspace_id: str):
+        self.conn = conn
+        self.wid = workspace_id
+
+    def create(self, agent_id: int, types: list) -> int:
+        import json as _json
+        cur = self.conn.execute(
+            "INSERT INTO ask_new_task (workspace_id, agent_id, types) "
+            "VALUES (?, ?, ?)",
+            (self.wid, agent_id, _json.dumps(types or [])))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_pending(self, agent_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        if agent_id is None:
+            return _rows(self.conn.execute(
+                "SELECT * FROM ask_new_task WHERE status = 'pending' "
+                "AND workspace_id = ? ORDER BY requested_at", (self.wid,)).fetchall())
+        return _rows(self.conn.execute(
+            "SELECT * FROM ask_new_task WHERE status = 'pending' "
+            "AND workspace_id = ? AND agent_id = ? ORDER BY requested_at",
+            (self.wid, agent_id)).fetchall())
+
+    def serve(self, ask_id: int, sub_task_id: int) -> None:
+        self.conn.execute(
+            "UPDATE ask_new_task SET status = 'served', served_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), ask_id))
+        self.conn.commit()
+
+    def mark_wait(self, ask_id: int) -> None:
+        self.conn.execute(
+            "UPDATE ask_new_task SET status = 'answered_wait' WHERE id = ?",
+            (ask_id,))
+        self.conn.commit()
+
+
+class SupervisorRulesRepository:
+    """Tableau de règles du task_supervisor (par team/workspace).
+
+    Règle : (in_type, in_tag) → (out_type, out_tag). Généraliste par défaut
+    (team_id=-1, workspace_id=''), surchargeable par team. out_type='' →
+    pas de création (le noeud passe supervised)."""
+
+    def __init__(self, conn: sqlite3.Connection, workspace_id: str = ""):
+        self.conn = conn
+        self.wid = workspace_id
+
+    def add_rule(self, in_type: str, in_tag: str, out_type: str,
+                 out_tag: str = "", team_id: int = -1,
+                 workspace_id: str = "", priority: int = 0) -> int:
+        cur = self.conn.execute("""
+            INSERT INTO task_supervisor_rules
+                (workspace_id, team_id, in_type, in_tag, out_type, out_tag, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (workspace_id or self.wid, team_id, in_type, in_tag,
+              out_type, out_tag, priority))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_rules(self, workspace_id: str = "", team_id: int = -1
+                   ) -> List[Dict[str, Any]]:
+        """Règles applicables : les plus spécifiques d'abord (workspace+team,
+        puis workspace, puis globales)."""
+        return _rows(self.conn.execute("""
+            SELECT * FROM task_supervisor_rules
+            WHERE enabled = 1
+              AND ((workspace_id = ? AND team_id = ?)
+                OR (workspace_id = ? AND team_id = -1)
+                OR (workspace_id = '' AND team_id = -1))
+            ORDER BY priority DESC, rule_id
+        """, (workspace_id or self.wid, team_id, workspace_id or self.wid)).fetchall())
+
+    def find_rule(self, in_type: str, in_tag: str,
+                  workspace_id: str = "", team_id: int = -1
+                  ) -> Optional[Dict[str, Any]]:
+        """Règle la plus spécifique qui matche (in_type, in_tag)."""
+        for r in self.list_rules(workspace_id, team_id):
+            it = r.get("in_type", "")
+            if it and it != in_type:
+                continue
+            ig = r.get("in_tag", "")
+            if ig and ig != in_tag:
+                continue
+            return r
+        return None
+
+
 class IssueRepository:
     """Issues d'un workspace (demandes de haut niveau → découpées en tâches)."""
 
@@ -833,6 +1097,30 @@ class WorkspaceDB:
             _add_column_if_missing(self.conn, "tasks", "estimated_minutes", "INTEGER DEFAULT 0")
             # V0.13 : rotation des agents (dernier échec → un autre reprend).
             _add_column_if_missing(self.conn, "tasks", "freedby", "TEXT DEFAULT ''")
+            # V0.15 : taskflow — tasks = sujet (tag terminal), sub_tasks = relais.
+            _add_column_if_missing(self.conn, "tasks", "tag", "TEXT DEFAULT ''")
+            # V0.15 : dépendances qualifiées (étape + résultat attendus).
+            _add_column_if_missing(self.conn, "task_dependencies", "required_tag",
+                                   "TEXT DEFAULT ''")
+            # V0.15 : dépendances entre sub_tasks (relais) — état + tag requis.
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS sub_task_dependencies (
+                    child_id       INTEGER NOT NULL,
+                    parent_id      INTEGER NOT NULL,
+                    required_state TEXT DEFAULT 'done',
+                    required_tag   TEXT DEFAULT '',
+                    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (child_id, parent_id),
+                    FOREIGN KEY (child_id)  REFERENCES sub_tasks(sub_task_id) ON DELETE CASCADE,
+                    FOREIGN KEY (parent_id) REFERENCES sub_tasks(sub_task_id) ON DELETE CASCADE
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sub_task_deps_child "
+                "ON sub_task_dependencies(child_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sub_task_deps_parent "
+                "ON sub_task_dependencies(parent_id)")
             # V0.10 : rôle requis → type de tâche (étape du pipeline). Une
             # tâche 'coder_senior' devient task_type 'coding' (le niveau de
             # l'agent borne la difficulté piochable). Clean des données (rien
@@ -941,6 +1229,9 @@ class WorkspaceScope:
         self.issues = IssueRepository(conn, workspace_id)
         self.chat = ChatroomRepository(conn, workspace_id)
         self.usage = UsageFileRepository(conn, workspace_id)
+        self.sub_tasks = SubTaskRepository(conn, workspace_id)
+        self.ask = AskNewTaskRepository(conn, workspace_id)
+        self.rules = SupervisorRulesRepository(conn, workspace_id)
 
 
 def chatroom_send_message(team_id=None, agent_id="", msg="",

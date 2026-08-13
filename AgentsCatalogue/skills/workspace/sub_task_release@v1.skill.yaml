@@ -1,0 +1,27 @@
+name: workspace/sub_task_release@v1
+category: workspace
+description: >
+  LIBÈRE une sub_task (échec agent) : unattributed + freedby + tag qualifiant
+  l'échec (ex. done/failure). Le supervisor décide ensuite de la suite selon
+  les règles de la team (re-découpe, fix, etc.).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  sub_task_id:
+    type: integer
+    required: true
+  freedby:
+    type: string
+    required: false
+  tag:
+    type: string
+    required: false
+outputs:
+  ok:
+    type: boolean
+  sub_task:
+    type: object
+implementation:
+  type: python
+  function: workspacedb.taskflow.sub_task_release

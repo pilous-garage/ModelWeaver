@@ -1,0 +1,37 @@
+name: workspace/entry_create@v1
+category: workspace
+description: >
+  ENTRYPOINT du swarm (as_llm_leader, SANS LLM) : crée la TASK d'entrée selon
+  le type demandé (chat_entry, completion_entry…) + sa sub_task `analysis`
+  initiale unattributed. Le supervisor/l'analyste prennent ensuite le relais.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  title:
+    type: string
+    required: true
+  description:
+    type: string
+    required: false
+  entry_type:
+    type: string
+    required: false
+    default: chat_entry
+    description: "chat_entry | completion_entry | feature…"
+  priority:
+    type: integer
+    required: false
+  team_id:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  task_id:
+    type: integer
+  sub_task_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.create_entry

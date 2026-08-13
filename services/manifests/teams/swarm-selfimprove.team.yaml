@@ -181,3 +181,20 @@ resources:
   budget_per_hour: 100
   max_concurrent: 5
   llm_quota_per_day: 500
+
+# ── Task_supervisor : tableau de règles (in_type, in_tag) → (out_type, out_tag) ──
+# OBLIGATOIRE (V0.15 taskflow). Le supervisor applique ces règles mécaniquement
+# (sans LLM) : quand une sub_task est done/cancelled avec un tag, il crée la
+# sub_task de sortie (avec dépendance) et passe le groupe complet en supervised.
+# out_type vide = pas de création (le noeud est terminal → supervised).
+supervisor_rules:
+  - {in_type: analysis, in_tag: ok, out_type: "", out_tag: ""}
+  - {in_type: coding, in_tag: done/ok, out_type: review, out_tag: ""}
+  - {in_type: coding, in_tag: done/failure, out_type: analysis, out_tag: ""}
+  - {in_type: coding, in_tag: done/need_split, out_type: analysis, out_tag: ""}
+  - {in_type: review, in_tag: ok, out_type: testing, out_tag: ""}
+  - {in_type: review, in_tag: fail, out_type: coding, out_tag: ""}
+  - {in_type: testing, in_tag: ok, out_type: merge, out_tag: ""}
+  - {in_type: testing, in_tag: fail, out_type: coding, out_tag: ""}
+  - {in_type: merge, in_tag: ok, out_type: "", out_tag: ""}
+  - {in_type: merge, in_tag: conflict, out_type: coding, out_tag: ""}

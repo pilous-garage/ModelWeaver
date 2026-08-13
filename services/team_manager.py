@@ -520,6 +520,16 @@ class TeamManager:
         team.setup()
         team._register_routes()
         self._teams[spec.team_name] = team
+        # V0.15 taskflow : le tableau de règles du task_supervisor est OBLIGATOIRE
+        # à la déclaration (from_yaml le garantit). On le (re)charge en BDD pour
+        # que le supervisor l'applique (workspace → team_id=-1 = généraliste).
+        try:
+            if spec.workspace_id and spec.supervisor_rules:
+                from services.task_supervisor.service import TaskSupervisor
+                sup = TaskSupervisor()
+                sup.seed_rules(spec.workspace_id, -1, spec.supervisor_rules)
+        except Exception:
+            pass
         return team
 
     def unregister(self, team_name: str):
