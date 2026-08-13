@@ -781,7 +781,8 @@ class DirectBridge(BaseBridge):
                   error_code: str = "", tokens_thinking: int = 0,
                   agent_id: Optional[str] = None,
                   error_msg: str = "", call_type: str = "chat",
-                  caller_id: Optional[str] = None) -> None:
+                  caller_id: Optional[str] = None,
+                  meta: Optional[dict] = None) -> None:
         """Journalise un appel LLM réel dans model_call_log (métriques runtime).
 
         Référencé par ID (provider_id/model_id/provider_model_id), pas par nom.
@@ -804,25 +805,26 @@ class DirectBridge(BaseBridge):
             toks = _extract_tokens(u)
             if not caller_id:
                 caller_id = f"agent:{agent_id}" if agent_id else "bridge"
+            meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, agent_id, success,
                      tokens_in, tokens_out, tokens_thinking, latency_ms,
-                     error_code, error_msg, call_type, caller_id)
+                     error_code, error_msg, call_type, caller_id, meta_json)
                 VALUES (
                     COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
                     COALESCE((SELECT id FROM catalogue_models WHERE ref = ?), 0),
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, model_ref, provider_ref, model_ref,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), toks["prompt"], toks["completion"],
                   toks["thinking"] or int(tokens_thinking or 0),
                   float(latency_ms or 0), (error_code or "")[:100],
                   (error_msg or "")[:200], (call_type or "chat")[:30],
-                  (str(caller_id)[:120] if caller_id else None)))
+                  (str(caller_id)[:120] if caller_id else None), meta_json))
             self.cat.conn.commit()
             # Les lignes détaillées sont agrégées par le TICKER DE BATCHAGE
             # (usage_batcher, service séparé) : il lit model_call_log par
@@ -941,7 +943,8 @@ class DirectBridge(BaseBridge):
                            usage=(data or {}).get("usage"),
                            agent_id=params.get("agent_id"),
                            caller_id=params.get("caller_id"),
-                           call_type=params.get("call_type", "chat"))
+                           call_type=params.get("call_type", "chat"),
+                           meta=params.get("meta"))
         except Exception as exc:
             err = _classify_exception(exc, provider_ref, model_ref)
             _err_cat = getattr(err, "category", None)
@@ -959,8 +962,9 @@ class DirectBridge(BaseBridge):
                                error_code=_cat.value if _cat else str(err)[:100],
                                error_msg=_msg,
                                agent_id=params.get("agent_id"),
-                           caller_id=params.get("caller_id"),
-                               call_type=params.get("call_type", "chat"))
+                               caller_id=params.get("caller_id"),
+                               call_type=params.get("call_type", "chat"),
+                               meta=params.get("meta"))
                 raise err
 
         self._mark_call_ok(provider_ref, model_ref)

@@ -1179,6 +1179,27 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         if schema.exists():
             self.conn.executescript(schema.read_text())
 
+        # ── capacite_log : journal LÉGER des observations de capacité ──
+        # (table simple à deux entrées ok/fail ; la table d'expérience
+        # model_endpoint_provider_capacite est mise à jour PAR BATCH via
+        # flush_capacite_log).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS capacite_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider_id  INTEGER,
+                model_id     INTEGER,
+                capability   TEXT NOT NULL,
+                ok           INTEGER NOT NULL DEFAULT 1,
+                created_at   INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cap_log_model "
+                "ON capacite_log(model_id)")
+        except Exception:
+            pass
+
         # Migration: ajouter key_display à api_keys
         try:
             self.conn.execute("ALTER TABLE api_keys ADD COLUMN key_display TEXT")
@@ -1386,6 +1407,25 @@ class CatalogueDB:
             if schema.exists():
                 self.conn.executescript(schema.read_text())
         else:
+            # ── capacite_log : journal léger des observations de capacité
+            # (maj de model_endpoint_provider_capacite PAR BATCH via
+            # flush_capacite_log) ──
+            try:
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS capacite_log (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider_id  INTEGER,
+                        model_id     INTEGER,
+                        capability   TEXT NOT NULL,
+                        ok           INTEGER NOT NULL DEFAULT 1,
+                        created_at   INTEGER DEFAULT (strftime('%s','now'))
+                    )
+                """)
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cap_log_model "
+                    "ON capacite_log(model_id)")
+            except Exception:
+                pass
             # Migration: ajoute provider_models si manquant
             try:
                 self.conn.execute("""
@@ -1648,6 +1688,9 @@ class CatalogueDB:
             # Permet de reconstruire les SESSIONS PAR APPELLANT (llm_caller_sessions)
             # sans confondre avec les séquences globales par modèle.
             _add_column_if_missing(self.conn, "model_call_log", "caller_id", "TEXT")
+            # Méta de l'appel agentic : {agentic_mode, success_tool,
+            # success_translation} renseignés par le FSM à chaque llm_call.
+            _add_column_if_missing(self.conn, "model_call_log", "meta_json", "TEXT")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
                 "ON model_call_log(provider_id, model_id, id)")
@@ -1892,6 +1935,23 @@ class CatalogueDB:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_mepc_cap "
                 "ON model_endpoint_provider_capacite(capability)")
+            # ── capacite_log : journal LÉGER des observations de capacité ──
+            # Table simple à deux entrées (ok/fail). La table d'expérience
+            # model_endpoint_provider_capacite est mise à jour PAR BATCH depuis
+            # ici (flush_capacite_log) au lieu d'écrire à chaque appel LLM.
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS capacite_log (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_id  INTEGER,
+                    model_id     INTEGER,
+                    capability   TEXT NOT NULL,
+                    ok           INTEGER NOT NULL DEFAULT 1,
+                    created_at   INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cap_log_model "
+                "ON capacite_log(model_id)")
         except Exception as e:
             import sys as _sys
             self.conn.rollback()

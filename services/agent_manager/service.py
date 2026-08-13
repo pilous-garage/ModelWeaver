@@ -1037,6 +1037,17 @@ class AgentManager:
         active = len(self.list_active())
         # ACTIVITÉ RÉELLE : les agents greedy s'exécutent dans des threads
         # daemon enregistrés dans _LIVE_AGENT_THREADS. Un agent qui travaille
+        # FLUSH des observations de capacité (capacite_log → table d'expérience)
+        # par batch : mis à jour à chaque tick pour que la table de capacités
+        # reflète l'usage réel des modèles (agentic / agentic-translation).
+        try:
+            from modules.llm_manager.capacites import flush_capacite_log
+            from modules.sql.catalogue_repo import CatalogueDB
+            _ccat = CatalogueDB()
+            flush_capacite_log(_ccat)
+            _ccat.close()
+        except Exception:
+            pass
         # (même en attente LLM, pas encore dans agent_runtime à cet instant)
         # compte comme actif. Sans ça, `active_agents` sous-estime massivement
         # le swarm (les threads vivants vs agent_runtime).

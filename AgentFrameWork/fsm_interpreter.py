@@ -688,19 +688,34 @@ class FSMInterpreter:
                     tools = []
                 else:
                     tools = self._build_llm_tools(step.get("bundles"), step.get("skills"))
-                tool_kwargs = {"tools": tools} if tools else {}
-                # DÉCISION du mode agentic (au niveau bridge) :
-                #   can_do_agentic = confiance 'agentic' (natif) depuis la table.
-                #   - conf >= 0.7 → tools API natifs
-                #   - conf <= 0.3 → prouvé NON-agentic → mode need_translation
-                #                    (tools dans le prompt + ###tool_call:...###)
-                #   - inconnu      → tools natifs + on observe (test_agentic)
+                # DÉCISION du mode agentic (au niveau BRIDGE, via capacites) :
+                #   native      → tools API (agentic prouvé ≥ 0.7)
+                #   translation → tools dans le prompt (###tool_call:...###),
+                #                 modèle prouvé non-agentic (≤ 0.3) avec
+                #                 agentic-translation ≥ 0.7
+                #   give_both   → tools API ET bloc texte (le LLM choisit ;
+                #                 confiance inconnue ou les deux possibles)
+                #   text        → pas de tools
+                _agentic_mode = "text"
                 _need_translation = False
-                if tools and _agentic_req != "false":
-                    _conf_agentic = self._capability_confidence(
-                        m_ref, p_ref, "agentic")
-                    if _conf_agentic is not None and _conf_agentic <= 0.3:
-                        _need_translation = True
+                _translation_prompt = ""
+                if _agentic_req != "false" and tools:
+                    try:
+                        from modules.llm_manager.capacites import (
+                            check_capacite, transforme_agentic_send)
+                        _cap = check_capacite(self.bridge, None,
+                                              p_ref, m_ref)
+                        _agentic_mode = _cap.get("mode", "give_both")
+                    except Exception:
+                        _agentic_mode = "give_both"
+                    _send = transforme_agentic_send(_agentic_mode, tools, "")
+                    tools = _send["tools"]
+                    _translation_prompt = _send["extra_prompt"]
+                    _need_translation = _send["translation"]
+                tool_kwargs = {"tools": tools} if tools else {}
+                # Si mode translation (pas de tools API) → forcer _need_translation
+                if _agentic_mode == "translation":
+                    _need_translation = True
 
                 timeout = step.get("timeout")
                 use_fallback = step.get("fallback", False)
@@ -728,22 +743,25 @@ class FSMInterpreter:
                     _trace_tools = []
                     _trans_ok = 0  # nb de tools traduits exécutés (agentic-translation)
                     for _tool_round in range(15):
+                        _meta = {"agentic_mode": _agentic_mode,
+                                 "agentic_tag": _agentic_req}
                         if _need_translation:
-                            # Mode TRADUCTION (modèle non-agentic) : pas de tools
-                            # API — on met la liste des tools + le format dans le
-                            # prompt, le LLM répond ###tool_call:nom:"args"###.
-                            _msgs = msgs + [{"role": "user", "content":
-                                             self._translation_prompt(tools)}]
+                            # Mode TRADUCTION / GIVE_BOTH (modèle non-agentic) :
+                            # le bloc ###tool_call:nom|JSON### est dans le prompt
+                            # (avec batch), pas de dépendance aux tools API.
+                            _msgs = msgs + [{"role": "user",
+                                             "content": _translation_prompt}]
                             response = self.bridge.chat(
                                 provider_ref=p_ref, model_ref=m_ref,
                                 messages=_msgs, temperature=temperature,
                                 max_tokens=max_tokens, agent_id=_agent_id or None,
+                                meta=_meta,
                             )
                         else:
                             response = self.bridge.chat(
                                 provider_ref=p_ref, model_ref=m_ref,
                                 messages=msgs, temperature=temperature, max_tokens=max_tokens,
-                                agent_id=_agent_id or None, **tool_kwargs,
+                                agent_id=_agent_id or None, meta=_meta, **tool_kwargs,
                             )
                         result.variables["_llm_provider"] = p_ref
                         result.variables["_llm_model"] = m_ref
@@ -910,16 +928,38 @@ class FSMInterpreter:
         result.messages.append({"role": "assistant", "content": content})
         result.content = content
         result.tokens_used += tokens
-        # MISE À JOUR de la table d'expérience à chaque step llm_call qui
-        # utilise une capacité : observer `agentic` (tools natifs) ou
-        # `agentic-translation` (mode traduction) selon le mode utilisé.
-        # ok = au moins un tool a été appelé/exécuté.
+        # OBSERVATION à chaque step llm_call qui utilise une capacité :
+        # écrit dans la table LÉGÈRE `capacite_log` (agentic /
+        # agentic-translation, ok/fail). La table d'expérience
+        # model_endpoint_provider_capacite est mise à jour PAR BATCH
+        # (flush_capacite_log) — pas d'écriture directe à chaque appel.
         if tools and _agentic_req != "false":
             try:
+                from modules.llm_manager.capacites import log_capacite
+                from modules.sql.catalogue_repo import CatalogueDB
                 _cap = "agentic-translation" if _need_translation else "agentic"
                 _ok = _trans_ok > 0 if _need_translation else bool(_trace_tools)
-                self._observe_capability(m_ref, p_ref, _cap, _ok,
-                                         source="experience")
+                _cat = CatalogueDB()
+                log_capacite(_cat, p_ref, m_ref, _cap, _ok)
+                # Renseigner success_tool / success_translation sur le dernier
+                # log LLM (le meta était passé avant de connaître le résultat).
+                try:
+                    _cat.conn.execute(
+                        "UPDATE model_call_log SET meta_json = ? "
+                        "WHERE id = (SELECT MAX(id) FROM model_call_log "
+                        "WHERE provider_id = (SELECT id FROM catalogue_providers "
+                        "WHERE ref = ?) AND model_id = (SELECT id FROM "
+                        "catalogue_models WHERE ref = ?))",
+                        (json.dumps({"agentic_mode": _agentic_mode,
+                                     "agentic_tag": _agentic_req,
+                                     "success_tool": bool(_trace_tools),
+                                     "success_translation": _trans_ok > 0},
+                                    ensure_ascii=False),
+                         p_ref, m_ref))
+                    _cat.conn.commit()
+                except Exception:
+                    pass
+                _cat.close()
             except Exception:
                 pass
         result.next_step_id = step.get("next")
