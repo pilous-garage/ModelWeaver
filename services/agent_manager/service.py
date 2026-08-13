@@ -1683,7 +1683,7 @@ class AgentManager:
         # (pas de return ici : même sans wait_for, l'amorce réveille les agents
         # greedy au premier cycle)
 
-        def _cond_matches(cond: dict) -> bool:
+        def _cond_matches(cond: dict, agent_id: int = 0) -> bool:
             ctype = cond.get("type", "")
             ws = cond.get("workspace_id", "")
             team = int(cond.get("team_id", -1))
@@ -1718,9 +1718,26 @@ class AgentManager:
                     return bool(all_done)
                 return False
             if ctype == "sub_task_available":
-                # Taskflow V0.15 : l'agent greedy attend une sub_task
-                # unattributed (dépendances satisfaites) d'un de ses types.
+                # Taskflow V0.15 : l'agent greedy attend une sub_task de son
+                # type — unattributed dispo (deps satisfaites) OU déjà
+                # assignée à lui (doing : reprise d'un run coupé/relaunch).
                 types = cond.get("types") or []
+                if isinstance(types, str):
+                    # wait_for créé avant parsing : "[{type: analysis, level_max: expert}]"
+                    import re as _re
+                    _parsed = []
+                    for _m in _re.finditer(r"\{([^}]*)\}", types):
+                        _body = _m.group(1)
+                        _t = _re.search(r"type\s*:\s*[\"']?([\w]+)[\"']?", _body)
+                        _d = _re.search(r"level_max\s*:\s*[\"']?([\w]+)[\"']?", _body)
+                        _e = {}
+                        if _t:
+                            _e["type"] = _t.group(1)
+                        if _d:
+                            _e["level_max"] = _d.group(1)
+                        if _e:
+                            _parsed.append(_e)
+                    types = _parsed
                 if not types:
                     return False
                 stypes = [t.get("type") if isinstance(t, dict) else str(t)
@@ -1732,6 +1749,17 @@ class AgentManager:
                     from modules.sql.workspace import WorkspaceDB
                     wdb = WorkspaceDB()
                     ph = ",".join("?" for _ in stypes)
+                    if agent_id:
+                        mine = wdb.conn.execute(
+                            f"SELECT 1 FROM sub_tasks "
+                            f"WHERE workspace_id = ? AND team_id = ? "
+                            f"AND status = 'doing' AND supervised = 0 "
+                            f"AND assigned_to = ? AND sub_task_type IN ({ph}) "
+                            f"LIMIT 1",
+                            (ws, team, f"agent:{agent_id}", *stypes)).fetchone()
+                        if mine:
+                            wdb.close()
+                            return True
                     row = wdb.conn.execute(
                         f"SELECT s.sub_task_id FROM sub_tasks s "
                         f"WHERE s.workspace_id = ? AND s.team_id = ? "
@@ -1783,7 +1811,7 @@ class AgentManager:
             except Exception:
                 self.db.wait_for.mark_done(r["agent_id"])
                 continue
-            if not _cond_matches(cond):
+            if not _cond_matches(cond, r["agent_id"]):
                 continue
             # Garde pause : une team en pause ne re-réveille pas ses greedy.
             try:
@@ -1826,7 +1854,7 @@ class AgentManager:
             except Exception:
                 self.db.wait_for.mark_done(w["agent_id"])
                 continue
-            if not _cond_matches(cond):
+            if not _cond_matches(cond, w["agent_id"]):
                 continue
             # Condition remplie : réveiller l'agent (un à la fois), marquer ready
             # ── Garde pause : une team en pause ne réveille pas ses greedy.
