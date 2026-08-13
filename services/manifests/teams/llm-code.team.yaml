@@ -40,6 +40,14 @@ members:
     resources:
       llm: true
 
+  # ── EXPLORATEUR (sous-agent) : remplit les demandes d'intel de l'analyste ──
+  - agent_name: explorer
+    ref: greedy-explore
+    role: explorateur
+    occupation: continue
+    resources:
+      llm: true
+
   # ── CODEURS : produisent le code (difficulté variable) ──
   - agent_name: coder-junior
     ref: greedy-coder

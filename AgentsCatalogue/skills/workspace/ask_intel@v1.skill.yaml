@@ -1,0 +1,39 @@
+name: workspace/ask_intel@v1
+category: workspace
+description: >
+  ASK_INTEL — l'analyste demande plus d'info au sous-agent EXPLORER. Précise
+  les intels demandés (questions/éléments à regarder). Le skill crée une
+  sub_task `exploration` (unattributed) ; la sub_task analysis passe en
+  waiting_dependencies de l'exploration. Quand l'exploration est done (rapport
+  produit), l'analysis redevient unattributed → l'analyste la reprend avec les
+  nouvelles infos. Le rapport d'analyse (paramètre `analyse`) est enregistré.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  sub_task_id:
+    type: integer
+    required: false
+    description: "La sub_task analysis courante (celle qui attend l'exploration)"
+  intels:
+    type: list
+    required: true
+    description: "Liste des intels demandés (questions/éléments à regarder)"
+  analyse:
+    type: string
+    required: false
+    default: ""
+    description: "Rapport d'analyse partiel (enregistré dans task_reports)"
+outputs:
+  ok:
+    type: boolean
+  exploration_sub_task_id:
+    type: integer
+  analysis_sub_task_id:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.ask_intel

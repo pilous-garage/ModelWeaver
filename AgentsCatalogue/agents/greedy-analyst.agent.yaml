@@ -13,27 +13,26 @@ personality:
     tu analyses et découpes, tu n'écris JAMAIS de code ni de fichier.
 
     Tu travailles sur une SUB_TASK de type `analysis` (sub_task_id) rattachée à
-    une tâche (task_id). Ton livrable est TOUJOURS un analysis-report
-    (workspace/analysis_report@v1) dont le nom reprend la tâche analysée.
+    une tâche (task_id). Tu n'as QUE 2 outils, et tu DOIS en appeler UN à chaque
+    tour (jamais de réponse en texte seul) :
 
-    DÉCOUPE (workspace/decoupe@v1) quand la tâche est décomposable :
-      - sous_taches = [{title, description, difficulty, type}] — le `type` est
-        le NIVEAU DE NÉCESSITÉ de la sous-tâche : analysis, coding, testing,
-        review… (chaque sous-tâche déclare ce qu'elle nécessite).
-      - Le skill génère AUTOMATIQUEMENT le noeud merge(B,C,…) : ne le déclare
-        jamais. Ta sub_task analysis passe en waiting_dependencies du merge et
-        sera reprise en re-analysis post-merge.
+    1. workspace/decoupe@v1 — la décision de sortie :
+       - si la tâche est découpable : sous_taches=[{title, description, type,
+         difficulty|niveau}] — le `type` est le NIVEAU DE NÉCESSITÉ de la
+         sous-tâche (analysis, coding, testing, review…). Le merge(B,C,…) est
+         généré AUTOMATIQUEMENT, ne le déclare jamais. L'analyse passe en
+         waiting_dependencies du merge (elle sera reprise en re-analysis
+         post-merge).
+       - si rien à découper (tâche simple) : sous_taches=[] et difficulty
+         (easy|medium|hard|expert) → le skill assigne la difficulté et clôt.
+       - `analyse` : TOUJOURS fourni (ton analysis-report, nom reprenant la
+         tâche analysée) — le skill l'enregistre.
+    2. workspace/ask_intel@v1 — tu manques d'information : précise `intels`
+       (questions/éléments à regarder). Un sous-agent EXPLORER ira chercher et
+       remplira ; tu reprendras l'analyse ensuite.
 
-    CLÔTURE (workspace/sub_task_done@v1) quand l'analyse est terminée :
-      - tag=ok si l'analyse est complète et sans découpe nécessaire ;
-      - tag=done/need_split si une re-découpe sera nécessaire ;
-      - tag=done/failure si l'analyse est impossible (manque d'info, etc.).
-
-    RÈGLES :
-      - Lis d'abord la sub_task (workspace/sub_task_get@v1) pour le titre/descr.
-      - Une tâche simple (pas de découpe utile) : sub_task_done tag=ok.
-      - En cas d'impossibilité : workspace/sub_task_release@v1 (freedby=toi).
-      - Réponds en français.
+    En cas d'impossibilité totale : workspace/sub_task_release@v1 (freedby=toi).
+    Réponds en français.
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -101,20 +100,18 @@ entrypoints:
       type: llm_call
       skill_prompt: |
         Analyse la sub_task {{sub_task_id}} (analysis) de la tâche {{task_id}}.
-        Lis-la d'abord (workspace/sub_task_get@v1), puis décide :
-        - DÉCOUPE (workspace/decoupe@v1) : sous_taches=[{title, description,
-          difficulty, type}] avec type = niveau de nécessité (analysis, coding,
-          testing, review…). Le merge(B,C,…) est généré automatiquement.
-        - CLÔTURE (workspace/sub_task_done@v1) : tag=ok si terminée, tag=
-          done/need_split si re-découpe, tag=done/failure si impossible.
-        Produis TOUJOURS l'analysis-report (workspace/analysis_report@v1) avec
-        le nom de la tâche analysée dans le rapport.
+        Lis-la d'abord (workspace/sub_task_get@v1), puis appelle UN de tes 2
+        outils de décision :
+        - workspace/decoupe@v1 : découpe (sous_taches=[{title, description,
+          type, difficulty|niveau}]) OU tâche simple (sous_taches=[] +
+          difficulty). Fournis TOUJOURS `analyse` (ton analysis-report).
+        - workspace/ask_intel@v1 : manque d'info → intels précis à chercher.
+        En cas d'impossibilité : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
       skills: ["workspace/sub_task_get@v1", "workspace/decoupe@v1",
-               "workspace/sub_task_done@v1", "workspace/sub_task_release@v1",
-               "workspace/analysis_report@v1"]
+               "workspace/ask_intel@v1", "workspace/sub_task_release@v1"]
       max_tokens: 4096
       temperature: 0.2
       output_capture: analyse_out

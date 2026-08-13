@@ -1,184 +1,128 @@
 name: greedy-explore
-role: explore
+role: explorateur
 description: >
-  Explorateur glouton intelligent — patron adapté : pick (exploration) →
-  allocation LLM (check_llm/ask_llm/check_error_type) → boucle (exploration
-  READ-ONLY + verdict task_verdict) → done. Ne modifie jamais le code.
+  Explorateur (sous-agent, taskflow V0.15) : pioche les sub_tasks `exploration`
+  (demandes d'intel de l'analyste) via ask_new_task, explore le repo en
+  READ-ONLY, remplit les intels demandés, et produit le rapport d'exploration
+  (sub_task_done tag=ok avec `rapport`). L'analyse (en attente de
+  l'exploration) reprend ensuite avec les nouvelles infos.
 personality:
   tone: ''
-  system_prompt: >
-    Tu es un explorateur de code dans un swarm. READ-ONLY : tu ne modifies
-    JAMAIS le code. Quand ton analyse est prête, appelle le verdict task_verdict.
-    Réponds en français.
-bundles:
-  - dev
+  system_prompt: "Tu es l'EXPLORATEUR d'un swarm (taskflow). Tu pioches les
+    sub_task de type `exploration` (sub_task_id) via workspace/task_ask_new@v1.
+    La description contient les INTELS DEMANDÉS (les questions/éléments à
+    regarder). Tu explores le repo en READ-ONLY (lecture de fichiers, glob,
+    grep, list_dir) et tu remplis chaque intel. Tu termines par
+    workspace/sub_task_done@v1 avec tag=ok et `rapport` = le rapport
+    d'exploration détaillé (qui répond point par point aux intels). Si
+    l'exploration est impossible : workspace/sub_task_release@v1.
+    Réponds en français."
 skills:
-  - workspace/task_verdict@v1
+  - file/read_file@v1
+  - file/glob@v1
+  - file/grep@v1
+  - file/list_dir@v1
+  - git/lite@v1
+  - workspace/sub_task_get@v1
+  - workspace/sub_task_done@v1
+  - workspace/sub_task_release@v1
 model_requirements:
   min_context_tokens: 16384
   capabilities:
   - text_generation
 contexts:
 - general
-- project:modelweaver
 default_config:
   temperature: 0.2
   max_tokens: 4096
 entrypoints:
   main:
-    max_iterations: 30
+    max_iterations: 20
     steps:
-    - id: pick
+    - id: ask_new_task
       type: call
-      fn: workspace/token_task_pick@v1
+      fn: workspace/task_ask_new@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        team_id: "{{team_id}}"
         agent_id: "{{agent_id}}"
-        task_types: "[{type: exploration, max_difficulty: expert}]"
+        types: "[{type: exploration, level_max: expert}]"
       capture:
-        task: task
+        sub_task_id: sub_task_id
+        task_id: task_id
       on_error: sleep
-      next: check_llm
-    - id: check_llm
-      type: call
-      fn: workflow/check_llm@v1
-      inputs:
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        has_llm: has_llm
-      on_error: ask_llm
-      next: exec_loop
+      next: ask_llm
     - id: ask_llm
       type: call
       fn: workflow/ask_llm@v1
       inputs:
-        use_case: analysis
+        use_case: coding
         agent_id: "{{agent_id}}"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
-      on_error: llm_error
-      next: exec_loop
-    - id: llm_error
+      on_error: sleep
+      next: do_explore
+    - id: do_explore
+      type: llm_call
+      skill_prompt: |
+        Explore pour la sub_task {{sub_task_id}} (exploration) de la tâche
+        {{task_id}}. Lis la demande (workspace/sub_task_get@v1) pour les
+        INTELS DEMANDÉS, explore le repo en READ-ONLY, remplis chaque intel,
+        puis workspace/sub_task_done@v1 avec tag=ok et `rapport` = ton rapport
+        d'exploration (point par point). Si impossible :
+        workspace/sub_task_release@v1.
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      agentic: always
+      skills: ["file/read_file@v1", "file/glob@v1", "file/grep@v1",
+               "file/list_dir@v1", "git/lite@v1",
+               "workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
+               "workspace/sub_task_release@v1"]
+      max_tokens: 4096
+      temperature: 0.2
+      output_capture: explore_out
+      on_error: explore_error
+      next: check_after
+    - id: explore_error
       type: call
-      fn: workflow/check_error_type@v1
-      inputs:
-        error: "{{_last_call_error}}"
-        provider_ref: "{{_llm_provider}}"
-        model_ref: "{{_llm_model}}"
-      capture:
-        action: err_action
-      next: err_branch
-    - id: err_branch
-      type: switch
-      variable: "{{err_action}}"
-      conditions:
-      - operator: EQUALS
-        value: "blacklist_provider"
-        next: fail
-      - operator: EQUALS
-        value: "context_reduce"
-        next: ask_llm
-      - operator: EQUALS
-        value: "switch_model"
-        next: ask_llm
-      default: sleep
-    - id: exec_loop
-      type: while
-      condition:
-        variable: task_state
-        operator: NOT_EQUALS
-        value: "done"
-      body:
-        steps:
-        - id: do_explore
-          type: llm_call
-          skill_prompt: |
-            Explore la tâche {{task.task_id}} (exploration) READ-ONLY :
-            {{task.description}}
-
-            Utilise file/read_file, file/glob, file/grep, shell/exec (ls/cat/grep)
-            pour explorer. Ne modifie JAMAIS le code.
-            Quand ton analyse est prête : appelle le verdict task_verdict
-            (done | continue | error | to_difficult, task_id={{task.task_id}}).
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["dev"]
-          max_tokens: 4096
-          temperature: 0.2
-          output_capture: explore_out
-          next: check_after_explore
-        - id: check_after_explore
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_explore
-        - id: decide_after_explore
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "exploration"
-            next: break_loop
-          default: ask_verdict
-        - id: ask_verdict
-          type: llm_call
-          skill_prompt: |
-            Tu as exploré le token {{task.task_id}} sans le transitionner.
-            Décide : task_verdict (done | continue | error | to_difficult).
-          provider_ref: "{{_llm_provider}}"
-          model_ref: "{{_llm_model}}"
-          bundles: ["workspace_verdict"]
-          max_tokens: 1024
-          temperature: 0.2
-          output_capture: verdict_out
-          next: check_after_verdict
-        - id: check_after_verdict
-          type: call
-          fn: workspace/task_get@v1
-          inputs:
-            workspace_id: "{{workspace_id}}"
-            task_id: "{{task.task_id}}"
-          capture:
-            task: task_now
-          next: decide_after_verdict
-        - id: decide_after_verdict
-          type: switch
-          variable: "{{task_now.task_type}}"
-          conditions:
-          - operator: NOT_EQUALS
-            value: "exploration"
-            next: break_loop
-          default: continue_loop
-        - id: break_loop
-          type: set_variable
-          name: task_state
-          value: "done"
-          next: break
-        - id: break
-          type: break
-        - id: continue_loop
-          type: continue
-      next: end
-    - id: end
-      type: end
-      status: SUCCESS
-    - id: sleep
-      type: call
-      fn: workspace/wait_for@v1
+      fn: workspace/sub_task_release@v1
       inputs:
         workspace_id: "{{workspace_id}}"
-        type: "task_for_role"
-        role: "{{role_required}}"
-        team_id: "{{team_id}}"
-        agent_id: "{{agent_id}}"
-      next: end
+        sub_task_id: "{{sub_task_id}}"
+        freedby: "{{agent_id}}"
+      next: break_loop
+    - id: check_after
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: decide_after
+    - id: decide_after
+      type: switch
+      variable: "{{sub_task_now.status}}"
+      conditions:
+      - operator: NOT_EQUALS
+        value: "doing"
+        next: break_loop
+      default: continue_loop
+    - id: break_loop
+      type: set_variable
+      name: task_state
+      value: "done"
+      next: break
+    - id: break
+      type: break
+    - id: continue_loop
+      type: continue
+    - id: sleep
+      type: call
+      fn: host/sleep@v1
+      inputs:
+        seconds: 30
+      next: fail
     - id: fail
       type: end
-      status: FAILED
+      status: FAILURE

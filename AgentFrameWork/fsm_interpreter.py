@@ -37,6 +37,20 @@ import re
 
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
 
+# Skills DÉCISIONNELS (terminaux) : leur exécution clôt la boucle tool_calls
+# d'un llm_call — pas besoin de re-appeler le LLM. Les tools d'INFO (lecture/
+# exploration) laissent la boucle continuer (l'agent peut demander plus de
+# contexte). L'analyste découpeur n'a QUE des tools terminaux (decoupe/ask_intel).
+_TERMINAL_SKILLS = {
+    "workspace/decoupe@v1",
+    "workspace/ask_intel@v1",
+    "workspace/assign_difficulte@v1",
+    "workspace/sub_task_done@v1",
+    "workspace/sub_task_release@v1",
+    "workspace/task_verdict@v1",
+    "workspace/review_verdict@v1",
+}
+
 
 def _strip_code_fences(text: str) -> str:
     """Nettoie une sortie LLM censée être du code brut.
@@ -762,6 +776,7 @@ class FSMInterpreter:
                 _timeout = step.get("timeout", 90)
                 _fallback = step.get("fallback", True)
                 _trace_tools = []
+                _terminal_hit = False  # tool décisionnel exécuté → sortie de boucle
                 _trans_ok = 0  # nb de tools traduits exécutés (agentic-translation)
                 for _tool_round in range(15):
                     _meta = {"agentic_mode": _agentic_mode,
@@ -923,13 +938,19 @@ class FSMInterpreter:
                             "tool_call_id": tc.get("id", ""),
                             "content": json.dumps(tool_result, default=str),
                         })
+                        # ── Tool TERMINAL → clôturer la boucle tool_calls ──
+                        # Un tool décisionnel (decoupe/done/release/verdict) met
+                        # fin à l'étape : pas besoin de re-appeler le LLM. Les
+                        # tools d'INFO (lecture/exploration) laissent la boucle
+                        # continuer (l'agent peut demander plus de contexte).
+                        if conv_name in _TERMINAL_SKILLS:
+                            _terminal_hit = True
 
                     # On GARDE les tools d'un round à l'autre : après un
                     # write_file, le LLM doit pouvoir appeler it_is_done au
                     # round suivant. La boucle est bornée par range(15).
-                    # (Ancien comportement : tool_kwargs={} → le LLM ne
-                    # pouvait jamais clôturer → boucle do_work sans fin.)
-                    # tool_kwargs = {}
+                    if _terminal_hit:
+                        break  # décision prise → sortie de la boucle tool_calls
                     else:
                         # 15 rounds sans réponse textuelle → erreur
                         content = "Tool call limit exceeded"

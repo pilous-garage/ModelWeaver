@@ -27,6 +27,7 @@ TASK_TAGS: Dict[str, List[str]] = {
     "review": ["ok", "fail"],
     "merge": ["ok", "conflict"],
     "respond": ["ok"],
+    "exploration": ["ok", "fail"],
 }
 
 
@@ -52,24 +53,23 @@ def _current_analysis(db, sc, task_id: int):
 # ── decoupe : analysis/decoupe@v1 ─────────────────────────────────────────
 
 def decoupe(inputs: dict, home: str) -> dict:
-    """Découpe A → B, C, … + merge auto (skill analysis/decoupe@v1).
+    """Découpe en UNE passe (skill analysis/decoupe@v1) — tool UNIQUE.
 
-    La sub_task analysis courante de `task_id` passe en waiting_dependencies.
-    Pour chaque sous-tâche déclarée (type = niveau de nécessité : analysis,
-    coding, testing, review…), une sub_task unattributed est créée. Un noeud
-    `merge(B,C,…)` est généré automatiquement (dépend de toutes les sous-tâches).
-    La sub_task analysis courante dépend du merge → elle ne redevient
-    unattributed (re-analysis post-merge) que quand le merge est terminé.
+    Deux cas :
+      - `sous_taches` non vide : découpe A → B,C,… + merge auto. La sub_task
+        analysis courante passe waiting_dependencies du merge.
+      - `sous_taches` vide (rien à découper) : assigne simplement la difficulté
+        (inputs.difficulty) et clôt l'analyse (sub_task analysis → done/ok).
 
-    Le `rapport_analysis` est attaché à la tâche (task_reports).
+    `analyse` (le rapport d'analyse, toujours produit) est enregistré dans
+    task_reports. Le merge n'est jamais déclaré explicitement : il est généré
+    automatiquement (dépend de toutes les sous-tâches).
     """
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
     sous = inputs.get("sous_taches") or []
     if not workspace_id or task_id is None:
         return {"ok": False, "error": "workspace_id + task_id requis"}
-    if not isinstance(sous, list) or not sous:
-        return {"ok": False, "error": "sous_taches : liste non vide requise"}
     try:
         db, sc = _scope(workspace_id)
         task = sc.tasks.get(int(task_id))
@@ -79,9 +79,28 @@ def decoupe(inputs: dict, home: str) -> dict:
         team_id = task.get("team_id", -1)
         repo = task.get("repo", "") or ""
         branch = task.get("branch", "") or ""
-
         cur = _current_analysis(db, sc, task_id)
 
+        # ── Cas SIMPLE : rien à découper → assigner difficulté + clore ──
+        if not sous:
+            diff = (inputs.get("difficulty") or "").strip().lower()
+            if diff not in ("easy", "medium", "hard", "expert"):
+                diff = task.get("difficulty") or "medium"
+            # assigner la difficulté de la tâche + clore l'analyse done/ok
+            sc.tasks.update(int(task_id), difficulty=diff)
+            if cur:
+                sc.sub_tasks.update(cur["sub_task_id"], difficulty=diff)
+                sc.sub_tasks.set_status(cur["sub_task_id"], "done", tag="ok")
+            _save_analyse(sc, task_id, inputs)
+            db.close()
+            return {"ok": True, "mode": "assign_difficulte",
+                    "difficulty": diff,
+                    "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
+
+        # ── Cas DÉCOUPE : A → B,C,… + merge auto ──
+        if not isinstance(sous, list):
+            db.close()
+            return {"ok": False, "error": "sous_taches : liste requise"}
         created_ids: List[int] = []
         for i, st in enumerate(sous):
             title = (st.get("title") or "").strip()
@@ -92,7 +111,7 @@ def decoupe(inputs: dict, home: str) -> dict:
                         "error": f"sous-tâche {i}: title + type requis"}
             new_st = sc.sub_tasks.create(
                 task_id=int(task_id), sub_task_type=stype,
-                difficulty=st.get("difficulty") or "medium",
+                difficulty=st.get("difficulty") or st.get("niveau") or "medium",
                 status="unattributed",
                 repo=repo, branch=branch, team_id=team_id)
             created_ids.append(new_st["sub_task_id"])
@@ -112,19 +131,72 @@ def decoupe(inputs: dict, home: str) -> dict:
             sc.sub_tasks.add_dependency(cur["sub_task_id"],
                                         merge_st["sub_task_id"], "done", "ok")
 
-        # Rapport d'analyse attaché à la tâche.
-        rapport = (inputs.get("rapport_analysis") or "").strip()
-        if rapport:
-            try:
-                sc.tasks.add_report(int(task_id), "analysis", rapport)
-            except Exception:
-                pass
+        _save_analyse(sc, task_id, inputs)
         db.close()
-        return {"ok": True, "created": created_ids, "count": len(created_ids),
+        return {"ok": True, "mode": "decoupe", "created": created_ids,
+                "count": len(created_ids),
                 "merge_sub_task_id": merge_st["sub_task_id"],
                 "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def ask_intel(inputs: dict, home: str) -> dict:
+    """ask_intel — demande d'info au sous-agent EXPLORER (tool de l'analyste).
+
+    L'analyste précise les intels demandés (questions/éléments à regarder). Le
+    skill crée une sub_task `exploration` (unattributed) avec la liste des
+    intels ; la sub_task analysis passe waiting_dependencies de l'exploration.
+    Quand l'exploration est done (rapport produit), l'analysis redevient
+    unattributed → l'analyste la reprend avec les nouvelles infos.
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    sub_task_id = inputs.get("sub_task_id")
+    intels = inputs.get("intels") or []
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    if isinstance(intels, str):
+        import re
+        intels = [s.strip() for s in re.split(r"[\n;]", intels) if s.strip()]
+    try:
+        db, sc = _scope(workspace_id)
+        task = sc.tasks.get(int(task_id))
+        team_id = task.get("team_id", -1) if task else -1
+        desc = "INTELS DEMANDÉS :\n" + "\n".join(f"- {i}" for i in intels)
+        exp = sc.sub_tasks.create(
+            task_id=int(task_id), sub_task_type="exploration",
+            difficulty="medium", status="unattributed",
+            repo=task.get("repo", "") if task else "",
+            branch=task.get("branch", "") if task else "",
+            team_id=team_id)
+        # l'exploration doit fournir un rapport (tag ok)
+        cur = None
+        if sub_task_id is not None:
+            cur = sc.sub_tasks.get(int(sub_task_id))
+        if cur:
+            sc.sub_tasks.waiting_dependencies(cur["sub_task_id"])
+            sc.sub_tasks.add_dependency(cur["sub_task_id"],
+                                        exp["sub_task_id"], "done", "ok")
+        # rapport d'exploration attendu : on stocke la demande dans le rapport
+        sc.tasks.add_report(int(task_id), "exploration_request", desc)
+        _save_analyse(sc, task_id, inputs)
+        db.close()
+        return {"ok": True, "exploration_sub_task_id": exp["sub_task_id"],
+                "intels": intels,
+                "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _save_analyse(sc, task_id: int, inputs: dict) -> None:
+    """Enregistre le rapport d'analyse (paramètre `analyse` ou rapport_analysis)."""
+    rapport = (inputs.get("analyse") or inputs.get("rapport_analysis") or "").strip()
+    if rapport:
+        try:
+            sc.tasks.add_report(int(task_id), "analysis", rapport)
+        except Exception:
+            pass
 
 
 # ── ask_new_task : cycle greedy (remplace sleep + pick) ───────────────────
@@ -239,6 +311,7 @@ def sub_task_done(inputs: dict, home: str) -> dict:
     branch = inputs.get("branch", "") or ""
     commit_hash = inputs.get("commit_hash", "") or ""
     delivered = bool(inputs.get("delivered", False))
+    rapport = (inputs.get("rapport") or "").strip()
     if not workspace_id or sub_task_id is None:
         return {"ok": False, "error": "workspace_id + sub_task_id requis"}
     try:
@@ -265,6 +338,13 @@ def sub_task_done(inputs: dict, home: str) -> dict:
                                 commit_hash=commit_hash)
         if branch:
             sc.sub_tasks.update(int(sub_task_id), branch=branch)
+        # Rapport produit (ex. rapport d'exploration) → task_reports.
+        if rapport:
+            role = "exploration" if st["sub_task_type"] == "exploration" else "work"
+            try:
+                sc.tasks.add_report(st["task_id"], role, rapport)
+            except Exception:
+                pass
         st = sc.sub_tasks.get(int(sub_task_id))
         db.close()
         return {"ok": True, "sub_task": st}
@@ -417,6 +497,6 @@ def entry_result(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-__skills__ = ["decoupe", "ask_new_task", "sub_task_done", "sub_task_release",
-              "sub_task_get", "sub_task_list", "analysis_report",
-              "create_entry", "entry_result"]
+__skills__ = ["decoupe", "ask_intel", "ask_new_task", "sub_task_done",
+              "sub_task_release", "sub_task_get", "sub_task_list",
+              "analysis_report", "create_entry", "entry_result"]
