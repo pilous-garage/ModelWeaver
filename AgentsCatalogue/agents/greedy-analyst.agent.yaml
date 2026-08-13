@@ -129,7 +129,17 @@ entrypoints:
           max_tokens: 4096
           temperature: 0.2
           output_capture: analyse_out
+          on_error: analyse_error
           next: check_after_analyse
+        - id: analyse_error
+          type: call
+          fn: workspace/token_task_release@v1
+          inputs:
+            workspace_id: "{{workspace_id}}"
+            task_id: "{{task.task_id}}"
+            freedby: "{{agent_id}}"
+            error: "analyst: échec analyse LLM ({{_last_error}})"
+          next: break_loop
         - id: check_after_analyse
           type: call
           fn: workspace/task_get@v1
@@ -159,6 +169,7 @@ entrypoints:
           max_tokens: 1024
           temperature: 0.2
           output_capture: verdict_out
+          on_error: analyse_error
           next: check_after_verdict
         - id: check_after_verdict
           type: call

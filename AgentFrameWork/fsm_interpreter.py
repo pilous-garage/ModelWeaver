@@ -717,45 +717,48 @@ class FSMInterpreter:
                 if _agentic_mode == "translation":
                     _need_translation = True
 
-                timeout = step.get("timeout")
-                use_fallback = step.get("fallback", False)
-                if timeout:
-                    from modules.llm_manager.resilient import resilient_chat
-                    try:
-                        response = resilient_chat(
-                            p_ref, m_ref, msgs,
-                            timeout=int(timeout), fallback=use_fallback,
-                            max_tokens=max_tokens, temperature=temperature,
-                            agent_id=_agent_id or None,
-                            **tool_kwargs,
-                        )
-                    except BridgeError as e:
-                        return self._branch_on_error(step, result, f"LLM error: {e}")
-                    except Exception as e:
-                        return self._branch_on_error(step, result, f"LLM call error: {e}")
-                    p_ref, m_ref = (getattr(response, "provider_used", p_ref),
-                                    getattr(response, "model_used", m_ref))
-                    result.variables["_llm_provider"] = p_ref
-                    result.variables["_llm_model"] = m_ref
-                    result.variables["_llm_fallbacks"] = getattr(response, "fallbacks", 0)
-                else:
-                    # Boucle tool_calls : LLM → tool → LLM → ... → text
-                    _trace_tools = []
-                    _trans_ok = 0  # nb de tools traduits exécutés (agentic-translation)
-                    for _tool_round in range(15):
-                        _meta = {"agentic_mode": _agentic_mode,
-                                 "agentic_tag": _agentic_req}
-                        if _need_translation:
-                            # Mode TRADUCTION / GIVE_BOTH (modèle non-agentic) :
-                            # le bloc ###tool_call:nom|JSON### est dans le prompt
-                            # (avec batch), pas de dépendance aux tools API.
-                            _msgs = msgs + [{"role": "user",
-                                             "content": _translation_prompt}]
+                # Boucle tool_calls : LLM → tool → LLM → ... → text.
+                # Le PREMIER appel (round 0) passe par resilient_chat (retry +
+                # fallback sur un autre LLM) pour les échecs transitoires
+                # (timeout, 429, 401) : un llm_call qui rate ne doit PAS être un
+                # arrêt silencieux du run. Le step peut désactiver via
+                # fallback=False / timeout=<s>. Les rounds suivants (tool_calls)
+                # utilisent bridge.chat direct.
+                _timeout = step.get("timeout", 90)
+                _fallback = step.get("fallback", True)
+                _trace_tools = []
+                _trans_ok = 0  # nb de tools traduits exécutés (agentic-translation)
+                for _tool_round in range(15):
+                    _meta = {"agentic_mode": _agentic_mode,
+                             "agentic_tag": _agentic_req}
+                    if _need_translation:
+                        # Mode TRADUCTION / GIVE_BOTH (modèle non-agentic) :
+                        # le bloc ###tool_call:nom|JSON### est dans le prompt
+                        # (avec batch), pas de dépendance aux tools API.
+                        _msgs = msgs + [{"role": "user",
+                                         "content": _translation_prompt}]
+                        if _tool_round == 0:
+                            from modules.llm_manager.resilient import resilient_chat
+                            response = resilient_chat(
+                                p_ref, m_ref, _msgs, timeout=int(_timeout),
+                                fallback=_fallback, max_tokens=max_tokens,
+                                temperature=temperature, agent_id=_agent_id or None,
+                            )
+                        else:
                             response = self.bridge.chat(
                                 provider_ref=p_ref, model_ref=m_ref,
                                 messages=_msgs, temperature=temperature,
                                 max_tokens=max_tokens, agent_id=_agent_id or None,
                                 meta=_meta,
+                            )
+                    else:
+                        if _tool_round == 0:
+                            from modules.llm_manager.resilient import resilient_chat
+                            response = resilient_chat(
+                                p_ref, m_ref, msgs, timeout=int(_timeout),
+                                fallback=_fallback, max_tokens=max_tokens,
+                                temperature=temperature, agent_id=_agent_id or None,
+                                **tool_kwargs,
                             )
                         else:
                             response = self.bridge.chat(
@@ -763,11 +766,13 @@ class FSMInterpreter:
                                 messages=msgs, temperature=temperature, max_tokens=max_tokens,
                                 agent_id=_agent_id or None, meta=_meta, **tool_kwargs,
                             )
-                        result.variables["_llm_provider"] = p_ref
-                        result.variables["_llm_model"] = m_ref
-                        result.variables["_llm_fallbacks"] = 0
+                    p_ref = getattr(response, "provider_used", p_ref)
+                    m_ref = getattr(response, "model_used", m_ref)
+                    result.variables["_llm_provider"] = p_ref
+                    result.variables["_llm_model"] = m_ref
+                    result.variables["_llm_fallbacks"] = 0
 
-                        if _need_translation:
+                    if _need_translation:
                             # Parser les ###tool_call:nom:"args"### du texte.
                             _parsed = self._parse_translation_tools(
                                 (getattr(response, "content", "") or ""))
@@ -795,89 +800,89 @@ class FSMInterpreter:
                                     "content": json.dumps(_res, default=str),
                                 })
                             continue  # re-appeler le LLM avec les résultats
-                        tool_calls = getattr(response, "tool_calls", None)
-                        if not tool_calls:
-                            # debug : trace le contenu texte du round final
-                            logger.debug(
-                                "llm/round_text provider=%s model=%s content=%s",
-                                p_ref, m_ref,
-                                (getattr(response, "content", "") or "")[:80])
-                            break  # réponse textuelle → on sort
-
-                        # Trace des tools appelés : le output_capture (work_out)
-                        # est analysé par check_work_state qui cherche
-                        # it_is_done / exit_loop_too_hard dans le TEXTE. Sans
-                        # trace, un round qui appelle it_is_done (content vide)
-                        # laisse work_out vide → state=continue → boucle infinie.
-                        # On inclut les ARGUMENTS (JSON) pour que les skills de
-                        # décision (review_decision → approve/disapprove) puissent
-                        # lire le choix exact depuis la trace.
-                        for _tc in tool_calls:
-                            _fn = _tc.get("function", {})
-                            _nm = _fn.get("name", "")
-                            _args = _fn.get("arguments", "") or ""
-                            if _args:
-                                _trace_tools.append(f"{_nm}({_args[:200]})")
-                            else:
-                                _trace_tools.append(_nm)
+                    tool_calls = getattr(response, "tool_calls", None)
+                    if not tool_calls:
+                        # debug : trace le contenu texte du round final
                         logger.debug(
-                            "llm/tool_round provider=%s model=%s tools=%s",
+                            "llm/round_text provider=%s model=%s content=%s",
                             p_ref, m_ref,
-                            ",".join(_tc.get("function", {}).get("name", "")
-                                    for _tc in tool_calls))
+                            (getattr(response, "content", "") or "")[:80])
+                        break  # réponse textuelle → on sort
 
-                        # Ajouter la réponse assistant avec tool_calls
-                        asst_msg = {"role": "assistant", "content": response.content or ""}
-                        tc_list = []
-                        for tc in tool_calls:
-                            tc_entry = {
-                                "id": tc.get("id"),
-                                "type": tc.get("type", "function"),
-                                "function": {
-                                    "name": tc["function"]["name"],
-                                    "arguments": tc["function"]["arguments"],
-                                },
-                            }
-                            tc_list.append(tc_entry)
-                        if tc_list:
-                            asst_msg["tool_calls"] = tc_list
-                        msgs.append(asst_msg)
+                    # Trace des tools appelés : le output_capture (work_out)
+                    # est analysé par check_work_state qui cherche
+                    # it_is_done / exit_loop_too_hard dans le TEXTE. Sans
+                    # trace, un round qui appelle it_is_done (content vide)
+                    # laisse work_out vide → state=continue → boucle infinie.
+                    # On inclut les ARGUMENTS (JSON) pour que les skills de
+                    # décision (review_decision → approve/disapprove) puissent
+                    # lire le choix exact depuis la trace.
+                    for _tc in tool_calls:
+                        _fn = _tc.get("function", {})
+                        _nm = _fn.get("name", "")
+                        _args = _fn.get("arguments", "") or ""
+                        if _args:
+                            _trace_tools.append(f"{_nm}({_args[:200]})")
+                        else:
+                            _trace_tools.append(_nm)
+                    logger.debug(
+                        "llm/tool_round provider=%s model=%s tools=%s",
+                        p_ref, m_ref,
+                        ",".join(_tc.get("function", {}).get("name", "")
+                                for _tc in tool_calls))
 
-                        # Exécuter chaque tool
-                        for tc in tool_calls:
-                            fn_name = tc["function"]["name"]
-                            try:
-                                raw_args = json.loads(tc["function"]["arguments"])
-                            except json.JSONDecodeError:
-                                raw_args = {}
-                            conv_name = self._resolve_tool_skill(fn_name)
-                            # Le skill doit s'exécuter dans le home de l'agent
-                            # (sinon write_file écrit dans /tmp) et connaître son
-                            # agent_id (journal d'usage, scopes, mémoire).
-                            try:
-                                from services.skill_manager import call_skill
-                                _a_id = result.variables.get("agent_id", "")
-                                if str(_a_id).startswith("agent_"):
-                                    _a_id = str(_a_id).split("_")[-1]
-                                _home = self._agent_work_home(_a_id, result.variables)
-                                tool_result = call_skill(
-                                    conv_name, raw_args, home=_home,
-                                    agent_id=str(_a_id),
-                                )
-                            except Exception as e2:
-                                tool_result = {"ok": False, "error": str(e2)}
-                            msgs.append({
-                                "role": "tool",
-                                "tool_call_id": tc.get("id", ""),
-                                "content": json.dumps(tool_result, default=str),
-                            })
+                    # Ajouter la réponse assistant avec tool_calls
+                    asst_msg = {"role": "assistant", "content": response.content or ""}
+                    tc_list = []
+                    for tc in tool_calls:
+                        tc_entry = {
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "function"),
+                            "function": {
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"]["arguments"],
+                            },
+                        }
+                        tc_list.append(tc_entry)
+                    if tc_list:
+                        asst_msg["tool_calls"] = tc_list
+                    msgs.append(asst_msg)
 
-                        # On GARDE les tools d'un round à l'autre : après un
-                        # write_file, le LLM doit pouvoir appeler it_is_done au
-                        # round suivant. La boucle est bornée par range(15).
-                        # (Ancien comportement : tool_kwargs={} → le LLM ne
-                        # pouvait jamais clôturer → boucle do_work sans fin.)
-                        # tool_kwargs = {}
+                    # Exécuter chaque tool
+                    for tc in tool_calls:
+                        fn_name = tc["function"]["name"]
+                        try:
+                            raw_args = json.loads(tc["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            raw_args = {}
+                        conv_name = self._resolve_tool_skill(fn_name)
+                        # Le skill doit s'exécuter dans le home de l'agent
+                        # (sinon write_file écrit dans /tmp) et connaître son
+                        # agent_id (journal d'usage, scopes, mémoire).
+                        try:
+                            from services.skill_manager import call_skill
+                            _a_id = result.variables.get("agent_id", "")
+                            if str(_a_id).startswith("agent_"):
+                                _a_id = str(_a_id).split("_")[-1]
+                            _home = self._agent_work_home(_a_id, result.variables)
+                            tool_result = call_skill(
+                                conv_name, raw_args, home=_home,
+                                agent_id=str(_a_id),
+                            )
+                        except Exception as e2:
+                            tool_result = {"ok": False, "error": str(e2)}
+                        msgs.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": json.dumps(tool_result, default=str),
+                        })
+
+                    # On GARDE les tools d'un round à l'autre : après un
+                    # write_file, le LLM doit pouvoir appeler it_is_done au
+                    # round suivant. La boucle est bornée par range(15).
+                    # (Ancien comportement : tool_kwargs={} → le LLM ne
+                    # pouvait jamais clôturer → boucle do_work sans fin.)
+                    # tool_kwargs = {}
                     else:
                         # 15 rounds sans réponse textuelle → erreur
                         content = "Tool call limit exceeded"
