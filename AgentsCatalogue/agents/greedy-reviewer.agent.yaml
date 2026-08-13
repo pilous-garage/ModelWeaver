@@ -175,6 +175,7 @@ entrypoints:
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
           skills: ["workspace/review_verdict@v1"]
+          agentic: always
           max_tokens: 2048
           temperature: 0.2
           output_capture: review_out

@@ -276,8 +276,8 @@ class ModelCapaciteRepository:
     """
 
     # Capacités booléennes connues.
-    BOOL_CAPS = ("agentic", "vision", "supports_chat", "streaming",
-                 "function_calling", "reasoning")
+    BOOL_CAPS = ("agentic", "agentic-translation", "vision", "supports_chat",
+                 "streaming", "function_calling", "reasoning")
     # Capacités de plage connues (tokens).
     RANGE_CAPS = ("context_window", "max_input", "max_output")
 

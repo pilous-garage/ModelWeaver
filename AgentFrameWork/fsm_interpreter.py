@@ -430,6 +430,113 @@ class FSMInterpreter:
             })
         return tools
 
+    def _capability_confidence(self, model_ref: str, provider_ref: str,
+                               capability: str) -> Optional[float]:
+        """Confidence (0..1) d'une capacité d'un modèle/provider dans la table
+        d'expérience (model_endpoint_provider_capacite). None si inconnu.
+
+        Utilisé pour décider du mode agentic d'un llm_call :
+          - agentic              : tool_calls natifs via l'API
+          - agentic-translation  : tools via le format texte ###tool_call:...###
+        """
+        try:
+            from modules.sql.catalogue_repo import CatalogueDB
+            cat = CatalogueDB()
+            row = cat.conn.execute("""
+                SELECT mepc.confidence
+                FROM model_endpoint_provider_capacite mepc
+                JOIN catalogue_models cm ON cm.id = mepc.model_id
+                WHERE (cm.ref = ? OR cm.model_key = ?)
+                  AND mepc.provider_id = (
+                        SELECT id FROM catalogue_providers WHERE ref = ?)
+                  AND mepc.capability = ?
+                ORDER BY mepc.updated_at DESC LIMIT 1
+            """, (model_ref, model_ref, provider_ref, capability)).fetchone()
+            conf = float(row["confidence"]) if row else None
+            cat.close()
+            return conf
+        except Exception:
+            return None
+
+    def _observe_capability(self, model_ref: str, provider_ref: str,
+                            capability: str, ok: bool,
+                            source: str = "experience") -> None:
+        """Met à jour la table d'expérience (model_endpoint_provider_capacite)
+        pour une capacité booléenne à chaque llm_call qui l'utilise.
+
+        `ok` : la capacité a fonctionné (tool_call natif / traduit) ou non."""
+        try:
+            from modules.sql.catalogue_repo import CatalogueDB
+            from modules.sql.catalogue_repo import ModelCapaciteRepository
+            cat = CatalogueDB()
+            # Résoudre model_id + endpoint_id + provider_id du couple.
+            row = cat.conn.execute("""
+                SELECT cm.id AS model_id, kem.endpoint_id,
+                       kem.provider_id
+                FROM provider_models_mapping kem
+                JOIN catalogue_models cm ON cm.id = kem.model_id
+                WHERE (cm.ref = ? OR cm.model_key = ?)
+                  AND kem.provider_id = (
+                        SELECT id FROM catalogue_providers WHERE ref = ?)
+                LIMIT 1
+            """, (model_ref, model_ref, provider_ref)).fetchone()
+            if row:
+                ModelCapaciteRepository(cat.conn).observe_bool(
+                    row["model_id"], row["endpoint_id"], row["provider_id"],
+                    capability, ok, source=source, strength=0.3)
+                cat.conn.commit()
+            cat.close()
+        except Exception:
+            pass
+
+    def _translation_prompt(self, tools: List[Dict]) -> str:
+        """Bloc d'instruction pour le mode need_translation (< ~1k tokens).
+
+        Liste les outils disponibles et le format de réponse
+        `###tool_call:nom|JSON###` pour un modèle NON-agentic mais
+        capable de suivre une convention texte (JSON d'arguments BRUT,
+        sans guillemets d'encadrement — plus robuste à parser)."""
+        lines = [
+            "## OUTILS DISPONIBLES",
+            "Pour exécuter un outil, écris UNE ligne exactement au format :",
+            "###tool_call:nom_outil|{\"param\": \"valeur\"}###",
+            "Exemple : "
+            "###tool_call:file_write_file_v1|{\"path\": \"a.py\", "
+            "\"content\": \"print(1)\"}###",
+            "Un appel par ligne. Après exécution des outils, donne ta réponse "
+            "finale en texte.",
+            "",
+            "Outils disponibles :",
+        ]
+        for t in tools:
+            fn = t.get("function", {})
+            name = fn.get("name", "?")
+            desc = (fn.get("description", "") or "").split("\n")[0][:120]
+            params = fn.get("parameters", {}).get("properties", {})
+            param_names = ", ".join(list(params.keys())[:6])
+            lines.append(f"- {name} : {desc}  (params: {param_names})")
+        return "\n".join(lines)[:1200]
+
+    def _parse_translation_tools(self, text: str) -> List[tuple]:
+        """Parse les ###tool_call:nom|JSON### d'une réponse de traduction.
+
+        Retourne [(nom, args_dict)] dans l'ordre d'apparition."""
+        import re as _re
+        out = []
+        for m in _re.finditer(r"###tool_call:([A-Za-z0-9_]+)\|(.*?)###",
+                              text, _re.DOTALL):
+            name = m.group(1)
+            raw = m.group(2).strip()
+            args = {}
+            try:
+                args = json.loads(raw)
+            except Exception:
+                args = {"content": raw}
+            if not isinstance(args, dict):
+                args = {"content": str(args)}
+            out.append((name, args))
+        return out
+
     def _resolve_tool_skill(self, fn_name: str) -> str:
         """Convertit un nom de tool OpenAI (file_write_file_v1) en nom de
         skill catalogue (file/write_file@v1).
@@ -536,6 +643,7 @@ class FSMInterpreter:
             content = ""
             tokens = 0
             _trace_tools: List[str] = []
+            _trans_ok = 0
             # agent_id disponible pour le journal d'usage (si l'agent l'a
             # fourni via {{agent_id}} ou le contexte d'exécution).
             _agent_id = result.variables.get("agent_id", "")
@@ -569,9 +677,30 @@ class FSMInterpreter:
                 result.variables["_llm_model"] = m_ref
                 result.variables["_llm_fallbacks"] = 0
             else:
-                # Tools : convertir les skills disponibles au format OpenAI
-                tools = self._build_llm_tools(step.get("bundles"), step.get("skills"))
+                # Tag agentic du step llm_call :
+                #   false  → AUCUN tool fourni (appel texte simple)
+                #   maybe  → tools fournis, texte toléré si le LLM ne les utilise pas
+                #   always → tools fournis, et AUCUN tool_call = ÉCHEC (on_error)
+                _agentic_req = str(step.get("agentic", "maybe")).lower()
+                # Tools : convertir les skills disponibles au format OpenAI.
+                # agentic=false → pas de tools (simple génération de texte).
+                if _agentic_req == "false":
+                    tools = []
+                else:
+                    tools = self._build_llm_tools(step.get("bundles"), step.get("skills"))
                 tool_kwargs = {"tools": tools} if tools else {}
+                # DÉCISION du mode agentic (au niveau bridge) :
+                #   can_do_agentic = confiance 'agentic' (natif) depuis la table.
+                #   - conf >= 0.7 → tools API natifs
+                #   - conf <= 0.3 → prouvé NON-agentic → mode need_translation
+                #                    (tools dans le prompt + ###tool_call:...###)
+                #   - inconnu      → tools natifs + on observe (test_agentic)
+                _need_translation = False
+                if tools and _agentic_req != "false":
+                    _conf_agentic = self._capability_confidence(
+                        m_ref, p_ref, "agentic")
+                    if _conf_agentic is not None and _conf_agentic <= 0.3:
+                        _need_translation = True
 
                 timeout = step.get("timeout")
                 use_fallback = step.get("fallback", False)
@@ -597,16 +726,57 @@ class FSMInterpreter:
                 else:
                     # Boucle tool_calls : LLM → tool → LLM → ... → text
                     _trace_tools = []
+                    _trans_ok = 0  # nb de tools traduits exécutés (agentic-translation)
                     for _tool_round in range(15):
-                        response = self.bridge.chat(
-                            provider_ref=p_ref, model_ref=m_ref,
-                            messages=msgs, temperature=temperature, max_tokens=max_tokens,
-                            agent_id=_agent_id or None, **tool_kwargs,
-                        )
+                        if _need_translation:
+                            # Mode TRADUCTION (modèle non-agentic) : pas de tools
+                            # API — on met la liste des tools + le format dans le
+                            # prompt, le LLM répond ###tool_call:nom:"args"###.
+                            _msgs = msgs + [{"role": "user", "content":
+                                             self._translation_prompt(tools)}]
+                            response = self.bridge.chat(
+                                provider_ref=p_ref, model_ref=m_ref,
+                                messages=_msgs, temperature=temperature,
+                                max_tokens=max_tokens, agent_id=_agent_id or None,
+                            )
+                        else:
+                            response = self.bridge.chat(
+                                provider_ref=p_ref, model_ref=m_ref,
+                                messages=msgs, temperature=temperature, max_tokens=max_tokens,
+                                agent_id=_agent_id or None, **tool_kwargs,
+                            )
                         result.variables["_llm_provider"] = p_ref
                         result.variables["_llm_model"] = m_ref
                         result.variables["_llm_fallbacks"] = 0
 
+                        if _need_translation:
+                            # Parser les ###tool_call:nom:"args"### du texte.
+                            _parsed = self._parse_translation_tools(
+                                (getattr(response, "content", "") or ""))
+                            if not _parsed:
+                                break  # plus de tool traduit → réponse finale
+                            for _name, _args in _parsed:
+                                _trace_tools.append(f"{_name}(translated)")
+                            _trans_ok += len(_parsed)
+                            # Exécuter les tools traduits et re-appeler le LLM.
+                            for _name, _args in _parsed:
+                                try:
+                                    from services.skill_manager import call_skill
+                                    _a_id = result.variables.get("agent_id", "")
+                                    if str(_a_id).startswith("agent_"):
+                                        _a_id = str(_a_id).split("_")[-1]
+                                    _home = self._agent_work_home(_a_id, result.variables)
+                                    _res = call_skill(
+                                        self._resolve_tool_skill(_name), _args,
+                                        home=_home, agent_id=str(_a_id))
+                                except Exception as _e:
+                                    _res = {"ok": False, "error": str(_e)}
+                                msgs.append({
+                                    "role": "tool",
+                                    "tool_call_id": f"tr-{_tool_round}-{_name}",
+                                    "content": json.dumps(_res, default=str),
+                                })
+                            continue  # re-appeler le LLM avec les résultats
                         tool_calls = getattr(response, "tool_calls", None)
                         if not tool_calls:
                             # debug : trace le contenu texte du round final
@@ -701,6 +871,22 @@ class FSMInterpreter:
                     result.budget = response.budget
                 if stream_sink:
                     stream_sink(content)
+                # agentic: always → AUCUN tool_call = ÉCHEC (on_error), pas une
+                # boucle silencieuse. Le modèle devait produire un tool (ex.
+                # review_verdict) mais a répondu en texte : c'est une erreur.
+                if _agentic_req == "always" and tools and not _trace_tools \
+                        and not (_need_translation and _trans_ok > 0):
+                    err = (f"agentic=always requis mais aucun tool_call "
+                           f"({p_ref}/{m_ref})")
+                    logger.warning("llm/agentic_fail %s", err)
+                    result.variables["_last_call_error"] = err
+                    result.variables["_last_call_ok"] = False
+                    if step.get("on_error"):
+                        result.next_step_id = step.get("on_error")
+                        return True
+                    result.status = "failed"
+                    result.end_reason = err
+                    return False
         except BridgeError as e:
             return self._branch_on_error(step, result, f"LLM error: {e}")
         except AgentAbort:
@@ -724,6 +910,18 @@ class FSMInterpreter:
         result.messages.append({"role": "assistant", "content": content})
         result.content = content
         result.tokens_used += tokens
+        # MISE À JOUR de la table d'expérience à chaque step llm_call qui
+        # utilise une capacité : observer `agentic` (tools natifs) ou
+        # `agentic-translation` (mode traduction) selon le mode utilisé.
+        # ok = au moins un tool a été appelé/exécuté.
+        if tools and _agentic_req != "false":
+            try:
+                _cap = "agentic-translation" if _need_translation else "agentic"
+                _ok = _trans_ok > 0 if _need_translation else bool(_trace_tools)
+                self._observe_capability(m_ref, p_ref, _cap, _ok,
+                                         source="experience")
+            except Exception:
+                pass
         result.next_step_id = step.get("next")
         return True
 
