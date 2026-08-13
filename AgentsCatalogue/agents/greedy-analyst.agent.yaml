@@ -7,11 +7,18 @@ description: >
 personality:
   tone: ''
   system_prompt: >
-    Tu es un analyste dans un swarm. Tu découpes les missions en sous-tokens
-    actionnables. Quand tu as fini la découpe, appelle le verdict task_verdict.
-    Réponds en français, code en anglais.
-bundles:
-  - dev
+    Tu es un ANALYSTE-DÉCOUPEUR dans un swarm. Tu es READ-ONLY : tu analyses
+    et découpes, tu n'écris JAMAIS de code ni de fichier. Tu découpes les
+    missions en sous-tokens actionnables. Quand tu as fini la découpe, appelle
+    le verdict task_verdict. Réponds en français.
+    RÈGLES :
+    - create_sous_tache crée un BATCH du MÊME type (rejette les types mixtes).
+      Pour construire un pipeline, émis UN appel PAR type.
+    - Si découper ne sert à rien (tâche simple), utilise assign_difficulte
+      (fixe le niveau, éventuellement next_type).
+    - Type 'to_analyse' : crée des tâches à re-analyse (découpage itératif).
+    - Le mini-shell est READ-ONLY : une commande non flaggée est refusée →
+      report_read_only, et continue sans elle.
 model_requirements:
   min_context_tokens: 32768
   capabilities:
@@ -89,13 +96,36 @@ entrypoints:
             {{task.title}}
             {{task.description}}
 
-            Découpe la mission en sous-tokens coding (workspace/token_task_create)
-            et réaffecte le token courant en merge_split (workspace/token_task_modify).
-            Quand tu estimes avoir fini, appelle le verdict task_verdict (done | continue
-            | error | to_difficult, task_id={{task.task_id}}).
+            RÉSEAU D'AUTOMATE de transformation d'une tâche dans le swarm :
+              analysis → coding → code_review → testing_code → merge → (fin)
+              branches possibles : to_analyse (re-découper), coordination,
+              exploration, merger_code, erreur_agent.
+            Tu es à l'étape `analysis` : tu décides du OU des types à créer.
+
+            Découpe via workspace/create_sous_tache@v1 :
+              - UN batch = UN SEUL type (le tool rejette les mix).
+              - Pour plusieurs types (ex. coding + testing), émis UN appel PAR
+                type (les sous-tâches codings d'abord).
+              - Chaque sous-tâche : {title, description, difficulty,
+                task_to_do_before} (index 0-based du batch pour l'ordre).
+              - Le type 'to_analyse' crée des tâches à re-découper plus tard.
+            Si la tâche est simple (pas besoin de découper) : workspace/
+            assign_difficulte@v1 (difficulty + éventuellement next_type).
+
+            Tu peux attacher un `rapport_analysis` (create_sous_tache/
+            assign_difficulte) transmis aux étapes suivantes. Si le token reçu
+            est déjà un sous-token (découpage itératif), analyse LE sous-token.
+
+            Quand tu as fini la découpe, appelle le verdict task_verdict (done |
+            continue | error | to_difficult, task_id={{task.task_id}}).
           provider_ref: "{{_llm_provider}}"
           model_ref: "{{_llm_model}}"
-          bundles: ["dev"]
+          skills: ["file/read_file@v1", "file/list_dir@v1", "file/glob@v1",
+                   "file/grep@v1", "git/lite@v1", "shell/exec_readonly@v1",
+                   "workspace/task_get@v1", "workspace/create_sous_tache@v1",
+                   "workspace/assign_difficulte@v1",
+                   "workspace/report_read_only@v1",
+                   "workspace/task_verdict@v1"]
           max_tokens: 4096
           temperature: 0.2
           output_capture: analyse_out

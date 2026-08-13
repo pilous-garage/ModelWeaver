@@ -596,6 +596,30 @@ class TaskRepository:
         return _rows(self.conn.execute(
             "SELECT * FROM task_files WHERE task_id = ?", (task_id,)).fetchall())
 
+    # ── Rapports d'analyse (task_reports) ──
+
+    def add_report(self, task_id: int, role: str = "analysis",
+                   content: str = "") -> int:
+        """Attache un rapport d'analyse à une tâche (transmis à la chaîne)."""
+        if not content:
+            return 0
+        cur = self.conn.execute(
+            "INSERT INTO task_reports (task_id, role, content) VALUES (?, ?, ?)",
+            (task_id, role, content))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_reports(self, task_id: int, roles: Optional[list] = None):
+        """Rapports d'une tâche (tous, ou filtrés par rôles)."""
+        if roles:
+            ph = ",".join("?" for _ in roles)
+            return _rows(self.conn.execute(
+                f"SELECT * FROM task_reports WHERE task_id = ? "
+                f"AND role IN ({ph}) ORDER BY id", (task_id, *roles)).fetchall())
+        return _rows(self.conn.execute(
+            "SELECT * FROM task_reports WHERE task_id = ? ORDER BY id",
+            (task_id,)).fetchall())
+
 
 class IssueRepository:
     """Issues d'un workspace (demandes de haut niveau → découpées en tâches)."""
@@ -833,6 +857,24 @@ class WorkspaceDB:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_deps_parent "
                 "ON task_dependencies(parent_id)")
+            # ── task_reports : rapports d'analyse attachés à une tâche ──
+            # L'analyste (découpeur) produit des rapports d'analyse transmis à
+            # la chaîne (coder/reviewer/merger) comme contexte. role = l'étape
+            # qui a produit le rapport (analysis, testing, review…).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_reports (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    INTEGER NOT NULL,
+                    role       TEXT NOT NULL DEFAULT 'analysis',
+                    content    TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (task_id) REFERENCES tasks(task_id)
+                        ON DELETE CASCADE
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_reports_task "
+                "ON task_reports(task_id)")
             _add_column_if_missing(self.conn, "issues", "team_id", "INTEGER DEFAULT -1")
             # V0.8.9 : lien issue → workspace d'analyse (le workspace où les
             # tasks de découpage vivent). Permet de marquer l'issue 'done'

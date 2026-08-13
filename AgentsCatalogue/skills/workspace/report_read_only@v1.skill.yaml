@@ -1,0 +1,31 @@
+name: workspace/report_read_only@v1
+category: workspace
+description: >
+  SIGNALE une commande qui a été refusée (non flaggée read-only) au gestionnaire
+  read-only. L'analyste l'utilise quand il avait besoin d'une commande refusée
+  par shell/exec_readonly@v1 : le gestionnaire pourra la marquer is_read_only
+  si elle est sûre. Le processus est long — l'analyste doit continuer l'analyse
+  sans la commande en attendant.
+inputs:
+  command:
+    type: string
+    required: true
+    description: Commande refusée (exactement comme elle a été saisie)
+  context:
+    type: string
+    required: false
+    default: ""
+    description: Pourquoi elle était nécessaire (contexte d'analyse)
+  niveau:
+    type: string
+    required: false
+    default: "commande"
+    description: "niveau du refus : commande | option | argument"
+outputs:
+  ok:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.report_read_only

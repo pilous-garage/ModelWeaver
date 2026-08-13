@@ -1,0 +1,38 @@
+name: workspace/assign_difficulte@v1
+category: workspace
+description: >
+  ASSIGNE une difficulté à une tâche (ou la passe à l'étape suivante) quand le
+  découpage n'est pas nécessaire. Utilisé par l'ANALYSTE quand une tâche est
+  simple (ex. « créer fact(n) ») : on fixe juste le niveau, pas de sous-tâches.
+  Optionnel : `next_type` pour faire avancer la tâche dans le pipeline sans
+  sous-découpage (ex. analysis → coding prêt à exécuter).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: true
+  difficulty:
+    type: string
+    required: false
+    default: ""
+    description: "easy | medium | hard | expert"
+  next_type:
+    type: string
+    required: false
+    default: ""
+    description: "Type suivant dans le pipeline (coding, testing_code, code_review, merge…)"
+  rapport_analysis:
+    type: string
+    required: false
+    default: ""
+    description: "Rapport d'analyse attaché à la tâche (task_reports)"
+outputs:
+  ok:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.assign_difficulte

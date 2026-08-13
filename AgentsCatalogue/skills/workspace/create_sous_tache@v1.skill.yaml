@@ -1,0 +1,52 @@
+name: workspace/create_sous_tache@v1
+category: workspace
+description: >
+  CRÉE un BATCH de sous-tâches du MÊME type en UN SEUL appel (découpage de
+  l'analyste). Remplace token_task_create pour l'usage analyste.
+
+  RÈGLE STRICTE : toutes les sous-tâches d'un batch partagent le MÊME
+  `type`. Pour créer plusieurs types (ex. un pipeline coding + testing),
+  l'analyste émet PLUSIEURS appels create_sous_tache (un par type).
+
+  Chaque sous-tâche : {title, description, difficulty, task_to_do_before}
+  où task_to_do_before = liste de task_id (ou index du batch) que cette
+  sous-tâche attend d'abord (dépendance). Les parents peuvent être des
+  tâches du workspace (task_id) ou des index de sous-tâches du batch (0-based).
+
+  Un `rapport_analysis` (optionnel) est attaché à la tâche parente (table
+  task_reports, rôle 'analysis') pour transmettre le contexte à la chaîne.
+
+  Le type 'to_analyse' crée des tâches qui seront reprises et découpées à
+  nouveau (découpage itératif par type).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  type:
+    type: string
+    required: true
+    description: "Type des sous-tâches (toutes pareilles) : coding | code_review | testing | testing_code | merge | merger_code | analysis | to_analyse | coordination | exploration"
+  parent_task_id:
+    type: integer
+    required: true
+    description: "Tâche que l'analyste découpe (ses sous-tâches en dépendent)"
+  sous_taches:
+    type: array
+    required: true
+    description: "[{title, description?, difficulty, task_to_do_before?}]"
+  rapport_analysis:
+    type: string
+    required: false
+    default: ""
+    description: "Rapport d'analyse attaché à parent_task_id (transmis à la chaîne)"
+outputs:
+  ok:
+    type: boolean
+  created:
+    type: array
+    description: "Liste des sous-tâches créées (task_id)"
+  error:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.task.create_sous_tache

@@ -1,0 +1,33 @@
+name: shell/exec_readonly@v1
+category: shell
+description: >
+  Exécute UNIQUEMENT des commandes READ-ONLY (analyste/découpeur). Le tag
+  `is_read_only` est porté par les commandes ci-dessous. Toute commande non
+  flaggée read-only est REFUSÉE avec un message explicite — et l'analyste peut
+  signaler la commande via workspace/report_read_only@v1 pour qu'elle soit
+  examinée par le gestionnaire read-only.
+
+  Commandes read-only : ls, cat, head, tail, grep, find, df, du, free, stat,
+  file, wc, sort, uniq, git (status/log/diff/show/branch/rev-parse), pwd, echo.
+inputs:
+  command:
+    type: string
+    required: true
+    description: Commande read-only à exécuter
+outputs:
+  stdout:
+    type: string
+  stderr:
+    type: string
+  exit_code:
+    type: int
+  ok:
+    type: boolean
+  refused:
+    type: boolean
+    description: True si la commande a été refusée (non read-only)
+  reason:
+    type: string
+implementation:
+  type: python
+  function: shell.readonly.exec

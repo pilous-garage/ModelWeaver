@@ -74,6 +74,148 @@ def _normalize_repo_ref(repo: str) -> str:
     return r
 
 
+def create_sous_tache(inputs: dict, home: str) -> dict:
+    """create_sous_tache — découpage par l'ANALYSTE en UN batch du MÊME type.
+
+    RÈGLE STRICTE : toutes les sous-tâches partagent le `type` fourni (le tool
+    rejette les types mixtes). L'analyste émet un appel PAR type s'il construit
+    un pipeline. Chaque sous-tâche : {title, description, difficulty,
+    task_to_do_before} (dépendances : task_id du workspace OU index 0-based du
+    batch). Un `rapport_analysis` est attaché à la tâche parente (task_reports).
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    stype = _normalize_task_type(inputs.get("type", ""))
+    parent_id = inputs.get("parent_task_id")
+    sous = inputs.get("sous_taches") or []
+    if not workspace_id or not stype or parent_id is None:
+        return {"ok": False, "error": "workspace_id + type + parent_task_id requis"}
+    if not isinstance(sous, list) or not sous:
+        return {"ok": False, "error": "sous_taches : liste non vide requise"}
+    try:
+        db, scope = _scope(workspace_id)
+        parent = scope.tasks.get(int(parent_id))
+        if not parent:
+            db.close()
+            return {"ok": False, "error": "tâche parente introuvable"}
+        # Référence du repo/branche héritée de la parente.
+        repo = _normalize_repo_ref(parent.get("repo", ""))
+        branch = parent.get("branch", "")
+        team_id = parent.get("team_id", -1)
+        created_ids = []
+        batch_ids = {}  # index 0-based → task_id
+        for i, st in enumerate(sous):
+            title = (st.get("title") or "").strip()
+            if not title:
+                db.close()
+                return {"ok": False, "error": f"sous-tâche {i}: title requis"}
+            diff = st.get("difficulty") or "medium"
+            created = scope.tasks.create(
+                title=title,
+                description=st.get("description") or "",
+                difficulty=diff, task_type=stype, team_id=team_id,
+                repo=repo, branch=branch, primordial=0)
+            batch_ids[i] = created["task_id"]
+            created_ids.append(created["task_id"])
+        # Dépendances : parent + task_to_do_before (task_id ou index batch).
+        for i, st in enumerate(sous):
+            tid = batch_ids[i]
+            scope.tasks.add_dependency(tid, int(parent_id), "done")
+            before = st.get("task_to_do_before") or []
+            if isinstance(before, int):
+                before = [before]
+            for b in before:
+                pid = batch_ids.get(int(b)) if isinstance(b, int) else b
+                if pid and int(pid) != tid:
+                    try:
+                        scope.tasks.add_dependency(tid, int(pid), "done")
+                    except Exception:
+                        pass
+        # Rapport d'analyse attaché à la tâche parente.
+        rapport = (inputs.get("rapport_analysis") or "").strip()
+        if rapport:
+            try:
+                scope.tasks.add_report(int(parent_id), "analysis", rapport)
+            except Exception:
+                pass
+        db.close()
+        return {"ok": True, "created": created_ids, "count": len(created_ids),
+                "type": stype}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def assign_difficulte(inputs: dict, home: str) -> dict:
+    """assign_difficulte — fixe la difficulté d'une tâche (ou la fait avancer).
+
+    Pour l'analyste quand la découpe n'est pas nécessaire : on garde la tâche
+    telle quelle, on ajuste juste le niveau (easy/medium/hard/expert). `next_type`
+    fait avancer la tâche dans le pipeline (ex. analysis → coding) sans
+    sous-découpage — utile si le découpage serait trivial. Le `rapport_analysis`
+    est attaché à la tâche."""
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    if not workspace_id or task_id is None:
+        return {"ok": False, "error": "workspace_id + task_id requis"}
+    updates = {}
+    diff = (inputs.get("difficulty") or "").strip().lower()
+    if diff:
+        if diff not in ("easy", "medium", "hard", "expert"):
+            return {"ok": False, "error": "difficulty invalide (easy|medium|hard|expert)"}
+        updates["difficulty"] = diff
+    next_type = (inputs.get("next_type") or "").strip()
+    if next_type:
+        updates["task_type"] = _normalize_task_type(next_type)
+    rapport = (inputs.get("rapport_analysis") or "").strip()
+    try:
+        db, scope = _scope(workspace_id)
+        task = scope.tasks.get(int(task_id))
+        if not task:
+            db.close()
+            return {"ok": False, "error": "tâche introuvable"}
+        if updates:
+            scope.tasks.update(int(task_id), **updates)
+        if rapport:
+            try:
+                scope.tasks.add_report(int(task_id), "analysis", rapport)
+            except Exception:
+                pass
+        db.close()
+        return {"ok": True, "updated": list(updates.keys()),
+                "difficulty": updates.get("difficulty", task.get("difficulty")),
+                "task_type": updates.get("task_type", task.get("task_type"))}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def report_read_only(inputs: dict, home: str) -> dict:
+    """report_read_only — signale une commande refusée (non read-only).
+
+    Loggue la demande comme un rapport (rôle 'readonly_request') sur la tâche
+    courante, pour que le gestionnaire read-only la voie. L'analyste continue
+    sans la commande en attendant."""
+    workspace_id = inputs.get("workspace_id", "")
+    task_id = inputs.get("task_id")
+    command = (inputs.get("command") or "").strip()
+    if not command:
+        return {"ok": False, "error": "command requis"}
+    context = (inputs.get("context") or "").strip()
+    niveau = (inputs.get("niveau") or "commande").strip()
+    content = (f"[read-only request] commande={command!r} niveau={niveau} "
+               f"contexte={context}")
+    try:
+        if task_id is not None:
+            db, scope = _scope(workspace_id or "mw-llm-code")
+            try:
+                scope.tasks.add_report(int(task_id), "readonly_request", content)
+            finally:
+                db.close()
+        return {"ok": True, "note": content[:200],
+                "instruction": "analyse sans cette commande ; le gestionnaire "
+                               "évaluera la demande"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def create(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     title = inputs.get("title", "")
@@ -958,4 +1100,5 @@ __skills__ = ["create", "list_pending", "list_all", "list_tasks", "get",
               "claim", "claim_next", "done", "done_no_code", "add_file",
               "get_files", "verdict", "apply_verdict", "review_verdict",
               "task_has_corrective", "create_token", "pick_token",
-              "modify_token", "clear_task", "cancel_task", "release_token"]
+              "modify_token", "clear_task", "cancel_task", "release_token",
+              "create_sous_tache", "assign_difficulte", "report_read_only"]
