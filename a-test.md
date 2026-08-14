@@ -71,9 +71,15 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
   `provider_ref=nvidia model_ref=meta/llama-3.1-8b-instruct` → **status: ok**.
   Le decoupeur analyse/découpe réellement. La table api_keys avait perdu la
   liaison (key_value vides) mais le `.env` + keyring la comblent.
-- **Reste** : lancer le flux TASKFLOW réel complet (entry_create → analysis →
-  découpe → coding → merge) via l'as-llm-leader (pas un execute direct), et
-  vérifier que les sub_tasks sont créées/supervisées en BDD.
+- **VALIDÉ E2E RÉEL (2026-08-14)** : le flux taskflow complet tourne de bout
+  en bout via `run_completion` :
+  entry → analysis → découpe (3 coding + merge) → coder doing → respond →
+  **task supervised**. Le modèle conclut la découpe (blocage historique levé).
+- **Bug restant** : la découpe crée parfois ses sub_tasks sur une NOUVELLE
+  tâche (1608) au lieu de la tâche d'origine (1607) — injection task_id
+  (`task_id: 0` du modèle) mal résolue. L'analysis 1607 finalise avec respond
+  pendant que la découpe 1608 continue. À corriger : injection workspace_id/
+  task_id dans decoupe (le modèle met `default`/`0`).
 
 ## 7. Invariants — à re-vérifier après modifications
 - `services/taskflow_petri.py --check-invariants` (B2/B3/A4/B5/C1) passe sur
