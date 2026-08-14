@@ -132,3 +132,22 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
 - **Performance** : chaque coding prend ~3-4 min (6+ rounds LLM, ~30-60s par
   appel deepseek sur nvidia). Le timeout de 900s du run_completion est juste
   suffisant pour une mission simple ; à augmenter pour les missions longues.
+
+## 10. Scoring LLM — bugs découverts (2026-08-15, à déboguer)
+- **Pénalité « jamais appelé »** (`_score_model` ×0.4) : volontaire (évite de
+  re-sélectionner des modèles morts jamais testés) mais défavorise les
+  nouveaux modèles valides. À reconsidérer (×0.6 ? conditionné ?).
+- **Bug sémantique score_batch** : `score_blocks.py` écrit `score_fail_rate`
+  = score de FAIL lissé (0.55 pour 4 req/0 fail) et `score_latency` = latence
+  brute (2004 ms), mais `allocate.py` lit ces colonnes comme SUCCÈS (1=parfait)
+  et score 0-1 (exp). Contrat cassé → le deepseek (bon modèle) est mal classé.
+- **model_key None** : 61 modèles (dont deepseek-v4-flash-0731) avaient
+  model_key=None → benchmark jamais croisé → score baseline 0.1. CORRIGÉ via
+  `python3 scripts/fill_model_keys.py` (le normalisateur gère -0731/:preview).
+- **deepseek-v4-flash a un bon benchmark** (score_etire=0.416, model_efficacy
+  coding 38.46 / agentic 42.91) mais il est invisible à cause du model_key
+  + du contrat score_batch cassé.
+- **`get_score(type_request)` manquant** : pas de fonction publique sur le
+  bridge qui classe les LLM via _score_model. À ajouter.
+- **Bug fixé au passage** : `_score_model` référençait `batch_latency_ms`
+  (inexistant) → AttributeError → corrigé en `runtime_latency_ms`.

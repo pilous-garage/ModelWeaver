@@ -167,8 +167,8 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     # exp de la latence runtime moyenne.
     if option.batch_latency_score > 0:
         score *= option.batch_latency_score
-    elif option.batch_latency_ms > 0 and option.runtime_calls > 0:
-        lat_s = max(request.latence_penalise, option.batch_latency_ms / 1000.0)
+    elif option.runtime_latency_ms > 0 and option.runtime_calls > 0:
+        lat_s = max(request.latence_penalise, option.runtime_latency_ms / 1000.0)
         score_latence = math.exp(
             -(lat_s - request.latence_penalise) / request.latence_regule)
         score *= score_latence
