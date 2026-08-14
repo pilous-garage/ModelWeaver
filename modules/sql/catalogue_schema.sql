@@ -590,6 +590,43 @@ CREATE TABLE IF NOT EXISTS budgets (
 );
 
 -- ============================================================
+-- PROVIDER_MODEL_ADDRESS — Répertoire RÉSOLU des adresses LLM.
+--    Une adresse = provider × endpoint × provider_model (le nom du
+--    modèle CHEZ ce provider — plusieurs providers peuvent nommer un
+--    même modèle différemment). SANS clé API : l'adresse est en dur
+--    (provider+endpoint+modèle), la clé est posée À RUNTIME depuis le
+--    keyring (le répertoire reste lisible et partageable).
+--    `adresse_id` est la clé de référence commune à TOUTES les tables
+--    de scoring/log/usage (au lieu des textes provider_ref/model_ref).
+--    Une adresse = 1 clé pour l'instant (à généraliser plus tard si
+--    plusieurs clés par modèle).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS provider_model_address (
+    adresse_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- identité complète (résolue)
+    provider_id       INTEGER NOT NULL REFERENCES catalogue_providers(id),
+    provider_ref      TEXT NOT NULL,           -- dénormalisé (lisible) : "nvidia"
+    endpoint_id       INTEGER REFERENCES provider_endpoints(endpoint_id),
+    endpoint_url      TEXT DEFAULT '',         -- ex. "https://api.nvidia.com/v1"
+    model_id          INTEGER REFERENCES catalogue_models(id),
+    model_key         TEXT DEFAULT '',         -- canonique : "deepseek-v4-flash"
+    provider_model_id INTEGER NOT NULL REFERENCES provider_models(id),
+    provider_model_name TEXT NOT NULL,         -- model_provider : "deepseek-ai/deepseek-v4-flash-0731"
+    -- état
+    available         INTEGER DEFAULT 1,
+    deprecated        INTEGER DEFAULT 0,
+    created_at        TEXT DEFAULT (datetime('now')),
+    -- UNE adresse par (provider, endpoint, provider_model_NAME) — pas par
+    -- provider_model_id (un provider peut avoir N lignes provider_models
+    -- pour le même nom de modèle).
+    UNIQUE(provider_id, endpoint_id, provider_model_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pma_provider ON provider_model_address(provider_id);
+CREATE INDEX IF NOT EXISTS idx_pma_model ON provider_model_address(model_key);
+CREATE INDEX IF NOT EXISTS idx_pma_name ON provider_model_address(provider_model_name);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);
