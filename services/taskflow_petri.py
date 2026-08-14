@@ -322,38 +322,24 @@ def build_team_petri(path: Path) -> Dict[str, Any]:
 
 
 def save_petri_png(petri: Petri, out_path: str) -> str:
-    """Construit le PetriNet pm4py et le sauvegarde en image (PNG)."""
-    from pm4py.objects.petri_net.obj import PetriNet, Marking
-    from pm4py.objects.petri_net.utils import petri_utils
-    net = PetriNet(f"taskflow_{petri.agent}")
-    pm_places: Dict[str, PetriNet.Place] = {}
-    pm_trans: Dict[str, PetriNet.Transition] = {}
-    for pname in petri.places:
-        pm_places[pname] = PetriNet.Place(pname)
-        net.places.add(pm_places[pname])
+    """Construit le pétri en DOT (graphviz) avec les LABELS des places et
+    transitions, et le rend en PNG. pm4py ne nomme pas les places (cercles
+    muets) — graphviz permet un contrôle total des labels."""
+    from graphviz import Digraph
+    g = Digraph(f"taskflow_{petri.agent}", format="png")
+    g.attr(rankdir="LR", size="20,20", dpi="120")
+    for p in petri.places:
+        g.node(p, p, shape="circle", fontsize="9")
     for t in petri.transitions:
-        pt = PetriNet.Transition(t["name"], t["name"])
-        net.transitions.add(pt)
-        pm_trans[t["name"]] = pt
-        for p in t["in"]:
-            petri_utils.add_arc_from_to(pm_places[p], pt, net)
-        for p in t["out"]:
-            petri_utils.add_arc_from_to(pt, pm_places[p], net)
-    m0 = Marking()
-    for t in petri.types:
-        src = pm_places.get(f"data_{t}_unattributed")
-        if src is not None:
-            m0[src] = 1
-    try:
-        from pm4py.visualization.petri_net import visualizer
-        # Visualiseur par défaut : les LABELS des places et transitions sont
-        # affichés (WO_DECORATION les enlèverait).
-        gviz = visualizer.apply(net, m0, None,
-                                parameters={"format": "png", "font_size": "9"})
-        visualizer.save(gviz, out_path)
-    except Exception:
-        import pm4py as _pm4py
-        _pm4py.save_vis_petri_net(net, m0, out_path)
+        g.node(t["name"], t["name"], shape="box", fontsize="9")
+        for pin in t["in"]:
+            g.edge(pin, t["name"])
+        for pout in t["out"]:
+            g.edge(t["name"], pout)
+    base = str(out_path)
+    if base.endswith(".png"):
+        base = base[:-4]
+    g.render(base, cleanup=True)
     return out_path
 
 
