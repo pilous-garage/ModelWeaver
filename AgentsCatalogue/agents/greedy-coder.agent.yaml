@@ -80,6 +80,8 @@ entrypoints:
         Si impossible : workspace/sub_task_release@v1 (tag=done/failure).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
+      agentic: always
+      base_tools: false
       skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1",
                "file/glob@v1", "file/grep@v1", "file/list_dir@v1",
                "system/check_syntax@v1", "shell/exec@v1", "git/commit@v1",
