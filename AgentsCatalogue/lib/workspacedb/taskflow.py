@@ -163,6 +163,33 @@ def ask_intel(inputs: dict, home: str) -> dict:
         db, sc = _scope(workspace_id)
         task = sc.tasks.get(int(task_id))
         team_id = task.get("team_id", -1) if task else -1
+
+        cur = None
+        if sub_task_id is not None:
+            cur = sc.sub_tasks.get(int(sub_task_id))
+
+        # ── Garde anti-boucle : l'analysis attend-elle déjà une exploration ? ──
+        if cur:
+            for dep in sc.sub_tasks.get_parents(cur["sub_task_id"]):
+                p = sc.sub_tasks.get(dep["parent_id"])
+                if p and p["sub_task_type"] == "exploration" \
+                        and p["status"] not in ("done", "supervised", "cancelled"):
+                    db.close()
+                    return {"ok": True, "already_waiting": True,
+                            "exploration_sub_task_id": p["sub_task_id"],
+                            "note": "l'analyse attend déjà une exploration — "
+                                    "demande ignorée (anti-boucle)"}
+
+        # ── Redondance : mêmes intels déjà demandés ? ──
+        norm = sorted(set(i.strip().lower() for i in intels if i.strip()))
+        redundant = 0
+        if norm:
+            prev = sc.tasks.get_reports(int(task_id), roles=["exploration_request"])
+            for r in prev or []:
+                body = str(r.get("content") or "").lower()
+                if all(i in body for i in norm):
+                    redundant += 1
+
         desc = "INTELS DEMANDÉS :\n" + "\n".join(f"- {i}" for i in intels)
         exp = sc.sub_tasks.create(
             task_id=int(task_id), sub_task_type="exploration",
@@ -171,9 +198,6 @@ def ask_intel(inputs: dict, home: str) -> dict:
             branch=task.get("branch", "") if task else "",
             team_id=team_id)
         # l'exploration doit fournir un rapport (tag ok)
-        cur = None
-        if sub_task_id is not None:
-            cur = sc.sub_tasks.get(int(sub_task_id))
         if cur:
             sc.sub_tasks.waiting_dependencies(cur["sub_task_id"])
             sc.sub_tasks.add_dependency(cur["sub_task_id"],
@@ -183,7 +207,7 @@ def ask_intel(inputs: dict, home: str) -> dict:
         _save_analyse(sc, task_id, inputs)
         db.close()
         return {"ok": True, "exploration_sub_task_id": exp["sub_task_id"],
-                "intels": intels,
+                "intels": intels, "redundant_count": redundant,
                 "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
     except Exception as e:
         return {"ok": False, "error": str(e)}
