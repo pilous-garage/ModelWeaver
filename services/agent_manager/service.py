@@ -180,6 +180,38 @@ ROLE_TO_TASK = {
     "orchestrateur": "merger_code",
 }
 
+# Taskflow V0.15 : mapping rôle greedy → type de sub_task (relais).
+ROLE_TO_SUBTASK = {
+    "architecte": "analysis",
+    "planificateur": "analysis",
+    "explorateur": "exploration",
+    "explore": "exploration",
+    "codeur": "coding",
+    "test_runner": "testing",
+    "relecteur": "review",
+    "orchestrateur": "merge",
+    "prepare_response": "respond",
+}
+
+
+def _subtype_available(agent_id: int, sub_work: set) -> bool:
+    """Vrai si une sub_task unattributed du type du rôle de l'agent est dispo."""
+    try:
+        from modules.sql.db import AgentsDB
+        adb = AgentsDB()
+        row = adb.conn.execute(
+            "SELECT role_type FROM agents WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        adb.close()
+        if not row:
+            return False
+        rt = ROLE_TO_SUBTASK.get(str(row["role_type"] or "").strip().lower(), "")
+        if not rt:
+            return False
+        return any(stype == rt for (_ws, _team, stype) in sub_work)
+    except Exception:
+        return False
+
 
 class Agent:
     """Wrapper runtime d'un agent hydraté.
@@ -1658,6 +1690,21 @@ class AgentManager:
                     "('code_review','merger_code','testing_code','merge_split') "
                     "AND COALESCE(cancelled, 0) = 0"
                 ).fetchall()}
+            # Taskflow V0.15 : sub_tasks unattributed (deps satisfaites) dispo.
+            sub_work = {
+                (s["workspace_id"], s["team_id"], s["sub_task_type"])
+                for s in wdb.conn.execute(
+                    "SELECT s.workspace_id, s.team_id, s.sub_task_type "
+                    "FROM sub_tasks s "
+                    "WHERE s.status = 'unattributed' AND s.supervised = 0 "
+                    "AND NOT EXISTS ("
+                    "  SELECT 1 FROM sub_task_dependencies d "
+                    "  JOIN sub_tasks p ON p.sub_task_id = d.parent_id "
+                    "  WHERE d.child_id = s.sub_task_id "
+                    "    AND (p.status != d.required_state "
+                    "      OR (d.required_tag != '' "
+                    "          AND p.tag != d.required_tag))) "
+                ).fetchall()}
             # Workspaces "terminés" : au moins 1 tâche ET toutes done → le
             # manager peut faire le push de fin sur auto_code_<team_id>.
             all_done = {
@@ -1672,6 +1719,7 @@ class AgentManager:
             pending_tasks = set()
             next_tokens = set()
             all_done = set()
+            sub_work = set()
         finally:
             try:
                 wdb.close()
@@ -1914,7 +1962,7 @@ class AgentManager:
         # MIN_ACTIVE_TARGET actifs simultanés (le wait_for seul n'en lance qu'un
         # par condition, le swarm resterait à 1-3 agents). Tant que des tâches
         # du rôle sont dispo, on complète le pool d'actifs.
-        if active + count < MIN_ACTIVE_TARGET and (open_issues or pending_tasks):
+        if active + count < MIN_ACTIVE_TARGET and (open_issues or pending_tasks or sub_work):
             # PRIORITÉ REVIEWER : si des tokens sont à relire (code_review), les
             # reviewers passent AVANT les codeurs — sinon le backlog review
             # grossit sans fin (les codeurs produisent plus vite que 2-3
@@ -1989,7 +2037,9 @@ class AgentManager:
                         pass  # réveiller le reviewer
                     elif not any(
                         _r in _compatible_roles(rt) or _r == rt
-                        for _w, _t, _r in pending_tasks):
+                        for _w, _t, _r in pending_tasks) \
+                            and not _subtype_available(row["agent_id"],
+                                                       sub_work):
                         continue
                     if _agent_thread_alive(row["agent_id"]):
                         continue
