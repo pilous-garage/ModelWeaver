@@ -211,18 +211,24 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         outs = list(outs_by_node.get(nid, []))
         tk, tk_types = token_class.get(nid, ("normal", []))
         if tk == "pick":
+            # pick : global_<type>_attributed → agent_data (l'agent prend la tâche)
             for t in (tk_types or ["analysis"]):
-                ins.append(f"global_{t}_attributed")
-                outs.append("agent_data")
-        elif tk == "release":
-            ins.append("agent_data")
-            for t in sorted(consumes or ["analysis"]):
-                outs.append(f"global_{t}_done")
-        elif tk == "produce":
-            ins.append("agent_data")
-            outs.append("agent_data")
-            for t in (tk_types or []):
-                outs.append(f"global_{t}_unattributed")
+                net.trans(f"pick_{name}_{nid}_{t}", ins + [f"global_{t}_attributed"],
+                          outs + ["agent_data"], "pick")
+        elif tk in ("release", "produce", "use"):
+            # UTILISATION : la data est prise et REMISE dans la même place
+            # (agent_data → agent_data) — le step travaille dessus sans la déplacer.
+            net.trans(f"step_{name}_{nid}", ins + ["agent_data"],
+                      outs + ["agent_data"], "use")
+            # effet de jeton en plus (transition séparée de changement d'état) :
+            if tk == "release":
+                for t in sorted(consumes or ["analysis"]):
+                    net.trans(f"release_{name}_{nid}_{t}", ["agent_data"],
+                              [f"global_{t}_done"], "release")
+            elif tk == "produce":
+                for t in (tk_types or []):
+                    net.trans(f"produce_{name}_{nid}_{t}", ["agent_data"],
+                              ["agent_data", f"global_{t}_unattributed"], "produce")
         elif tk == "data":
             # Skills DATA (superviseur, sans LLM) : transforme les pots globaux.
             in_et, out_et, mode = (tk_types or ["", "", "single"])
@@ -232,7 +238,9 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
                     outs.append(f"global_{t}_{out_et}")
             else:
                 outs.append(f"global_{out_et}_unattributed")
-        net.trans(f"step_{name}_{nid}", ins, outs, tk)
+            net.trans(f"step_{name}_{nid}", ins, outs, tk)
+        else:
+            net.trans(f"step_{name}_{nid}", ins, outs, tk)
 
     # Reliage de la BOUCLE : la place loop (arc vers vide) alimente le corps.
     for e in edges:
