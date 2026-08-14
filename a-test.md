@@ -117,3 +117,18 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
    (aucun agent n'a d'entrypoint pause/ask_auth déclaré).
 4. **Fichiers runtime** (gen_runtime_files) : check_runtime non branché au get.
 5. **get_data_genere** : les ensure_* supervisor/team pas encore migrés dessus.
+
+## 9. Modèle LLM réel (2026-08-14)
+- Le run 1620 a utilisé `nvidia/deepseek-ai/deepseek-v4-flash-0731` (le
+  modèle par défaut d'assign_llm) + des fallbacks groq/google quand nvidia
+  échouait. Il a fait le travail (3 coding supervised).
+- **Bug trouvé** : mon restrict_llm pointait vers
+  `nvidia/meta/llama-3.1-8b-instruct` qui n'EXISTE PAS sur nvidia (il est
+  sur openrouter/kilo/groq/llm7/huggingface/ollama) → le restrict ne
+  filtrait rien → assign_llm choisissait au hasard.
+- **Fix** : restrict corrigé vers `nvidia/deepseek-ai/deepseek-v4-flash`
+  (le modèle qui fonctionne) — validé : ask_llm le respecte pour
+  analysis/coding/testing.
+- **Performance** : chaque coding prend ~3-4 min (6+ rounds LLM, ~30-60s par
+  appel deepseek sur nvidia). Le timeout de 900s du run_completion est juste
+  suffisant pour une mission simple ; à augmenter pour les missions longues.
