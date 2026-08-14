@@ -210,37 +210,42 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         ins = list(ins_by_node.get(nid, []))
         outs = list(outs_by_node.get(nid, []))
         tk, tk_types = token_class.get(nid, ("normal", []))
+        # data_in / data_out selon la classe de jeton (le step manipule les pots)
+        d_in, d_out = [], []
         if tk == "pick":
-            # pick : global_<type>_attributed → agent_data (l'agent prend la tâche)
             for t in (tk_types or ["analysis"]):
-                net.trans(f"pick_{name}_{nid}_{t}", ins + [f"global_{t}_attributed"],
-                          outs + ["agent_data"], "pick")
+                d_in.append(f"global_{t}_attributed")
+                d_out.append("agent_data")
         elif tk in ("release", "produce", "use"):
-            # UTILISATION : la data est prise et REMISE dans la même place
-            # (agent_data → agent_data) — le step travaille dessus sans la déplacer.
-            net.trans(f"step_{name}_{nid}", ins + ["agent_data"],
-                      outs + ["agent_data"], "use")
-            # effet de jeton en plus (transition séparée de changement d'état) :
-            if tk == "release":
-                for t in sorted(consumes or ["analysis"]):
-                    net.trans(f"release_{name}_{nid}_{t}", ["agent_data"],
-                              [f"global_{t}_done"], "release")
-            elif tk == "produce":
-                for t in (tk_types or []):
-                    net.trans(f"produce_{name}_{nid}_{t}", ["agent_data"],
-                              ["agent_data", f"global_{t}_unattributed"], "produce")
+            d_in.append("agent_data")
+            d_out.append("agent_data")  # l'utilisation prend ET remet la data
         elif tk == "data":
-            # Skills DATA (superviseur, sans LLM) : transforme les pots globaux.
             in_et, out_et, mode = (tk_types or ["", "", "single"])
             if mode == "all":
                 for t in net.types:
-                    ins.append(f"global_{t}_{in_et}")
-                    outs.append(f"global_{t}_{out_et}")
+                    d_in.append(f"global_{t}_{in_et}")
+                    d_out.append(f"global_{t}_{out_et}")
             else:
-                outs.append(f"global_{out_et}_unattributed")
-            net.trans(f"step_{name}_{nid}", ins, outs, tk)
-        else:
-            net.trans(f"step_{name}_{nid}", ins, outs, tk)
+                d_out.append(f"global_{out_et}_unattributed")
+        # UNE transition PAR SORTIE (les flows/on_error ont plusieurs sorties ;
+        # les skills/llm_call n'en ont qu'une). Les données sont prises/remises
+        # sur chaque chemin.
+        sorties = outs if outs else ["__end__"]
+        for i, out in enumerate(sorties):
+            tins = ins + list(d_in)
+            touts = ([out] if out != "__end__" else [f"activity_{name}_end"]) + list(d_out)
+            lbl = f"{tk}->{i + 1}" if len(sorties) > 1 else tk
+            net.trans(f"step_{name}_{nid}_{i}", tins, touts, lbl)
+        # Les CHANGEMENTS d'état de jeton (release/produce) : transitions
+        # séparées (agent_data → global_<etat>).
+        if tk == "release":
+            for t in sorted(consumes or ["analysis"]):
+                net.trans(f"release_{name}_{nid}_{t}", ["agent_data"],
+                          [f"global_{t}_done"], "release")
+        elif tk == "produce":
+            for t in (tk_types or []):
+                net.trans(f"produce_{name}_{nid}_{t}", ["agent_data"],
+                          ["agent_data", f"global_{t}_unattributed"], "produce")
 
     # Reliage de la BOUCLE : la place loop (arc vers vide) alimente le corps.
     for e in edges:
