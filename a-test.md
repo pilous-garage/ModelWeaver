@@ -4,6 +4,13 @@ Tout ce qui a été écrit dans la session (data_genere, flow, ticker, watcher)
 mais qui n'a PAS été validé en réel (run complet du runtime) ou qui est
 incomplet. À vérifier/test en priorité avant de considérer le système fiable.
 
+## 0. RÉSOLU depuis — à rayer au fur et à mesure
+- ✅ P0-1 : `get_data_genere` wrapper générique (invalidation récursive) — validé
+  (commit 0005998). `ensure_team_petri` est un pont vers `get_team_petri`.
+- ✅ petri_runtime (miroir FSM par observation pure) — validé (commit 45e54d8).
+- ✅ workflow expandu en data_genere (traçabilité exécution) — validé
+  (commit 469746a).
+
 ## 1. FLUX dans le pétri (C1–C5) — créé, jamais exécuté
 - Places `flux_<agent>_{main,pause,cancel,ask_auth,receive_auth,stack}` générées
   dans `build_from_yaml` (`services/taskflow_petri.py`).
@@ -13,6 +20,13 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
 - **Non testé** : C2 (priorité monotone), C3 (pause>cancel>auth>main),
   C4 (preemption stack/pop réelle), C5 (pause gèle le travail) — AUCUN run
   réel ne les a exercés.
+
+## 1b. SWITCH entrypoint en cours de run — partiellement câblé
+- `resolve_entrypoint` (au démarrage) validé : signal ask_auth PENDING →
+  entrypoint résolu, workflow chargé. MAIS le SWITCH pendant un run actif
+  (interruption → stack_state → pop_state) repose sur les signaux
+  pause/resume + reprise state_json — PAS exécuté en réel. Bloqué par P3
+  (pas d'agents actifs dans les BDD de test).
 
 ## 2. `get_data_genere` wrapper générique — JAMAIS implémenté
 - Design discuté (validité + régénération + récursion sur les deps), mais les
