@@ -237,20 +237,23 @@ def _counts_from_log(cat, lo: int, hi: int) -> Dict[str, Tuple[int, int]]:
     return out
 
 
-def score_fail_for(rt, key: str, last5: Optional[float] = None) -> float:
-    """score_fail d'un modèle = (sqrt(score_last_5) + score_total) / 4."""
+def score_succes_for(rt, key: str, last5: Optional[float] = None) -> float:
+    """Score de SUCCÈS global d'un modèle = (sqrt(score_last_5) + score_total)/4.
+
+    score_total (0–3) = score_1h + score_1d + score_1w, chaque zone =
+    sqrt((1+succ)/(1+tot)) — 1.0 = meilleur score (aucun échec / jamais testé)."""
     row = rt.conn.execute(
         "SELECT score_total FROM model_bucket_counts WHERE provider_ref = ? "
         "AND model_ref = ?", (key.split("/", 1)[0], key.split("/", 1)[1])
     ).fetchone()
     total = float(row["score_total"]) if row else 3.0
     if last5 is None:
-        last5 = 1.0  # aucune donnée récente → fail (non testé)
+        last5 = 1.0  # aucune donnée récente → neutre (jamais testé)
     return (last5 + total) / 4.0
 
 
 def update_score_batch(rt, cat, now: Optional[int] = None) -> int:
-    """Recompose score_batch (fail/latence/etire/final) depuis les buckets
+    """Recompose score_batch (succès/latence/etire/final) depuis les buckets
     stables + score_last_5 du log. Retourne le nombre de modèles mis à jour."""
     now = now or int(time.time())
     last5 = score_last_5(cat, now)
@@ -265,16 +268,16 @@ def update_score_batch(rt, cat, now: Optional[int] = None) -> int:
     upserts = 0
     for r in rows:
         key = f"{r['provider_ref']}/{r['model_ref']}"
-        fail = score_fail_for(rt, key, last5.get(key, 1.0))
+        succes = score_succes_for(rt, key, last5.get(key, 1.0))
         score_lat = lat.get(key, 1.0)
         etire = bench.get(r["model_ref"], 0.1)
-        final = etire * score_lat * (1.0 - fail)
+        final = etire * score_lat * succes
         rt.conn.execute("""
             INSERT OR REPLACE INTO score_batch
                 (provider_ref, model_ref, score_fail_rate, score_latency,
                  score_etire, score_final, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))
-        """, (r["provider_ref"], r["model_ref"], fail, score_lat, etire, final))
+        """, (r["provider_ref"], r["model_ref"], succes, score_lat, etire, final))
         upserts += 1
     rt.conn.commit()
     return upserts

@@ -806,6 +806,13 @@ class DirectBridge(BaseBridge):
             if not caller_id:
                 caller_id = f"agent:{agent_id}" if agent_id else "bridge"
             meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
+            # model_id résolu en priorité via provider_models (le model_ref du
+            # bridge = provider_model_name, ex. deepseek-ai/deepseek-v4-flash),
+            # puis ref exact de catalogue_models, sinon 0 (non résolu → ignoré
+            # par le scoring des buckets).
+            _short = str(model_ref or "")
+            if provider_ref and _short.startswith(f"{provider_ref}/"):
+                _short = _short[len(provider_ref) + 1:]
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, agent_id, success,
@@ -813,12 +820,18 @@ class DirectBridge(BaseBridge):
                      error_code, error_msg, call_type, caller_id, meta_json)
                 VALUES (
                     COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
-                    COALESCE((SELECT id FROM catalogue_models WHERE ref = ?), 0),
+                    COALESCE(
+                        (SELECT pm.model_id FROM provider_models pm
+                          JOIN catalogue_providers p ON p.id = pm.provider_id
+                         WHERE p.ref = ? AND pm.provider_model_name = ?),
+                        (SELECT id FROM catalogue_models WHERE ref = ?),
+                        0),
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (provider_ref, model_ref, provider_ref, model_ref,
+            """, (provider_ref, provider_ref, _short, model_ref,
+                  provider_ref, _short,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), toks["prompt"], toks["completion"],
                   toks["thinking"] or int(tokens_thinking or 0),
