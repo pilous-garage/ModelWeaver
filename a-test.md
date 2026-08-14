@@ -64,8 +64,16 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
   l'API LLM. MAIS les 3 clés en BDD (mistral, llm7, ollama-cloud) sont toutes
   INVALIDES/expirées ("Invalid API Key", "Unauthorized"). Aucune clé dans
   l'env. → **bloqué par CREDENTIALS, pas par le code.**
-- À refaire dès qu'une clé valide est configurée (mistral-small-latest,
-  groq, etc.) : entry → analysis → découpe → coding/testing → merge.
+- **RÉSOLU 2026-08-14** : les clés réelles sont dans **`.env`** (nvidia
+  `nvapi-`, google `AQ.Ab`, groq `gsk_`, mistral `cYVA`, opencode-zen
+  `sk-Ink`...) — chargées par le DirectBridge AVANT le keyring. Le run réel
+  fonctionne :
+  `provider_ref=nvidia model_ref=meta/llama-3.1-8b-instruct` → **status: ok**.
+  Le decoupeur analyse/découpe réellement. La table api_keys avait perdu la
+  liaison (key_value vides) mais le `.env` + keyring la comblent.
+- **Reste** : lancer le flux TASKFLOW réel complet (entry_create → analysis →
+  découpe → coding → merge) via l'as-llm-leader (pas un execute direct), et
+  vérifier que les sub_tasks sont créées/supervisées en BDD.
 
 ## 7. Invariants — à re-vérifier après modifications
 - `services/taskflow_petri.py --check-invariants` (B2/B3/A4/B5/C1) passe sur
