@@ -238,9 +238,19 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         elif tk == "data":
             in_et, out_et, mode = (tk_types or ["", "", "single"])
             if mode == "all":
+                # UNE transition PAR TYPE (une data de chaque type peut être
+                # traitée indépendamment — sinon la transition exigerait une
+                # data de TOUS les types à la fois) × par sortie d'activité.
+                sorties = outs if outs else ["__end__"]
                 for t in net.types:
-                    d_in.append(f"global_{t}_{in_et}")
-                    d_out.append(f"global_{t}_{out_et}")
+                    for i, out in enumerate(sorties):
+                        touts = ([out] if out != "__end__"
+                                 else [f"activity_{name}_end"])
+                        net.trans(f"step_{name}_{nid}_{t}_{i}",
+                                  ins + [f"global_{t}_{in_et}"],
+                                  touts + [f"global_{t}_{out_et}"],
+                                  f"data:{t}")
+                continue  # transitions déjà générées (une par type)
             else:
                 d_out.append(f"global_{out_et}_unattributed")
         # UNE transition PAR SORTIE (les flows/on_error ont plusieurs sorties ;
