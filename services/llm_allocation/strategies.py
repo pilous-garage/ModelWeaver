@@ -52,9 +52,10 @@ class ModelOption:
     runtime_success_count: int = 0
     runtime_calls: int = 0
     runtime_latency_ms: float = 0.0
-    # Scores batch (runtime.db) — fail_rate + latence des fenêtres 5m/1h/1j/1w.
-    batch_fail_rate: float = 0.0
-    batch_latency_ms: float = 0.0
+    # Scores batch (runtime.db) — V0.16 : score de SUCCÈS (1=parfait) + score
+    # de latence (0-1, exp) des buckets stables.
+    batch_succes: float = 0.0
+    batch_latency_score: float = 0.0
     # Score benchmark étiré (score_benchmark_etire) : dans [0.1, 0.9],
     # benchmark croisé par model_key, fallback global si spécialité absente.
     score_etire: float = 0.0
@@ -162,21 +163,21 @@ def _score_model(option: ModelOption, request: AllocationRequest) -> float:
     # (Le fallback global est déjà intégré par score_benchmark_etire.)
 
     # ── Composante latence (exponentielle paramétrable) ──
-    if option.batch_latency_ms > 0 and option.runtime_calls > 0:
+    # V0.16 : score de latence précalculé (0-1) des buckets stables, sinon
+    # exp de la latence runtime moyenne.
+    if option.batch_latency_score > 0:
+        score *= option.batch_latency_score
+    elif option.batch_latency_ms > 0 and option.runtime_calls > 0:
         lat_s = max(request.latence_penalise, option.batch_latency_ms / 1000.0)
         score_latence = math.exp(
             -(lat_s - request.latence_penalise) / request.latence_regule)
-    else:
-        score_latence = 1.0
-    score *= score_latence
+        score *= score_latence
 
-    # ── Composante fail_rate ──
-    # Score batch (composite fenêtres) si dispo. Sinon fallback runtime lissé
-    # Laplace : p = (1 + succès)/(1 + total) → fail = 1 - p. Un seul succès
-    # (1/1) → fail=0 ; un seul échec (0/1) → fail=0.5 (pas 1.0 qui éliminerait
-    # à tort un modèle sur un aléa). 0 si aucun appel (pas d'échec → parfait).
-    if option.batch_fail_rate > 0:
-        score *= (1.0 - option.batch_fail_rate)
+    # ── Composante succès (V0.16) ──
+    # Score de SUCCÈS des buckets stables (1 = parfait, jamais appelé → 1.0
+    # neutre) — multiplié directement. Fallback runtime lissé Laplace.
+    if option.batch_succes > 0:
+        score *= option.batch_succes
     elif option.runtime_calls >= 1:
         smoothed = (1.0 + option.runtime_success_count) / (1.0 + option.runtime_calls)
         score *= smoothed

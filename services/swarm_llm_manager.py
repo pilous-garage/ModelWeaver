@@ -34,7 +34,7 @@ CENTRAL_REPO = MW_HOME / "repos" / "mw-swarm.git"
 # Les dépôts de session (git-bazzar) : un par requête benchmark.
 SESSION_REPOS = MW_HOME / "repos" / "sessions"
 
-ANALYST_AGENT = "team:llm-code/analyst"
+ANALYST_AGENT = "team:llm-code/decoupeur"
 WORKSPACE = "mw-llm-code"
 TEAM_ID = 519
 

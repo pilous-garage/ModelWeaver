@@ -58,16 +58,16 @@ def _load_runtime_scores() -> tuple[Dict[str, Any], Dict[str, Any]]:
                 "SELECT model_ref, score_fail_rate, score_latency "
                 "FROM score_batch").fetchall():
             key = ref_to_key.get(r["model_ref"]) or r["model_ref"]
-            # Cumul : on garde la moyenne (un même model_key peut avoir des
-            # variantes ; le batch est par provider/model réel).
+            # V0.16 : score_fail_rate = score de SUCCÈS (1=parfait),
+            # score_latency = score de latence (0-1, exp). Cumul par moyenne.
             prev = batch.get(key)
             if prev is None:
-                batch[key] = {"fail_rate": r["score_fail_rate"] or 0.0,
-                              "latency_ms": r["score_latency"] or 0.0}
+                batch[key] = {"succes": r["score_fail_rate"] or 0.0,
+                              "latency_score": r["score_latency"] or 0.0}
             else:
                 n = 2
-                prev["fail_rate"] = (prev["fail_rate"] + (r["score_fail_rate"] or 0.0)) / n
-                prev["latency_ms"] = (prev["latency_ms"] + (r["score_latency"] or 0.0)) / n
+                prev["succes"] = (prev["succes"] + (r["score_fail_rate"] or 0.0)) / n
+                prev["latency_score"] = (prev["latency_score"] + (r["score_latency"] or 0.0)) / n
         etire: Dict[str, float] = {}
         for r in conn.execute(
                 "SELECT model_ref, score_etire FROM score_benchmark_etire").fetchall():
@@ -359,12 +359,12 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
             runtime_success_count=int(row.get("runtime_success_count") or 0),
             runtime_calls=int(row.get("runtime_calls") or 0),
             runtime_latency_ms=float(row.get("runtime_latency_ms") or 0.0),
-            # Scores batch (fail_rate + latence) et benchmark étiré, croisés
+            # Scores batch (succès + latence) et benchmark étiré, croisés
             # par model_key (même score pour toutes les variantes du modèle).
-            batch_fail_rate=float(
-                (batch_scores.get(row.get("model_key"), {}) or {}).get("fail_rate", 0.0)),
-            batch_latency_ms=float(
-                (batch_scores.get(row.get("model_key"), {}) or {}).get("latency_ms", 0.0)),
+            batch_succes=float(
+                (batch_scores.get(row.get("model_key"), {}) or {}).get("succes", 0.0)),
+            batch_latency_score=float(
+                (batch_scores.get(row.get("model_key"), {}) or {}).get("latency_score", 0.0)),
             score_etire=float(etire_scores.get(row.get("model_key"), 0.0) or 0.0),
         ))
 

@@ -33,14 +33,14 @@ members:
       llm: false
 
   # ── ANALYSTE / PLANIFICATEUR : découpe les demandes en tâches ──
-  - agent_name: analyst
-    ref: greedy-analyst
+  - agent_name: decoupeur
+    ref: greedy-decoupeur
     role: architecte
     occupation: continue
     resources:
       llm: true
 
-  # ── EXPLORATEUR (sous-agent) : remplit les demandes d'intel de l'analyste ──
+  # ── EXPLORATEUR (sous-agent) : remplit les demandes d'intel du découpeur ──
   - agent_name: explorer
     ref: greedy-explore
     role: explorateur

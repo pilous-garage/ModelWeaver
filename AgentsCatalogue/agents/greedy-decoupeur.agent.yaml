@@ -1,7 +1,7 @@
-name: greedy-analyst
+name: greedy-decoupeur
 role: architecte
 description: >
-  Analyste glouton (analysis-planning) — taskflow V0.15 : ask_new_task (pioche
+  Découpeur glouton (planning) — taskflow V0.15 : ask_new_task (pioche
   une sub_task analysis attribuée par le supervisor) → allocation LLM →
   analyse + découpe (decoupe@v1 : A → B,C + merge auto) ou clôture
   (sub_task_done analysis). READ-ONLY : produit uniquement l'analysis-report et

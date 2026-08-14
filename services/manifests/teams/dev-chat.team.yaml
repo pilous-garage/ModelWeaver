@@ -89,8 +89,8 @@ members:
       llm: true
 
   # ── ANALYST : analyse les missions (avis indépendants, découpe des tâches) ──
-  - agent_name: analyst
-    ref: greedy-analyst
+  - agent_name: decoupeur
+    ref: greedy-decoupeur
     role: architecte
     occupation: continue
     resources:
