@@ -28,6 +28,9 @@ class TeamMemberSpec:
     provider_ref: str = ""
     model_ref: str = ""
     ref: str = ""  # Nom de l'agent catalogue (ex. "greedy-coder") — la team référence, ne définit pas.
+    # Sous-agents déclarés par ce membre (références de définition) : instanciés
+    # au setup avec le HOME du maître. ex. [{"agent_name":"explore","ref":"greedy-explore","role":"explorateur"}]
+    sub_agents: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -108,6 +111,7 @@ class TeamSpec:
                 provider_ref=m_raw.get("provider_ref", ""),
                 model_ref=m_raw.get("model_ref", ""),
                 ref=m_raw.get("ref", ""),
+                sub_agents=m_raw.get("sub_agents", []) or [],
             ))
 
         res_raw = raw.get("resources", {}) or {}

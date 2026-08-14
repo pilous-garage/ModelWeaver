@@ -29,12 +29,13 @@ def _get_agent_db():
 
 
 def _ensure_agent_exists(spec, role: str, occupation: str,
-                         team_name: str = "") -> int:
+                         team_name: str = "", home: str = "") -> int:
     """Crée l'agent dans agents.db s'il n'existe pas, retourne son agent_id.
 
     Le nom réel de l'agent est préfixé par le team_name pour garantir
     l'unicité inter-projets. Un agent_name 'lead-bug-hunter' dans l'équipe
     'bug-busters' devient 'bug-busters/lead-bug-hunter'.
+    `home` : home déclaré (sous-agent = home du maître) posé sur agents.home.
     """
     db = _get_agent_db()
     scoped_name = f"{team_name}/{spec.agent_name}" if team_name else spec.agent_name
@@ -97,10 +98,10 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
 
     ref = f"agent:{scoped_name}"
     db.conn.execute("""
-        INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json, home)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (scoped_name, ref, effective_role, effective_occupation,
-          config_json, resources_json))
+          config_json, resources_json, home or ""))
     db.conn.commit()
 
     row = db.conn.execute(
@@ -168,6 +169,26 @@ class Team:
             aid = _ensure_agent_exists(m, m.role, m.occupation,
                                        team_name=self.spec.team_name)
             self.member_agent_ids[m.agent_name] = aid
+            # Sous-agents déclarés par ce membre (par référence) : instanciés
+            # avec le HOME du maître (le sous-agent travaille dans le home du
+            # maître). Nom : <team>/<maître>/<sous-agent>.
+            for sa in (m.sub_agents or []):
+                try:
+                    sa_spec = TeamMemberSpec(
+                        agent_name=f"{m.agent_name}/{sa.get('agent_name', '')}",
+                        role=sa.get("role", "worker"),
+                        occupation=sa.get("occupation", "continue"),
+                        resources=sa.get("resources"),
+                        config=sa.get("config", {}),
+                        ref=sa.get("ref", ""),
+                    )
+                    from services._common import mw_home
+                    master_home = str(mw_home() / "agent_home" / str(aid))
+                    _ensure_agent_exists(sa_spec, sa_spec.role, sa_spec.occupation,
+                                         team_name=self.spec.team_name,
+                                         home=master_home)
+                except Exception:
+                    pass
 
         # Lier le workspace à la team (flat ou leader-driven) : les agents du
         # swarm en déduisent le project_id git (repo central de référence).

@@ -32,21 +32,21 @@ members:
     resources:
       llm: false
 
-  # ── ANALYSTE / PLANIFICATEUR : découpe les demandes en tâches ──
+  # ── DÉCOUPEUR : découpe les demandes en tâches. Déclare son sous-agent
+  # EXPLORATEUR (par référence) : instancié avec le home du découpeur. ──
   - agent_name: decoupeur
     ref: greedy-decoupeur
     role: architecte
     occupation: continue
     resources:
       llm: true
-
-  # ── EXPLORATEUR (sous-agent) : remplit les demandes d'intel du découpeur ──
-  - agent_name: explorer
-    ref: greedy-explore
-    role: explorateur
-    occupation: continue
-    resources:
-      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
   # ── CODEURS : produisent le code (difficulté variable) ──
   - agent_name: coder-junior
