@@ -565,6 +565,35 @@ def _fs_auth_route(agent_id: int, method: str, sub_parts: List[str], params: dic
         mgr.close()
 
 
+def _restart_all_service() -> None:
+    """Relance TOUS les services + le daemon (recharge le code Python).
+
+    - arrête les services à tick (file_watcher, petri_runtime) ;
+    - arrête le superviseur de services ;
+    - re-exécute le daemon avec les MÊMES args (os.execv) → tous les modules
+      sont re-importés frais (fsm_interpreter, agents, skills, taskflow…).
+    Le superviseur Rust (kill-and-replace) relance aussi le daemon si l'execv
+    échoue — double sécurité.
+    """
+    from services.logger import MWLogger
+    log = MWLogger("daemon")
+    log.info("restart_all_service : relance du daemon")
+    # Arrête les services à tick (file_watcher, petri_runtime).
+    try:
+        from services.service_ticker import ServiceTicker
+        st = ServiceTicker()
+        st.stop()
+    except Exception as e:
+        log.warning("ticker stop échoué", error=str(e))
+    # Re-exec du daemon avec les mêmes arguments (recharge tous les modules).
+    try:
+        argv = sys.argv if sys.argv and sys.argv[0] else ["python3"]
+        os.execv(sys.executable, [sys.executable] + argv)
+    except Exception as e:
+        log.error("execv échoué, sortie", error=str(e))
+        sys.exit(1)
+
+
 class MWAPIHandler(BaseHTTPRequestHandler):
     server_version = "ModelWeaverDaemon/1.0"
 
@@ -774,6 +803,14 @@ class MWAPIHandler(BaseHTTPRequestHandler):
         if stream_handler:
             self._handle_stream(route, stream_handler, params)
             return
+        # Restart TOUS les services + le daemon (recharge le code — les
+        # modifications de fsm_interpreter/agents/etc. sont relues).
+        if route == "restart_all_service":
+            self._send(200, {"ok": True, "route": route,
+                             "result": {"status": "restarting",
+                                        "note": "relance du daemon (os.execv)"}})
+            threading.Timer(0.5, _restart_all_service).start()
+            return
         # Route dynamique agents/{id}/{op} ?
         parts = [p for p in route.split("/") if p]
         dyn = _agent_dynamic_route("POST", parts, params)
@@ -962,7 +999,6 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
 
     log.info("Daemon démarré", port=port, api=API_VERSION, version=MW_VERSION,
              token=str(token_file), routes=len(ROUTES))
-
     # Boot agents : crée les agents système s'ils n'existent pas encore.
     _ensure_boot_agents(log)
 

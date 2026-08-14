@@ -562,18 +562,31 @@ class FSMInterpreter:
             params = fn.get("parameters", {}).get("properties", {})
             param_names = ", ".join(list(params.keys())[:6])
             lines.append(f"- {name} : {desc}  (params: {param_names})")
-        return "\n".join(lines)[:1200]
+        # Limite généreuse : tronquer la liste des tools prive le modèle des
+        # skills essentiels (ex. workspace/sub_task_get) → il confond un
+        # skill avec un fichier et fait file_read_file dessus.
+        return "\n".join(lines)[:4000]
 
     def _parse_translation_tools(self, text: str) -> List[tuple]:
         """Parse les ###tool_call:nom|JSON### d'une réponse de traduction.
 
-        Retourne [(nom, args_dict)] dans l'ordre d'apparition."""
+        Retourne [(nom, args_dict)] dans l'ordre d'apparition.
+
+        Tolérant à la fermeture : certains modèles (deepseek) OUBLIENT le
+        `###` final du bloc — on accepte `###tool_call:nom|JSON` jusqu'à la
+        fin de la ligne ou du texte."""
         import re as _re
         out = []
-        for m in _re.finditer(r"###tool_call:([A-Za-z0-9_]+)\|(.*?)###",
-                              text, _re.DOTALL):
+        # Matche les blocs fermés `###tool_call:nom|JSON###` ET les blocs
+        # ouverts `###tool_call:nom|JSON` (fermeture manquante, jusqu'à la fin
+        # de la ligne ou du texte).
+        for m in _re.finditer(
+                r"###tool_call:([A-Za-z0-9_]+)\|(.*?)(?:###|\n|$)",
+                text, _re.DOTALL):
             name = m.group(1)
             raw = m.group(2).strip()
+            if not raw:
+                continue
             args = {}
             try:
                 args = json.loads(raw)
@@ -618,6 +631,51 @@ class FSMInterpreter:
             if cand in self._tool_to_skill.values():
                 return cand
         return cands[0]
+
+    def _execute_translated_tools(self, parsed: List[tuple], msgs: List[dict],
+                                  result: "FSMResult", _trace_tools: List[str],
+                                  _tool_round: int) -> bool:
+        """Exécute des tools traduits depuis le TEXTE (###tool_call:nom|JSON###).
+
+        Utilisé par le mode translation (agentic non-agentic) ET en fallback
+        quand un modèle `agentic:always` répond en TEXTE au lieu de tool_calls
+        API. Retourne True si un tool TERMINAL a été exécuté (→ clôturer la
+        boucle). Injection : workspace_id/task_id (le modèle met souvent
+        `default`/0/des index) sont corrigés depuis les variables du run."""
+        from services.skill_manager import call_skill
+        terminal_hit = False
+        _a_id = result.variables.get("agent_id", "")
+        if str(_a_id).startswith("agent_"):
+            _a_id = str(_a_id).split("_")[-1]
+        _v_ws = result.variables.get("workspace_id", "")
+        _v_tid = result.variables.get("task_id")
+        for _name, _args in parsed:
+            _trace_tools.append(f"{_name}(translated)")
+            # Injection contexte : workspace_id/task_id souvent vides ou 0.
+            if _v_ws and (not _args.get("workspace_id")
+                          or str(_args.get("workspace_id")) in ("0",)
+                          or str(_args.get("workspace_id")) == str(_v_tid)):
+                _args["workspace_id"] = _v_ws
+            if _v_tid and _args.get("task_id") in (None, 0, "0", ""):
+                _args["task_id"] = _v_tid
+            if _a_id and not _args.get("agent_id"):
+                _args["agent_id"] = _a_id
+            try:
+                _home = self._agent_work_home(_a_id, result.variables)
+                _res = call_skill(
+                    self._resolve_tool_skill(_name), _args,
+                    home=_home, agent_id=str(_a_id))
+            except Exception as _e:
+                _res = {"ok": False, "error": str(_e)}
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": f"tr-{_tool_round}-{_name}",
+                "content": json.dumps(_res, default=str),
+            })
+            # Tool TERMINAL (decoupe/ask_intel/…) → clôturer la boucle.
+            if self._resolve_tool_skill(_name) in _TERMINAL_SKILLS:
+                terminal_hit = True
+        return terminal_hit
 
     def _agent_home(self, agent_id) -> str:
         """Home du workspace d'un agent (agent_home/<agent_id>), fallback sur
@@ -852,10 +910,13 @@ class FSMInterpreter:
                             # Parser les ###tool_call:nom:"args"### du texte.
                             _parsed = self._parse_translation_tools(
                                 (getattr(response, "content", "") or ""))
+                            logger.debug(
+                                "llm/translation_round p=%s m=%s parsed=%d "
+                                "need_translation=%s content=%s",
+                                p_ref, m_ref, len(_parsed), _need_translation,
+                                (getattr(response, "content", "") or "")[:60])
                             if not _parsed:
                                 break  # plus de tool traduit → réponse finale
-                            for _name, _args in _parsed:
-                                _trace_tools.append(f"{_name}(translated)")
                             _trans_ok += len(_parsed)
                             # Contexte COMPLET : on conserve la réponse du modèle
                             # (message assistant avec les blocs ###tool_call###)
@@ -866,46 +927,30 @@ class FSMInterpreter:
                                 "content": getattr(response, "content", "") or "",
                             })
                             # Exécuter les tools traduits et re-appeler le LLM.
-                            for _name, _args in _parsed:
-                                try:
-                                    from services.skill_manager import call_skill
-                                    _a_id = result.variables.get("agent_id", "")
-                                    if str(_a_id).startswith("agent_"):
-                                        _a_id = str(_a_id).split("_")[-1]
-                                    # Injection contexte (mode translation) :
-                                    # workspace_id/task_id fournis par le modèle
-                                    # sont souvent vides ou 0 (index relatif).
-                                    _v_ws = result.variables.get("workspace_id", "")
-                                    _v_tid = result.variables.get("task_id")
-                                    if _v_ws and (not _args.get("workspace_id")
-                                                  or str(_args.get("workspace_id")) in ("0",)
-                                                  or str(_args.get("workspace_id")) == str(_v_tid)):
-                                        _args["workspace_id"] = _v_ws
-                                    if _v_tid and _args.get("task_id") in (
-                                            None, 0, "0", ""):
-                                        _args["task_id"] = _v_tid
-                                    if _a_id and not _args.get("agent_id"):
-                                        _args["agent_id"] = _a_id
-                                    _home = self._agent_work_home(_a_id, result.variables)
-                                    _res = call_skill(
-                                        self._resolve_tool_skill(_name), _args,
-                                        home=_home, agent_id=str(_a_id))
-                                except Exception as _e:
-                                    _res = {"ok": False, "error": str(_e)}
-                                msgs.append({
-                                    "role": "tool",
-                                    "tool_call_id": f"tr-{_tool_round}-{_name}",
-                                    "content": json.dumps(_res, default=str),
-                                })
-                                # Tool TERMINAL (decoupe/ask_intel/…) → clôturer
-                                # la boucle, pas de re-appel du LLM.
-                                if self._resolve_tool_skill(_name) in _TERMINAL_SKILLS:
-                                    _terminal_hit = True
+                            _terminal_hit = self._execute_translated_tools(
+                                _parsed, msgs, result, _trace_tools, _tool_round)
                             if _terminal_hit:
                                 break  # décision prise → sortie de la boucle
                             continue  # re-appeler le LLM avec les résultats
                     tool_calls = getattr(response, "tool_calls", None)
                     if not tool_calls:
+                        # Modèle agentic:always qui répond en TEXTE
+                        # (###tool_call###) au lieu de tool_calls API → fallback
+                        # translation : on parse et on exécute quand même.
+                        _fallback_parsed = self._parse_translation_tools(
+                            (getattr(response, "content", "") or ""))
+                        if _fallback_parsed:
+                            _trans_ok += len(_fallback_parsed)
+                            msgs.append({
+                                "role": "assistant",
+                                "content": getattr(response, "content", "") or "",
+                            })
+                            _terminal_hit = self._execute_translated_tools(
+                                _fallback_parsed, msgs, result, _trace_tools,
+                                _tool_round)
+                            if _terminal_hit:
+                                break  # décision prise → sortie de la boucle
+                            continue  # re-appeler le LLM avec les résultats
                         # debug : trace le contenu texte du round final
                         logger.debug(
                             "llm/round_text provider=%s model=%s content=%s",
@@ -1857,6 +1902,7 @@ class FSMInterpreter:
         Retourne True si le FSM doit continuer (branche on_error), False sinon."""
         result.variables["_last_error"] = msg
         result.variables["_last_call_ok"] = False
+        logger.warning("fsm/on_error step=%s msg=%s", step.get("id"), msg[:200])
         on_error = step.get("on_error")
         if on_error:
             result.next_step_id = on_error
