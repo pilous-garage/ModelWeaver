@@ -947,24 +947,21 @@ class FSMInterpreter:
                                 fn_name = _target
                                 raw_args = _target_args
                                 _trace_tools.append(f"{_target}(via text)")
-                        # Injection des variables de contexte manquantes : les
-                        # modèles (ex. hy3) inventent souvent le workspace_id
-                        # (ils passent le task_id). On force workspace_id /
-                        # agent_id depuis le run s'ils sont absents des args.
+                        # Injection des variables de contexte : les modèles
+                        # (hy3, llama) mettent workspace_id/task_id à 0 ou
+                        # confondent sub_task_id/task_id. On force depuis le run
+                        # quand la valeur fournie est absente/falsy/erronée.
                         _v_ws = result.variables.get("workspace_id", "")
-                        if _v_ws and "workspace_id" not in raw_args:
-                            raw_args["workspace_id"] = _v_ws
-                        if _agent_id and "agent_id" not in raw_args:
-                            raw_args["agent_id"] = _agent_id
-                        # Correction task_id : hy3 confond sub_task_id et
-                        # task_id (il passe 53 = sub_task_id au lieu de 1576).
-                        # Si le task_id fourni == sub_task_id du run (ou absent),
-                        # on force le vrai task_id.
                         _v_tid = result.variables.get("task_id")
                         _v_sid = result.variables.get("sub_task_id")
-                        if _v_tid and _v_tid != _v_sid:
+                        if _v_ws and not raw_args.get("workspace_id"):
+                            raw_args["workspace_id"] = _v_ws
+                        if _agent_id and not raw_args.get("agent_id"):
+                            raw_args["agent_id"] = _agent_id
+                        if _v_tid:
                             _p_tid = raw_args.get("task_id")
-                            if _p_tid is None or str(_p_tid) == str(_v_sid):
+                            if (_p_tid in (None, 0, "0", "")
+                                    or (_v_sid and str(_p_tid) == str(_v_sid))):
                                 raw_args["task_id"] = _v_tid
                         conv_name = self._resolve_tool_skill(fn_name)
                         # Le skill doit s'exécuter dans le home de l'agent
