@@ -38,6 +38,7 @@ entrypoints:
         variable: task_state
         operator: NOT_EQUALS
         value: "done"
+      next: end
       body:
         steps:
         - id: get_result

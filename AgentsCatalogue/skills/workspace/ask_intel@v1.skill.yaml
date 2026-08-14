@@ -1,12 +1,13 @@
 name: workspace/ask_intel@v1
 category: workspace
 description: >
-  ASK_INTEL — l'analyste demande plus d'info au sous-agent EXPLORER. Précise
-  les intels demandés (questions/éléments à regarder). Le skill crée une
-  sub_task `exploration` (unattributed) ; la sub_task analysis passe en
-  waiting_dependencies de l'exploration. Quand l'exploration est done (rapport
-  produit), l'analysis redevient unattributed → l'analyste la reprend avec les
-  nouvelles infos. Le rapport d'analyse (paramètre `analyse`) est enregistré.
+  ASK_INTEL — un agent (analyste, codeur, testeur, relecteur, mergeur…) demande
+  plus d'info au sous-agent EXPLORER. Précise les intels demandés
+  (questions/éléments à regarder). Le skill crée une sub_task `exploration`
+  (unattributed) ; la sub_task courante passe en waiting_dependencies de
+  l'exploration. Quand l'exploration est done (rapport produit), la sub_task
+  redevient unattributed → l'agent la reprend avec les nouvelles infos. Le
+  rapport d'analyse (paramètre `analyse`) est enregistré.
 inputs:
   workspace_id:
     type: string

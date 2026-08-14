@@ -184,13 +184,13 @@ def decoupe(inputs: dict, home: str) -> dict:
 
 
 def ask_intel(inputs: dict, home: str) -> dict:
-    """ask_intel — demande d'info au sous-agent EXPLORER (tool de l'analyste).
+    """ask_intel — demande d'info au sous-agent EXPLORER (tool de tout agent).
 
-    L'analyste précise les intels demandés (questions/éléments à regarder). Le
+    L'agent précise les intels demandés (questions/éléments à regarder). Le
     skill crée une sub_task `exploration` (unattributed) avec la liste des
-    intels ; la sub_task analysis passe waiting_dependencies de l'exploration.
-    Quand l'exploration est done (rapport produit), l'analysis redevient
-    unattributed → l'analyste la reprend avec les nouvelles infos.
+    intels ; la sub_task courante passe waiting_dependencies de l'exploration.
+    Quand l'exploration est done (rapport produit), la sub_task redevient
+    unattributed → l'agent la reprend avec les nouvelles infos.
     """
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")

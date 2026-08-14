@@ -334,6 +334,52 @@ class Agent:
 
         return self
 
+    def resolve_entrypoint(self, trigger: str = "") -> str:
+        """Résout l'ENTRYPOINT à lancer pour ce run.
+
+        Lit la table agent_entrypoints : parmi les entrypoints ENABLED, prend
+        celui de PLUS HAUTE priorité dont le trigger est actif.
+        `trigger` : le contexte courant (ex. "ask_auth", "pause", "").
+
+        Règles de trigger :
+          - trigger VIDE  → TOUJOURS actif (le main).
+          - trigger `signal:<X>` → actif si un signal <X> est en attente
+            pour cet agent (agent_signals PENDING) OU si trigger == <X>.
+          - trigger libre → actif si == trigger passé.
+
+        Ordre de priorité : pause(3) > cancel(2) > ask_auth/receive_auth(1)
+        > main(0). Le main est le fallback (trigger vide).
+        """
+        try:
+            rows = self.db.conn.execute(
+                "SELECT ep_name, priority, enabled, trigger, step_id "
+                "FROM agent_entrypoints WHERE agent_id = ? AND enabled = 1 "
+                "ORDER BY priority DESC", (self.agent_id,)).fetchall()
+        except Exception:
+            return "main"
+
+        pending_signals = set()
+        try:
+            for r in self.db.conn.execute(
+                    "SELECT type FROM agent_signals WHERE agent_id = ? "
+                    "AND status = 'PENDING'", (self.agent_id,)).fetchall():
+                pending_signals.add(r["type"])
+        except Exception:
+            pass
+
+        def is_active(tr: str) -> bool:
+            if not tr.strip():
+                return True  # main : toujours actif
+            if tr.strip().startswith("signal:"):
+                return tr.strip()[len("signal:"):] in pending_signals \
+                    or tr.strip()[len("signal:"):] == trigger
+            return tr.strip() == trigger
+
+        for r in rows:
+            if is_active(r["trigger"] or ""):
+                return r["ep_name"]
+        return "main"
+
     def execute(self, request: str, provider_ref: str = "", model_ref: str = "",
                  temperature: float = 0.7, max_tokens: int = 4096,
                  entrypoint: str = "main") -> Dict[str, Any]:
@@ -374,13 +420,22 @@ class Agent:
             self._bridge = make_bridge()
 
         # Résoudre le workflow (FSM) — priorité aux entrypoints
+        # Si l'appelant n'a pas précisé d'entrypoint (défaut "main"), on
+        # résout depuis la table agent_entrypoints (plus haute priorité dont
+        # le trigger est actif). Un entrypoint prioritaire (pause/cancel/auth)
+        # peut rediriger vers son propre workflow.
         config = json.loads(self._data.get("config_json") or "{}")
-        if "entrypoints" in config and entrypoint in config["entrypoints"]:
-            workflow = config["entrypoints"][entrypoint]
-        elif entrypoint == "main":
+        resolved_ep = entrypoint
+        if entrypoint == "main":
+            resolved_ep = self.resolve_entrypoint()
+        if "entrypoints" in config and resolved_ep in config["entrypoints"]:
+            workflow = config["entrypoints"][resolved_ep]
+        elif resolved_ep == "main" or (not resolved_ep):
             workflow = config.get("workflow") or config.get("pipeline")
         else:
-            workflow = None
+            # entrypoint déclaré en BDD mais sans workflow nommé : le FSM
+            # lancera main, le switch de flux est piloté par la table.
+            workflow = config.get("workflow") or config.get("pipeline")
         if workflow and isinstance(workflow, dict):
             from services.skill_manager import expand_workflow
             try:

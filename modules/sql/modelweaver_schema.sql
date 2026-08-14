@@ -516,6 +516,68 @@ CREATE TABLE IF NOT EXISTS agent_actif (
 CREATE INDEX IF NOT EXISTS idx_agent_actif_hb ON agent_actif(last_heartbeat);
 
 -- ============================================================
+-- SERVICE_TICKS — Services à tick (petits services éphémères).
+--    Le ticker maître lance chaque service au rythme de son
+--    `tick_interval_s`, dans un thread éphémère, et vérifie qu'il
+--    se clôture. La liste est persistée en runtime (relance propre
+--    après redémarrage).
+--      - tick_interval_s : rythme (1s, 60s, 3600s...)
+--      - last_launch    : timestamp du dernier lancement
+--      - cmd            : commande à exécuter (python callable ou cmd)
+--      - running        : thread en cours (0/1) ; éphémère
+-- ============================================================
+CREATE TABLE IF NOT EXISTS service_ticks (
+    tick_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    svc_name        TEXT UNIQUE NOT NULL,      -- "file_watcher", "usage_tick"...
+    tick_interval_s REAL NOT NULL DEFAULT 60,
+    cmd             TEXT DEFAULT '',           -- callable ou commande
+    last_launch     REAL,                      -- unix ts du dernier lancement
+    last_duration_s REAL,                      -- durée du dernier run
+    running         INTEGER DEFAULT 0,         -- thread éphémère en cours
+    enabled         INTEGER DEFAULT 1,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_svc_ticks_next ON service_ticks(enabled, tick_interval_s);
+
+-- ============================================================
+-- SERVICE_TICKS_SECONDES — Services à tick 1s (haute fréquence).
+--    Threads PERMANENTS (un singleton par service, boucle
+--    `while fn(); sleep(1)`) tant que le nombre de services reste
+--    sous le seuil ; au-delà → éphémère. Table séparée pour que le
+--    ticker maître ne mélange pas les rythmes.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS service_ticks_secondes (
+    tick_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    svc_name        TEXT UNIQUE NOT NULL,
+    cmd             TEXT DEFAULT '',
+    last_launch     REAL,
+    last_duration_s REAL,
+    running         INTEGER DEFAULT 0,         -- thread vivant (permanent/éphémère)
+    enabled         INTEGER DEFAULT 1,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- SERVICE_TICK_RUNS — Runs des services ÉPHÉMÈRES (traçage).
+--    Une ligne par lancement : `thread_id` = threading.ident du
+--    thread éphémère, `status` = running/done/timedout. Permet de
+--    VÉRIFIER qu'un thread tourne (is_alive) et de détecter ceux
+--    qui dépassent le timeout (10 ticks) → détachés et relancés.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS service_tick_runs (
+    run_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    svc_name    TEXT NOT NULL,
+    thread_id   INTEGER,                       -- threading.ident
+    started_at  REAL,
+    finished_at REAL,
+    duration_s  REAL,
+    status      TEXT DEFAULT 'running'
+                CHECK(status IN ('running','done','timedout')),
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_runs_svc ON service_tick_runs(svc_name, status);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 -- ============================================================

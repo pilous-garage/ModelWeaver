@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────
+# .conf_gitignore.yaml — Règles de scan du projet (couche 2).
+#
+# Couche 1 : gen_file_rules (défaut en BDD, extensions de langage).
+# Couche 2 : ce fichier — overrides utilisateur, EXPLICITES.
+# Couche 3 : .gitignore (recoupé si `gitignore: true`).
+#
+# RÉSOLUTION : pour chaque fichier, on prend le pattern le PLUS
+# SPÉCIFIQUE qui le matche (le plus de caractères littéraux) :
+#   - le plus spécifique est `include` → le fichier EST suivi ;
+#   - le plus spécifique est `exclude` → le fichier est ignoré ;
+#   - aucun match → règles de la couche 1 (défaut BDD).
+# Cela permet :
+#   include "**/*.agent.yaml"   à côté de   exclude "**/*.yaml"
+#   exclude ".*"                (cachés)     + include "src/**"
+#   include "dossier/*.yaml"    (imbriqué)
+#
+# PATTERNS : globs relatifs à la racine du projet.
+#   "**/*.py"    — tout .py, à n'importe quelle profondeur
+#   "*.yaml"     — .yaml à la racine
+#   "dossier/*"  — tout ce qui est DIRECTEMENT dans dossier/
+#   "dossier/**" — tout ce qui est sous dossier/ (récursif)
+#   ".*"         — fichiers/dossiers cachés (nom commençant par .)
+#   "foo.log"    — un fichier précis
+#   "!keep"      — force l'inclusion (même si un exclude moins
+#                  spécifique matche) ; se comporte comme un include
+#                  à spécificité maximale pour ce chemin.
+# ─────────────────────────────────────────────────────────────
+version: 1
+
+# Recouper le .gitignore du projet (patterns ajoutés aux excludes).
+gitignore: false
+
+# ── Fichiers RUNTIME (générés/gitignorés, ex. logs) ──────────
+# Non surveillés par le watcher mtime : ils sont vérifiés au GET de la
+# data_genere qui les déclare (gen_runtime_files). Le glob peut être
+# dynamique (logs/*.log) — on compare le mtime MAX des matchs au dernier
+# get. Exemple :
+#   runtime_globs:
+#     - "logs/*.log"
+#     - "data/runtime/*.json"
+runtime_globs: []
+
+rules:
+  # ── Extensions de langage (les sources à surveiller) ──────
+  - {action: include, pattern: "**/*.py"}
+  - {action: include, pattern: "**/*.c"}
+  - {action: include, pattern: "**/*.cpp"}
+  - {action: include, pattern: "**/*.h"}
+  - {action: include, pattern: "**/*.go"}
+  - {action: include, pattern: "**/*.rs"}
+  - {action: include, pattern: "**/*.js"}
+  - {action: include, pattern: "**/*.ts"}
+  - {action: include, pattern: "**/*.tsx"}
+  - {action: include, pattern: "**/*.java"}
+  - {action: include, pattern: "**/*.rb"}
+  - {action: include, pattern: "**/*.php"}
+  - {action: include, pattern: "**/*.sql"}
+  - {action: include, pattern: "**/*.sh"}
+  - {action: include, pattern: "**/*.toml"}
+  - {action: include, pattern: "**/*.ini"}
+  - {action: include, pattern: "**/*.cfg"}
+
+  # ── Config / docs ──────────────────────────────────────────
+  - {action: include, pattern: "**/*.txt"}
+  - {action: include, pattern: "**/*.md"}
+  - {action: include, pattern: "**/*.json"}
+  - {action: include, pattern: "**/*.yaml"}
+  - {action: include, pattern: "**/*.yml"}
+
+  # ── Fichiers cachés et générés : EXCLUS par défaut ─────────
+  - {action: exclude, pattern: ".*"}              # tout fichier/dossier caché
+  - {action: exclude, pattern: "**/.*"}           # cachés imbriqués
+  - {action: exclude, pattern: "**/node_modules/**"}
+  - {action: exclude, pattern: "**/.git/**"}
+  - {action: exclude, pattern: "**/__pycache__/**"}
+  - {action: exclude, pattern: "**/.venv/**"}
+  - {action: exclude, pattern: "**/venv/**"}
+  - {action: exclude, pattern: "**/target/**"}
+  - {action: exclude, pattern: "**/dist/**"}
+  - {action: exclude, pattern: "**/build/**"}
+
+  # ── Médias = assets, pas des sources ──────────────────────
+  - {action: exclude, pattern: "**/*.png"}
+  - {action: exclude, pattern: "**/*.jpg"}
+  - {action: exclude, pattern: "**/*.jpeg"}
+  - {action: exclude, pattern: "**/*.gif"}
+  - {action: exclude, pattern: "**/*.svg"}
+  - {action: exclude, pattern: "**/*.ico"}
+  - {action: exclude, pattern: "**/*.mp3"}
+  - {action: exclude, pattern: "**/*.mp4"}
+  - {action: exclude, pattern: "**/*.wav"}
+  - {action: exclude, pattern: "**/*.woff"}
+  - {action: exclude, pattern: "**/*.woff2"}
+  - {action: exclude, pattern: "**/*.ttf"}
+  - {action: exclude, pattern: "**/*.pdf"}
+
+  # ── Lockfiles (générés, inutiles pour l'analyse) ──────────
+  - {action: exclude, pattern: "**/package-lock.json"}
+  - {action: exclude, pattern: "**/yarn.lock"}
+  - {action: exclude, pattern: "**/Cargo.lock"}
+  - {action: exclude, pattern: "**/poetry.lock"}

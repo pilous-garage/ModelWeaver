@@ -59,13 +59,14 @@ entrypoints:
         - un texte final clair (résumé du travail effectué) ;
         - la liste des tool_calls effectués ;
         - un JSON de synthèse (si pertinent).
-        Termine par workspace/sub_task_done@v1 (tag=ok).
+        Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent
+        explore ira chercher). Termine par workspace/sub_task_done@v1 (tag=ok).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
       base_tools: false
       skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
-               "workspace/sub_task_list@v1"]
+               "workspace/sub_task_list@v1", "workspace/ask_intel@v1"]
       max_tokens: 4096
       temperature: 0.4
       output_capture: respond_out

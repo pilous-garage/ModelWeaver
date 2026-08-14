@@ -55,12 +55,26 @@ members:
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
   - agent_name: coder-senior
     ref: greedy-coder
     role: codeur
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
   # ── TEST / REVIEW / MERGE : validations et intégration ──
   - agent_name: tester
@@ -69,18 +83,39 @@ members:
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
   - agent_name: reviewer
     ref: greedy-reviewer
     role: relecteur
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
   - agent_name: merger
     ref: greedy-merger
     role: orchestrateur
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
   # ── PREPARE-RESPONSE : assemble le livrable final (txt + tool_calls + json) ──
   - agent_name: prepare-response
@@ -89,6 +124,13 @@ members:
     occupation: continue
     resources:
       llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
 resources:
   budget_per_hour: 100

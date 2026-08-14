@@ -2,10 +2,10 @@ name: greedy-explore
 role: explorateur
 description: >
   Explorateur (sous-agent, taskflow V0.15) : pioche les sub_tasks `exploration`
-  (demandes d'intel de l'analyste) via ask_new_task, explore le repo en
-  READ-ONLY, remplit les intels demandés, et produit le rapport d'exploration
-  (sub_task_done tag=ok avec `rapport`). L'analyse (en attente de
-  l'exploration) reprend ensuite avec les nouvelles infos.
+  (demandes d'intel de n'importe quel agent) via ask_new_task, explore le repo
+  en READ-ONLY, remplit les intels demandés, et produit le rapport
+  d'exploration (sub_task_done tag=ok avec `rapport`). La sub_task du maître
+  (en attente de l'exploration) reprend ensuite avec les nouvelles infos.
 personality:
   tone: ''
   system_prompt: "Tu es l'EXPLORATEUR d'un swarm (taskflow). Tu pioches les

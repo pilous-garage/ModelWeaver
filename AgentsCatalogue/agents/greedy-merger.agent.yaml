@@ -47,12 +47,13 @@ entrypoints:
     - id: do_work
       type: llm_call
       skill_prompt: |
-        Traite la sub_task {{sub_task_id}} (merge) de la tâche {{task_id}} : try simple merge (git auto), sinon resolve conflict ; puis workspace/sub_task_done@v1 (tag=ok | conflict). Si impossible : workspace/sub_task_release@v1.
+        Traite la sub_task {{sub_task_id}} (merge) de la tâche {{task_id}} : try simple merge (git auto), sinon resolve conflict ; puis workspace/sub_task_done@v1 (tag=ok | conflict). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
       skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
-               "workspace/sub_task_release@v1"]
+               "workspace/sub_task_release@v1",
+               "workspace/ask_intel@v1"]
       max_tokens: 4096
       temperature: 0.3
       output_capture: work_out

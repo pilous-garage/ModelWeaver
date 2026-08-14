@@ -949,6 +949,10 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     from services.team_manager import TeamManager
     TeamManager().supervise_loop(interval=15.0)
 
+    # Service ticker : lance les services à tick (file_watcher, usage_tick...)
+    # en singleton (threads éphémères vérifiés ou permanents 1s).
+    _start_service_ticker(log)
+
     # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
     try:
         from AgentFrameWork.stream_bus import activate_cross_process, resolve_stream_path
@@ -985,6 +989,38 @@ SERVICE_MANIFESTS = sorted(MANIFESTS_DIR.glob("*.service.yaml"))
 
 # Fichiers .team.yaml — toutes les équipes
 TEAM_MANIFESTS = sorted((MANIFESTS_DIR / "teams").glob("*.team.yaml"))
+
+
+def _start_service_ticker(log=None) -> None:
+    """Démarre le ServiceTicker (threads éphémères singleton) et y branche les
+    services à tick de fond :
+      - file_watcher : vérification des fichiers sources + propagation stale ;
+      - usage_tick   : agrégation d'usage (si disponible).
+    Rythmes : file_watcher ~60s (éphémère), usage 1s (permanent).
+    """
+    from services.service_ticker import ServiceTicker
+    st = ServiceTicker()
+
+    # reprend les services persistés d'un précédent démarrage (redémarrage)
+    try:
+        n = st.load_persisted()
+        if n and log:
+            log.info("ServiceTicker: %d services persistés relancés", n)
+    except Exception:
+        pass
+
+    # file_watcher : service éphémère (60s) — mtime/hash + propagation stale.
+    try:
+        from services.file_watcher import run_service as fw_tick
+        st.register("file_watcher", interval_s=60, fn=fw_tick,
+                    cmd="services.file_watcher:run_service")
+    except Exception as e:
+        if log:
+            log.warning("file_watcher non enregistré", error=str(e))
+
+    st.start()
+    if log:
+        log.info("ServiceTicker démarré")
 
 
 def _ensure_boot_agents(log):

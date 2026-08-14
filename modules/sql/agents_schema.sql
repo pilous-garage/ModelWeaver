@@ -84,3 +84,41 @@ CREATE TABLE IF NOT EXISTS agent_signals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_signals_agent_status ON agent_signals(agent_id, status);
+
+-- ============================================================
+-- 6. AGENT_ENTRYPOINTS — Points d'entrée pilotés en BDD.
+--    Chaque entrypoint a un niveau de priorité. Le FSM, au démarrage
+--    d'un run, résout l'entrypoint à lancer : parmi les enabled, celui
+--    de PLUS HAUTE priorité dont le trigger est actif (signal/état).
+--    Priorités types : pause=3 > cancel=2 > ask_auth/receive_auth=1
+--    > main=0 (défaut).
+--    `trigger` : condition de déclenchement (signal, état, expression) ;
+--    vide = toujours actif (ex. main).
+--    `step_id` : step de départ du workflow ('' = auto via _find_entry_point).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_entrypoints (
+    entrypoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id      INTEGER NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    ep_name       TEXT NOT NULL,              -- "main", "ask_auth", "pause", "cancel"...
+    priority      INTEGER NOT NULL DEFAULT 0, -- plus haut = prioritaire
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    trigger       TEXT DEFAULT '',            -- signal/état ('' = toujours actif)
+    step_id       TEXT DEFAULT '',            -- step de départ ('' = auto)
+    created_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(agent_id, ep_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_ep_prio ON agent_entrypoints(agent_id, priority);
+
+-- Entrypoints par défaut pour TOUS les agents (logique agent, pas skill).
+-- main=0 (défaut, trigger vide = toujours actif), cancel=2 (trigger
+-- signal:cancel), pause=3 (trigger signal:pause). ask_auth/receive_auth
+-- déclarés par les agents qui en ont besoin (priority 1, trigger
+-- signal:ask_auth). Les triggers signal:* ne s'activent que si le signal
+-- correspondant est présent au démarrage.
+INSERT OR IGNORE INTO agent_entrypoints (agent_id, ep_name, priority)
+SELECT agent_id, 'main', 0 FROM agents;
+INSERT OR IGNORE INTO agent_entrypoints (agent_id, ep_name, priority, trigger)
+SELECT agent_id, 'cancel', 2, 'signal:cancel' FROM agents;
+INSERT OR IGNORE INTO agent_entrypoints (agent_id, ep_name, priority, trigger)
+SELECT agent_id, 'pause', 3, 'signal:pause' FROM agents;
