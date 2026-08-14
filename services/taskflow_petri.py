@@ -345,14 +345,15 @@ def save_petri_png(petri: Petri, out_path: str) -> str:
         if src is not None:
             m0[src] = 1
     try:
-        pm4py.save_vis_petri_net(net, m0, out_path)
+        from pm4py.visualization.petri_net import visualizer
+        # Visualiseur par défaut : les LABELS des places et transitions sont
+        # affichés (WO_DECORATION les enlèverait).
+        gviz = visualizer.apply(net, m0, None,
+                                parameters={"format": "png", "font_size": "9"})
+        visualizer.save(gviz, out_path)
     except Exception:
         import pm4py as _pm4py
-        from pm4py.visualization.petri_net import visualizer
-        gviz = visualizer.apply(net, m0, None,
-                                parameters={visualizer.Variants.WO_DECORATION.value:
-                                            {"format": "png"}})
-        visualizer.save(gviz, out_path)
+        _pm4py.save_vis_petri_net(net, m0, out_path)
     return out_path
 
 
