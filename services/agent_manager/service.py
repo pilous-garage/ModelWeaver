@@ -201,9 +201,14 @@ def _subtype_available(agent_id: int, sub_work: set) -> bool:
         from modules.sql.db import AgentsDB
         adb = AgentsDB()
         row = adb.conn.execute(
-            "SELECT role_type FROM agents WHERE agent_id = ?", (agent_id,)
+            "SELECT role_type, status FROM agents WHERE agent_id = ?", (agent_id,)
         ).fetchone()
         if not row:
+            adb.close()
+            return False
+        # Agent désactivé/terminé → ne le réveille pas (il ne doit plus
+        # piocher de tâches).
+        if row["status"] in ("TERMINATED", "STOPPED"):
             adb.close()
             return False
         rt = ROLE_TO_SUBTASK.get(str(row["role_type"] or "").strip().lower(), "")
@@ -1507,6 +1512,16 @@ class AgentManager:
         # l'accumulation de clones bloqués sur des appels LLM lents.
         if _agent_thread_alive(agent_id):
             return
+        # Agent désactivé → ne le réveille plus (évite qu'un TERMINATED/STOPPED
+        # reprenne des tâches).
+        try:
+            _st = self.db.conn.execute(
+                "SELECT status FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if _st and _st["status"] in ("TERMINATED", "STOPPED"):
+                return
+        except Exception:
+            pass
         # RÉSERVATION ATOMIQUE : on inscrit le thread DANS le lock AVANT la
         # purge et hydrate. Sans ça, deux réveils concurrents passent tous les
         # deux le garde alive=False puis l'un échoue sur UNIQUE agent_runtime
@@ -2059,6 +2074,7 @@ class AgentManager:
                        OR occupation = 'continue')
                   AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
                   AND agent_id NOT IN (SELECT agent_id FROM wait_for WHERE status='waiting')
+                  AND status NOT IN ('TERMINATED', 'STOPPED')
                 ORDER BY CASE WHEN role_type = 'relecteur' THEN {_reviewer_first} ELSE 0 END DESC
                 LIMIT 40
             """).fetchall()
