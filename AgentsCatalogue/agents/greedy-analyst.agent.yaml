@@ -97,22 +97,32 @@ entrypoints:
         value: "switch_model"
         next: ask_llm
       default: sleep
+    - id: get_sub_task
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: do_analyse
     - id: do_analyse
       type: llm_call
       skill_prompt: |
-        Analyse la sub_task {{sub_task_id}} (analysis) de la tâche {{task_id}}.
-        Lis-la d'abord (workspace/sub_task_get@v1), puis appelle UN de tes 2
-        outils de décision :
+        Analyse la sub_task {{sub_task_id}} (analysis) de la tâche {{task_id}}
+        (workspace {{workspace_id}}).
+        CONTENU DE LA SUB_TASK :
+        {{sub_task_now.description}}
+        Tu n'as QUE 2 outils, appelle UN des deux (jamais de texte seul) :
         - workspace/decoupe@v1 : découpe (sous_taches=[{title, description,
           type, difficulty|niveau}]) OU tâche simple (sous_taches=[] +
           difficulty). Fournis TOUJOURS `analyse` (ton analysis-report).
         - workspace/ask_intel@v1 : manque d'info → intels précis à chercher.
-        En cas d'impossibilité : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
-      skills: ["workspace/sub_task_get@v1", "workspace/decoupe@v1",
-               "workspace/ask_intel@v1", "workspace/sub_task_release@v1"]
+      base_tools: false
+      skills: ["workspace/decoupe@v1", "workspace/ask_intel@v1"]
       max_tokens: 4096
       temperature: 0.2
       output_capture: analyse_out

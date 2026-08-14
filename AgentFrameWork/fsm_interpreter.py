@@ -373,13 +373,17 @@ class FSMInterpreter:
     # ── Steps ──────────────────────────────────────────
 
     def _build_llm_tools(self, bundles: Optional[List[str]] = None,
-                         skills: Optional[List[str]] = None) -> List[Dict]:
+                         skills: Optional[List[str]] = None,
+                         base: bool = True) -> List[Dict]:
         """Construit la liste des outils (OpenAI function calling) depuis les skills YAML.
 
         `bundles` (optionnel) : expose les tools des bundles nommés (ex. ["dev"]).
         `skills` (optionnel)  : expose des refs de skills DIRECTES définies dans
         le .yaml de l'agent (ex. ["workspace/token_task_pick@v1"]) — chargées
         depuis le catalogue des skills, sans passer par un bundle.
+        `base` (défaut True) : ajoute les 4 tools de base (shell/git/file).
+        Un step `base_tools: false` n'expose QUE ses skills déclarés (ex.
+        l'analyste : uniquement decoupe + ask_intel, sans fantômes).
         """
         try:
             import yaml as _yaml
@@ -387,13 +391,16 @@ class FSMInterpreter:
             return []
         from pathlib import Path as _Path
 
-        base = _Path(__file__).parent.parent / "AgentsCatalogue" / "skills"
-        tool_skills = [
-            "shell/exec@v1",
-            "git/lite@v1",
-            "file/read_file@v1",
-            "file/write_file@v1",
-        ]
+        base = bool(base)
+        base_path = _Path(__file__).parent.parent / "AgentsCatalogue" / "skills"
+        tool_skills = []
+        if base:
+            tool_skills = [
+                "shell/exec@v1",
+                "git/lite@v1",
+                "file/read_file@v1",
+                "file/write_file@v1",
+            ]
         # Tools additionnels depuis les bundles nommés.
         if bundles:
             try:
@@ -408,7 +415,7 @@ class FSMInterpreter:
         seen = set()
         for ref in tool_skills:
             parts = ref.replace("@v1", "").split("/")
-            candidates = list(base.rglob(f"{parts[-1]}*.skill.yaml"))
+            candidates = list(base_path.rglob(f"{parts[-1]}*.skill.yaml"))
             skill_path = candidates[0] if candidates else None
             if not skill_path or not skill_path.exists():
                 continue
@@ -727,7 +734,9 @@ class FSMInterpreter:
                 if _agentic_req == "false":
                     tools = []
                 else:
-                    tools = self._build_llm_tools(step.get("bundles"), step.get("skills"))
+                    tools = self._build_llm_tools(
+                        step.get("bundles"), step.get("skills"),
+                        base=bool(step.get("base_tools", True)))
                 # DÉCISION du mode agentic (au niveau BRIDGE, via capacites) :
                 #   native      → tools API (agentic prouvé ≥ 0.7)
                 #   translation → tools dans le prompt (###tool_call:...###),
@@ -844,6 +853,14 @@ class FSMInterpreter:
                             for _name, _args in _parsed:
                                 _trace_tools.append(f"{_name}(translated)")
                             _trans_ok += len(_parsed)
+                            # Contexte COMPLET : on conserve la réponse du modèle
+                            # (message assistant avec les blocs ###tool_call###)
+                            # pour le journal de conversation ET pour que le LLM
+                            # garde le fil au round suivant.
+                            msgs.append({
+                                "role": "assistant",
+                                "content": getattr(response, "content", "") or "",
+                            })
                             # Exécuter les tools traduits et re-appeler le LLM.
                             for _name, _args in _parsed:
                                 try:
@@ -930,6 +947,15 @@ class FSMInterpreter:
                                 fn_name = _target
                                 raw_args = _target_args
                                 _trace_tools.append(f"{_target}(via text)")
+                        # Injection des variables de contexte manquantes : les
+                        # modèles (ex. hy3) inventent souvent le workspace_id
+                        # (ils passent le task_id). On force workspace_id /
+                        # agent_id depuis le run s'ils sont absents des args.
+                        _v_ws = result.variables.get("workspace_id", "")
+                        if _v_ws and "workspace_id" not in raw_args:
+                            raw_args["workspace_id"] = _v_ws
+                        if _agent_id and "agent_id" not in raw_args:
+                            raw_args["agent_id"] = _agent_id
                         conv_name = self._resolve_tool_skill(fn_name)
                         # Le skill doit s'exécuter dans le home de l'agent
                         # (sinon write_file écrit dans /tmp) et connaître son
