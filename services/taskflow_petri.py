@@ -349,6 +349,11 @@ def build_team_petri(path: Path) -> Dict[str, Any]:
             if sapath.exists():
                 sa_name = f"{m.get('agent_name', ref)}/{sa.get('agent_name', '')}"
                 result["members"].append(build_from_yaml(sapath, sa_name))
+    # Le SUPERVISOR (transformé comme un agent, sans LLM) fait partie de la team.
+    sup_path = REPO / "AgentsCatalogue" / "agents" / "supervisor.agent.yaml"
+    if sup_path.exists():
+        result["members"].append(build_from_yaml(sup_path, "supervisor"))
+    return result
     return result
 
 
@@ -518,10 +523,6 @@ def main() -> None:
                 v = verify_with_pm4py(m["petri"])
                 print("   verify:", v)
         print()
-        print("== SUPERVISOR ==")
-        print(supervisor_petri().render())
-        if args.verify:
-            print("   verify:", verify_with_pm4py(supervisor_petri()))
     else:
         res = build_from_yaml(path, args.agent)
         print(res["petri"].render())
