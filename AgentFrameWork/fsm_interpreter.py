@@ -872,11 +872,11 @@ class FSMInterpreter:
                                     # workspace_id/task_id fournis par le modèle
                                     # sont souvent vides ou 0 (index relatif).
                                     _v_ws = result.variables.get("workspace_id", "")
+                                    _v_tid = result.variables.get("task_id")
                                     if _v_ws and (not _args.get("workspace_id")
                                                   or str(_args.get("workspace_id")) in ("0",)
                                                   or str(_args.get("workspace_id")) == str(_v_tid)):
                                         _args["workspace_id"] = _v_ws
-                                    _v_tid = result.variables.get("task_id")
                                     if _v_tid and _args.get("task_id") in (
                                             None, 0, "0", ""):
                                         _args["task_id"] = _v_tid
