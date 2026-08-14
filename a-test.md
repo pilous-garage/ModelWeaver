@@ -80,6 +80,11 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
   (`task_id: 0` du modèle) mal résolue. L'analysis 1607 finalise avec respond
   pendant que la découpe 1608 continue. À corriger : injection workspace_id/
   task_id dans decoupe (le modèle met `default`/`0`).
+- **CORRIGÉ 2026-08-14** : `decoupe` résout maintenant l'identité depuis la
+  sub_task courante (`sub_task_id` → vrai workspace + task_id) quand le
+  workspace/task_id du modèle est invalide (`_find_subtask_workspace`).
+  Validé en réel : la découpe de 1609 a créé les 3 coding sur 1609 (pas de
+  tâche fantôme) malgré `workspace_id: "todo_cli"` + `task_id: 0` du modèle.
 
 ## 7. Invariants — à re-vérifier après modifications
 - `services/taskflow_petri.py --check-invariants` (B2/B3/A4/B5/C1) passe sur

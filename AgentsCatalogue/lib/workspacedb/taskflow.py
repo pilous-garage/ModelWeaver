@@ -36,6 +36,21 @@ def _scope(workspace_id: str):
     return db, db.for_workspace(workspace_id)
 
 
+def _find_subtask_workspace(db, sub_task_id: int) -> Optional[str]:
+    """Retrouve le workspace d'une sub_task (les sub_tasks vivent dans la BDD
+    workspace globale, une table `sub_tasks` par workspace ? non — la table est
+    commune, workspace_id est une colonne)."""
+    try:
+        row = db.conn.execute(
+            "SELECT workspace_id FROM sub_tasks WHERE sub_task_id = ?",
+            (sub_task_id,)).fetchone()
+        if row:
+            return row["workspace_id"]
+    except Exception:
+        pass
+    return None
+
+
 def _current_analysis(db, sc, task_id: int):
     """La sub_task analysis courante de la tâche (doing d'abord, sinon la plus
     récente unattributed)."""
@@ -83,6 +98,30 @@ def decoupe(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id + task_id requis"}
     try:
         db, sc = _scope(workspace_id)
+        # ── Correction d'identité : le modèle met souvent workspace_id inventé
+        # (ex. "default", "todo_cli") et task_id = 0 (index relatif). La sub_task
+        # courante (sub_task_id) porte la VRAIE tâche/workspace → on résout
+        # depuis elle quand le task_id/workspace du modèle est invalide.
+        cur = None
+        _resolved_ws = workspace_id
+        _resolved_tid = task_id
+        if sub_task_id is not None:
+            cur = sc.sub_tasks.get(int(sub_task_id))
+            if not cur:
+                # workspace du modèle invalide : cherche la sub_task dans les
+                # autres workspaces (la BDD workspace est globale).
+                _alt = _find_subtask_workspace(db, int(sub_task_id))
+                if _alt:
+                    db.close()
+                    db, sc = _scope(_alt)
+                    _resolved_ws = _alt
+                    cur = sc.sub_tasks.get(int(sub_task_id))
+            if cur:
+                _tid_real = cur.get("task_id")
+                if _tid_real is not None:
+                    _resolved_tid = _tid_real
+        workspace_id = _resolved_ws
+        task_id = _resolved_tid
         task = sc.tasks.get(int(task_id))
         if not task:
             db.close()
@@ -90,9 +129,6 @@ def decoupe(inputs: dict, home: str) -> dict:
         team_id = task.get("team_id", -1)
         repo = task.get("repo", "") or ""
         branch = task.get("branch", "") or ""
-        cur = None
-        if sub_task_id is not None:
-            cur = sc.sub_tasks.get(int(sub_task_id))
         if not cur:
             cur = _current_analysis(db, sc, task_id)
 
