@@ -62,12 +62,14 @@ class Petri:
         self.types = types
         self.places: Dict[str, int] = {}   # nom → marquage initial
         self.transitions: List[Dict[str, Any]] = []
-        # Pot INTERNE : la tâche de l'agent (≤ 1 jeton).
-        self.places["agent_data"] = 0
         # Pots EXTERNES (globaux) : un pot par type×état.
         for t in types:
             for et in ETATS:
                 self.places[f"global_{t}_{et}"] = 0
+        # Pot INTERNE (agent) : un pot par type×état (la tâche en cours).
+        # ex. agent_data_coding_doing — le greedy-coder qui code.
+        for t in types:
+            self.places[f"agent_data_{t}_doing"] = 0
 
     def place(self, name: str) -> None:
         if name not in self.places:
@@ -203,6 +205,16 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         if t:
             ins_by_node.setdefault(t, []).append(p)
         outs_by_node.setdefault(f, []).append(p)
+
+    # MERGES : un step avec PLUSIEURS prédécesseurs reçoit UNE place de jonction
+    # (les chemins y convergent) → la transition du step a exactement 1 entrée
+    # activité. Une transition join_<nid> : chemins → activity_merge_<nid>.
+    for nid, in_list in list(ins_by_node.items()):
+        if len(in_list) > 1:
+            merge_p = f"activity_merge_{name}_{nid}"
+            net.place(merge_p)
+            net.trans(f"join_{name}_{nid}", in_list, [merge_p], "join")
+            ins_by_node[nid] = [merge_p]
     for n in nodes:
         nid = n.get("id", "")
         if nid == "main":
@@ -212,13 +224,17 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         tk, tk_types = token_class.get(nid, ("normal", []))
         # data_in / data_out selon la classe de jeton (le step manipule les pots)
         d_in, d_out = [], []
+        agent_types = sorted(consumes) if consumes else (tk_types or [])
+        if not agent_types:
+            agent_types = (tk_types if tk in ("produce", "pick") else ["analysis"])
         if tk == "pick":
             for t in (tk_types or ["analysis"]):
                 d_in.append(f"global_{t}_attributed")
-                d_out.append("agent_data")
+                d_out.append(f"agent_data_{t}_doing")
         elif tk in ("release", "produce", "use"):
-            d_in.append("agent_data")
-            d_out.append("agent_data")  # l'utilisation prend ET remet la data
+            for t in (agent_types or ["analysis"]):
+                d_in.append(f"agent_data_{t}_doing")
+                d_out.append(f"agent_data_{t}_doing")  # l'utilisation prend ET remet
         elif tk == "data":
             in_et, out_et, mode = (tk_types or ["", "", "single"])
             if mode == "all":
@@ -237,15 +253,15 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
             lbl = f"{tk}->{i + 1}" if len(sorties) > 1 else tk
             net.trans(f"step_{name}_{nid}_{i}", tins, touts, lbl)
         # Les CHANGEMENTS d'état de jeton (release/produce) : transitions
-        # séparées (agent_data → global_<etat>).
+        # séparées (agent_data_<type>_doing → global_<etat>).
         if tk == "release":
             for t in sorted(consumes or ["analysis"]):
-                net.trans(f"release_{name}_{nid}_{t}", ["agent_data"],
+                net.trans(f"release_{name}_{nid}_{t}", [f"agent_data_{t}_doing"],
                           [f"global_{t}_done"], "release")
         elif tk == "produce":
             for t in (tk_types or []):
-                net.trans(f"produce_{name}_{nid}_{t}", ["agent_data"],
-                          ["agent_data", f"global_{t}_unattributed"], "produce")
+                net.trans(f"produce_{name}_{nid}_{t}", [f"agent_data_{t}_doing"],
+                          [f"agent_data_{t}_doing", f"global_{t}_unattributed"], "produce")
 
     # Reliage de la BOUCLE : la place loop (arc vers vide) alimente le corps.
     for e in edges:
@@ -403,6 +419,23 @@ def team_global_petri(path: Path, rules: List[Dict[str, Any]] = ()) -> Petri:
     return merged
 
 
+def check_activity_rule(petri: Petri) -> List[Dict[str, Any]]:
+    """Règle de validité : toute transition de STEP doit avoir exactement
+    UNE entrée activité et UNE sortie activité (les places de data sont en
+    plus). Les transitions data pures (release/produce) et de contrôle
+    (loop/end) sont exemptes."""
+    violations: List[Dict[str, Any]] = []
+    for t in petri.transitions:
+        if not t["name"].startswith("step_"):
+            continue
+        n_in = sum(1 for p in t["in"] if p.startswith("activity_"))
+        n_out = sum(1 for p in t["out"] if p.startswith("activity_"))
+        if n_in != 1 or n_out != 1:
+            violations.append({"transition": t["name"],
+                               "in_activity": n_in, "out_activity": n_out})
+    return violations
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="YAML → Pétri du taskflow")
     ap.add_argument("yaml", help="fichier .team.yaml ou .agent.yaml")
@@ -412,6 +445,8 @@ def main() -> None:
                     help="pétri GLOBAL de la team (agents + superviseur fusionnés)")
     ap.add_argument("--verify", action="store_true",
                     help="vérifier le pétri (pm4py : reachability de supervised)")
+    ap.add_argument("--check", action="store_true",
+                    help="vérifier la règle d'activité (1 entrée + 1 sortie activité/step)")
     ap.add_argument("--png", default="", help="sauvegarder le pétri en PNG")
     args = ap.parse_args()
     path = Path(args.yaml)
@@ -422,6 +457,19 @@ def main() -> None:
             res = build_from_yaml(path, args.agent)
             out = save_petri_png(res["petri"], args.png)
         print(f"PNG sauvegardé : {out}")
+        return
+    if args.check:
+        if args.team or args.team_petri:
+            petri = team_global_petri(path)
+        else:
+            petri = build_from_yaml(path, args.agent)["petri"]
+        v = check_activity_rule(petri)
+        if v:
+            print(f"VIOLATIONS ({len(v)}) :")
+            for x in v[:20]:
+                print(f"  {x['transition']}: {x['in_activity']} in / {x['out_activity']} out activité")
+        else:
+            print("OK : toutes les transitions de step ont exactement 1 entrée + 1 sortie activité")
         return
     if args.team:
         res = build_team_petri(path)
