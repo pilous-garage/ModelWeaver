@@ -496,7 +496,8 @@ def create_entry(inputs: dict, home: str) -> dict:
             team_id=team_id, primordial=1)
         st = sc.sub_tasks.create(
             task_id=task["task_id"], sub_task_type="analysis",
-            difficulty="medium", status="unattributed", team_id=team_id)
+            difficulty="medium", status="unattributed", team_id=team_id,
+            description=f"{title}\n{description}".strip())
         db.close()
         return {"ok": True, "task_id": task["task_id"],
                 "task": task, "sub_task_id": st["sub_task_id"]}

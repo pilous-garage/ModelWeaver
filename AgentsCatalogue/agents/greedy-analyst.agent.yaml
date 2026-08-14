@@ -72,6 +72,15 @@ entrypoints:
         provider_ref: _llm_provider
         model_ref: _llm_model
       on_error: llm_error
+      next: get_sub_task
+    - id: get_sub_task
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
       next: do_analyse
     - id: llm_error
       type: call
@@ -97,15 +106,6 @@ entrypoints:
         value: "switch_model"
         next: ask_llm
       default: sleep
-    - id: get_sub_task
-      type: call
-      fn: workspace/sub_task_get@v1
-      inputs:
-        workspace_id: "{{workspace_id}}"
-        sub_task_id: "{{sub_task_id}}"
-      capture:
-        sub_task: sub_task_now
-      next: do_analyse
     - id: do_analyse
       type: llm_call
       skill_prompt: |
