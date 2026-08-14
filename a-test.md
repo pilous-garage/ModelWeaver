@@ -89,6 +89,31 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
   SANS appliquer le tool_call produit. C'est un problème du CYCLE DE VIE du
   greedy (break_loop trop tôt / pas de re-loop après le round 0), PAS du fix
   d'injection (validé en direct) ni du prompt.
-- **À corriger** : le FSM du greedy doit boucler pour exécuter le tool_call
-  avant de se déshydrater, ou l'analysis ne doit pas être finalisée tant que
-  la découpe n'est pas appliquée.
+- **RÉSOLU** : 4 causes racines identifiées et corrigées (commits) :
+  1. Parse `###tool_call` sans `###` de fermeture (deepseek l'oublie) → regex
+     tolérant ;
+  2. Prompt OUTILS tronqué à 1200 → les skills workspace/* étaient coupés
+     (le modèle faisait file_read_file sur le skill) → [:4000] ;
+  3. Fallback : exécuter les ###tool_call### texte même sans tool_calls API ;
+  4. Analyste reliquat (agent 520 team:llm-code/analyst) qui piochait les
+     analysis et les closait en "cas simple" avant le decoupeur → filtres
+     TERMINATED/STOPPED dans le waker.
+  + route `restart_all_service` (POST /v1/) : relance le daemon via os.execv
+    (recharge tout le code) — corrige le problème récurrent du daemon qui
+    tournait avec l'ancien code.
+- **VALIDÉ run réel 1620** : analysis → découpe (3 coding + merge) → les 3
+  coding sont passés **supervised tag=done/ok** (le coder code/commit réellement).
+  Le flux s'est arrêté au merge #142 (timeout du run_completion 900s + daemon
+  qui a arrêté de logger) — le timeout du TEST est trop court pour le réel.
+
+## 8. RESTE À FAIRE après validation 1620
+1. **Le merge + respond + supervised finale** : le run 1620 s'est arrêté au
+   merge #142 (unattributed) car le daemon a cessé de traiter (log arrêté à
+   21:56). À relancer avec un timeout de test plus long (> 900s) pour voir la
+   fin complète.
+2. **Nettoyage BDD** : ~100 agents `analyst-swarm-*` reliquats dans agents.db
+   + tâches de test (1607-1620) + tags done/failure résiduels.
+3. **C2–C5 du flux pétri** : preemption stack/pop jamais exercée en réel
+   (aucun agent n'a d'entrypoint pause/ask_auth déclaré).
+4. **Fichiers runtime** (gen_runtime_files) : check_runtime non branché au get.
+5. **get_data_genere** : les ensure_* supervisor/team pas encore migrés dessus.
