@@ -166,6 +166,16 @@ class GenereCatalogue:
                 (status, _now(), project_id, id_data))
             return cur.rowcount > 0
 
+    def set_inputs_hash(self, project_id: int, id_data: str,
+                        inputs_hash: str) -> bool:
+        """Met à jour l'inputs_hash (après régénération par un générateur)."""
+        with self._lock:
+            cur = self.ram.execute(
+                "UPDATE gen_data SET inputs_hash = ?, status = 'valid', "
+                "updated_at = ? WHERE project_id = ? AND id_data = ?",
+                (inputs_hash, _now(), project_id, id_data))
+            return cur.rowcount > 0
+
     def flag_question(self, project_id: int, id_data: str,
                       question: str) -> int:
         """Signale une data comme "étrange" (id_question). Retourne l'id."""

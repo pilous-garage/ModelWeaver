@@ -41,16 +41,77 @@ def file_hash(path: Path) -> str:
 
 
 class FlowEngine:
-    """Moteur de génération des data_genere (skills + supervisor)."""
+    """Moteur de génération des data_genere (skills + supervisor + pétri).
+
+    Le point d'entrée unifié est `get_data_genere` : il résout la validité
+    d'une data (status + inputs_hash), régénère si nécessaire, et appelle
+    RÉCURSIVEMENT les générateurs des dépendances data_genere. Les
+    `ensure_*` (ensure_skill_symbol, ensure_supervisor, ensure_team_petri)
+    sont des générateurs enregistrés sous un `id_data` — ils consomment
+    `get_data_genere` pour leurs propres dépendances.
+    """
 
     def __init__(self, db_path: Optional[Path] = None, auto_flush: bool = True):
         self.gen = GenereCatalogue(db_path=db_path, auto_flush=auto_flush)
+        self._gen_stack: List[str] = []  # prévention de cycles
 
     def close(self) -> None:
         try:
             self.gen.flush()
         except Exception:
             pass
+
+    # ── get_data_genere : wrapper générique (validité + récursion) ──
+
+    def get_data_genere(self, id_data: str, *, generator: str,
+                        deps: Optional[List[Dict[str, Any]]] = None,
+                        params: str = "", project_id: int = 0,
+                        force: bool = False) -> Optional[Dict[str, Any]]:
+        """Point d'entrée UNIFIÉ pour toute data_genere.
+
+        `generator` : nom de générateur (ex. "petri", "symbol") enregistré
+        dans `_GENERATORS`. Le GÉNÉRATEUR est la source de vérité de
+        l'invalidation (il connaît ses fichiers/deps et calcule son propre
+        inputs_hash). `get_data_genere` :
+          1. résout RÉCURSIVEMENT les deps data_genere (spécifiées par
+             {id, generator, params}) — une dep stale est re-générée ;
+          2. vérifie la data courante : si elle existe et est VALID et son
+             inputs_hash == celui du générateur → cache ;
+          3. sinon → appelle le générateur (qui calcule son hash, upsert,
+             enregistre ses deps).
+        `force` : re-génère toujours (propagé aux deps)."""
+        if id_data in self._gen_stack:
+            raise RuntimeError(f"cycle de génération détecté : {id_data}")
+        self._gen_stack.append(id_data)
+        try:
+            gen = _GENERATORS.get(generator)
+            if gen is None:
+                raise KeyError(f"générateur inconnu : {generator}")
+            # 1) résout récursivement les deps data_genere (stale → re-gen)
+            for dep_spec in deps or []:
+                dep_id = dep_spec.get("id", "")
+                dep_gen = dep_spec.get("generator", "")
+                dep_params = dep_spec.get("params", "")
+                if not dep_id or not dep_gen:
+                    continue
+                dep = self.gen.get(project_id, dep_id)
+                # dep manquante ou stale → re-résolution récursive
+                if dep is None or dep.get("status") != "valid":
+                    self.get_data_genere(dep_id, generator=dep_gen,
+                                         params=dep_params,
+                                         project_id=project_id, force=force)
+            # 2) la data courante est-elle valide ? (le générateur vérifie
+            #    son propre inputs_hash via la méthode ensure_* associée)
+            existing = self.gen.get(project_id, id_data)
+            if existing and existing.get("status") == "valid" and not force:
+                # l'invalidation fine est laissée au générateur : on relance
+                # le générateur qui décidera cache vs re-gen via son hash.
+                pass
+            # 3) appelle le générateur (il gère hash/cache/upsert/deps)
+            return gen(self, id_data=id_data, project_id=project_id,
+                       params=params, force=force, deps=deps or [])
+        finally:
+            self._gen_stack.pop()
 
     # ── Skills ──────────────────────────────────────────────
 
@@ -215,86 +276,25 @@ class FlowEngine:
 
     def ensure_team_petri(self, team_path: Path,
                           force: bool = False) -> Dict[str, Any]:
-        """Construit le pétri GLOBAL d'une team en tant que data_genere
-        passif (kind=petri) : invalidation par inputs_hash.
+        """Construit le pétri GLOBAL d'une team (data_genere passif).
 
-        Le pétri dépend des symbols des agents (+ superviseur). S'ils n'ont
-        pas changé (inputs_hash identique), on renvoie le pétri en cache —
-        zéro re-calcul. Sinon on régénère et on stocke.
-        """
+        PONT vers `get_team_petri` (le chemin unifié via get_data_genere) :
+        garde la signature historique (utilisée par la CLI --flow et les
+        callers) mais délègue la génération + invalidation au wrapper."""
         import yaml
-        from services.taskflow_petri import team_global_petri, \
-            verify_team, save_petri_png
-
         data = yaml.safe_load(team_path.read_text()) or {}
         team_name = data.get("name", team_path.stem)
-        rules = [r for r in (data.get("supervisor_rules") or []) if isinstance(r, dict)]
-        project_id = 0
         id_data = f"petri:{team_name}"
-
-        # ── inputs_hash : version pétri + rules + hash des symbols membres ──
-        # 1. assure les symbols des agents (skills) d'abord
-        self.ensure_team_symbols(team_path)
-        # 2. hash : rules + symbols skills des membres (le contenu réel)
-        skill_ids = self._team_skill_symbol_ids(team_path)
-        h = hashlib.sha1()
-        h.update(b"petri-gen-v1")
-        h.update(json.dumps(rules, sort_keys=True).encode())
-        for sid in sorted(skill_ids):
-            row = self.gen.get(project_id, sid)
-            h.update((sid + ":" + (row.get("inputs_hash", "") if row else "")).encode())
-        # + hash des agents (structure du workflow)
-        for mpath in sorted(self._team_member_paths(team_path)):
-            mp = REPO / mpath
-            h.update(("agent:" + mpath + ":" +
-                      (file_hash(mp) if mp.exists() else "")).encode())
-        ihash = h.hexdigest()
-
-        existing = self.gen.get(project_id, id_data)
-        if existing and existing.get("inputs_hash") == ihash and not force:
-            # déjà valide → renvoie tel quel
-            return {"petri": id_data, "cached": True, "hash": ihash,
-                    "symbols": skill_ids}
-
-        # ── construction réelle ──
-        petri = team_global_petri(team_path, rules)
-        verify = verify_team(team_path)
-        # rendu texte + PNG (value_is_file)
-        render = petri.render()
-        out_png = str(REPO / "docs" / "petri" / f"petri_{team_name}.png")
-        try:
-            save_petri_png(petri, out_png)
-            png_file = True
-        except Exception:
-            out_png, png_file = "", False
-
-        # dépendances du petri : symbols skills + FICHIERS AGENTS (un agent
-        # modifié → stale propagé au petri) + fichier team + PNG.
-        member_paths = self._team_member_paths(team_path)
-        dep_list = [{"dep_ref": s, "version": "", "role": "member"}
-                    for s in sorted(skill_ids)]
-        dep_list += [{"dep_ref": m, "version": "", "role": "agent"}
-                     for m in sorted(member_paths)]
-        dep_list.append({"dep_ref": str((REPO / team_path).resolve().relative_to(REPO)),
-                         "version": "", "role": "team"})
-        self.gen.upsert(
-            project_id, id_data, name=team_name, kind="petri",
-            path=f"petri:{team_name}", ref_id=f"team:{team_name}",
-            value=render, value_is_file=False,
-            dependencies_json=dep_list,
-            inputs_hash=ihash, status="valid", generation_mode="deterministic")
-        for s in sorted(skill_ids):
-            self.gen.add_dependency(project_id, id_data, s, "", "member")
-        for m in sorted(member_paths):
-            self.gen.add_dependency(project_id, id_data, m, "", "agent")
-        team_rel = str((REPO / team_path).resolve().relative_to(REPO))
-        self.gen.add_dependency(project_id, id_data, team_rel, "", "team")
-        if png_file:
-            self.gen.add_dependency(project_id, id_data, out_png, "", "reference")
-
-        return {"petri": id_data, "cached": False, "hash": ihash,
-                "symbols": skill_ids, "verify": verify,
-                "png": out_png or None}
+        result = self.get_team_petri(team_path, force=force)
+        cached = self.gen.get(0, id_data)
+        return {
+            "petri": id_data,
+            "cached": bool(cached and cached.get("status") == "valid"),
+            "hash": (cached or {}).get("inputs_hash", ""),
+            "symbols": self._team_skill_symbol_ids(team_path),
+            "verify": (result or {}).get("verify"),
+            "png": (result or {}).get("png"),
+        }
 
     def _team_member_paths(self, team_path: Path) -> List[str]:
         """chemins des agents d'une team (membres + sous-agents)."""
@@ -312,6 +312,26 @@ class FlowEngine:
                 if sapath.exists():
                     out.append(str(sapath.relative_to(REPO)))
         return sorted(set(out))
+
+    def _find_skill_for_symbol(self, skill_id: str) -> Optional[str]:
+        """skill_id = 'symbol:<chemin>:<fn>' → skill_ref (ex. workspace/decoupe@v1).
+        Scanne les yaml skills dont l'implémentation résout vers ce path."""
+        import yaml
+        target = skill_id[len("symbol:"):]  # "<chemin>:<fn>"
+        skills_root = REPO / "AgentsCatalogue" / "skills"
+        for y in skills_root.rglob("*.yaml"):
+            try:
+                data = yaml.safe_load(y.read_text()) or {}
+            except Exception:
+                continue
+            impl = data.get("implementation") or {}
+            fn = impl.get("function") if isinstance(impl, dict) else None
+            if not fn:
+                continue
+            sym = python_translator.translate(fn)
+            if sym and sym.path == target:
+                return f"{y.parent.name}/{y.stem}"
+        return None
 
     def _team_skill_symbol_ids(self, team_path: Path) -> List[str]:
         """id_data des symbols SKILLS de tous les membres de la team."""
@@ -350,5 +370,127 @@ class FlowEngine:
         data = yaml.safe_load(team_path.read_text()) or {}
         return self.gen.get(0, f"petri:{data.get('name', team_path.stem)}")
 
+    def get_team_petri(self, team_path: Path,
+                       force: bool = False) -> Optional[Dict[str, Any]]:
+        """Pétri d'une team via get_data_genere : RÉCURSIF sur les symbols
+        skills des membres (deps data_genere) + fichiers agents/team.
 
-__all__ = ["FlowEngine", "TRANSLATOR_VERSION", "file_hash"]
+        C'est l'exemple canonique de la récursion : le pétri dépend de N
+        symbols ; chaque symbol est résolu (validité + régénération si
+        besoin) AVANT le calcul du hash du pétri."""
+        import yaml
+        import json as _json
+        data = yaml.safe_load(team_path.read_text()) or {}
+        team_name = data.get("name", team_path.stem)
+        id_data = f"petri:{team_name}"
+        # deps : chaque skill membre → spec {id, generator: symbol, params}
+        deps = []
+        for sk in sorted(self._team_skill_symbol_ids(team_path)):
+            # sk = "symbol:<chemin_relatif>:<fonction>" → retrouve le skill yaml
+            # sous AgentsCatalogue/skills/ (le générateur symbol le résout)
+            deps.append({
+                "id": sk, "generator": "symbol",
+                "params": _json.dumps({"skill_id": sk}),
+            })
+        # params : team_path (le générateur petri s'en sert)
+        params = _json.dumps({"team_path": str(team_path)})
+        return self.get_data_genere(
+            id_data, generator="petri", deps=deps, params=params,
+            project_id=0, force=force)
+
+
+# ── Registre des générateurs ──────────────────────────────────
+# generator → callable(fe, id_data, project_id, params, force, deps).
+# Chaque générateur produit la data_genere ; get_data_genere gère
+# l'invalidation (inputs_hash) et la récursion sur les deps.
+def _gen_symbol(fe, id_data, project_id=0, params="", force=False, deps=None):
+    """Générateur d'un SYMBOL de skill. `params` = JSON {skill_id} (le id_data
+    du symbol). Le skill_ref est résolu en scannant les yaml skills dont
+    l'implémentation mène au path du symbol."""
+    import json as _json
+    spec = _json.loads(params) if params else {}
+    skill_id = spec.get("skill_id", "") or id_data
+    # skill_id = "symbol:<chemin>:<fn>" → retrouve le skill yaml correspondant
+    skill_ref = fe._find_skill_for_symbol(skill_id)
+    if not skill_ref:
+        return None
+    return fe.ensure_skill_symbol(skill_ref, force=force)
+
+
+def _gen_team_petri(fe, id_data, project_id=0, params="", force=False,
+                    deps=None):
+    """Générateur du PÉTRI : résout team_path depuis params (JSON), construit
+    le pétri global, vérifie l'invariant, enregistre value + deps.
+
+    L'invalidation : inputs_hash = f(rules, hash des deps symbols résolues,
+    hash des fichiers agents, version). Si la data est valid et a le même
+    hash → retourne le cache (pas de re-calcul)."""
+    import yaml
+    from services.taskflow_petri import team_global_petri, \
+        verify_team, save_petri_png
+    import json as _json
+    spec = _json.loads(params) if params else {}
+    team_path = REPO / spec.get("team_path", "")
+    if not team_path.exists():
+        return None
+    data = yaml.safe_load(team_path.read_text()) or {}
+    team_name = data.get("name", team_path.stem)
+    rules = [r for r in (data.get("supervisor_rules") or [])
+             if isinstance(r, dict)]
+    # ── inputs_hash : rules + deps symbols + fichiers agents + team ──
+    h = hashlib.sha1()
+    h.update(b"petri-gen-v1")
+    h.update(_json.dumps(rules, sort_keys=True).encode())
+    for d in sorted(deps or [], key=lambda x: x.get("id", "")):
+        dep = fe.gen.get(project_id, d["id"])
+        h.update((d["id"] + ":" +
+                  (dep.get("inputs_hash", "") if dep else "")).encode())
+    for m in sorted(fe._team_member_paths(team_path)):
+        mp = REPO / m
+        h.update(("agent:" + m + ":" +
+                  (file_hash(mp) if mp.exists() else "")).encode())
+    team_rel = str((REPO / team_path).resolve().relative_to(REPO))
+    h.update(("team:" + team_rel + ":" + file_hash(REPO / team_rel)).encode())
+    ihash = h.hexdigest()
+    existing = fe.gen.get(project_id, id_data)
+    if existing and existing.get("inputs_hash") == ihash \
+            and existing.get("status") == "valid" and not force:
+        return existing
+    # ── construction réelle ──
+    petri = team_global_petri(team_path, rules)
+    verify = verify_team(team_path)
+    render = petri.render()
+    out_png = str(REPO / "docs" / "petri" / f"petri_{team_name}.png")
+    try:
+        save_petri_png(petri, out_png)
+        png_file = True
+    except Exception:
+        out_png, png_file = "", False
+    dep_list = [{"dep_ref": d["id"], "version": "", "role": "member"}
+                for d in sorted(deps or [], key=lambda x: x.get("id", ""))]
+    for m in sorted(fe._team_member_paths(team_path)):
+        dep_list.append({"dep_ref": m, "version": "", "role": "agent"})
+    dep_list.append({"dep_ref": team_rel, "version": "", "role": "team"})
+    fe.gen.upsert(
+        project_id, id_data, name=team_name, kind="petri",
+        path=f"petri:{team_name}", ref_id=f"team:{team_name}",
+        value=render, value_is_file=False,
+        dependencies_json=dep_list,
+        inputs_hash=ihash, status="valid", generation_mode="deterministic")
+    for d in sorted(deps or [], key=lambda x: x.get("id", "")):
+        fe.gen.add_dependency(project_id, id_data, d["id"], "", "member")
+    for m in sorted(fe._team_member_paths(team_path)):
+        fe.gen.add_dependency(project_id, id_data, m, "", "agent")
+    fe.gen.add_dependency(project_id, id_data, team_rel, "", "team")
+    if png_file:
+        fe.gen.add_dependency(project_id, id_data, out_png, "", "reference")
+    return {"petri": id_data, "verify": verify, "png": out_png or None}
+
+
+_GENERATORS: Dict[str, Any] = {
+    "symbol": _gen_symbol,
+    "petri": _gen_team_petri,
+}
+
+
+__all__ = ["FlowEngine", "TRANSLATOR_VERSION", "file_hash", "_GENERATORS"]
