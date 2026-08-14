@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS agents (
     variables_json TEXT,                             -- variables internes (mémoire de travail)
     state_json    TEXT,                              -- état FSM courant
     storage_json  TEXT,                              -- stockage disque proprio (quota/path/used_bytes)
+    home          TEXT DEFAULT '',                   -- home déclaré (sous-agents : hérité du maître)
     successor_id  INTEGER REFERENCES agents(agent_id),
     id_proprietaire TEXT,                            -- uint64 (décimal) : agent propriétaire
                                                    --   MAX_UINT64 = agent humain ; NULL = maître racine

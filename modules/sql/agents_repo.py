@@ -130,6 +130,8 @@ class AgentsDB:
         _add_column_if_missing(self.conn, "agents", "id_team", "INTEGER")
         _add_column_if_missing(self.conn, "agent_runtime", "id_proprietaire", "TEXT")
         _add_column_if_missing(self.conn, "agent_runtime", "id_team", "INTEGER")
+        # V0.16 : home déclaré (sous-agents héritent du home du maître).
+        _add_column_if_missing(self.conn, "agents", "home", "TEXT DEFAULT ''")
         # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
         _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
         # Migration V0.8.9 : wait_for — agents endormis en attente d'une

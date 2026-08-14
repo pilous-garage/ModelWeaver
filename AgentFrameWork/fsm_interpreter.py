@@ -634,21 +634,25 @@ class FSMInterpreter:
     def _agent_work_home(self, agent_id, variables: Dict) -> str:
         """Home de travail pour les tool_calls d'un step llm_call.
 
-        Si le step a cloné un repo (variable `repo_eff` non vide), les skills
-        file (write_file/append_file/…) doivent écrire DANS le clone
-        (agent_home/<aid>/workspace/<repo_eff>), pas dans le home racine —
-        sinon le code produit n'apparaît jamais dans le dépôt et la vérif git
-        ne voit aucun diff. Sans repo → home agent (comportement historique).
-        """
+        Base = le home DÉCLARÉ de l'agent (variables['home'], posé par
+        l'agent_manager à l'hydratation — sous-agent = home du maître) sinon
+        agent_home/<id> dérivé. Si un repo a été cloné (repo_eff), les skills
+        file travaillent DANS le clone (<base>/workspace/<repo_eff>)."""
         _a_id = str(agent_id or "")
+        try:
+            declared = str(variables.get("home") or "").strip()
+        except Exception:
+            declared = ""
+        if not declared or declared.startswith("{{"):
+            declared = ""
+        base = declared or self._agent_home(agent_id)
         try:
             repo_eff = str(variables.get("repo_eff", "") or "").strip()
         except Exception:
             repo_eff = ""
         if repo_eff and _a_id:
-            base = self._agent_home(_a_id)
             return os.path.join(base, "workspace", repo_eff)
-        return self._agent_home(agent_id)
+        return base
 
     def _step_llm_call(
         self, step: Dict, result: FSMResult,

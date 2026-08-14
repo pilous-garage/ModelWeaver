@@ -481,3 +481,20 @@ doivent passer par le **bridge de l'hôte**.
   scores : trop de lissage, trop de bénéfice pour les LLM jamais appelés).
 - Rollup : la somme des buckets d'un niveau donne le premier bucket du niveau
   supérieur.
+
+## Idée 14 — Évaluer aussi les AGENTS (pas seulement les LLM)
+
+**Statut** : idée notée, NON implémenté. Source : session benchmark by experience (2026-08-14).
+
+Le benchmark par expérience ne note que les **LLM** (les seuls porteurs de qualité) :
+le supervisor (sans LLM) et as_llm_leader (sans LLM, recopie le prompt en tâche)
+ne sont PAS notés sur leur création de tâches.
+
+Mais il faudra AUSSI évaluer les **agents** (la qualité de l'orchestration, les
+décisions) : capacité du découpeur à découper juste, pertinence des choix de
+modèles, réglages des workflows. C'est un second niveau d'évaluation, à part.
+
+- Séparer l'évaluation LLM (par modèle) de l'évaluation agent (par agent) dans
+  le benchmark par expérience.
+- L'évaluation agent pourrait croiser : difficulté assignée vs difficulté perçue,
+  pertinence de la découpe, choix du modèle selon la tâche.

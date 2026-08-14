@@ -649,6 +649,14 @@ class Agent:
         Phase 5 : spawn + handoff)."""
         import json
         variables = json.loads(self._data.get("variables_json") or "{}")
+        # Home déclaré (agents.home, ex. sous-agent = home du maître) → injecté
+        # dans les variables pour _agent_work_home. Sinon home dérivé conservé.
+        _decl_home = str(self._data.get("home") or "").strip()
+        if _decl_home:
+            variables["home"] = _decl_home
+        elif not variables.get("home"):
+            from services._common import mw_home
+            variables["home"] = str(mw_home() / "agent_home" / str(self.agent_id))
         # Purger les variables de capture du run précédent (_member_*, sorties
         # d'agent_call) : sans quoi un nouveau run réaffiche les anciennes
         # sorties des membres dans ses variables finales.
@@ -766,6 +774,7 @@ class Agent:
                 config=spec.get("config"),
                 provider_ref=spec.get("provider_ref", ""),
                 model_ref=spec.get("model_ref", ""),
+                home=str(self._data.get("home") or ""),
             )
         return _spawn
 
@@ -2218,6 +2227,7 @@ class AgentManager:
         keep_sleeping: bool = True,
         id_proprietaire: Optional[str] = None,
         id_team: Optional[int] = None,
+        home: str = "",
     ) -> Dict[str, Any]:
         if occupation not in ("continue", "noncontinue", "disparate"):
             return {"status": "error", "error": f"occupation invalide: {occupation}"}
@@ -2258,11 +2268,11 @@ class AgentManager:
             self.db.conn.execute("""
                 INSERT INTO agents (name, ref, role_type, occupation, config_json,
                                     resources_json, variables_json,
-                                    id_proprietaire, id_team)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    id_proprietaire, id_team, home)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (name, ref, role, occupation,
                   json.dumps(config or {}), json.dumps(resources or {}), "{}",
-                  id_proprietaire, id_team))
+                  id_proprietaire, id_team, home or ""))
             self.db.conn.commit()
             agent_id = self.db.conn.execute(
                 "SELECT agent_id FROM agents WHERE name = ?", (name,)
