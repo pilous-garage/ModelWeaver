@@ -872,7 +872,8 @@ class FSMInterpreter:
                                     # workspace_id/task_id fournis par le modèle
                                     # sont souvent vides ou 0 (index relatif).
                                     _v_ws = result.variables.get("workspace_id", "")
-                                    if _v_ws and not _args.get("workspace_id"):
+                                    if _v_ws and (not _args.get("workspace_id")
+                                                  or str(_args.get("workspace_id")) in ("0",)):
                                         _args["workspace_id"] = _v_ws
                                     _v_tid = result.variables.get("task_id")
                                     if _v_tid and _args.get("task_id") in (
@@ -891,6 +892,12 @@ class FSMInterpreter:
                                     "tool_call_id": f"tr-{_tool_round}-{_name}",
                                     "content": json.dumps(_res, default=str),
                                 })
+                                # Tool TERMINAL (decoupe/ask_intel/…) → clôturer
+                                # la boucle, pas de re-appel du LLM.
+                                if self._resolve_tool_skill(_name) in _TERMINAL_SKILLS:
+                                    _terminal_hit = True
+                            if _terminal_hit:
+                                break  # décision prise → sortie de la boucle
                             continue  # re-appeler le LLM avec les résultats
                     tool_calls = getattr(response, "tool_calls", None)
                     if not tool_calls:
@@ -966,7 +973,8 @@ class FSMInterpreter:
                         _v_ws = result.variables.get("workspace_id", "")
                         _v_tid = result.variables.get("task_id")
                         _v_sid = result.variables.get("sub_task_id")
-                        if _v_ws and not raw_args.get("workspace_id"):
+                        if _v_ws and (not raw_args.get("workspace_id")
+                                      or str(raw_args.get("workspace_id")) in ("0",)):
                             raw_args["workspace_id"] = _v_ws
                         if _agent_id and not raw_args.get("agent_id"):
                             raw_args["agent_id"] = _agent_id
