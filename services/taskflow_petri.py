@@ -287,19 +287,61 @@ def save_petri_png(petri: Petri, out_path: str) -> str:
     return out_path
 
 
+def merge_petris(name: str, petris: List[Petri]) -> Petri:
+    """Fusionne plusieurs Petri en un seul : les places data_<type>_<etat> sont
+    partagées (mêmes noms), data_agent_<agent> et activity_<agent>_<step> restent
+    propres à chaque agent. Les transitions sont concaténées."""
+    types: Set[str] = set()
+    for p in petris:
+        types.update(p.types)
+    net = Petri(name, sorted(types))
+    for p in petris:
+        for place in p.places:
+            net.place(place)
+        for t in p.transitions:
+            net.trans(t["name"], t["in"], t["out"], t["label"])
+    return net
+
+
+def team_global_petri(path: Path, rules: List[Dict[str, Any]] = ()) -> Petri:
+    """Pétri GLOBAL d'une team : fusion de chaque membre (+ sous-agents) et du
+    superviseur (assign/finalise/relais selon les règles)."""
+    import yaml
+    data = yaml.safe_load(path.read_text()) or {}
+    petris: List[Petri] = []
+    for m in data.get("members", []) or []:
+        ref = m.get("ref", "")
+        apath = REPO / "AgentsCatalogue" / "agents" / f"{ref}.agent.yaml"
+        if apath.exists():
+            petris.append(build_from_yaml(apath, m.get("agent_name", ref))["petri"])
+        for sa in (m.get("sub_agents") or []):
+            saref = sa.get("ref", "")
+            sapath = REPO / "AgentsCatalogue" / "agents" / f"{saref}.agent.yaml"
+            if sapath.exists():
+                sa_name = f"{m.get('agent_name', ref)}/{sa.get('agent_name', '')}"
+                petris.append(build_from_yaml(sapath, sa_name)["petri"])
+    petris.append(supervisor_petri(rules))
+    return merge_petris(f"team_{data.get('name', path.stem)}", petris)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="YAML → Pétri du taskflow")
     ap.add_argument("yaml", help="fichier .team.yaml ou .agent.yaml")
     ap.add_argument("--agent", default="", help="nom d'agent (si yaml team)")
     ap.add_argument("--team", action="store_true", help="traiter comme une team")
+    ap.add_argument("--team-petri", action="store_true",
+                    help="pétri GLOBAL de la team (agents + superviseur fusionnés)")
     ap.add_argument("--verify", action="store_true",
                     help="vérifier le pétri (pm4py : reachability de supervised)")
     ap.add_argument("--png", default="", help="sauvegarder le pétri en PNG")
     args = ap.parse_args()
     path = Path(args.yaml)
     if args.png:
-        res = build_from_yaml(path, args.agent)
-        out = save_petri_png(res["petri"], args.png)
+        if args.team or args.team_petri:
+            out = save_petri_png(team_global_petri(path), args.png)
+        else:
+            res = build_from_yaml(path, args.agent)
+            out = save_petri_png(res["petri"], args.png)
         print(f"PNG sauvegardé : {out}")
         return
     if args.team:
