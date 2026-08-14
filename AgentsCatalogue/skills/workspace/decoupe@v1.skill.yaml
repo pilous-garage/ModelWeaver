@@ -1,14 +1,14 @@
 name: workspace/decoupe@v1
 category: workspace
 description: >
-  DÉCOUPE en UNE passe (tool UNIQUE de l'analyste). Deux cas :
-  - sous_taches non vide : découpe A → B,C… avec le TYPE de chaque élément
-    (niveau de nécessité : analysis|coding|testing|review…) ; le skill génère
-    AUTOMATIQUEMENT le merge(B,C,…) (jamais déclaré). L'analysis courante passe
-    en waiting_dependencies du merge (re-analysis post-merge).
-  - sous_taches vide (rien à découper) : assigne simplement la difficulté et
-    clôt l'analyse (done/ok).
-  `analyse` (rapport, toujours produit) est enregistré dans task_reports.
+  DÉCOUPE en UNE passe (tool UNIQUE de l'analyste). L'analyste ne connaît PAS
+  les vrais task_id : il référence sa tâche courante par l'INDEX 0 et crée des
+  tâches 1…n (par type), avec `task_content` et des `dependencies` RELATIVES.
+  Le skill résout les index et génère les merges : dépendance unique → lien
+  direct ; dépendances multiples → merge intermédiaire (start C après fusion
+  des parents) ; merge FINAL (toutes les sous-tâches) → reprise de l'analyse.
+  Cas simple (types vide) : assigne `difficulty` et clôt (done/ok).
+  `analyse` (rapport) est toujours enregistré.
 inputs:
   workspace_id:
     type: string
@@ -16,25 +16,29 @@ inputs:
   task_id:
     type: integer
     required: true
-    description: "La tâche (sujet) dont on découpe la sub_task analysis courante"
-  sous_taches:
+    description: "Vrai task_id (injecté par le FSM) — l'analyste ne le connaît pas"
+  sub_task_id:
+    type: integer
+    required: false
+    description: "La sub_task analysis courante (index 0)"
+  types:
     type: list
     required: false
     default: []
     description: >
-      [{title, description, type, difficulty|niveau}] — type = niveau de
-      nécessité (analysis|coding|testing|review…). Vide = tâche simple
-      (assignation de difficulté, pas de découpe).
+      [{type, tasks: [{task_id: 1, task_content, dependencies: [index]}]}].
+      task_id = index relatif (1+) ; dependencies = index relatifs (0 = la
+      tâche courante). Vide = tâche simple (assignation de difficulté).
   difficulty:
     type: string
     required: false
     default: ""
-    description: "Pour le cas simple (sous_taches vide) : easy|medium|hard|expert"
+    description: "Cas simple : easy|medium|hard|expert"
   analyse:
     type: string
     required: false
     default: ""
-    description: "Analysis-report de la tâche analysée (toujours produit)"
+    description: "Analysis-report (toujours produit)"
 outputs:
   ok:
     type: boolean
@@ -43,7 +47,6 @@ outputs:
     description: "decoupe | assign_difficulte"
   created:
     type: list
-    description: "sub_task_id des sous-tâches créées"
   merge_sub_task_id:
     type: integer
   analysis_sub_task_id:

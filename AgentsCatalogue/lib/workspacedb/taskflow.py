@@ -55,19 +55,30 @@ def _current_analysis(db, sc, task_id: int):
 def decoupe(inputs: dict, home: str) -> dict:
     """Découpe en UNE passe (skill analysis/decoupe@v1) — tool UNIQUE.
 
-    Deux cas :
-      - `sous_taches` non vide : découpe A → B,C,… + merge auto. La sub_task
-        analysis courante passe waiting_dependencies du merge.
-      - `sous_taches` vide (rien à découper) : assigne simplement la difficulté
-        (inputs.difficulty) et clôt l'analyse (sub_task analysis → done/ok).
+    L'analyste ne connaît PAS les vrais task_id : il référence sa tâche
+    courante par l'INDEX 0 et crée des tâches 1…n (par type de tâche), avec
+    `task_content` et des `dependencies` RELATIVES (index).
 
-    `analyse` (le rapport d'analyse, toujours produit) est enregistré dans
-    task_reports. Le merge n'est jamais déclaré explicitement : il est généré
-    automatiquement (dépend de toutes les sous-tâches).
+    format `types` :
+      [{type: "coding", tasks: [{task_id: 1, task_content: "...", dependencies: []},
+                                {task_id: 2, ...}]},
+       {type: "testing", tasks: [{task_id: 3, task_content: "...", dependencies: [1,2]}]}]
+
+    Le skill RÉSOUT les index et génère les merges :
+      - dépendance unique → lien direct ;
+      - dépendances multiples (C dépend de A,B) → merge intermédiaire
+        merge(A,B) → C (start C après fusion de A,B) ;
+      - merge FINAL merge(A,B,C,D) → la sub_task analysis (index 0) attend ce
+        merge final (start x = re-analysis post-merge).
+    Le merge est intelligent (git gère les commits déjà mergés).
+
+    Cas SIMPLE (`types` vide) : rien à découper → assigne `difficulty` et clôt
+    l'analyse (done/ok). `analyse` (rapport) est toujours enregistré.
     """
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
-    sous = inputs.get("sous_taches") or []
+    sub_task_id = inputs.get("sub_task_id")
+    types = inputs.get("types") or []
     if not workspace_id or task_id is None:
         return {"ok": False, "error": "workspace_id + task_id requis"}
     try:
@@ -79,14 +90,19 @@ def decoupe(inputs: dict, home: str) -> dict:
         team_id = task.get("team_id", -1)
         repo = task.get("repo", "") or ""
         branch = task.get("branch", "") or ""
-        cur = _current_analysis(db, sc, task_id)
+        cur = None
+        if sub_task_id is not None:
+            cur = sc.sub_tasks.get(int(sub_task_id))
+        if not cur:
+            cur = _current_analysis(db, sc, task_id)
 
         # ── Cas SIMPLE : rien à découper → assigner difficulté + clore ──
-        if not sous:
+        if not types:
             diff = (inputs.get("difficulty") or "").strip().lower()
+            diff = {"facile": "easy", "moyen": "medium", "moyenne": "medium",
+                    "difficile": "hard", "simple": "easy"}.get(diff, diff)
             if diff not in ("easy", "medium", "hard", "expert"):
                 diff = task.get("difficulty") or "medium"
-            # assigner la difficulté de la tâche + clore l'analyse done/ok
             sc.tasks.update(int(task_id), difficulty=diff)
             if cur:
                 sc.sub_tasks.update(cur["sub_task_id"], difficulty=diff)
@@ -97,46 +113,71 @@ def decoupe(inputs: dict, home: str) -> dict:
                     "difficulty": diff,
                     "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
 
-        # ── Cas DÉCOUPE : A → B,C,… + merge auto ──
-        if not isinstance(sous, list):
+        # ── Cas DÉCOUPE : créer les sub_tasks (index relatifs 1+) ──
+        created: Dict[int, int] = {}  # index relatif → sub_task_id
+        for t in types:
+            stype = (t.get("type") or "").strip().lower()
+            if not stype:
+                continue
+            for tsk in t.get("tasks") or []:
+                idx = tsk.get("task_id")
+                content = (tsk.get("task_content") or tsk.get("title") or "").strip()
+                if idx is None or not content:
+                    continue
+                ns = sc.sub_tasks.create(
+                    task_id=int(task_id), sub_task_type=stype,
+                    difficulty=(tsk.get("difficulty") or tsk.get("niveau")
+                                or "medium"),
+                    status="unattributed",
+                    repo=repo, branch=branch, team_id=team_id,
+                    description=content)
+                created[int(idx)] = ns["sub_task_id"]
+        if not created:
             db.close()
-            return {"ok": False, "error": "sous_taches : liste requise"}
-        created_ids: List[int] = []
-        for i, st in enumerate(sous):
-            title = (st.get("title") or "").strip()
-            stype = (st.get("type") or "").strip().lower()
-            if not title or not stype:
-                db.close()
-                return {"ok": False,
-                        "error": f"sous-tâche {i}: title + type requis"}
-            new_st = sc.sub_tasks.create(
-                task_id=int(task_id), sub_task_type=stype,
-                difficulty=st.get("difficulty") or st.get("niveau") or "medium",
-                status="unattributed",
-                repo=repo, branch=branch, team_id=team_id,
-                description=(f"{title}\n{st.get('description', '')}").strip())
-            created_ids.append(new_st["sub_task_id"])
+            return {"ok": False, "error": "aucune sous-tâche à créer (types mal formés)"}
 
-        # Merge automatique : dépend de toutes les sous-tâches.
-        merge_st = sc.sub_tasks.create(
+        # ── Dépendances : directes (1 dep) ou merge intermédiaire (n deps) ──
+        for t in types:
+            for tsk in t.get("tasks") or []:
+                idx = tsk.get("task_id")
+                if idx is None or int(idx) not in created:
+                    continue
+                deps = tsk.get("dependencies") or []
+                tid = created[int(idx)]
+                if len(deps) == 1 and deps[0] in created:
+                    sc.sub_tasks.add_dependency(tid, created[int(deps[0])],
+                                                "done", "")
+                elif len(deps) > 1:
+                    # merge intermédiaire : fusion des parents avant la tâche
+                    m = sc.sub_tasks.create(
+                        task_id=int(task_id), sub_task_type="merge",
+                        difficulty="medium", status="waiting_dependencies",
+                        repo=repo, branch=branch, team_id=team_id)
+                    for d in deps:
+                        if d in created:
+                            sc.sub_tasks.add_dependency(m["sub_task_id"],
+                                                        created[int(d)], "done", "")
+                    sc.sub_tasks.add_dependency(tid, m["sub_task_id"], "done", "ok")
+
+        # ── Merge FINAL : toutes les sub_tasks → x (analysis) attend ──
+        merge_final = sc.sub_tasks.create(
             task_id=int(task_id), sub_task_type="merge",
             difficulty="medium", status="waiting_dependencies",
             repo=repo, branch=branch, team_id=team_id)
-        for cid in created_ids:
-            sc.sub_tasks.add_dependency(merge_st["sub_task_id"], cid,
-                                        "done", "")
-
-        # La sub_task analysis courante attend le merge.
+        for idx in created:
+            sc.sub_tasks.add_dependency(merge_final["sub_task_id"],
+                                        created[idx], "done", "")
         if cur:
             sc.sub_tasks.waiting_dependencies(cur["sub_task_id"])
             sc.sub_tasks.add_dependency(cur["sub_task_id"],
-                                        merge_st["sub_task_id"], "done", "ok")
+                                        merge_final["sub_task_id"], "done", "ok")
 
         _save_analyse(sc, task_id, inputs)
         db.close()
-        return {"ok": True, "mode": "decoupe", "created": created_ids,
-                "count": len(created_ids),
-                "merge_sub_task_id": merge_st["sub_task_id"],
+        return {"ok": True, "mode": "decoupe",
+                "created": list(created.values()),
+                "count": len(created),
+                "merge_sub_task_id": merge_final["sub_task_id"],
                 "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
     except Exception as e:
         return {"ok": False, "error": str(e)}

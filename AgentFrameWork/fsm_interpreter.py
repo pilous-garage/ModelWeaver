@@ -956,6 +956,16 @@ class FSMInterpreter:
                             raw_args["workspace_id"] = _v_ws
                         if _agent_id and "agent_id" not in raw_args:
                             raw_args["agent_id"] = _agent_id
+                        # Correction task_id : hy3 confond sub_task_id et
+                        # task_id (il passe 53 = sub_task_id au lieu de 1576).
+                        # Si le task_id fourni == sub_task_id du run (ou absent),
+                        # on force le vrai task_id.
+                        _v_tid = result.variables.get("task_id")
+                        _v_sid = result.variables.get("sub_task_id")
+                        if _v_tid and _v_tid != _v_sid:
+                            _p_tid = raw_args.get("task_id")
+                            if _p_tid is None or str(_p_tid) == str(_v_sid):
+                                raw_args["task_id"] = _v_tid
                         conv_name = self._resolve_tool_skill(fn_name)
                         # Le skill doit s'exécuter dans le home de l'agent
                         # (sinon write_file écrit dans /tmp) et connaître son

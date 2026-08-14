@@ -17,20 +17,18 @@ personality:
     tour (jamais de réponse en texte seul) :
 
     1. workspace/decoupe@v1 — la décision de sortie :
-       - si la tâche est découpable : sous_taches=[{title, description, type,
-         difficulty|niveau}] — le `type` est le NIVEAU DE NÉCESSITÉ de la
-         sous-tâche (analysis, coding, testing, review…). Le merge(B,C,…) est
-         généré AUTOMATIQUEMENT, ne le déclare jamais. L'analyse passe en
-         waiting_dependencies du merge (elle sera reprise en re-analysis
-         post-merge).
-       - si rien à découper (tâche simple) : sous_taches=[] et difficulty
-         (easy|medium|hard|expert) → le skill assigne la difficulté et clôt.
-       - `analyse` : TOUJOURS fourni (ton analysis-report, nom reprenant la
-         tâche analysée) — le skill l'enregistre.
+       - découpe : types=[{type, tasks:[{task_id: 1, task_content,
+         dependencies: [index]}]}]. task_id = index relatif (1+),
+         dependencies = index des tâches dont dépend la nouvelle (0 = ta tâche
+         courante). Les merges sont générés automatiquement par le skill.
+       - tâche simple : types=[] et difficulty (easy|medium|hard|expert).
+       - `analyse` : TOUJOURS fourni (ton analysis-report) — le skill l'enregistre.
     2. workspace/ask_intel@v1 — tu manques d'information : précise `intels`
        (questions/éléments à regarder). Un sous-agent EXPLORER ira chercher et
        remplira ; tu reprendras l'analyse ensuite.
 
+    Tu ne connais PAS les vrais task_id : ta tâche courante = INDEX 0, les
+    nouvelles tâches = index 1…n (le skill résout les identifiants réels).
     En cas d'impossibilité totale : workspace/sub_task_release@v1 (freedby=toi).
     Réponds en français.
 model_requirements:
@@ -109,14 +107,20 @@ entrypoints:
     - id: do_analyse
       type: llm_call
       skill_prompt: |
-        Analyse la sub_task {{sub_task_id}} (analysis) de la tâche {{task_id}}
-        (workspace {{workspace_id}}).
-        CONTENU DE LA SUB_TASK :
+        Analyse la sub_task {{sub_task_id}} (analysis). Ta tâche courante est
+        l'INDEX 0 — tu ne connais PAS les vrais task_id, référence les tâches
+        par leur index.
+        CONTENU DE TA TÂCHE :
         {{sub_task_now.description}}
         Tu n'as QUE 2 outils, appelle UN des deux (jamais de texte seul) :
-        - workspace/decoupe@v1 : découpe (sous_taches=[{title, description,
-          type, difficulty|niveau}]) OU tâche simple (sous_taches=[] +
-          difficulty). Fournis TOUJOURS `analyse` (ton analysis-report).
+        - workspace/decoupe@v1 : DÉCOUPE (format) :
+            types: [{type: coding, tasks: [{task_id: 1, task_content: "...",
+                     dependencies: []}]}]
+          task_id = index relatif (1+) ; dependencies = index des tâches dont
+          dépend la nouvelle (0 = ta tâche courante). Les merges (fusion des
+          dépendances + merge final) sont générés automatiquement par le skill.
+          OU cas simple (rien à découper) : types: [] + difficulty
+          (easy|medium|hard|expert). Fournis TOUJOURS `analyse` (ton rapport).
         - workspace/ask_intel@v1 : manque d'info → intels précis à chercher.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
