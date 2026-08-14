@@ -10,6 +10,9 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
 - ✅ petri_runtime (miroir FSM par observation pure) — validé (commit 45e54d8).
 - ✅ workflow expandu en data_genere (traçabilité exécution) — validé
   (commit 469746a).
+- ✅ **P1 runtime SMOKE TEST** (`tests/smoke_petri_runtime.py`, sans LLM) :
+  agent running + pots, step FSM avancé, cohérence types ⊆ pétri statique,
+  resolve_entrypoint (main/ask_auth/pause) + flux stack/pop.
 
 ## 1. FLUX dans le pétri (C1–C5) — créé, jamais exécuté
 - Places `flux_<agent>_{main,pause,cancel,ask_auth,receive_auth,stack}` générées
