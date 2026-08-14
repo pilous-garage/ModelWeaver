@@ -145,10 +145,12 @@ def _update_scores_sql(rt) -> None:
             score_1d = sqrt((1.0 + ({s5s}) + ({shs})) / (1.0 + ({s5t}) + ({sht}))),
             score_1w = sqrt((1.0 + ({s5s}) + ({shs}) + ({sds}))
                             / (1.0 + ({s5t}) + ({sht}) + ({sdt}))),
+            score_all = sqrt((1.0 + all_time_succ) / (1.0 + all_time_tot)),
             score_total = sqrt((1.0 + ({s5s})) / (1.0 + ({s5t})))
                         + sqrt((1.0 + ({s5s}) + ({shs})) / (1.0 + ({s5t}) + ({sht})))
                         + sqrt((1.0 + ({s5s}) + ({shs}) + ({sds}))
-                               / (1.0 + ({s5t}) + ({sht}) + ({sdt}))),
+                               / (1.0 + ({s5t}) + ({sht}) + ({sdt})))
+                        + sqrt((1.0 + all_time_succ) / (1.0 + all_time_tot)),
             updated_at = strftime('%s','now')
     """)
     rt.conn.commit()
@@ -186,7 +188,12 @@ def tick_buckets(rt, cat, now: Optional[int] = None) -> int:
         h1["bucket_nb"] += 1
         h1["last_bucket"] = hi
         if h1["bucket_nb"] >= h1["bucket_qt"]:
-            # 23 buckets 1h révolus → rollup 1d
+            # 23 buckets 1h révolus → rollup 1d. Le bucket 1d le plus ancien
+            # (sd_0) sort de la rotation → il est AJOUTÉ au compteur all_time.
+            rt.conn.execute(
+                "UPDATE model_bucket_counts SET "
+                "all_time_succ = all_time_succ + sd_succ_0, "
+                "all_time_tot  = all_time_tot  + sd_tot_0")
             _shift(rt, "1d")
             _rollup_sum(rt, "1h", 23)
             h1["bucket_nb"] = 0
@@ -238,18 +245,18 @@ def _counts_from_log(cat, lo: int, hi: int) -> Dict[str, Tuple[int, int]]:
 
 
 def score_succes_for(rt, key: str, last5: Optional[float] = None) -> float:
-    """Score de SUCCÈS global d'un modèle = (sqrt(score_last_5) + score_total)/4.
+    """Score de SUCCÈS global d'un modèle = (sqrt(score_last_5) + score_total)/5.
 
-    score_total (0–3) = score_1h + score_1d + score_1w, chaque zone =
-    sqrt((1+succ)/(1+tot)) — 1.0 = meilleur score (aucun échec / jamais testé)."""
+    score_total (0–4) = score_1h + score_1d + score_1w + score_all, chaque zone
+    = sqrt((1+succ)/(1+tot)) — 1.0 = meilleur score (aucun échec / jamais testé)."""
     row = rt.conn.execute(
         "SELECT score_total FROM model_bucket_counts WHERE provider_ref = ? "
         "AND model_ref = ?", (key.split("/", 1)[0], key.split("/", 1)[1])
     ).fetchone()
-    total = float(row["score_total"]) if row else 3.0
+    total = float(row["score_total"]) if row else 4.0
     if last5 is None:
         last5 = 1.0  # aucune donnée récente → neutre (jamais testé)
-    return (last5 + total) / 4.0
+    return (last5 + total) / 5.0
 
 
 def update_score_batch(rt, cat, now: Optional[int] = None) -> int:
@@ -305,3 +312,110 @@ def _latency_by_model(cat, now: int) -> Dict[str, float]:
         lat_s = max(1.0, (float(lat_ms) / 1000.0))
         out[f"{pr}/{mr}"] = math.exp(-(lat_s - 1.0) / 60.0)
     return out
+
+
+def reset_buckets(rt, cat, now: Optional[int] = None) -> int:
+    """Reconstruit les buckets stables depuis model_call_log + archive.
+
+    Répartit les appels passés (log + model_call_log_archive) par modèle dans
+    les fenêtres non chevauchantes : 12×5m (dernière heure), 23×1h (23h avant),
+    6×1d (6 jours avant), all_time (avant 7 jours). Les 5 dernières minutes ne
+    sont PAS stockées (score_last_5 à la demande). Réinitialise les têtes.
+    Retourne le nombre de modèles reconstruits."""
+    now = now or int(time.time())
+    rt.conn.execute("DELETE FROM model_bucket_counts")
+    # compteurs par (provider, model, bucket 5m) sur les 7 derniers jours
+    rows = cat.conn.execute("""
+        SELECT COALESCE(p.ref, ''), COALESCE(m.ref, ''),
+               CAST(l.created_at / 300 AS INTEGER) * 300 AS b5,
+               COUNT(*),
+               SUM(CASE WHEN l.success = 1 THEN 1 ELSE 0 END)
+        FROM (
+            SELECT provider_id, model_id, success, created_at
+            FROM model_call_log
+            UNION ALL
+            SELECT provider_id, model_id, success, created_at
+            FROM model_call_log_archive
+        ) l
+        LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+        LEFT JOIN catalogue_models m ON m.id = l.model_id
+        WHERE l.created_at >= ? AND l.created_at < ?
+        GROUP BY 1, 2, 3
+    """, (now - 7 * 86400, now)).fetchall()
+    # all_time : avant 7 jours (cumul par modèle)
+    allt = cat.conn.execute("""
+        SELECT COALESCE(p.ref, ''), COALESCE(m.ref, ''),
+               COUNT(*),
+               SUM(CASE WHEN l.success = 1 THEN 1 ELSE 0 END)
+        FROM (
+            SELECT provider_id, model_id, success, created_at
+            FROM model_call_log
+            UNION ALL
+            SELECT provider_id, model_id, success, created_at
+            FROM model_call_log_archive
+        ) l
+        LEFT JOIN catalogue_providers p ON p.id = l.provider_id
+        LEFT JOIN catalogue_models m ON m.id = l.model_id
+        WHERE l.created_at < ?
+        GROUP BY 1, 2
+    """, (now - 7 * 86400,)).fetchall()
+
+    models: Dict[str, Dict[str, int]] = {}
+
+    def _acc(key, btype, idx, succ, tot):
+        d = models.setdefault(key, {})
+        d[f"{btype}_succ_{idx}"] = d.get(f"{btype}_succ_{idx}", 0) + succ
+        d[f"{btype}_tot_{idx}"] = d.get(f"{btype}_tot_{idx}", 0) + tot
+
+    for pr, mr, b5, tot, succ in rows:
+        if not pr or not mr:
+            continue
+        key = f"{pr}/{mr}"
+        succ = int(succ or 0); tot = int(tot or 0)
+        age = now - int(b5)
+        if age >= 7 * 86400:
+            models.setdefault(key, {})
+            models[key]["all_time_succ"] = models[key].get("all_time_succ", 0) + succ
+            models[key]["all_time_tot"] = models[key].get("all_time_tot", 0) + tot
+        elif age >= 86400:
+            idx = 6 - int(age / 86400)
+            if 0 <= idx < 6:
+                _acc(key, "sd", idx, succ, tot)
+        elif age >= 3600:
+            idx = 23 - int(age / 3600)
+            if 0 <= idx < 23:
+                _acc(key, "sh", idx, succ, tot)
+        elif age >= 300:
+            idx = 11 - int(age / 300)
+            if 0 <= idx < 12:
+                _acc(key, "s5", idx, succ, tot)
+        # age < 300 : les 5 dernières minutes → score_last_5 (à la demande)
+
+    for pr, mr, tot, succ in allt:
+        if not pr or not mr:
+            continue
+        key = f"{pr}/{mr}"
+        d = models.setdefault(key, {})
+        d["all_time_succ"] = d.get("all_time_succ", 0) + int(succ or 0)
+        d["all_time_tot"] = d.get("all_time_tot", 0) + int(tot or 0)
+
+    n = 0
+    for key, d in models.items():
+        pr, mr = key.split("/", 1)
+        cols = ", ".join(list(d.keys()) + ["provider_ref", "model_ref", "updated_at"])
+        marks = ", ".join(["?"] * (len(d) + 3))
+        rt.conn.execute(
+            f"INSERT OR REPLACE INTO model_bucket_counts ({cols}) "
+            f"VALUES ({marks})",
+            list(d.values()) + [pr, mr, now])
+        n += 1
+    # réinitialiser les têtes (le reset repart du présent)
+    for btype, qt, size in (("5m", 12, 300), ("1h", 23, 3600), ("1d", 6, 86400)):
+        rt.conn.execute("""
+            INSERT OR REPLACE INTO score_bucket_heads
+                (bucket_type, last_bucket, timestamp_start, bucket_nb, bucket_qt, bucket_size)
+            VALUES (?, ?, ?, 0, ?, ?)
+        """, (btype, now, now, qt, size))
+    rt.conn.commit()
+    _update_scores_sql(rt)
+    return n

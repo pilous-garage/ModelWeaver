@@ -479,10 +479,14 @@ class RuntimeDB:
                     sd_succ_3 INTEGER DEFAULT 0, sd_tot_3 INTEGER DEFAULT 0,
                     sd_succ_4 INTEGER DEFAULT 0, sd_tot_4 INTEGER DEFAULT 0,
                     sd_succ_5 INTEGER DEFAULT 0, sd_tot_5 INTEGER DEFAULT 0,
+                    -- All-time : cumul des buckets 1d sortis de la rotation
+                    all_time_succ INTEGER DEFAULT 0,
+                    all_time_tot  INTEGER DEFAULT 0,
                     score_1h      REAL DEFAULT 1.0,
                     score_1d      REAL DEFAULT 1.0,
                     score_1w      REAL DEFAULT 1.0,
-                    score_total   REAL DEFAULT 3.0,  -- 0..3
+                    score_all     REAL DEFAULT 1.0,
+                    score_total   REAL DEFAULT 4.0,  -- 0..4
                     updated_at    INTEGER DEFAULT (strftime('%s','now')),
                     PRIMARY KEY (provider_ref, model_ref)
                 );
@@ -575,6 +579,15 @@ class RuntimeDB:
                                    "score_etire", "REAL DEFAULT 0")
             _add_column_if_missing(self.conn, "score_batch",
                                    "score_final", "REAL DEFAULT 0")
+            # V0.16 : buckets stables — colonnes all_time (5e étape du score).
+            _add_column_if_missing(self.conn, "model_bucket_counts",
+                                   "all_time_succ", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "model_bucket_counts",
+                                   "all_time_tot", "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "model_bucket_counts",
+                                   "score_all", "REAL DEFAULT 1.0")
+            _add_column_if_missing(self.conn, "model_bucket_counts",
+                                   "score_total", "REAL DEFAULT 4.0")
         except Exception:
             self.conn.rollback()
 
