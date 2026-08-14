@@ -873,7 +873,8 @@ class FSMInterpreter:
                                     # sont souvent vides ou 0 (index relatif).
                                     _v_ws = result.variables.get("workspace_id", "")
                                     if _v_ws and (not _args.get("workspace_id")
-                                                  or str(_args.get("workspace_id")) in ("0",)):
+                                                  or str(_args.get("workspace_id")) in ("0",)
+                                                  or str(_args.get("workspace_id")) == str(_v_tid)):
                                         _args["workspace_id"] = _v_ws
                                     _v_tid = result.variables.get("task_id")
                                     if _v_tid and _args.get("task_id") in (
@@ -974,7 +975,8 @@ class FSMInterpreter:
                         _v_tid = result.variables.get("task_id")
                         _v_sid = result.variables.get("sub_task_id")
                         if _v_ws and (not raw_args.get("workspace_id")
-                                      or str(raw_args.get("workspace_id")) in ("0",)):
+                                      or str(raw_args.get("workspace_id")) in ("0",)
+                                      or str(raw_args.get("workspace_id")) == str(_v_tid)):
                             raw_args["workspace_id"] = _v_ws
                         if _agent_id and not raw_args.get("agent_id"):
                             raw_args["agent_id"] = _agent_id

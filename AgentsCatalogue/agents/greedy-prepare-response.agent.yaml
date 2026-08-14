@@ -62,6 +62,8 @@ entrypoints:
         Termine par workspace/sub_task_done@v1 (tag=ok).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
+      agentic: always
+      base_tools: false
       skills: ["workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
                "workspace/sub_task_list@v1"]
       max_tokens: 4096
