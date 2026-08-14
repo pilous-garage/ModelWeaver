@@ -80,3 +80,15 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
   (le fix d'injection + le prompt). Le run réel a des interruptions du
   swarm qui font échouer l'exécution du tool (problème de stabilité du
   swarm, pas du fix).
+
+### 7c. 3e problème identifié : le greedy ne boucle PAS pour appliquer le tool
+- Run 1611 : le decoupeur produit la découpe (round 0, tool_call valide)
+  MAIS le FSM fait `ask_new_task` → `sleep` sans exécuter le tool → l'analysis
+  est finalisée en supervised + respond (superviseur) sans coding créé.
+- **Constat** : le greedy (agent 659) fait 1 round LLM puis se déshydrate
+  SANS appliquer le tool_call produit. C'est un problème du CYCLE DE VIE du
+  greedy (break_loop trop tôt / pas de re-loop après le round 0), PAS du fix
+  d'injection (validé en direct) ni du prompt.
+- **À corriger** : le FSM du greedy doit boucler pour exécuter le tool_call
+  avant de se déshydrater, ou l'analysis ne doit pas être finalisée tant que
+  la découpe n'est pas appliquée.
