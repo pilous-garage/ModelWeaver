@@ -252,6 +252,41 @@ def build_team_petri(path: Path) -> Dict[str, Any]:
     return result
 
 
+def save_petri_png(petri: Petri, out_path: str) -> str:
+    """Construit le PetriNet pm4py et le sauvegarde en image (PNG)."""
+    from pm4py.objects.petri_net.obj import PetriNet, Marking
+    from pm4py.objects.petri_net.utils import petri_utils
+    net = PetriNet(f"taskflow_{petri.agent}")
+    pm_places: Dict[str, PetriNet.Place] = {}
+    pm_trans: Dict[str, PetriNet.Transition] = {}
+    for pname in petri.places:
+        pm_places[pname] = PetriNet.Place(pname)
+        net.places.add(pm_places[pname])
+    for t in petri.transitions:
+        pt = PetriNet.Transition(t["name"], t["name"])
+        net.transitions.add(pt)
+        pm_trans[t["name"]] = pt
+        for p in t["in"]:
+            petri_utils.add_arc_from_to(pm_places[p], pt, net)
+        for p in t["out"]:
+            petri_utils.add_arc_from_to(pt, pm_places[p], net)
+    m0 = Marking()
+    for t in petri.types:
+        src = pm_places.get(f"data_{t}_unattributed")
+        if src is not None:
+            m0[src] = 1
+    try:
+        pm4py.save_vis_petri_net(net, m0, out_path)
+    except Exception:
+        import pm4py as _pm4py
+        from pm4py.visualization.petri_net import visualizer
+        gviz = visualizer.apply(net, m0, None,
+                                parameters={visualizer.Variants.WO_DECORATION.value:
+                                            {"format": "png"}})
+        visualizer.save(gviz, out_path)
+    return out_path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="YAML → Pétri du taskflow")
     ap.add_argument("yaml", help="fichier .team.yaml ou .agent.yaml")
@@ -259,8 +294,14 @@ def main() -> None:
     ap.add_argument("--team", action="store_true", help="traiter comme une team")
     ap.add_argument("--verify", action="store_true",
                     help="vérifier le pétri (pm4py : reachability de supervised)")
+    ap.add_argument("--png", default="", help="sauvegarder le pétri en PNG")
     args = ap.parse_args()
     path = Path(args.yaml)
+    if args.png:
+        res = build_from_yaml(path, args.agent)
+        out = save_petri_png(res["petri"], args.png)
+        print(f"PNG sauvegardé : {out}")
+        return
     if args.team:
         res = build_team_petri(path)
         print(f"== Team {res['agent']} : {len(res['members'])} agents ==")
