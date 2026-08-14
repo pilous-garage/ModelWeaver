@@ -38,11 +38,19 @@ ETATS = ("unattributed", "attributed", "done", "supervised")
 # Skills de gestion de jeton (taskflow).
 PICK_SKILL = "workspace/task_ask_new@v1"
 RELEASE_SKILLS = {"workspace/sub_task_done@v1", "workspace/sub_task_release@v1"}
-# Skills qui CRÉENT des jetons : skill → types produits (data_<type>_unattributed).
+# Skills qui CRÉENT des jetons : skill → types produits (global_<type>_unattributed).
 PRODUCE_SKILLS: Dict[str, List[str]] = {
     "workspace/decoupe@v1": ["analysis", "coding", "testing", "review", "merge"],
     "workspace/ask_intel@v1": ["exploration"],
     "workspace/entry_create@v1": ["analysis"],
+}
+
+# Skills DATA du SUPERVISOR (sans LLM) : ils transforment les pots globaux.
+# (in_etat, out_etat, mode) — mode 'all' = pour chaque type ; 'single' = unique.
+DATA_SKILLS: Dict[str, tuple] = {
+    "supervisor/assign@v1": ("unattributed", "attributed", "all"),
+    "supervisor/finalise@v1": ("done", "supervised", "all"),
+    "supervisor/make_respond@v1": (None, "respond", "single"),
 }
 
 
@@ -54,10 +62,12 @@ class Petri:
         self.types = types
         self.places: Dict[str, int] = {}   # nom → marquage initial
         self.transitions: List[Dict[str, Any]] = []
+        # Pot INTERNE : la tâche de l'agent (≤ 1 jeton).
+        self.places["agent_data"] = 0
+        # Pots EXTERNES (globaux) : un pot par type×état.
         for t in types:
             for et in ETATS:
-                self.places[f"data_{t}_{et}"] = 0
-        self.places[f"data_agent_{agent}"] = 0
+                self.places[f"global_{t}_{et}"] = 0
 
     def place(self, name: str) -> None:
         if name not in self.places:
@@ -107,22 +117,31 @@ class Petri:
 
 
 def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
-    """Génère le pétri depuis un .yaml agent (récursif via yaml_to_fsm)."""
+    """Génère le pétri depuis un .yaml agent (récursif via yaml_to_fsm).
+
+    Transformation graphe → pétri : chaque ARC devient une PLACE (le jeton
+    d'activité), chaque NOEUD (step) devient une TRANSITION. Les steps
+    pick/release/produce manipulent en plus les pots de data :
+      - pick    : global_<type>_attributed → agent_data
+      - release : agent_data → global_<type>_done
+      - produce : agent_data → agent_data + global_<type>_unattributed
+    Les boucles du FSM (continue/while) sont conservées par le cycle du graphe.
+    """
     import yaml
     data = yaml.safe_load(path.read_text()) or {}
     name = agent_name or data.get("name", path.stem)
     fsm = yaml_to_fsm(data)
+    nodes = fsm["nodes"]
+    edges = fsm["edges"]
 
-    # Types CONSOMMÉS (ask_new_task), PRODUITS, et classe de jeton par step.
+    # Classe de jeton par step (pick/release/produce/normal) + types.
     consumes: Set[str] = set()
     produced: Set[str] = set()
-    activity_steps: List[str] = []
-    steps_token: List[tuple] = []  # (sid, token_class, types)
+    token_class: Dict[str, tuple] = {}
 
     def walk(steps: List[Dict[str, Any]]) -> None:
         for s in steps or []:
             sid = s.get("id", "?")
-            activity_steps.append(sid)
             st = s.get("type", "")
             tk, tk_types = "normal", []
             if st == "call":
@@ -139,6 +158,10 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
                         tk = "produce"
                         tk_types = list(prods)
                         produced.update(prods)
+                for sk, (in_et, out_et, mode) in DATA_SKILLS.items():
+                    if sk.split("@")[0] in fn:
+                        tk = "data"
+                        tk_types = [in_et, out_et, mode]
             if st == "llm_call":
                 for sk in (s.get("skills") or []):
                     if sk in RELEASE_SKILLS:
@@ -147,7 +170,7 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
                         tk = "produce"
                         tk_types = list(PRODUCE_SKILLS[sk])
                         produced.update(PRODUCE_SKILLS[sk])
-            steps_token.append((sid, tk, tk_types))
+            token_class[sid] = (tk, tk_types)
             if st in ("while", "for", "if", "group"):
                 body = s.get("body", {})
                 sub = body.get("steps", body) if isinstance(body, dict) else body
@@ -162,40 +185,77 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
     net = Petri(name, types)
     net.agent = name
 
-    # Places d'activité (le jeton du workflow).
-    for s in activity_steps:
-        net.place(f"activity_{name}_{s}")
+    def _pname(e: Dict[str, Any]) -> str:
+        f, t = e.get("from", ""), e.get("to", "")
+        return f"activity_{name}_{f}__{t}" if t else f"activity_{name}_{f}__loop"
 
-    # CHAQUE step = une transition de la chaîne d'activité, avec les jetons
-    # data en plus si c'est un step pick/release/produce :
-    #   pick    : [act_prev, data_<type>_attributed] → [act_sid, data_agent]
-    #   release : [act_prev, data_agent] → [act_sid, data_<type>_done]
-    #   produce : [act_prev, data_agent] → [act_sid, data_agent, data_<type>_unattributed]
-    #   normal  : [act_prev] → [act_sid]
-    prev = "main"
-    for sid, tk, tk_types in steps_token:
-        ins = [f"activity_{name}_{prev}"]
-        outs = [f"activity_{name}_{sid}"]
+    # Places = les arcs du graphe FSM (le jeton d'activité circule dessus).
+    for e in edges:
+        net.place(_pname(e))
+
+    # Noeuds → transitions. Chaque transition prend les places des arcs
+    # entrants et produit les places des arcs sortants.
+    ins_by_node: Dict[str, List[str]] = {}
+    outs_by_node: Dict[str, List[str]] = {}
+    for e in edges:
+        f, t = e.get("from", ""), e.get("to", "")
+        p = _pname(e)
+        if t:
+            ins_by_node.setdefault(t, []).append(p)
+        outs_by_node.setdefault(f, []).append(p)
+    for n in nodes:
+        nid = n.get("id", "")
+        if nid == "main":
+            continue  # point d'entrée = place initiale (marquée)
+        ins = list(ins_by_node.get(nid, []))
+        outs = list(outs_by_node.get(nid, []))
+        tk, tk_types = token_class.get(nid, ("normal", []))
         if tk == "pick":
             for t in (tk_types or ["analysis"]):
-                ins.append(f"data_{t}_attributed")
-                outs.append(f"data_agent_{name}")
+                ins.append(f"global_{t}_attributed")
+                outs.append("agent_data")
         elif tk == "release":
-            ins.append(f"data_agent_{name}")
-            for t in sorted(consumes or {"analysis"}):
-                outs.append(f"data_{t}_done")
+            ins.append("agent_data")
+            for t in sorted(consumes or ["analysis"]):
+                outs.append(f"global_{t}_done")
         elif tk == "produce":
-            ins.append(f"data_agent_{name}")
-            outs.append(f"data_agent_{name}")
+            ins.append("agent_data")
+            outs.append("agent_data")
             for t in (tk_types or []):
-                outs.append(f"data_{t}_unattributed")
-        net.trans(f"step_{name}_{sid}", ins, outs, tk)
-        prev = sid
+                outs.append(f"global_{t}_unattributed")
+        elif tk == "data":
+            # Skills DATA (superviseur, sans LLM) : transforme les pots globaux.
+            in_et, out_et, mode = (tk_types or ["", "", "single"])
+            if mode == "all":
+                for t in net.types:
+                    ins.append(f"global_{t}_{in_et}")
+                    outs.append(f"global_{t}_{out_et}")
+            else:
+                outs.append(f"global_{out_et}_unattributed")
+        net.trans(f"step_{name}_{nid}", ins, outs, tk)
 
-    # Fin : activité → (end)
+    # Reliage de la BOUCLE : la place loop (arc vers vide) alimente le corps.
+    for e in edges:
+        if not e.get("to"):
+            _loop = _pname(e)
+            body0 = None
+            for n in nodes:
+                if n.get("id") not in ("main",) and n.get("id") in outs_by_node:
+                    body0 = n.get("id")
+                    break
+            if body0:
+                net.trans(f"loop_{name}_{e.get('from')}_to_{body0}",
+                          [_loop], [f"activity_{name}_main__{body0}"], "loop")
+
+    # Place finale (fin de workflow) : les noeuds terminaux → end.
     net.place(f"activity_{name}_end")
-    net.trans(f"act_{name}_{prev}_to_end", [f"activity_{name}_{prev}"],
-              [f"activity_{name}_end"], "end")
+    for n in nodes:
+        nid = n.get("id", "")
+        if nid == "main":
+            continue
+        if nid not in outs_by_node or not outs_by_node[nid]:
+            net.trans(f"step_{name}_{nid}_end", ins_by_node.get(nid, []),
+                      [f"activity_{name}_end"], "end")
 
     return {"agent": name, "petri": net, "fsm_nodes": len(fsm["nodes"]),
             "consumes": sorted(consumes), "produces": sorted(produced)}
@@ -213,19 +273,19 @@ def supervisor_petri(rules: List[Dict[str, Any]] = (),
         net.place(f"activity_{workspace}_{s}")
     # assign : unattributed → attributed ; finalise : done → supervised
     for t in all_types:
-        net.trans(f"sup_assign_{t}", [f"data_{t}_unattributed"],
-                  [f"data_{t}_attributed"], "assign")
-        net.trans(f"sup_final_{t}", [f"data_{t}_done"],
-                  [f"data_{t}_supervised"], "finalise")
-    # relais selon les règles : data_<in>_done → data_<out>_unattributed
+        net.trans(f"sup_assign_{t}", [f"global_{t}_unattributed"],
+                  [f"global_{t}_attributed"], "assign")
+        net.trans(f"sup_final_{t}", [f"global_{t}_done"],
+                  [f"global_{t}_supervised"], "finalise")
+    # relais selon les règles : global_<in>_done → global_<out>_unattributed
     for r in rules or []:
         it, ot = r.get("in_type", ""), r.get("out_type", "")
         if it and ot:
-            net.trans(f"sup_relay_{it}_{ot}", [f"data_{it}_done"],
-                      [f"data_{ot}_unattributed"], f"{it}→{ot}")
+            net.trans(f"sup_relay_{it}_{ot}", [f"global_{it}_done"],
+                      [f"global_{ot}_unattributed"], f"{it}→{ot}")
     # respond : créé par le superviseur quand une entrée est close
-    net.trans("sup_make_respond", [f"data_analysis_done"],
-              [f"data_respond_unattributed"], "make_respond")
+    net.trans("sup_make_respond", [f"global_analysis_done"],
+              [f"global_respond_unattributed"], "make_respond")
     return net
 
 
@@ -321,8 +381,20 @@ def team_global_petri(path: Path, rules: List[Dict[str, Any]] = ()) -> Petri:
             if sapath.exists():
                 sa_name = f"{m.get('agent_name', ref)}/{sa.get('agent_name', '')}"
                 petris.append(build_from_yaml(sapath, sa_name)["petri"])
-    petris.append(supervisor_petri(rules))
-    return merge_petris(f"team_{data.get('name', path.stem)}", petris)
+    # Le superviseur : transformé comme un agent (supervisor.agent.yaml → pétri).
+    sup_path = REPO / "AgentsCatalogue" / "agents" / "supervisor.agent.yaml"
+    if sup_path.exists():
+        petris.append(build_from_yaml(sup_path, "supervisor")["petri"])
+    else:
+        petris.append(supervisor_petri(rules))
+    # Relais selon les règles (superviseur) : global_<in>_done → global_<out>_unattributed
+    merged = merge_petris(f"team_{data.get('name', path.stem)}", petris)
+    for r in rules or []:
+        it, ot = r.get("in_type", ""), r.get("out_type", "")
+        if it and ot:
+            merged.trans(f"sup_relay_{it}_{ot}", [f"global_{it}_done"],
+                         [f"global_{ot}_unattributed"], f"{it}→{ot}")
+    return merged
 
 
 def main() -> None:

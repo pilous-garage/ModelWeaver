@@ -1,0 +1,30 @@
+name: supervisor
+role: supervisor
+description: >
+  Task_supervisor (sans LLM) — agent de supervision du taskflow. Ses steps
+  sont des skills DATA : ils consomment/produisent les pots globaux
+  (global_<type>_<etat>). Aucun LLM, aucune activité propre de jeton — c'est
+  la mécanique de transformation des tâches (assign, finalise, relais, respond).
+personality:
+  tone: ''
+  system_prompt: "Superviseur du taskflow (sans LLM)."
+entrypoints:
+  main:
+    max_iterations: 1000
+    steps:
+    - id: supervise
+      type: call
+      fn: supervisor/assign@v1
+      next: finalise
+    - id: finalise
+      type: call
+      fn: supervisor/finalise@v1
+      next: relay
+    - id: relay
+      type: call
+      fn: supervisor/relay@v1
+      next: make_respond
+    - id: make_respond
+      type: call
+      fn: supervisor/make_respond@v1
+      next: supervise
