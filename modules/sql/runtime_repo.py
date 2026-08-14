@@ -426,6 +426,81 @@ class RuntimeDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sbatch_model ON score_batch(provider_ref, model_ref);
 
+                -- ── Buckets STABLES de compteurs (succ/tot) par modèle ──────────
+                -- Refonte (V0.16) : on stocke des COMPTEURS nb_success / nb_fail
+                -- par bucket (jamais des scores — un bucket vide ≠ succès). Les
+                -- scores de zone sont calculés à la demande par somme :
+                --   score_1h = f(Σ 12×5m), score_1d = f(Σ 12×5m + Σ 23×1h),
+                --   score_1w = f(Σ 12×5m + Σ 23×1h + Σ 6×1d)
+                --   f(succ,tot) = (1 + succ) / (1 + tot)
+                -- score_total (0–3) = score_1h + score_1d + score_1w ; à la
+                -- demande score_fail = (score_last_5 + score_total) / 4.
+                CREATE TABLE IF NOT EXISTS model_bucket_counts (
+                    provider_ref TEXT NOT NULL,
+                    model_ref    TEXT NOT NULL,
+                    s5_succ_0 INTEGER DEFAULT 0, s5_tot_0 INTEGER DEFAULT 0,
+                    s5_succ_1 INTEGER DEFAULT 0, s5_tot_1 INTEGER DEFAULT 0,
+                    s5_succ_2 INTEGER DEFAULT 0, s5_tot_2 INTEGER DEFAULT 0,
+                    s5_succ_3 INTEGER DEFAULT 0, s5_tot_3 INTEGER DEFAULT 0,
+                    s5_succ_4 INTEGER DEFAULT 0, s5_tot_4 INTEGER DEFAULT 0,
+                    s5_succ_5 INTEGER DEFAULT 0, s5_tot_5 INTEGER DEFAULT 0,
+                    s5_succ_6 INTEGER DEFAULT 0, s5_tot_6 INTEGER DEFAULT 0,
+                    s5_succ_7 INTEGER DEFAULT 0, s5_tot_7 INTEGER DEFAULT 0,
+                    s5_succ_8 INTEGER DEFAULT 0, s5_tot_8 INTEGER DEFAULT 0,
+                    s5_succ_9 INTEGER DEFAULT 0, s5_tot_9 INTEGER DEFAULT 0,
+                    s5_succ_10 INTEGER DEFAULT 0, s5_tot_10 INTEGER DEFAULT 0,
+                    s5_succ_11 INTEGER DEFAULT 0, s5_tot_11 INTEGER DEFAULT 0,
+                    sh_succ_0 INTEGER DEFAULT 0, sh_tot_0 INTEGER DEFAULT 0,
+                    sh_succ_1 INTEGER DEFAULT 0, sh_tot_1 INTEGER DEFAULT 0,
+                    sh_succ_2 INTEGER DEFAULT 0, sh_tot_2 INTEGER DEFAULT 0,
+                    sh_succ_3 INTEGER DEFAULT 0, sh_tot_3 INTEGER DEFAULT 0,
+                    sh_succ_4 INTEGER DEFAULT 0, sh_tot_4 INTEGER DEFAULT 0,
+                    sh_succ_5 INTEGER DEFAULT 0, sh_tot_5 INTEGER DEFAULT 0,
+                    sh_succ_6 INTEGER DEFAULT 0, sh_tot_6 INTEGER DEFAULT 0,
+                    sh_succ_7 INTEGER DEFAULT 0, sh_tot_7 INTEGER DEFAULT 0,
+                    sh_succ_8 INTEGER DEFAULT 0, sh_tot_8 INTEGER DEFAULT 0,
+                    sh_succ_9 INTEGER DEFAULT 0, sh_tot_9 INTEGER DEFAULT 0,
+                    sh_succ_10 INTEGER DEFAULT 0, sh_tot_10 INTEGER DEFAULT 0,
+                    sh_succ_11 INTEGER DEFAULT 0, sh_tot_11 INTEGER DEFAULT 0,
+                    sh_succ_12 INTEGER DEFAULT 0, sh_tot_12 INTEGER DEFAULT 0,
+                    sh_succ_13 INTEGER DEFAULT 0, sh_tot_13 INTEGER DEFAULT 0,
+                    sh_succ_14 INTEGER DEFAULT 0, sh_tot_14 INTEGER DEFAULT 0,
+                    sh_succ_15 INTEGER DEFAULT 0, sh_tot_15 INTEGER DEFAULT 0,
+                    sh_succ_16 INTEGER DEFAULT 0, sh_tot_16 INTEGER DEFAULT 0,
+                    sh_succ_17 INTEGER DEFAULT 0, sh_tot_17 INTEGER DEFAULT 0,
+                    sh_succ_18 INTEGER DEFAULT 0, sh_tot_18 INTEGER DEFAULT 0,
+                    sh_succ_19 INTEGER DEFAULT 0, sh_tot_19 INTEGER DEFAULT 0,
+                    sh_succ_20 INTEGER DEFAULT 0, sh_tot_20 INTEGER DEFAULT 0,
+                    sh_succ_21 INTEGER DEFAULT 0, sh_tot_21 INTEGER DEFAULT 0,
+                    sh_succ_22 INTEGER DEFAULT 0, sh_tot_22 INTEGER DEFAULT 0,
+                    sd_succ_0 INTEGER DEFAULT 0, sd_tot_0 INTEGER DEFAULT 0,
+                    sd_succ_1 INTEGER DEFAULT 0, sd_tot_1 INTEGER DEFAULT 0,
+                    sd_succ_2 INTEGER DEFAULT 0, sd_tot_2 INTEGER DEFAULT 0,
+                    sd_succ_3 INTEGER DEFAULT 0, sd_tot_3 INTEGER DEFAULT 0,
+                    sd_succ_4 INTEGER DEFAULT 0, sd_tot_4 INTEGER DEFAULT 0,
+                    sd_succ_5 INTEGER DEFAULT 0, sd_tot_5 INTEGER DEFAULT 0,
+                    score_1h      REAL DEFAULT 1.0,
+                    score_1d      REAL DEFAULT 1.0,
+                    score_1w      REAL DEFAULT 1.0,
+                    score_total   REAL DEFAULT 3.0,  -- 0..3
+                    updated_at    INTEGER DEFAULT (strftime('%s','now')),
+                    PRIMARY KEY (provider_ref, model_ref)
+                );
+
+                -- Têtes de rotation des buckets stables.
+                CREATE TABLE IF NOT EXISTS score_bucket_heads (
+                    bucket_type     TEXT PRIMARY KEY,  -- '5m' | '1h' | '1d'
+                    last_bucket     INTEGER DEFAULT 0, -- ts du dernier bucket calculé
+                    timestamp_start INTEGER DEFAULT 0, -- début du bucket 5m courant
+                    bucket_nb       INTEGER DEFAULT 0, -- écritures depuis le rollup
+                    bucket_qt       INTEGER DEFAULT 0, -- seuil (12 | 23 | 6)
+                    bucket_size     INTEGER DEFAULT 0  -- 300 | 3600 | 86400
+                );
+                INSERT OR IGNORE INTO score_bucket_heads
+                    (bucket_type, bucket_qt, bucket_size)
+                VALUES
+                    ('5m', 12, 300), ('1h', 23, 3600), ('1d', 6, 86400);
+
                 -- Scores benchmark ÉTIRÉS par modèle (sans provider).
                 -- Étirement par min/max de colonne :
                 --   score_etire = (score - min_col)/(max_col - min_col)*0.8 + 0.1
@@ -517,38 +592,24 @@ class RuntimeDB:
     def list_responded_models(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Modèles ayant déjà répondu (score_batch), classés par score final.
 
-        Tableau : score benchmark global (score_etire) × score_latence ×
-        (1 - score_fail_rate). Le score_latence est recalculé proprement
-        (exp de la latence moyenne 1h) — la colonne score_batch.score_latency
-        pouvait contenir la latence brute (bug d'écriture corrigé)."""
-        import math
+        Tableau : score benchmark global × score latence × (1 − score_fail).
+        score_fail est le nouveau score des buckets stables (V0.16)."""
         rows = self.conn.execute("""
-            SELECT b.provider_ref, b.model_ref,
-                   b.score_etire, b.score_fail_rate,
-                   b.lat_1h_ms, b.requests_1h, b.requests_1w
-            FROM score_batch b
-            WHERE b.requests_1w > 0
-            ORDER BY b.score_final DESC
+            SELECT provider_ref, model_ref, score_etire, score_fail_rate,
+                   score_latency, score_final, updated_at
+            FROM score_batch
+            WHERE score_final IS NOT NULL
+            ORDER BY score_final DESC
         """).fetchall()
         out: List[Dict[str, Any]] = []
         for r in rows:
-            lat_ms = r["lat_1h_ms"] or 0.0
-            # score_latence = exp( -(max(1.0, lat_s) - 1.0)/60 )
-            lat_s = max(1.0, lat_ms / 1000.0)
-            score_latence = math.exp(-(lat_s - 1.0) / 60.0)
-            bench = float(r["score_etire"] or 0.0)
-            fail = float(r["score_fail_rate"] or 0.0)
-            final = bench * score_latence * (1.0 - fail)
             out.append({
                 "model_ref": r["model_ref"],
                 "provider_ref": r["provider_ref"],
-                "score_benchmark": round(bench, 4),
-                "score_latency": round(score_latence, 4),
-                "score_fail_rate": round(fail, 4),
-                "score_total": round(final, 4),
-                "lat_ms": round(lat_ms, 1),
-                "requests_1h": r["requests_1h"],
-                "requests_1w": r["requests_1w"],
+                "score_benchmark": round(float(r["score_etire"] or 0.0), 4),
+                "score_latency": round(float(r["score_latency"] or 0.0), 4),
+                "score_fail_rate": round(float(r["score_fail_rate"] or 0.0), 4),
+                "score_total": round(float(r["score_final"] or 0.0), 4),
             })
         out.sort(key=lambda x: x["score_total"], reverse=True)
         return out[:limit]

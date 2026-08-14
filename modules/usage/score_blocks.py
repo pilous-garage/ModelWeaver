@@ -42,6 +42,14 @@ BLOCK_1D = 86400
 # Pondération du score fail_rate composite (récent dominant, somme = 1).
 FAIL_WEIGHTS = (0.4, 0.3, 0.2, 0.1)
 
+# Pondérations des blocs par zone (score_fail = Σ pond×score_bloc / 4).
+# Conçues pour que la somme = 4 (les 4 zones) AVEC les buckets réellement
+# stockés (rotation) : 6 blocs 1j + 23 blocs 1h + 11 blocs 5m + last_5.
+POND_J   = 1.0 / 7.0
+POND_H   = (1.0 / 24.0) * (1.0 + POND_J)
+POND_5M  = (1.0 / 12.0) * (1.0 + POND_H)
+POND_LAST5 = 1.0 + POND_5M
+
 _META_5M = "score_batch.last_5m"
 _META_1H = "score_batch.last_1h"
 _META_1D = "score_batch.last_1d"
@@ -190,6 +198,37 @@ def _win_rows(rt, table: str, n: int) -> List[dict]:
     """, (n,)).fetchall()
 
 
+def _bloc_scores(rt, table: str, n: int) -> Dict[str, List[float]]:
+    """{key: scores de fail des <n> derniers blocs} (plus récent en dernier).
+
+    Le score d'un bloc = min(1, (fail + 5) / (success + 5)) — ratio lissé
+    (dégressif par échec), calculé sur les compteurs DU bloc."""
+    rows = rt.conn.execute(f"""
+        SELECT provider_ref, model_ref, requests, fail_count
+        FROM (
+            SELECT b.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY provider_ref, model_ref
+                       ORDER BY bucket DESC) AS rn
+            FROM {table} b
+        )
+        WHERE rn <= ?
+        ORDER BY provider_ref, model_ref, bucket
+    """, (n,)).fetchall()
+    out: Dict[str, List[float]] = {}
+    for r in rows:
+        key = f"{r['provider_ref']}/{r['model_ref']}"
+        req = r["requests"] or 0
+        if req == 0:
+            out.setdefault(key, []).append(0.0)
+            continue
+        fail = r["fail_count"] or 0
+        success = max(0, req - fail)
+        sc = min(1.0, (fail + 5.0) / (success + 5.0))
+        out.setdefault(key, []).append(sc)
+    return out
+
+
 def update_scores(rt, latence_penalise: Optional[float] = None,
                   latence_regule: Optional[float] = None) -> int:
     """Recompose score_batch (4 fenêtres) depuis les blocs stockés, tout modèle.
@@ -250,8 +289,15 @@ def update_scores(rt, latence_penalise: Optional[float] = None,
                 if req == 0:
                     return 0, 0, 0, 0
                 fail = r.get("fail_count") or 0
+                success = max(0, req - fail)
                 lat = r.get("total_latency_ms") or 0
-                return req, fail, lat, fail / req
+                # Score de FAIL LISSÉ par zone (dégressif par échec) :
+                #   score_fail_zone = (fail + 5) / (success + 5)
+                # Un modèle sans échec → 5/5 = 1.0... non : 0 échec, 10 succès
+                # → 5/15 = 0.33 ; 1 échec sur 10 → 6/15 = 0.40 ; tout en échec
+                # → (10+5)/(0+5) = 3.0 → borné à 1.0.
+                score_fail_zone = min(1.0, (fail + 5.0) / (success + 5.0))
+                return req, fail, lat, score_fail_zone
 
             r5_ = fr_and_lat(r5)
             rh_ = fr_and_lat(rh)

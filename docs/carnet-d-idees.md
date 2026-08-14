@@ -454,3 +454,30 @@ doivent passer par le **bridge de l'hôte**.
 - Flag d'environnement `MW_BRIDGE_REMOTE=http://host:port/...` lu au boot.
 - Validation : deux modelweaver (hôte + docker) → les appels du conteneur
   apparaissent dans `model_call_log` de l'hôte avec `caller_id` du conteneur.
+
+## Idée 13 — Timeout 300s sur les appels LLM + scores par méthode
+
+**Statut** : idée notée, NON implémenté. Source : session scoring batch (2026-08-14).
+
+### Timeout 300 sur les call
+- La limite d'appel est 300s (5 min). MAIS le timeout ne doit PAS interrompre un
+  **streaming en progrès** : si des chunks arrivent régulièrement, l'appel est
+  considéré SUCCÈS (pas timeout). Le timeout s'applique seulement si aucun
+  progrès pendant la fenêtre.
+
+### Scores par méthode d'appel
+- La méthode de score actuelle (bucket succès/fail par période) est adaptée au
+  chat/response (un appel = une réponse finale). Pas adaptée au **streaming**
+  (succès = début du flux + progrès) ni à la **completion** (succès partiel /
+  tokens produits).
+- Prévoir d'autres méthodes de score par `call_type` (chat, streaming,
+  completion) quand le timeout/succès sera défini par méthode.
+
+### Conclusion scoring (retenu pour le batch)
+- Stocker des COMPTEURS nb_success / nb_fail par bucket (jamais des scores) —
+  un bucket 5 min sans appel ne doit pas devenir "total succès".
+- `score_zone = (1 + nb_success_zone) / (1 + nb_total_zone)`, calculé par somme
+  des compteurs de la zone, indépendamment par zone (pas de pondération des
+  scores : trop de lissage, trop de bénéfice pour les LLM jamais appelés).
+- Rollup : la somme des buckets d'un niveau donne le premier bucket du niveau
+  supérieur.

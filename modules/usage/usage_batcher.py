@@ -699,11 +699,14 @@ def run_once() -> Dict[str, Any]:
     frontier = _data_frontier(cat)
     if frontier is None:
         return {"batched": 0, "cascade": 0, "purged": 0, "frontier": None}
-    # Blocs glissants de score (fail_rate + latence) : AVANT _batch_1m car il
-    # supprime le détail. Le tracking meta évite de recalculer les blocs figés.
+    # Buckets stables de compteurs (fail, refonte V0.16) : AVANT _batch_1m car
+    # il supprime le détail. tick_buckets fait la rotation + rollup + mise à
+    # jour SQL des scores ; update_score_batch recompose score_batch.
     try:
-        from modules.usage.score_blocks import run as run_blocks
-        score_blocks = run_blocks(cat, rt, frontier)
+        import time as _time
+        from modules.usage.score_buckets import tick_buckets, update_score_batch
+        tick_buckets(rt, cat, int(_time.time()))
+        score_blocks = {"buckets": update_score_batch(rt, cat)}
     except Exception:
         score_blocks = {}
     # Score benchmark étiré (model_efficacy → score_benchmark_etire).
