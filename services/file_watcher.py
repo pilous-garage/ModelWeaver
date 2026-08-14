@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -105,6 +106,7 @@ class FileWatcher:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._conf_runtime: List[str] = []
+        self._rules_cache: Dict[int, list] = {}
 
     # ── Enregistrement ─────────────────────────────────────
 
@@ -114,30 +116,46 @@ class FileWatcher:
 
         mtime stocké dans last_modify_data.last_modify_at en TEXTE =
         str(st_mtime_ns) : résolution nanoseconde, comparaison exacte."""
+        import sqlite3
         n = 0
         table = f"{DATA_FILE_TYPE}_catalogue"
+        # hash + collecte en mémoire, puis INSERT groupés via une connexion
+        # DIRECTE (le wrapper LocalCatalogue a un lock par opération, trop
+        # lent pour des milliers de fichiers).
+        rows_cat, rows_mod = [], []
         for p in paths:
             try:
                 h = file_hash(p)
                 m = _mtime_ns(p)
-                self.cat.conn.execute(
-                    f"INSERT INTO {table} (ref, name, ref_file, data_type, "
-                    f"value, status) VALUES (?, ?, ?, ?, ?, 'active') "
-                    f"ON CONFLICT(ref) DO UPDATE SET ref_file = excluded.ref_file, "
-                    f"value = excluded.value, data_type = excluded.data_type",
-                    (str(p), p.name, str(p), DATA_FILE_TYPE, h))
-                self.cat.conn.execute(
-                    "INSERT INTO last_modify_data(data_type, ref, last_modify_at, "
-                    "modify_count) VALUES (?, ?, ?, 1) "
-                    "ON CONFLICT(data_type, ref) DO UPDATE SET last_modify_at = ?",
-                    (DATA_FILE_TYPE, str(p), str(m), str(m)))
+                rows_cat.append((str(p), p.name, str(p), DATA_FILE_TYPE, h))
+                rows_mod.append((DATA_FILE_TYPE, str(p), str(m), str(m)))
                 n += 1
             except Exception:
                 pass
+        if not rows_cat:
+            return 0
+        # transaction EXPLICITE (un seul fsync) — l'autocommit (isolation_level
+        # = None) fait un commit par ligne = 1000× plus lent pour des milliers
+        # de fichiers.
+        import sqlite3
+        conn = sqlite3.connect(self.cat.db_path)
         try:
-            self.cat.conn.commit()
+            conn.executemany(
+                f"INSERT INTO {table} (ref, name, ref_file, data_type, "
+                f"value, status) VALUES (?, ?, ?, ?, ?, 'active') "
+                f"ON CONFLICT(ref) DO UPDATE SET ref_file = excluded.ref_file, "
+                f"value = excluded.value, data_type = excluded.data_type",
+                rows_cat)
+            conn.executemany(
+                "INSERT INTO last_modify_data(data_type, ref, last_modify_at, "
+                "modify_count) VALUES (?, ?, ?, 1) "
+                "ON CONFLICT(data_type, ref) DO UPDATE SET last_modify_at = ?",
+                rows_mod)
+            conn.commit()
         except Exception:
             pass
+        finally:
+            conn.close()
         return n
 
     def list_files(self) -> List[dict]:
@@ -242,6 +260,8 @@ class FileWatcher:
                 if decision is not None:
                     return decision
             # 2) règles BDD (défaut)
+            if name.startswith("."):
+                return False  # fichiers cachés (cohérent avec le prune dossiers)
             if any(seg in exc_dirs for seg in rel):
                 return False
             if inc_dirs and not any(seg in inc_dirs for seg in rel):
@@ -257,11 +277,10 @@ class FileWatcher:
                 return True
             return False
 
-        # dossiers à pruner pendant la marche : exclus + cachés (si le conf
-        # exclut '.*').
-        prune_hidden = conf_rules and any(
-            r.get("pattern") in (".*", "**/.*", "**/.**", "**/.*/**")
-            for r in conf_rules)
+        # dossiers à pruner pendant la marche : exclus + TOUJOURS les cachés
+        # (.git, .venv, .modelweaver...) — sinon on descend dans les envs et
+        # on scanne des centaines de milliers de fichiers inutiles.
+        prune_hidden = True
         # patterns de dossiers exclus du conf (ex. "**/node_modules/**" →
         # prunes tout dossier nommé node_modules).
         conf_dir_names = set()
@@ -330,27 +349,51 @@ class FileWatcher:
 
         Pour chaque règle dont le pattern matche le chemin relatif, on garde
         la PLUS SPÉCIFIQUE (le plus de caractères littéraux). Retourne
-        include/exclude de la gagnante, ou None si aucun match."""
-        best = None
-        best_score = -1
-        for r in rules:
-            pat = (r.get("pattern") or "").strip()
-            if not pat:
-                continue
-            action = (r.get("action") or "").strip()
-            forced_include = pat.startswith("!")
-            if forced_include:
-                pat = pat[1:]
-            score = _pattern_score(pat)
-            if _pattern_match(pat, rel_parts):
-                if score > best_score:
-                    best_score = score
-                    best = "include" if (action == "include" or forced_include) \
-                        else "exclude"
-        if best == "include":
+        include/exclude de la gagnante, ou None si aucun match.
+
+        Optimisé : les règles `**/*.ext` sont indexées par extension (check
+        direct, pas de regex chemin complet) ; les règles regex ne sont
+        testées que si aucune règle d'extension n'a décidé."""
+        key = id(rules)
+        prepared = self._rules_cache.get(key)
+        if prepared is None:
+            items, ext_inc, ext_exc = [], {}, {}
+            for r in rules:
+                pat = (r.get("pattern") or "").strip()
+                if not pat:
+                    continue
+                action = (r.get("action") or "").strip()
+                forced = pat.startswith("!")
+                if forced:
+                    pat = pat[1:]
+                include = action == "include" or forced
+                # indexe les règles d'extension par ext
+                if pat.startswith("**/*.") and "/" not in pat[5:]:
+                    ext = pat[len("**/*"):].lower()  # ".py"
+                    (ext_inc if include else ext_exc)[ext] = True
+                else:
+                    items.append({
+                        "pat": pat, "include": include,
+                        "score": _pattern_score(pat),
+                    })
+            items.sort(key=lambda x: -x["score"])
+            prepared = {"items": items, "ext_inc": ext_inc, "ext_exc": ext_exc}
+            if len(self._rules_cache) > 32:
+                self._rules_cache.clear()
+            self._rules_cache[key] = prepared
+        name = rel_parts[-1].lower()
+        # 1) règles d'extension : la PLUS SPÉCIFIQUE décide (une ext matchée
+        #    incluse prime sur une exclue ? non — spécificité : plus longue).
+        #    Simple : une ext incluse est un include ; une ext exclue exclut.
+        ext = Path(rel_parts[-1]).suffix.lower()
+        if ext in prepared["ext_inc"] and ext not in prepared["ext_exc"]:
             return True
-        if best == "exclude":
+        if ext in prepared["ext_exc"] and ext not in prepared["ext_inc"]:
             return False
+        # 2) règles regex (par score décroissant)
+        for it in prepared["items"]:
+            if _pattern_match(it["pat"], rel_parts):
+                return it["include"]
         return None
 
     # ── Fichiers runtime (glob) : brancher + vérifier au get ──
@@ -517,6 +560,11 @@ def _now_shift(seconds: float) -> str:
 
 # ── Pattern matching .conf_gitignore.yaml ─────────────────────
 
+# Cache de regex compilées (le scan appelle _pattern_match des milliers de
+# fois ; compiler à chaque appel serait un goulot).
+_REGEX_CACHE: Dict[str, "re.Pattern"] = {}
+
+
 def _pattern_to_regex(pattern: str) -> "re.Pattern":
     """Convertit un glob (gitignore-like) en regex.
 
@@ -528,7 +576,9 @@ def _pattern_to_regex(pattern: str) -> "re.Pattern":
     - sans `/` au début : match sur le nom OU sur un suffixe de chemin ;
       avec `/` : match relatif à la racine.
     """
-    import re
+    cached = _REGEX_CACHE.get(pattern)
+    if cached is not None:
+        return cached
     i = 0
     out = []
     n = len(pattern)
@@ -563,7 +613,9 @@ def _pattern_to_regex(pattern: str) -> "re.Pattern":
         else:
             out.append(c)
             i += 1
-    return re.compile("".join(out))
+    rx = re.compile("".join(out))
+    _REGEX_CACHE[pattern] = rx
+    return rx
 
 
 def _pattern_match(pattern: str, rel_parts) -> bool:
@@ -575,6 +627,10 @@ def _pattern_match(pattern: str, rel_parts) -> bool:
     # cas simple : extension (".py") → suffixe du dernier segment
     if pattern.startswith(".") and "/" not in pattern:
         return rel_parts[-1].lower().endswith(pattern.lower())
+    # cas fréquent "**/*.ext" → check d'extension du dernier segment
+    if pattern.startswith("**/*."):
+        ext = pattern[len("**/*"):]  # ".py" (garder le point)
+        return rel_parts[-1].lower().endswith(ext.lower())
     if not pattern:
         return False
     # glob relatif à la racine (on join les segments)
