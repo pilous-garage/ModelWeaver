@@ -97,7 +97,7 @@ def _build_body(steps: List[Dict[str, Any]], prefix: str,
     def resolve(ref: Optional[str]) -> Optional[str]:
         return f"{prefix}{ref}" if ref else None
 
-    for s in steps:
+    for i, s in enumerate(steps):
         sid = f"{prefix}{s.get('id', '')}"
         own = _own_tags(s)
         node_tags = list(dict.fromkeys(inherited + own))
@@ -126,6 +126,14 @@ def _build_body(steps: List[Dict[str, Any]], prefix: str,
         oe = resolve(s.get("on_error"))
         if oe:
             edges.append({"from": sid, "to": oe, "label": "err", "type": "error"})
+        # break/end SANS boucle englobante : sortie vers le prochain step
+        # top-level (flux linéaire). Dans une boucle, ce reliage est géré par
+        # les exitpoints de la boucle (loop_exit → next du while).
+        if s.get("type") in ("end", "break") and not nxt and i + 1 < len(steps):
+            _next = resolve(steps[i + 1].get("id", ""))
+            if _next:
+                edges.append({"from": sid, "to": _next,
+                              "label": "next", "type": "next"})
         # switch/if : les branches sortent de la BOX au niveau parent.
         if s.get("type") in ("switch", "if"):
             seen = set()
@@ -144,6 +152,17 @@ def _build_body(steps: List[Dict[str, Any]], prefix: str,
         if s.get("type") == "continue":
             cond_id = prefix.replace("/body/", "/condition")
             edges.append({"from": sid, "to": cond_id, "label": "loop", "type": "loop"})
+        # BOUCLE (while/for) : relier ses EXITPOINTS (condition false + breaks
+        # du corps) au `next` du step → le flux continue après la boucle.
+        inner = node.get("vars", {}).get("inner")
+        if s.get("type") in ("while", "for") and inner:
+            nxt = resolve(s.get("next"))
+            if nxt:
+                _eps = inner.get("exitpoints") or []
+                for _ep in _eps:
+                    if _ep and _ep != inner.get("entrypoint"):
+                        edges.append({"from": _ep, "to": nxt,
+                                      "label": "loop_exit", "type": "next"})
 
     return {"nodes": nodes, "edges": edges, "entrypoint": entrypoint,
             "exitpoints": exitpoints, "tags": inherited}
