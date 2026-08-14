@@ -36,6 +36,7 @@ SESSION_REPOS = MW_HOME / "repos" / "sessions"
 
 ANALYST_AGENT = "team:llm-code/analyst"
 WORKSPACE = "mw-llm-code"
+TEAM_ID = 519
 
 
 # ── helpers git ──────────────────────────────────────────────────────────
@@ -208,19 +209,75 @@ def reply(session: Dict[str, Any], collect_res: Dict[str, Any]) -> Dict[str, Any
 
 def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
                    timeout_s: int = 600) -> Dict[str, Any]:
-    """Exécute le flux complet d'un /v1/chat/completions.
+    """Exécute le flux complet d'un /v1/chat/completions — TASKFLOW V0.15.
 
-    Retourne une réponse OpenAI {choices, files, summary} ou une erreur."""
-    session = create_session(prompt, files)
-    session["_prompt"] = prompt
-    # 1. analyste découpe
-    a = ask_analyst(session)
-    if not a.get("ok"):
-        return {"ok": False, "error": a.get("error", "analyse échouée")}
-    # 2. superviser jusqu'à done
-    s = supervise(session, timeout_s=timeout_s)
-    if not s.get("ok"):
-        return {"ok": False, "error": s.get("error")}
-    # 3. collecter + répondre
-    collected = collect(session)
-    return reply(session, collected)
+    Retourne une réponse OpenAI {choices, files, summary} ou une erreur.
+
+    Nouveau flux (sans LLM côté entrée) :
+      1. as_llm_leader → create_entry : task `chat_entry` + sub_task analysis.
+      2. Le taskflow tourne automatiquement (amorce → greedy : analyste découpe
+         → coding/testing/merge → respond → supervise).
+      3. Poll entry_result jusqu'à `supervised`, puis réponse au format LLM.
+    """
+    from AgentsCatalogue.lib.workspacedb import taskflow
+    t0 = time.monotonic()
+    # 1. entry (as_llm_leader, sans LLM)
+    e = taskflow.create_entry({
+        "workspace_id": WORKSPACE,
+        "title": (prompt or "")[:80],
+        "description": prompt or "",
+        "entry_type": "chat_entry",
+        "team_id": TEAM_ID,
+    }, "")
+    if not e.get("ok"):
+        return {"ok": False, "error": e.get("error", "entry échouée")}
+    task_id = e["task_id"]
+    # 2. attendre la complétion (le swarm tourne en tâche de fond)
+    status = ""
+    while time.monotonic() - t0 < timeout_s:
+        er = taskflow.entry_result({"workspace_id": WORKSPACE,
+                                    "task_id": task_id}, "")
+        status = er.get("task_status", "") or ""
+        if status == "supervised":
+            break
+        time.sleep(5)
+    if status != "supervised":
+        return {"ok": False,
+                "error": f"timeout (task {task_id}, statut {status})"}
+    # 3. répondre au format LLM
+    return _taskflow_reply(task_id, er.get("response"))
+
+
+def _taskflow_reply(task_id: int, response: Any = None) -> Dict[str, Any]:
+    """Réponse OpenAI depuis les livrables de la tâche (taskflow)."""
+    try:
+        from modules.sql.workspace import WorkspaceDB
+        db = WorkspaceDB()
+        sc = db.for_workspace(WORKSPACE)
+        task = sc.tasks.get(int(task_id))
+        reports = sc.tasks.get_reports(int(task_id)) or []
+        db.close()
+    except Exception:
+        task, reports = None, []
+    title = (task.get("title") or "") if task else ""
+    parts = [f"### Résumé\n{title}"]
+    for r in reports:
+        role = r.get("role", "work")
+        body = str(r.get("content", "") or "").strip()
+        if body:
+            parts.append(f"### {role}\n{body}")
+    content = "\n\n".join(parts)
+    return {
+        "ok": True,
+        "object": "chat.completion",
+        "model": "mw-swarm",
+        "choices": [{"index": 0,
+                     "message": {"role": "assistant", "content": content},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0,
+                  "total_tokens": 0},
+        "files": {}, "summary": title,
+        "swarm": {"session": f"task_{task_id}",
+                  "response": response,
+                  "task_id": task_id},
+    }
