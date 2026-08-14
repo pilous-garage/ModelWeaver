@@ -113,36 +113,41 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
     name = agent_name or data.get("name", path.stem)
     fsm = yaml_to_fsm(data)
 
-    # Types CONSOMMÉS (ask_new_task) et skills des steps.
+    # Types CONSOMMÉS (ask_new_task), PRODUITS, et classe de jeton par step.
     consumes: Set[str] = set()
     produced: Set[str] = set()
-    steps_with_task: List[str] = []
     activity_steps: List[str] = []
+    steps_token: List[tuple] = []  # (sid, token_class, types)
 
     def walk(steps: List[Dict[str, Any]]) -> None:
         for s in steps or []:
             sid = s.get("id", "?")
             activity_steps.append(sid)
             st = s.get("type", "")
+            tk, tk_types = "normal", []
             if st == "call":
                 fn = str(s.get("fn", ""))
                 if PICK_SKILL in fn:
+                    tk = "pick"
                     import re
-                    types = (s.get("inputs") or {}).get("types", "")
-                    consumes.update(re.findall(r"type\s*:\s*[\"']?([\w]+)[\"']?",
-                                               str(types)))
-                # skills de création appelés en step call (ex. entry_create)
+                    tk_types = re.findall(
+                        r"type\s*:\s*[\"']?([\w]+)[\"']?",
+                        str((s.get("inputs") or {}).get("types", "")))
+                    consumes.update(tk_types)
                 for sk, prods in PRODUCE_SKILLS.items():
                     if sk.split("@")[0] in fn:
-                        steps_with_task.append(f"{sid}/produce")
+                        tk = "produce"
+                        tk_types = list(prods)
                         produced.update(prods)
             if st == "llm_call":
                 for sk in (s.get("skills") or []):
                     if sk in RELEASE_SKILLS:
-                        steps_with_task.append(f"{sid}/release")
+                        tk = "release"
                     if sk in PRODUCE_SKILLS:
-                        steps_with_task.append(f"{sid}/produce")
+                        tk = "produce"
+                        tk_types = list(PRODUCE_SKILLS[sk])
                         produced.update(PRODUCE_SKILLS[sk])
+            steps_token.append((sid, tk, tk_types))
             if st in ("while", "for", "if", "group"):
                 body = s.get("body", {})
                 sub = body.get("steps", body) if isinstance(body, dict) else body
@@ -161,35 +166,31 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
     for s in activity_steps:
         net.place(f"activity_{name}_{s}")
 
-    # pick : data_<type>_attributed → data_agent
-    for t in sorted(consumes or {"analysis"}):
-        net.trans(f"pick_{name}_{t}", [f"data_{t}_attributed"],
-                  [f"data_agent_{name}"], "pick")
-
-    # release : data_agent → data_<type>_done (le type = le type consommé)
-    for t in sorted(consumes or {"analysis"}):
-        net.trans(f"release_{name}_{t}", [f"data_agent_{name}"],
-                  [f"data_{t}_done"], "release")
-
-    # PRODUCTION (skills de création) : data_agent → data_agent +
-    # data_<type>_unattributed (le découpeur/as_llm_leader crée des jetons).
-    for t in sorted(produced):
-        net.trans(f"produce_{name}_{t}", [f"data_agent_{name}"],
-                  [f"data_agent_{name}", f"data_{t}_unattributed"],
-                  f"create:{t}")
-
-    # Enchaînement d'activité : main → step1 → step2 → ...
+    # CHAQUE step = une transition de la chaîne d'activité, avec les jetons
+    # data en plus si c'est un step pick/release/produce :
+    #   pick    : [act_prev, data_<type>_attributed] → [act_sid, data_agent]
+    #   release : [act_prev, data_agent] → [act_sid, data_<type>_done]
+    #   produce : [act_prev, data_agent] → [act_sid, data_agent, data_<type>_unattributed]
+    #   normal  : [act_prev] → [act_sid]
     prev = "main"
-    for s in activity_steps:
-        net.trans(f"act_{name}_{prev}_to_{s}", [f"activity_{name}_{prev}"],
-                  [f"activity_{name}_{s}"], "step")
-        prev = s
-    # (un step tâche consomme aussi data_agent en entrée et le rend en sortie)
-    for sid in steps_with_task:
-        net.trans(f"task_{name}_{sid}",
-                  [f"activity_{name}_{sid}", f"data_agent_{name}"],
-                  [f"activity_{name}_{sid}", f"data_agent_{name}"],
-                  f"task:{sid}")
+    for sid, tk, tk_types in steps_token:
+        ins = [f"activity_{name}_{prev}"]
+        outs = [f"activity_{name}_{sid}"]
+        if tk == "pick":
+            for t in (tk_types or ["analysis"]):
+                ins.append(f"data_{t}_attributed")
+                outs.append(f"data_agent_{name}")
+        elif tk == "release":
+            ins.append(f"data_agent_{name}")
+            for t in sorted(consumes or {"analysis"}):
+                outs.append(f"data_{t}_done")
+        elif tk == "produce":
+            ins.append(f"data_agent_{name}")
+            outs.append(f"data_agent_{name}")
+            for t in (tk_types or []):
+                outs.append(f"data_{t}_unattributed")
+        net.trans(f"step_{name}_{sid}", ins, outs, tk)
+        prev = sid
 
     # Fin : activité → (end)
     net.place(f"activity_{name}_end")
