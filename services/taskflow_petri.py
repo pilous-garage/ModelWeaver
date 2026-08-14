@@ -323,19 +323,25 @@ def build_team_petri(path: Path) -> Dict[str, Any]:
 
 def save_petri_png(petri: Petri, out_path: str) -> str:
     """Construit le pétri en DOT (graphviz) avec les LABELS des places et
-    transitions, et le rend en PNG. pm4py ne nomme pas les places (cercles
-    muets) — graphviz permet un contrôle total des labels."""
+    transitions, et le rend en PNG haute résolution. pm4py ne nomme pas les
+    places (cercles muets) — graphviz permet un contrôle total des labels."""
+    import math
     from graphviz import Digraph
     g = Digraph(f"taskflow_{petri.agent}", format="png")
-    g.attr(rankdir="LR", size="20,20", dpi="120")
+    # Canvas adaptatif : ~1.6" par place/transition, min 24", dpi élevé.
+    n_elems = max(1, len(petri.places) + len(petri.transitions))
+    dim = max(24.0, math.sqrt(n_elems) * 1.6)
+    g.attr(rankdir="LR", size=f"{dim},{dim}", dpi="300",
+           nodesep="0.25", ranksep="0.45")
     for p in petri.places:
-        g.node(p, p, shape="circle", fontsize="9")
+        g.node(p, p, shape="circle", fontsize="13")
     for t in petri.transitions:
-        g.node(t["name"], t["name"], shape="box", fontsize="9")
+        g.node(t["name"], t["name"], shape="box", fontsize="10",
+               style="rounded,filled", fillcolor="#eef2f7")
         for pin in t["in"]:
-            g.edge(pin, t["name"])
+            g.edge(pin, t["name"], arrowsize="0.7")
         for pout in t["out"]:
-            g.edge(t["name"], pout)
+            g.edge(t["name"], pout, arrowsize="0.7")
     base = str(out_path)
     if base.endswith(".png"):
         base = base[:-4]
