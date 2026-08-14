@@ -342,6 +342,32 @@ def build_team_petri(path: Path) -> Dict[str, Any]:
     return result
 
 
+# Couleurs des places par rôle/état (dégradé rouge → vert) :
+#   activity_*            : bleu clair (le jeton d'activité)
+#   global_<t>_<etat>     : unattributed=rouge, attributed=orange,
+#                           done=jaune, supervised=vert
+#   agent_data_<t>_doing  : orange clair (la tâche en cours de l'agent)
+PLACE_COLORS: Dict[str, str] = {
+    "unattributed": "#e74c3c",  # rouge
+    "attributed": "#f39c12",    # orange
+    "done": "#f1c40f",          # jaune
+    "supervised": "#2ecc71",    # vert
+}
+PLACE_ACTIVITY_COLOR = "#d6eaf8"   # bleu clair
+PLACE_AGENT_DOING_COLOR = "#f5b041"
+
+
+def _place_color(pname: str) -> str:
+    if pname.startswith("activity_"):
+        return PLACE_ACTIVITY_COLOR
+    for et, col in PLACE_COLORS.items():
+        if pname.endswith("_" + et):
+            return col
+    if pname.startswith("agent_data_"):
+        return PLACE_AGENT_DOING_COLOR
+    return "#ffffff"
+
+
 def save_petri_png(petri: Petri, out_path: str) -> str:
     """Construit le pétri en DOT (graphviz) avec les LABELS des places et
     transitions, et le rend en PNG haute résolution. pm4py ne nomme pas les
@@ -355,7 +381,8 @@ def save_petri_png(petri: Petri, out_path: str) -> str:
     g.attr(rankdir="LR", size=f"{dim},{dim}", dpi="300",
            nodesep="0.25", ranksep="0.45")
     for p in petri.places:
-        g.node(p, p, shape="circle", fontsize="13")
+        g.node(p, p, shape="circle", fontsize="13",
+               style="filled", fillcolor=_place_color(p))
     for t in petri.transitions:
         g.node(t["name"], t["name"], shape="box", fontsize="10",
                style="rounded,filled", fillcolor="#eef2f7")
