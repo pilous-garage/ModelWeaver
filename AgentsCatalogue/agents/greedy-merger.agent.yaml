@@ -82,7 +82,7 @@ entrypoints:
       - operator: NOT_EQUALS
         value: "doing"
         next: break_loop
-      default: continue_loop
+      default: break_loop
     - id: break_loop
       type: set_variable
       name: task_state
@@ -90,8 +90,6 @@ entrypoints:
       next: break
     - id: break
       type: break
-    - id: continue_loop
-      type: continue
     - id: register_wait
       type: call
       fn: workspace/wait_for@v1
