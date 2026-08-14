@@ -2014,6 +2014,8 @@ class AgentManager:
                 if active + count >= _target:
                     break
                 rt = ROLE_TO_TASK.get(row["role_type"], "")
+                rt2 = ROLE_TO_SUBTASK.get(
+                    str(row["role_type"] or "").strip().lower(), "")
                 # analyste → issue ; rôles greedy → SEULEMENT si des tasks de son
                 # rôle (+ team/projet) sont dispo, sinon il re-pioche rien et
                 # spam les wait_for.
@@ -2025,7 +2027,7 @@ class AgentManager:
                                            next(iter({w for w, _ in open_issues}), "")),
                                      daemon=True).start()
                     count += 1
-                elif rt:
+                elif rt or rt2:
                     # Réveiller l'intégrateur (merger) quand un workspace est
                     # all-done ET qu'il y a des commits non poussés sur la
                     # branche auto_code (sinon il boucle : réveil → push vide).
@@ -2061,9 +2063,17 @@ class AgentManager:
                         continue
                     if _agent_thread_alive(row["agent_id"]):
                         continue
+                    # Workspace de réveil : priorité au workspace d'une sub_task
+                    # du type de l'agent (taskflow), sinon pending_tasks.
+                    _ws = next(iter({w for w, _, _ in pending_tasks}), "")
+                    if not _ws and rt2:
+                        for _w, _t, _s in sub_work:
+                            if _s == rt2:
+                                _ws = _w
+                                break
                     threading.Thread(target=self._run_sleeping_agent,
                                      args=(row["agent_id"], "wakeup: task pending",
-                                           next(iter({w for w, _, _ in pending_tasks}), "")),
+                                           _ws),
                                      daemon=True).start()
                     count += 1
         return count
