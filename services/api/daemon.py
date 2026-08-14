@@ -1018,6 +1018,15 @@ def _start_service_ticker(log=None) -> None:
         if log:
             log.warning("file_watcher non enregistré", error=str(e))
 
+    # petri_runtime : miroir temps réel du FSM (observation pure, 10s).
+    try:
+        from services.petri_runtime import run_service as pr_tick
+        st.register("petri_runtime", interval_s=10, fn=pr_tick,
+                    cmd="services.petri_runtime:run_service")
+    except Exception as e:
+        if log:
+            log.warning("petri_runtime non enregistré", error=str(e))
+
     st.start()
     if log:
         log.info("ServiceTicker démarré")
