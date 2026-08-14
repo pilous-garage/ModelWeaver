@@ -868,6 +868,18 @@ class FSMInterpreter:
                                     _a_id = result.variables.get("agent_id", "")
                                     if str(_a_id).startswith("agent_"):
                                         _a_id = str(_a_id).split("_")[-1]
+                                    # Injection contexte (mode translation) :
+                                    # workspace_id/task_id fournis par le modèle
+                                    # sont souvent vides ou 0 (index relatif).
+                                    _v_ws = result.variables.get("workspace_id", "")
+                                    if _v_ws and not _args.get("workspace_id"):
+                                        _args["workspace_id"] = _v_ws
+                                    _v_tid = result.variables.get("task_id")
+                                    if _v_tid and _args.get("task_id") in (
+                                            None, 0, "0", ""):
+                                        _args["task_id"] = _v_tid
+                                    if _a_id and not _args.get("agent_id"):
+                                        _args["agent_id"] = _a_id
                                     _home = self._agent_work_home(_a_id, result.variables)
                                     _res = call_skill(
                                         self._resolve_tool_skill(_name), _args,

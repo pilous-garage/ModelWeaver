@@ -195,20 +195,38 @@ ROLE_TO_SUBTASK = {
 
 
 def _subtype_available(agent_id: int, sub_work: set) -> bool:
-    """Vrai si une sub_task unattributed du type du rôle de l'agent est dispo."""
+    """Vrai si une sub_task du type du rôle de l'agent est dispo (unattributed)
+    OU déjà assignée à lui (doing : reprise d'un run coupé/relaunch)."""
     try:
         from modules.sql.db import AgentsDB
         adb = AgentsDB()
         row = adb.conn.execute(
             "SELECT role_type FROM agents WHERE agent_id = ?", (agent_id,)
         ).fetchone()
-        adb.close()
         if not row:
+            adb.close()
             return False
         rt = ROLE_TO_SUBTASK.get(str(row["role_type"] or "").strip().lower(), "")
         if not rt:
+            adb.close()
             return False
-        return any(stype == rt for (_ws, _team, stype) in sub_work)
+        # sub_task unattributed du type → dispo
+        if any(stype == rt for (_ws, _team, stype) in sub_work):
+            adb.close()
+            return True
+        # sub_task doing assignée à l'agent → reprise (workspace.db)
+        try:
+            from modules.sql.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            mine = wdb.conn.execute(
+                "SELECT 1 FROM sub_tasks WHERE assigned_to = ? "
+                "AND status = 'doing' AND sub_task_type = ? LIMIT 1",
+                (f"agent:{agent_id}", rt)).fetchone()
+            wdb.close()
+        except Exception:
+            mine = None
+        adb.close()
+        return mine is not None
     except Exception:
         return False
 
