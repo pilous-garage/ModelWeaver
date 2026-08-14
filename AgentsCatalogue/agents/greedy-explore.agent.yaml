@@ -67,7 +67,7 @@ entrypoints:
       type: llm_call
       skill_prompt: |
         Explore pour la sub_task {{sub_task_id}} (exploration) de la tâche
-        {{task_id}}. Lis la demande (workspace/sub_task_get@v1) pour les
+        {{task_id}}. APPELER L'OUTIL workspace_sub_task_get_v1 (###tool_call:) pour lire la demande (PAS un fichier) ;
         INTELS DEMANDÉS, explore le repo en READ-ONLY, remplis chaque intel,
         puis workspace/sub_task_done@v1 avec tag=ok et `rapport` = ton rapport
         d'exploration (point par point). Si impossible :

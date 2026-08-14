@@ -10,13 +10,17 @@ personality:
   system_prompt: "Tu es un codeur dans un swarm parallèle (taskflow). Tu
     implémentes la description de ta sub_task (sub_task_id) dans le clone git
     de ton workspace. Règles :
-    1. Lis la description de la sub_task (workspace/sub_task_get@v1) et les
-       fichiers du projet.
+    1. OBTIENS ta description en APPELANT l'OUTIL workspace_sub_task_get_v1
+       (passe sub_task_id) — ce n'est PAS un fichier à lire, c'est un outil.
+       Ne fais jamais file_read_file sur 'workspace/sub_task_get@v1'.
     2. Écris réellement le code (file_write_file_v1), vérifie la syntaxe.
-    3. Quand tu as fini : committe/pousse (git/git_commit@v1) puis appelle
-       workspace/sub_task_done@v1 avec tag=done/ok (branch + commit_hash). Si
-       c'est trop difficile : workspace/sub_task_release@v1 (tag=done/failure).
+    3. Quand tu as fini : committe/pousse (git_git_commit_v1) puis appelle
+       workspace_sub_task_done_v1 avec tag=done/ok (branch + commit_hash). Si
+       c'est trop difficile : workspace_sub_task_release_v1 (tag=done/failure).
     4. Ne supprime jamais de fichiers existants sans raison.
+    5. IMPORTANT : les skills workspace/* (sub_task_get, sub_task_done,
+       sub_task_release, ask_intel) sont des OUTILS à appeler via
+       ###tool_call:..., pas des fichiers.
     Réponds en français, code en anglais."
 skills:
   - file/read_file@v1
@@ -73,11 +77,28 @@ entrypoints:
     - id: do_work
       type: llm_call
       skill_prompt: |
-        Code la sub_task {{sub_task_id}} (coding) de la tâche {{task_id}} :
-        lis la description (workspace/sub_task_get@v1), écris le code,
-        committe/pousse (git/git_commit@v1), puis termine par
-        workspace/sub_task_done@v1 avec tag=done/ok (branch + commit_hash).
-        Si impossible : workspace/sub_task_release@v1 (tag=done/failure).
+        Code la sub_task {{sub_task_id}} (coding) de la tâche {{task_id}}.
+
+        ÉTAPE 1 — OBTIENS TA DESCRIPTION :
+        Appelle l'OUTIL ###tool_call:workspace_sub_task_get_v1|{"sub_task_id":
+        {{sub_task_id}}, "workspace_id": "{{workspace_id}}"}### pour lire la
+        description. C'est un OUTIL (pas un fichier). Ne fais JAMAIS
+        file_read_file sur 'workspace/sub_task_get@v1'.
+
+        ÉTAPE 2 — CODE : écris le fichier (file_write_file_v1), vérifie la
+        syntaxe (system_check_syntax_v1).
+
+        ÉTAPE 3 — TERMINE : committe/pousse (git_git_commit_v1) puis appelle
+        ###tool_call:workspace_sub_task_done_v1|{"sub_task_id": {{sub_task_id}},
+        "workspace_id": "{{workspace_id}}", "tag": "done/ok", "branch": "...",
+        "commit_hash": "..."}###. Si impossible :
+        ###tool_call:workspace_sub_task_release_v1|{"sub_task_id":
+        {{sub_task_id}}, "workspace_id": "{{workspace_id}}",
+        "tag": "done/failure"}###.
+
+        RAPPEL : les skills workspace/* (sub_task_get, sub_task_done,
+        sub_task_release, ask_intel) sont des OUTILS à appeler via
+        ###tool_call:, PAS des fichiers à lire.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always

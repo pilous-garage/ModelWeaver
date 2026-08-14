@@ -47,7 +47,7 @@ entrypoints:
     - id: do_work
       type: llm_call
       skill_prompt: |
-        Traite la sub_task {{sub_task_id}} (testing) de la tâche {{task_id}} : lis la description (workspace/sub_task_get@v1), fais les tests, puis workspace/sub_task_done@v1 (tag=ok | fail | no_test). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
+        Traite la sub_task {{sub_task_id}} (testing) de la tâche {{task_id}} : APPELER L'OUTIL workspace_sub_task_get_v1 (via ###tool_call:) pour obtenir la description (ce n'est PAS un fichier), fais les tests, puis workspace/sub_task_done@v1 (tag=ok | fail | no_test). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always

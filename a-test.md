@@ -66,3 +66,17 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
   coding=modèle fort).
 - Le run 1609 a été arrêté (coding #105 relâché). À relancer avec un coder
   sur un meilleur modèle.
+
+### 7b. CORRIGÉ : prompt ambigu « lis la description (workspace/sub_task_get@v1) »
+- Le prompt des greedy (coder/tester/reviewer/explore) disait « lis la
+  description (workspace/sub_task_get@v1) » — le modèle le lit comme un
+  CHEMIN DE FICHIER et fait `file_read_file` dessus au lieu d'appeler le
+  tool `workspace_sub_task_get_v1`.
+- **Fix** : prompts réécrits pour dire « APPELER L'OUTIL
+  workspace_sub_task_get_v1 (###tool_call:) » + rappel explicite que les
+  skills workspace/* sont des OUTILS, pas des fichiers.
+- **Validé en direct** : `decoupe(workspace_id="default"/"todo_cli",
+  task_id=0, sub_task_id=109)` crée bien les coding sur la bonne tâche
+  (le fix d'injection + le prompt). Le run réel a des interruptions du
+  swarm qui font échouer l'exécution du tool (problème de stabilité du
+  swarm, pas du fix).
