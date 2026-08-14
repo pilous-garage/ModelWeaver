@@ -58,6 +58,7 @@ entrypoints:
       capture:
         sub_task_id: sub_task_id
         task_id: task_id
+        conv_id: _conv_id
         type: sub_task_type
       on_error: sleep
       next: ask_llm

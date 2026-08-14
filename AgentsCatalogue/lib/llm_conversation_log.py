@@ -1,17 +1,18 @@
 """Journal des réponses LLM — trace les échanges complets pour l'analyse.
 
-Écrit dans {home}/log/llm_conversation.log (fichier unique par agent, avec
-rotation de taille max). À la différence du FSM log (résumé), ce journal
-conserve le CONTENU des réponses LLM et les tool calls, pour permettre des
-analyses de boucles / de qualité en profondeur.
+Écrit dans {home}/log/llm_conversation[_<task_id>].log — UN FICHIER PAR TÂCHE
+(le nettoyage/rotation est prévu plus tard). À la différence du FSM log
+(résumé), ce journal conserve le CONTENU des réponses LLM et les tool calls,
+pour permettre des analyses de boucles / de qualité en profondeur.
 
 Rotation : quand le fichier dépasse `max_bytes` (défaut 10 Mo), il est renommé
 en .1, .2 … (max 3 backups), comme un logrotate simple. Le plus ancien est
 supprimé.
 
-Usage (depuis autonomous.py) :
+Usage (depuis le FSM / autonomous.py) :
     from AgentsCatalogue.lib.llm_conversation_log import log_llm_exchange
-    log_llm_exchange(home, p_ref, m_ref, round_n, response, ok=True, error="")
+    log_llm_exchange(home, p_ref, m_ref, round_n, response, ok=True, error="",
+                     messages=messages, task_id=42)
 """
 
 import os
@@ -52,11 +53,14 @@ def _safe_str(v: Any, max_len: int = 4000) -> str:
     return s.replace("\r", " ").replace("\n", "⏎")
 
 
-def _append(home: str, line: str) -> None:
+def _append(home: str, line: str, conv_id: Optional[str] = None) -> None:
     try:
         log_dir = Path(home) / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
-        path = log_dir / "llm_conversation.log"
+        fname = "llm_conversation.log"
+        if conv_id:
+            fname = f"llm_conversation_{conv_id}.log"
+        path = log_dir / fname
         _rotate(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -67,15 +71,16 @@ def _append(home: str, line: str) -> None:
 def log_llm_exchange(home: str, provider_ref: str, model_ref: str,
                      round_n: int, response: Any = None,
                      ok: bool = True, error: str = "",
-                     messages: Optional[list] = None) -> None:
+                     messages: Optional[list] = None,
+                     conv_id: Optional[str] = None) -> None:
     """Loggue un échange LLM (envoi + réponse ou erreur) dans le journal.
 
     `response` : ChatResponse (content, tool_calls, finish_reason, usage).
     `messages` : le prompt complet envoyé au LLM (liste de dicts role/content/
                  tool_calls). Écrit sous forme de blocs `send: <role>` pour que
-                 le panneau « vue agent » puisse afficher tout l'échange
-                 (envoyé → reçu), chaque envoi étant repliable.
-    Le content est conservé en entier (tronqué au max_len pour la taille).
+                 le panneau « vue agent » puisse afficher tout l'échange.
+    `conv_id`  : identifiant de conversation (généré à ask_task = tâche +
+                 timestamp) → UN fichier par conversation/run.
     """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     header = f"[{ts}] round={round_n} provider={provider_ref} model={model_ref} ok={ok}"
@@ -105,11 +110,11 @@ def log_llm_exchange(home: str, provider_ref: str, model_ref: str,
         pass
     if not ok:
         lines.append(f"error={_safe_str(error, 500)}")
-        _append(home, "\n".join(lines))
+        _append(home, "\n".join(lines), conv_id)
         return
     if response is None:
         lines.append("response=None")
-        _append(home, "\n".join(lines))
+        _append(home, "\n".join(lines), conv_id)
         return
     try:
         content = getattr(response, "content", "") or ""
@@ -128,7 +133,7 @@ def log_llm_exchange(home: str, provider_ref: str, model_ref: str,
         except Exception:
             fn, args = "?", ""
         lines.append(f"  tool: {fn}({_safe_str(args, 1000)})")
-    _append(home, "\n".join(lines))
+    _append(home, "\n".join(lines), conv_id)
 
 
 __all__ = ["log_llm_exchange", "MAX_BYTES"]

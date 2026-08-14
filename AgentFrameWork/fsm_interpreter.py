@@ -816,6 +816,19 @@ class FSMInterpreter:
                                 messages=msgs, temperature=temperature, max_tokens=max_tokens,
                                 agent_id=_agent_id or None, meta=_meta, **tool_kwargs,
                             )
+                    # Journal conversation (prompt + réponse complets) dans
+                    # {home}/log/llm_conversation.log — pour l'analyse des
+                    # boucles / de la qualité des réponses LLM.
+                    try:
+                        from AgentsCatalogue.lib.llm_conversation_log import (
+                            log_llm_exchange)
+                        _log_msgs = locals().get("_msgs") or msgs
+                        _home = self._agent_work_home(_agent_id, result.variables)
+                        log_llm_exchange(_home, p_ref, m_ref, _tool_round,
+                                         response, messages=_log_msgs,
+                                         conv_id=result.variables.get("_conv_id", ""))
+                    except Exception:
+                        pass
                     p_ref = getattr(response, "provider_used", p_ref)
                     m_ref = getattr(response, "model_used", m_ref)
                     result.variables["_llm_provider"] = p_ref

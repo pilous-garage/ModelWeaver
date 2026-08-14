@@ -275,7 +275,8 @@ def ask_new_task(inputs: dict, home: str) -> dict:
             db.close()
             return {"ok": True, "sub_task": dict(st),
                     "sub_task_id": st["sub_task_id"],
-                    "task_id": st["task_id"], "type": st["sub_task_type"]}
+                    "task_id": st["task_id"], "type": st["sub_task_type"],
+                    "conv_id": _new_conv_id(st["task_id"])}
         # 2) Écrit la demande en BDD, puis appel synchrone au supervisor.
         ask_id = sc.ask.create(aid, types)
         db.close()
@@ -286,7 +287,8 @@ def ask_new_task(inputs: dict, home: str) -> dict:
             return {"ok": True, "sub_task": res["sub_task"],
                     "sub_task_id": res["sub_task_id"],
                     "task_id": res["task_id"], "type": res["type"],
-                    "ask_id": ask_id}
+                    "ask_id": ask_id,
+                    "conv_id": _new_conv_id(res["task_id"])}
         # Rien de dispo → l'agent se déshydrate, mais on l'enregistre en
         # wait_for (sub_task_available) pour que le waker le réveille quand une
         # sub_task de son type devient dispo.
@@ -295,6 +297,12 @@ def ask_new_task(inputs: dict, home: str) -> dict:
                 "note": res.get("note", "aucune sub_task dispo")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _new_conv_id(task_id: int) -> str:
+    """Nouvelle conversation par run greedy : tâche + timestamp."""
+    import time as _t
+    return f"{task_id}_{int(_t.time())}"
 
 
 def _register_wait(workspace_id: str, agent_id: int, types: list) -> None:
