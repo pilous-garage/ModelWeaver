@@ -349,3 +349,21 @@ register("usage/series",    lambda p: _quiet(op_usage_series, p))
 register("usage/batch/run", lambda p: _quiet(op_usage_batch_run, p))
 register("tarif/info",      lambda p: _quiet(_op_tarif_info, p))
 register("tarif/sync",      lambda p: _quiet(_op_tarif_sync, p.get("url")))
+
+
+def op_usage_responded_models(params=None):
+    """Modèles ayant déjà répondu, classés par score final.
+
+    Tableau : score benchmark global × score latence × (1 − fail_rate)."""
+    try:
+        from modules.sql.runtime_repo import RuntimeDB
+        rt = RuntimeDB()
+        limit = int((params or {}).get("limit", 50))
+        rows = rt.list_responded_models(limit=limit)
+        rt.close()
+        return {"status": "ok", "models": rows}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
+register("usage/responded_models", lambda p: _quiet(op_usage_responded_models, p))

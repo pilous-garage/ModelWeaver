@@ -295,7 +295,7 @@ def update_scores(rt, latence_penalise: Optional[float] = None,
                   rh_[2] / rh_[0] if rh_[0] else 0.0,
                   rj_[2] / rj_[0] if rj_[0] else 0.0,
                   rw_[2] / rw_[0] if rw_[0] else 0.0,
-                  score_fail_rate, lat_ms,
+                  score_fail_rate, score_latence,
                   score_etire, score_final))
             upserts += 1
         rt.conn.commit()

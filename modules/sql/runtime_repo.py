@@ -514,6 +514,45 @@ class RuntimeDB:
     def read_meta(self, key: str, default: int = 0) -> int:
         return read_meta(self.conn, key, default=default)
 
+    def list_responded_models(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Modèles ayant déjà répondu (score_batch), classés par score final.
+
+        Tableau : score benchmark global (score_etire) × score_latence ×
+        (1 - score_fail_rate). Le score_latence est recalculé proprement
+        (exp de la latence moyenne 1h) — la colonne score_batch.score_latency
+        pouvait contenir la latence brute (bug d'écriture corrigé)."""
+        import math
+        rows = self.conn.execute("""
+            SELECT b.provider_ref, b.model_ref,
+                   b.score_etire, b.score_fail_rate,
+                   b.lat_1h_ms, b.requests_1h, b.requests_1w
+            FROM score_batch b
+            WHERE b.requests_1w > 0
+            ORDER BY b.score_final DESC
+        """).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            lat_ms = r["lat_1h_ms"] or 0.0
+            # score_latence = exp( -(max(1.0, lat_s) - 1.0)/60 )
+            lat_s = max(1.0, lat_ms / 1000.0)
+            score_latence = math.exp(-(lat_s - 1.0) / 60.0)
+            bench = float(r["score_etire"] or 0.0)
+            fail = float(r["score_fail_rate"] or 0.0)
+            final = bench * score_latence * (1.0 - fail)
+            out.append({
+                "model_ref": r["model_ref"],
+                "provider_ref": r["provider_ref"],
+                "score_benchmark": round(bench, 4),
+                "score_latency": round(score_latence, 4),
+                "score_fail_rate": round(fail, 4),
+                "score_total": round(final, 4),
+                "lat_ms": round(lat_ms, 1),
+                "requests_1h": r["requests_1h"],
+                "requests_1w": r["requests_1w"],
+            })
+        out.sort(key=lambda x: x["score_total"], reverse=True)
+        return out[:limit]
+
     def close(self):
         self.conn.close()
 
