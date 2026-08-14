@@ -38,8 +38,12 @@ ETATS = ("unattributed", "attributed", "done", "supervised")
 # Skills de gestion de jeton (taskflow).
 PICK_SKILL = "workspace/task_ask_new@v1"
 RELEASE_SKILLS = {"workspace/sub_task_done@v1", "workspace/sub_task_release@v1"}
-PRODUCE_SKILLS = {"workspace/decoupe@v1", "workspace/ask_intel@v1",
-                  "workspace/entry_create@v1"}
+# Skills qui CRÉENT des jetons : skill → types produits (data_<type>_unattributed).
+PRODUCE_SKILLS: Dict[str, List[str]] = {
+    "workspace/decoupe@v1": ["analysis", "coding", "testing", "review", "merge"],
+    "workspace/ask_intel@v1": ["exploration"],
+    "workspace/entry_create@v1": ["analysis"],
+}
 
 
 class Petri:
@@ -111,6 +115,7 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
 
     # Types CONSOMMÉS (ask_new_task) et skills des steps.
     consumes: Set[str] = set()
+    produced: Set[str] = set()
     steps_with_task: List[str] = []
     activity_steps: List[str] = []
 
@@ -130,6 +135,7 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
                         steps_with_task.append(f"{sid}/release")
                     if sk in PRODUCE_SKILLS:
                         steps_with_task.append(f"{sid}/produce")
+                        produced.update(PRODUCE_SKILLS[sk])
             if st in ("while", "for", "if", "group"):
                 body = s.get("body", {})
                 sub = body.get("steps", body) if isinstance(body, dict) else body
@@ -158,6 +164,13 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         net.trans(f"release_{name}_{t}", [f"data_agent_{name}"],
                   [f"data_{t}_done"], "release")
 
+    # PRODUCTION (skills de création) : data_agent → data_agent +
+    # data_<type>_unattributed (le découpeur/as_llm_leader crée des jetons).
+    for t in sorted(produced):
+        net.trans(f"produce_{name}_{t}", [f"data_agent_{name}"],
+                  [f"data_agent_{name}", f"data_{t}_unattributed"],
+                  f"create:{t}")
+
     # Enchaînement d'activité : main → step1 → step2 → ...
     prev = "main"
     for s in activity_steps:
@@ -177,7 +190,35 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
               [f"activity_{name}_end"], "end")
 
     return {"agent": name, "petri": net, "fsm_nodes": len(fsm["nodes"]),
-            "consumes": sorted(consumes)}
+            "consumes": sorted(consumes), "produces": sorted(produced)}
+
+
+def supervisor_petri(rules: List[Dict[str, Any]] = (),
+                     workspace: str = "supervisor") -> Petri:
+    """Pétri COMPLET du SUPERVISOR (sans LLM) : ses places (les pots globaux)
+    et ses transitions (assign, finalise, relais selon les règles, respond)."""
+    all_types = ["analysis", "coding", "testing", "review", "merge",
+                 "respond", "exploration"]
+    net = Petri(workspace, all_types)
+    # Places d'activité du superviseur
+    for s in ("supervise", "assign", "release_dependencies", "finalize"):
+        net.place(f"activity_{workspace}_{s}")
+    # assign : unattributed → attributed ; finalise : done → supervised
+    for t in all_types:
+        net.trans(f"sup_assign_{t}", [f"data_{t}_unattributed"],
+                  [f"data_{t}_attributed"], "assign")
+        net.trans(f"sup_final_{t}", [f"data_{t}_done"],
+                  [f"data_{t}_supervised"], "finalise")
+    # relais selon les règles : data_<in>_done → data_<out>_unattributed
+    for r in rules or []:
+        it, ot = r.get("in_type", ""), r.get("out_type", "")
+        if it and ot:
+            net.trans(f"sup_relay_{it}_{ot}", [f"data_{it}_done"],
+                      [f"data_{ot}_unattributed"], f"{it}→{ot}")
+    # respond : créé par le superviseur quand une entrée est close
+    net.trans("sup_make_respond", [f"data_analysis_done"],
+              [f"data_respond_unattributed"], "make_respond")
+    return net
 
 
 def build_team_petri(path: Path) -> Dict[str, Any]:
@@ -222,6 +263,11 @@ def main() -> None:
             if args.verify:
                 v = verify_with_pm4py(m["petri"])
                 print("   verify:", v)
+        print()
+        print("== SUPERVISOR ==")
+        print(supervisor_petri().render())
+        if args.verify:
+            print("   verify:", verify_with_pm4py(supervisor_petri()))
     else:
         res = build_from_yaml(path, args.agent)
         print(res["petri"].render())
