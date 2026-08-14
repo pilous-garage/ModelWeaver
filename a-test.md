@@ -51,3 +51,18 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
 - Des runs de test ont laissé des tâches (1607/1608 nettoyées, 1609 en cours)
   et des agents `analyst-swarm-*` nombreux dans agents.db. Un `purge` des
   tâches de test est à faire si on veut une BDD propre.
+
+### 7. Observation du run réel 1609 (2026-08-14) — modèle d'exécution insuffisant
+- Le flux avance : entry → analysis → **découpe correcte** (3 coding + merge,
+  sur la bonne tâche grâce au fix) → coder-senior prend le coding #105.
+- MAIS le coder-senior (deepseek-v4-flash) est **perdu dans le filesystem** :
+  il appelle `file_read_file|workspace/sub_task_get@v1` (confond le SKILL
+  `sub_task_get` avec un fichier), explore `workspace/sessions/swarm-*` au
+  lieu d'appeler `workspace_sub_task_get_v1`. 14+ rounds, jamais conclu.
+- **Constat** : deepseek-v4-flash fait bien la DÉCOUPE mais est trop faible
+  pour l'EXÉCUTION (coder). Le blocage est levé pour l'analyse/découpe, mais
+  l'exécution complète nécessite un **modèle plus fort** pour le coder
+  (ex. un modèle agentic fiable, restrict_llm par rôle : analysis=flash,
+  coding=modèle fort).
+- Le run 1609 a été arrêté (coding #105 relâché). À relancer avec un coder
+  sur un meilleur modèle.
