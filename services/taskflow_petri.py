@@ -209,6 +209,8 @@ def main() -> None:
     ap.add_argument("yaml", help="fichier .team.yaml ou .agent.yaml")
     ap.add_argument("--agent", default="", help="nom d'agent (si yaml team)")
     ap.add_argument("--team", action="store_true", help="traiter comme une team")
+    ap.add_argument("--verify", action="store_true",
+                    help="vérifier le pétri (pm4py : reachability de supervised)")
     args = ap.parse_args()
     path = Path(args.yaml)
     if args.team:
@@ -217,10 +219,80 @@ def main() -> None:
         for m in res["members"]:
             print()
             print(m["petri"].render())
+            if args.verify:
+                v = verify_with_pm4py(m["petri"])
+                print("   verify:", v)
     else:
         res = build_from_yaml(path, args.agent)
         print(res["petri"].render())
         print(f"\n(FSM : {res['fsm_nodes']} nœuds ; consumes={res['consumes']})")
+        if args.verify:
+            print("   verify:", verify_with_pm4py(res["petri"]))
+
+
+def supervisor_transitions(rules: List[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+    """Transitions du SUPERVISOR (selon les règles du manifest) :
+      - pour chaque type : unattributed → attributed (assign) ;
+        done → supervised (finalise) ;
+      - selon les règles (in_type, in_tag)→(out_type, out_tag) : quand un type
+        est done, crée le relais out_type → unattributed."""
+    trans: List[Dict[str, Any]] = []
+    # assign + finalise (par type connu)
+    for t in ("analysis", "coding", "testing", "review", "merge", "respond",
+              "exploration"):
+        trans.append({"name": f"sup_assign_{t}",
+                      "in": [f"data_{t}_unattributed"],
+                      "out": [f"data_{t}_attributed"], "label": "assign"})
+        trans.append({"name": f"sup_final_{t}",
+                      "in": [f"data_{t}_done"],
+                      "out": [f"data_{t}_supervised"], "label": "finalise"})
+    # relais selon les règles : data_<in_type>_done → data_<out_type>_unattributed
+    for r in rules or []:
+        it = r.get("in_type") or ""
+        ot = r.get("out_type") or ""
+        if it and ot:
+            trans.append({"name": f"sup_relay_{it}_{ot}",
+                          "in": [f"data_{it}_done"],
+                          "out": [f"data_{ot}_unattributed"], "label": f"{it}→{ot}"})
+    return trans
+
+
+def verify_with_pm4py(petri: Petri) -> Dict[str, Any]:
+    """Vérifie (BFS de marquages) que chaque type atteint `supervised` depuis
+    un jeton initial `unattributed` (reachability). Les places sont bornées."""
+    # transitions = agent (pick/release/steps) + superviseur (assign/finalise)
+    trans = list(petri.transitions) + supervisor_transitions()
+    results: Dict[str, Any] = {}
+    for t in petri.types:
+        src, dst = f"data_{t}_unattributed", f"data_{t}_supervised"
+        m0 = {p: (1 if p == src else 0) for p in petri.places}
+        # BFS des marquages atteignables
+        seen = {_mark_key(m0)}
+        frontier = [m0]
+        reached = False
+        while frontier:
+            m = frontier.pop()
+            if m.get(dst, 0) > 0:
+                reached = True
+                break
+            for tr in trans:
+                if all(m.get(i, 0) >= 1 for i in tr["in"]):
+                    nm = dict(m)
+                    for i in tr["in"]:
+                        nm[i] = max(0, nm.get(i, 0) - 1)
+                    for o in tr["out"]:
+                        nm[o] = nm.get(o, 0) + 1
+                    k = _mark_key(nm)
+                    if k not in seen:
+                        seen.add(k)
+                        frontier.append(nm)
+        results[t] = "OK (supervised atteignable)" if reached else \
+            "KO (jamais supervised)"
+    return results
+
+
+def _mark_key(m: Dict[str, int]) -> str:
+    return "|".join(f"{p}:{m.get(p, 0)}" for p in sorted(m))
 
 
 if __name__ == "__main__":
