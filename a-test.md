@@ -151,3 +151,27 @@ et ce qui a été résolu. Les `✅` = validé (par smoke test ou run réel).
   bridge qui classe les LLM via _score_model. À ajouter.
 - **Bug fixé au passage** : `_score_model` référençait `batch_latency_ms`
   (inexistant) → AttributeError → corrigé en `runtime_latency_ms`.
+
+## 11. Refactor adresse_id (provider×endpoint×model_provider) — À FAIRE
+- **Idée** : table `provider_model_address` = répertoire RÉSOLU :
+  adresse_id, provider_id/ref, endpoint_id/url, model_id/key,
+  provider_model_id, provider_model_name, key_ref. L'appel LLM = adresse
+  résolue + clé → plus qu'à construire la requête HTTP.
+- **Budgets** : 3 tables — budget(budget_id,type,qt),
+  cost(budget_id,adresse_id,type,cost/qt), budget_restant(budget_id,type,qt) ;
+  tick de soustraction depuis les logs (ou le bridge, à voir si pas trop
+  lourd) + tick de reset des quotas.
+- **Clé** : reste dans le keyring (valeur jamais en clair sur disque). Un dump
+  RAM expose les clés — inherent (tout agent doit les utiliser en clair).
+  Calculer à runtime = aucun gain vs le cache keyring (déjà en mémoire).
+  Donc : key_ref pointe vers api_keys, valeur au keyring.
+- **Orphelins (94)** : PAS de vrais manques — les modèles existent dans
+  catalogue_models. La non-résolution vient de la variante de
+  provider_model_name (casse/préfixe) entre score_batch et provider_models.
+  Résolvables par model_key (résolution tolérante). 9 sont des entrées vides
+  (model='') à purger.
+- **Point 1 (key_ref vs identity)** : provider_models_mapping.key_ref =
+  identity ('default'), alors que api_keys.ref = UUID stable. La table adresse
+  doit séparer : key_ref (ref api_keys) + key_identity (default).
+- **get_score → score_adresse → tri → give_adresse** : simplifierait
+  l'allocation (le scoring produit directement les adresse_id triés).
