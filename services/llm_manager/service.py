@@ -216,6 +216,37 @@ class LLMManagerService:
             "rest_models": sorted(f"{p}/{m}" for p, m in rest),
         }
 
+    def scores(self, limit: int = 200, provider: str = "") -> dict:
+        """Tableau COMPLET des scores (id_ref, fail_rate, latency, benchmark,
+        final) depuis score_batch. score_final = fail_rate × latency × etire.
+
+        Sert au DEBUG : vérifier ce que le scoring voit réellement pour chaque
+        modèle (et détecter les contrats cassés entre écriture/lecture)."""
+        from services._common import runtime_db_path
+        import sqlite3
+        conn = sqlite3.connect(runtime_db_path())
+        rows = conn.execute(
+            "SELECT provider_ref, model_ref, score_fail_rate, score_latency, "
+            "score_etire, score_final FROM score_batch ORDER BY score_final DESC "
+            "LIMIT ?", (int(limit),)).fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            p, m, fr, lat, etire, final = r
+            if provider and provider not in p:
+                continue
+            out.append({
+                "provider_ref": p,
+                "model_ref": m,
+                "id_ref": f"{p}/{m}",
+                "score_fail_rate": fr or 0.0,
+                "score_latency": lat or 0.0,
+                "score_benchmark": etire or 0.0,
+                "score_final": final or 0.0,
+                "score_final_check": round((fr or 0.0) * (lat or 0.0) * (etire or 0.0), 4),
+            })
+        return {"status": "ok", "count": len(out), "scores": out}
+
     # ── Report d'échec ──
 
     def report_failure(self, params: dict) -> dict:
@@ -305,6 +336,8 @@ class LLMManagerService:
                 result = self.allocate(req.get("params") or {})
             elif call == "state":
                 result = self.state()
+            elif call == "scores":
+                result = self.scores(req.get("params") or {})
             elif call == "report_failure":
                 result = self.report_failure(req.get("params") or {})
             elif call == "report_ok":

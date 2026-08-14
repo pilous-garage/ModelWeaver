@@ -44,6 +44,16 @@ class LLMClient:
                     "error": resp.get("error", "llm_service_erreur")}
         return resp.get("result", {})
 
+    def scores(self, limit: int = 200, provider: str = "") -> Dict[str, Any]:
+        """Tableau des scores (id_ref, fail_rate, latency, benchmark, final)."""
+        resp = self._client.send({"call": "scores",
+                                  "params": {"limit": limit, "provider": provider},
+                                  "id": "gw-llm-scores"})
+        if not resp.get("ok"):
+            return {"status": "error",
+                    "error": resp.get("error", "llm_service_erreur")}
+        return resp.get("result", {})
+
     def report_failure(self, provider_ref: str, model_ref: str) -> Dict[str, Any]:
         resp = self._client.send({"call": "report_failure",
                                   "params": {"provider_ref": provider_ref,
