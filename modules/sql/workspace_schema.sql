@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS sub_tasks (
     status       TEXT DEFAULT 'unattributed',
     tag          TEXT DEFAULT '',          -- posé par l'agent d'exécution, contraint par type
     difficulty   TEXT DEFAULT 'medium',
+    description  TEXT DEFAULT '',          -- consigne/description de l'étape (ex. intels de l'exploration)
     assigned_to  TEXT DEFAULT '',
     freedby      TEXT DEFAULT '',
     supervised   INTEGER DEFAULT 0,        -- groupe complet clos par le supervisor

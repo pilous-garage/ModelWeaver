@@ -113,7 +113,8 @@ def decoupe(inputs: dict, home: str) -> dict:
                 task_id=int(task_id), sub_task_type=stype,
                 difficulty=st.get("difficulty") or st.get("niveau") or "medium",
                 status="unattributed",
-                repo=repo, branch=branch, team_id=team_id)
+                repo=repo, branch=branch, team_id=team_id,
+                description=(f"{title}\n{st.get('description', '')}").strip())
             created_ids.append(new_st["sub_task_id"])
 
         # Merge automatique : dépend de toutes les sous-tâches.
@@ -196,7 +197,7 @@ def ask_intel(inputs: dict, home: str) -> dict:
             difficulty="medium", status="unattributed",
             repo=task.get("repo", "") if task else "",
             branch=task.get("branch", "") if task else "",
-            team_id=team_id)
+            team_id=team_id, description=desc)
         # l'exploration doit fournir un rapport (tag ok)
         if cur:
             sc.sub_tasks.waiting_dependencies(cur["sub_task_id"])

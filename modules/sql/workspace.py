@@ -638,15 +638,16 @@ class SubTaskRepository:
     def create(self, task_id: int, sub_task_type: str,
                difficulty: str = "medium", status: str = "unattributed",
                tag: str = "", repo: str = "", branch: str = "",
-               team_id: int = -1, assigned_to: str = "") -> Dict[str, Any]:
+               team_id: int = -1, assigned_to: str = "",
+               description: str = "") -> Dict[str, Any]:
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         cur = self.conn.execute("""
             INSERT INTO sub_tasks (workspace_id, task_id, team_id, sub_task_type,
-                                   status, tag, difficulty, assigned_to,
+                                   status, tag, difficulty, description, assigned_to,
                                    repo, branch, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, task_id, team_id, sub_task_type, status, tag,
-              difficulty, assigned_to, repo, branch, now, now))
+              difficulty, description, assigned_to, repo, branch, now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -1099,6 +1100,10 @@ class WorkspaceDB:
             _add_column_if_missing(self.conn, "tasks", "freedby", "TEXT DEFAULT ''")
             # V0.15 : taskflow — tasks = sujet (tag terminal), sub_tasks = relais.
             _add_column_if_missing(self.conn, "tasks", "tag", "TEXT DEFAULT ''")
+            # V0.15 : description de la sub_task (consigne de l'étape, ex.
+            # intels de l'exploration).
+            _add_column_if_missing(self.conn, "sub_tasks", "description",
+                                   "TEXT DEFAULT ''")
             # V0.15 : dépendances qualifiées (étape + résultat attendus).
             _add_column_if_missing(self.conn, "task_dependencies", "required_tag",
                                    "TEXT DEFAULT ''")
