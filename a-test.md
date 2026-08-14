@@ -59,8 +59,13 @@ incomplet. À vérifier/test en priorité avant de considérer le système fiabl
 ## 6. Validation réelle E2E avec un modèle fiable (bloquant session préc.)
 - hy3:free ne conclut pas la découpe (produit des tools d'info sans appeler
   decoupe/ask_intel). Le E2E simulé (mock) passe, le réel dépend du modèle.
-- À retester avec un modèle agentic fiable (restrict_llm / provider_ref sur
-  greedy-analyst).
+- **Diagnostic 2026-08-14 (P3)** : l'infra de run FONCTIONNE —
+  `AgentDaemon.call('team:llm-code/decoupeur', 'execute', ...)` atteint bien
+  l'API LLM. MAIS les 3 clés en BDD (mistral, llm7, ollama-cloud) sont toutes
+  INVALIDES/expirées ("Invalid API Key", "Unauthorized"). Aucune clé dans
+  l'env. → **bloqué par CREDENTIALS, pas par le code.**
+- À refaire dès qu'une clé valide est configurée (mistral-small-latest,
+  groq, etc.) : entry → analysis → découpe → coding/testing → merge.
 
 ## 7. Invariants — à re-vérifier après modifications
 - `services/taskflow_petri.py --check-invariants` (B2/B3/A4/B5/C1) passe sur
