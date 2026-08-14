@@ -370,6 +370,18 @@ class FlowEngine:
         data = yaml.safe_load(team_path.read_text()) or {}
         return self.gen.get(0, f"petri:{data.get('name', team_path.stem)}")
 
+    def get_agent_workflow(self, agent_path: Path,
+                           force: bool = False) -> Optional[Dict[str, Any]]:
+        """Workflow EXPANDU d'un agent via get_data_genere (kind=workflow).
+
+        C'est la vérité exécutée par le FSM (expand_workflow déroule les
+        skills). Invalidation par hash du yaml + contenu expandu."""
+        import json as _json
+        id_data = f"workflow:{agent_path}"
+        params = _json.dumps({"agent_path": str(agent_path)})
+        return self.get_data_genere(id_data, generator="workflow",
+                                    params=params, project_id=0, force=force)
+
     def get_team_petri(self, team_path: Path,
                        force: bool = False) -> Optional[Dict[str, Any]]:
         """Pétri d'une team via get_data_genere : RÉCURSIF sur les symbols
@@ -415,6 +427,54 @@ def _gen_symbol(fe, id_data, project_id=0, params="", force=False, deps=None):
     if not skill_ref:
         return None
     return fe.ensure_skill_symbol(skill_ref, force=force)
+
+
+def _gen_workflow(fe, id_data, project_id=0, params="", force=False, deps=None):
+    """Générateur du WORKFLOW EXPANDU d'un agent.
+
+    `params` = JSON {agent_path} (chemin relatif du yaml agent). Charge le
+    yaml, expand via expand_workflow (déroule les skills call → steps
+    inline), stocke le workflow expandu en data_genere (kind=workflow).
+
+    C'est la VÉRITÉ EXÉCUTÉE : le FSM exécute ce workflow expandu (pas le
+    yaml brut). Le stocker permet au pétri de se générer depuis lui →
+    cohérence analyse/exécution."""
+    import yaml
+    import json as _json
+    from services.skill_manager import expand_workflow
+    spec = _json.loads(params) if params else {}
+    agent_path = REPO / spec.get("agent_path", "")
+    if not agent_path.exists():
+        return None
+    try:
+        cfg = yaml.safe_load(agent_path.read_text()) or {}
+    except Exception:
+        return None
+    main_wf = ((cfg.get("entrypoints") or {}).get("main")
+               or cfg.get("workflow") or cfg.get("pipeline"))
+    if not isinstance(main_wf, dict):
+        return None
+    expanded = expand_workflow(main_wf)
+    # hash : version + contenu du yaml + le workflow expandu lui-même
+    h = hashlib.sha1()
+    h.update(b"workflow-gen-v1")
+    h.update(str(agent_path).encode())
+    h.update(file_hash(agent_path).encode())
+    h.update(_json.dumps(expanded, sort_keys=True, default=str).encode())
+    ihash = h.hexdigest()
+    existing = fe.gen.get(project_id, id_data)
+    if existing and existing.get("inputs_hash") == ihash \
+            and existing.get("status") == "valid" and not force:
+        return existing
+    fe.gen.upsert(
+        project_id, id_data, name=agent_path.stem, kind="workflow",
+        path=str(agent_path), ref_id=str(agent_path),
+        value=_json.dumps(expanded, default=str),
+        dependencies_json=[{"dep_ref": str(agent_path), "version": "",
+                            "role": "agent"}],
+        inputs_hash=ihash, status="valid", generation_mode="deterministic")
+    fe.gen.add_dependency(project_id, id_data, str(agent_path), "", "agent")
+    return {"workflow": id_data, "hash": ihash, "steps": len(expanded.get("steps", []))}
 
 
 def _gen_team_petri(fe, id_data, project_id=0, params="", force=False,
@@ -489,6 +549,7 @@ def _gen_team_petri(fe, id_data, project_id=0, params="", force=False,
 
 _GENERATORS: Dict[str, Any] = {
     "symbol": _gen_symbol,
+    "workflow": _gen_workflow,
     "petri": _gen_team_petri,
 }
 
