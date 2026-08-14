@@ -124,11 +124,18 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
             sid = s.get("id", "?")
             activity_steps.append(sid)
             st = s.get("type", "")
-            if st == "call" and PICK_SKILL in str(s.get("fn", "")):
-                import re
-                types = (s.get("inputs") or {}).get("types", "")
-                consumes.update(re.findall(r"type\s*:\s*[\"']?([\w]+)[\"']?",
-                                           str(types)))
+            if st == "call":
+                fn = str(s.get("fn", ""))
+                if PICK_SKILL in fn:
+                    import re
+                    types = (s.get("inputs") or {}).get("types", "")
+                    consumes.update(re.findall(r"type\s*:\s*[\"']?([\w]+)[\"']?",
+                                               str(types)))
+                # skills de création appelés en step call (ex. entry_create)
+                for sk, prods in PRODUCE_SKILLS.items():
+                    if sk.split("@")[0] in fn:
+                        steps_with_task.append(f"{sid}/produce")
+                        produced.update(prods)
             if st == "llm_call":
                 for sk in (s.get("skills") or []):
                     if sk in RELEASE_SKILLS:
