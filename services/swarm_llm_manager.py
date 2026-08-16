@@ -379,7 +379,8 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
     t0 = time.monotonic()
     _log_exchange("proxy_request", {"prompt": (prompt or "")[:2000],
                                     "model": model, "use_case": use_case,
-                                    "has_tools": bool(tools)})
+                                    "has_tools": bool(tools),
+                                    "first_tool": (tools or [None])[0]})
     try:
         from services.skill_manager import call_skill
         # ask_llm_autofallback : sélection (LLM fourni ou ask_llm) + UN appel

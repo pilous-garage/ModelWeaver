@@ -349,10 +349,34 @@ def _extract_tokens(usage: Optional[dict]) -> dict:
 
 
 def _build_tools_param(tools: Optional[List[Dict]] = None) -> Optional[List[dict]]:
-    """Formate les outils au format OpenAI function calling."""
+    """Formate les outils au format OpenAI function calling strict.
+
+    Deux formats entrant :
+      - standard OpenAI : {type: function, function: {name, description, parameters}}
+      - compact inspect_ai : {type: function, name, description, parameters} ?
+        (les providers stricts — nvidia, deepseek — exigent le champ
+        `function` imbriqué → "missing field 'function'". On normalise.)
+    """
     if not tools:
         return None
-    return tools  # déjà en format OpenAI
+    out = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        t = dict(t)
+        # format compact {type, name, description, parameters} → {type, function:{...}}
+        if "function" not in t and t.get("name"):
+            fn = {"name": t["name"]}
+            if t.get("description"):
+                fn["description"] = t["description"]
+            if t.get("parameters"):
+                fn["parameters"] = t["parameters"]
+            t["function"] = fn
+            t.pop("name", None)
+            t.pop("description", None)
+            t.pop("parameters", None)
+        out.append(t)
+    return out
 
 
 def _build_model_id(provider_ref: str, model_ref: str) -> str:
