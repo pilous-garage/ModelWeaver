@@ -30,6 +30,55 @@ class TaskSupervisor:
     def __init__(self, db: Optional[WorkspaceDB] = None):
         self.db = db or WorkspaceDB()
 
+    # ── Réveil par signal (PAS de waker) ──────────────────────────────────
+    # Architecture : AUCUN waker de scan. Le seul réveil d'un agent = un
+    # SIGNAL `wakeup` posé par le supervisor (table agent_signals), consommé
+    # par le FSM de l'agent. Quand une sub_task devient dispo, on réveille un
+    # agent du rôle qui la pioche (ROLE_TO_SUBTASK).
+    ROLE_TO_SUBTASK = {
+        "architecte": "analysis", "planificateur": "analysis",
+        "explorateur": "exploration", "explore": "exploration",
+        "codeur": "coding", "test_runner": "testing",
+        "relecteur": "review", "orchestrateur": "merge",
+        "prepare_response": "respond", "consensus": "avis", "avis": "avis",
+    }
+
+    def _wake_for_type(self, workspace_id: str, team_id: int,
+                       sub_task_type: str) -> int:
+        """Pose un signal `wakeup` à un agent du rôle qui pioche ce type.
+
+        Cherche un agent ENDORMI (occupation continue, pas dans runtime, pas de
+        thread) dont le rôle traite ce type, dans la team (ou n'importe quelle
+        team si team_id=-1). Retourne le nombre de signaux posés."""
+        roles = [r for r, st in self.ROLE_TO_SUBTASK.items() if st == sub_task_type]
+        if not roles:
+            return 0
+        ph = ",".join("?" for _ in roles)
+        team_filter = "" if team_id == -1 else "AND id_team = ?"
+        team_params = () if team_id == -1 else (team_id,)
+        try:
+            rows = self.db.conn.execute(
+                f"SELECT agent_id FROM agents "
+                f"WHERE role_type IN ({ph}) {team_filter} "
+                f"AND occupation = 'continue' "
+                f"AND agent_id NOT IN (SELECT agent_id FROM agent_runtime) "
+                f"AND status NOT IN ('TERMINATED', 'STOPPED', 'PAUSED') "
+                f"ORDER BY agent_id LIMIT 3",
+                (*roles, *team_params)).fetchall()
+        except Exception:
+            return 0
+        n = 0
+        for r in rows:
+            try:
+                from services.agent_manager.service import AgentManager
+                AgentManager(db=self.db).send_signal(
+                    r["agent_id"], "wakeup",
+                    {"type": sub_task_type, "workspace_id": workspace_id})
+                n += 1
+            except Exception:
+                pass
+        return n
+
     # ── Règles ────────────────────────────────────────────────────────────
 
     def seed_rules(self, workspace_id: str, team_id: int,
@@ -72,12 +121,18 @@ class TaskSupervisor:
         created, released, supervised_st, finalized = 0, 0, 0, 0
         bumped, resplit, cancelled = 0, 0, 0
 
-        # 1) Dépendances satisfaites → unattributed
+        # 1) Dépendances satisfaites → unattributed + réveil d'un agent du type
         for st in sc.sub_tasks.list_by_team_status(
                 team_id, ["waiting_dependencies"], limit=limit):
             if sc.sub_tasks.dependencies_satisfied(st["sub_task_id"]):
                 sc.sub_tasks.set_status(st["sub_task_id"], "unattributed")
                 released += 1
+                # Pas de waker : réveille UN agent capable de ce type (signal).
+                try:
+                    self._wake_for_type(workspace_id, team_id,
+                                        st["sub_task_type"])
+                except Exception:
+                    pass
 
         # 1bis) TOO_HARD : l'agent a abandonné (doing → too_hard). Le
         # supervisor décide :
@@ -278,6 +333,12 @@ class TaskSupervisor:
                         # le respond la reçoit pour pouvoir répondre.
                         description=(task.get("title") or "") + "\n"
                                     + (task.get("description") or ""))
+                    # Pas de waker : réveille un prepare_response (signal).
+                    try:
+                        _wid = sc.wid or ""
+                        self._wake_for_type(_wid, team_id, "respond")
+                    except Exception:
+                        pass
                 continue
             open_ = sc.conn.execute(
                 "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
@@ -299,6 +360,10 @@ class TaskSupervisor:
                         repo=task.get("repo", ""), branch=task.get("branch", ""),
                         description=(task.get("title") or "") + "\n"
                                     + (task.get("description") or ""))
+                    try:
+                        self._wake_for_type(sc.wid or "", team_id, "respond")
+                    except Exception:
+                        pass
                     continue  # attend le prepare-response
             sc.tasks.update(tid, status="supervised", tag=task.get("tag") or "ok")
             sc.conn.execute(
