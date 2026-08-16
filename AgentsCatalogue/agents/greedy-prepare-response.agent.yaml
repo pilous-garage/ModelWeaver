@@ -49,7 +49,6 @@ entrypoints:
       inputs:
         use_case: chat
         agent_id: "{{agent_id}}"
-        restrict_llm: "groq/llama-3.3-70b-versatile,opencode-zen/mimo-v2.5-free,opencode-zen/deepseek-v4-flash-free"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
@@ -71,6 +70,8 @@ entrypoints:
       temperature: 0.4
       output_capture: respond_out
       no_tool_trace: true
+      fallback: true
+      timeout: 60
       on_error: respond_error
       next: done_task
     - id: done_task
