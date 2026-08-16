@@ -14,6 +14,7 @@ Usage:
 import json
 import os
 import signal
+import sqlite3
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -318,13 +319,28 @@ class Agent:
         # SELECT (agent_runtime) AVANT que l'un insère → UNIQUE constraint
         # failed. OR REPLACE rend l'insert idempotent : le gagnant écrase
         # l'entrée runtime (état re-créé, pas de crash de réveil).
-        db.conn.execute("""
-            INSERT OR REPLACE INTO agent_runtime
-                (agent_id, thread_id, pid, heartbeat_at, started_at, current_step,
-                 id_proprietaire, id_team)
-            VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated', ?, ?)
-        """, (agent_id, thread_id, os.getpid(), owner, team))
-        db.conn.commit()
+        # Retry sur 'database is locked' : le daemon et l'agent_manager écrivent
+        # dans agents.db en parallèle → SQLite peut verrouiller au-delà du
+        # busy_timeout. On retente (backoff court) avant d'abandonner.
+        import time as _tlock
+        _last_locked = None
+        for _att in range(5):
+            try:
+                db.conn.execute("""
+                    INSERT OR REPLACE INTO agent_runtime
+                        (agent_id, thread_id, pid, heartbeat_at, started_at, current_step,
+                         id_proprietaire, id_team)
+                    VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated', ?, ?)
+                """, (agent_id, thread_id, os.getpid(), owner, team))
+                db.conn.commit()
+                break
+            except sqlite3.OperationalError as _e:
+                if "locked" not in str(_e).lower():
+                    raise
+                _last_locked = _e
+                _tlock.sleep(0.1 * (_att + 1))
+        else:
+            raise _last_locked or RuntimeError("agent_runtime insert locked")
 
         # Initialiser le shell interne de l'agent
         try:
