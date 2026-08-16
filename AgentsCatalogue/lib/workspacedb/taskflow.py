@@ -909,23 +909,26 @@ def consensus_judge(inputs: dict, home: str) -> dict:
             # 3. Pas de majorité → escalade.
             if tour <= max_tours:
                 escalade = f"NEW autorisé (tour {tour}/{max_tours}) — relancer"
+            elif not interdit_soi:
+                escalade = "pas de vote pour soi — relancer"
             else:
-                escalade = "NEW interdit — grader (0-1) ou hasard"
-                if not interdit_soi:
-                    escalade = "pas de vote pour soi — relancer"
+                # grader les autres (0-1) → meilleure note (simple : la plus
+                # fréquente hors soi, sinon hasard).
+                counts_autres = {c: cnt for c, cnt in comptes.items()
+                                 if c != "NEW"}
+                if inputs.get("ask_human"):
+                    # escalade HUMAIN demandée : on ne tranche pas par
+                    # le hasard, on laisse l'humain décider.
+                    consensus = ""
+                elif counts_autres:
+                    _best = max(counts_autres, key=counts_autres.get)
+                    _best_votes = [c for c, cnt in counts_autres.items()
+                                   if cnt == counts_autres[_best]]
+                    consensus = random.choice(_best_votes) if len(_best_votes) > 1 else _best
                 else:
-                    # grader les autres (0-1) → meilleure note (simple : la plus
-                    # fréquente hors soi, sinon hasard).
-                    counts_autres = {c: cnt for c, cnt in comptes.items()
-                                     if c != "NEW"}
-                    if counts_autres:
-                        _best = max(counts_autres, key=counts_autres.get)
-                        _best_votes = [c for c, cnt in counts_autres.items()
-                                       if cnt == counts_autres[_best]]
-                        consensus = random.choice(_best_votes) if len(_best_votes) > 1 else _best
-                    else:
-                        consensus = random.choice(choix)
-                    escalade = f"grade (0-1) → {consensus}"
+                    consensus = random.choice(choix)
+                escalade = f"grade (0-1) → {consensus}" if consensus else \
+                    "grade (0-1) — équilibre, escalade humain"
         if consensus and consensus in choix:
             qid = int(id_question)
             sc.consensus.set_status(qid, "answered")
@@ -935,10 +938,37 @@ def consensus_judge(inputs: dict, home: str) -> dict:
                     "escalade": "majorité absolue" if not escalade else escalade,
                     "reponses": [r_["contenu"] for r_ in reponses]}
         # Pas de consensus → on garde la question pour relance (tour suivant).
-        sc.consensus.set_status(qid := int(id_question), "awaiting")
+        qid = int(id_question)
+        # ESCALADE HUMAIN : si demandé (ask_human) et plus d'option automatisée,
+        # on signale à l'humain via human_choice (issue_id optionnel).
+        humain = ""
+        if inputs.get("ask_human"):
+            try:
+                import uuid as _uuid
+                _cid = f"hc_{_uuid.uuid4().hex[:12]}"
+                _iid = inputs.get("issue_id") or q.get("issue_id")
+                db.conn.execute(
+                    "INSERT INTO human_choice (choice_id, issue_id, question, "
+                    "options_json, status) VALUES (?, ?, ?, ?, 'pending')",
+                    (_cid, _iid,
+                     f"[consensus {qid}] {q.get('question','')} — pas de "
+                     f"majorité (votes {comptes}). Tranche pour les agents.",
+                     json.dumps([r_["contenu"] for r_ in reponses])))
+                db.conn.commit()
+                humain = f"escalade humain (choice_id={_cid})"
+                if _iid:
+                    db.conn.execute(
+                        "UPDATE issues SET status='blocked', updated_at=datetime('now') "
+                        "WHERE issue_id = ? AND workspace_id = ?",
+                        (_iid, workspace_id))
+                    db.conn.commit()
+            except Exception:
+                humain = "escalade humain (échec human_choice)"
+        sc.consensus.set_status(qid, "awaiting")
         db.close()
         return {"ok": False, "id_question": qid, "consensus": "",
-                "votes": comptes, "escalade": escalade or "relancer",
+                "votes": comptes, "escalade": (escalade or "relancer")
+                + (f" | {humain}" if humain else ""),
                 "reponses": [r_["contenu"] for r_ in reponses]}
     except Exception as e:
         return {"ok": False, "error": str(e)}

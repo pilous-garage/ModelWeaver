@@ -11,6 +11,18 @@ inputs:
   id_question:
     type: integer
     required: true
+  ask_human:
+    type: boolean
+    required: false
+    default: false
+    description: >
+      true = si pas de majorité après le grade (0-1), ESCALADE à l'humain
+      (table human_choice, status pending) au lieu de trancher au hasard.
+      L'humain répond via l'API human_choice/answer.
+  issue_id:
+    type: integer
+    required: false
+    description: "Issue à bloquer pendant la clarification humaine."
 outputs:
   ok:
     type: boolean
