@@ -1224,11 +1224,13 @@ class AgentManager:
         issues_completed = self._complete_done_issues()
 
         # Réveiller les agents endormis qui ont des signaux en attente
+        # (C'EST le canal de réveil : le supervisor pose des signaux wakeup
+        # quand une sub_task devient dispo — pas de waker de scan).
         woken = self._wake_sleeping_agents()
-        # Réveiller les agents quand des tâches workspace sont dispo (greedy)
-        woken_tasks = self._wake_for_tasks()
-        # (le coordinateur dev-chat est DÉPRÉCIÉ depuis le taskflow V0.15 —
-        # le réveil est désactivé pour ne pas créer de wake_up parasite.)
+        # (le waker de tâches _wake_for_tasks est DÉSACTIVÉ : le supervisor
+        # réveille les agents par SIGNAL à l'attribution, pas par scan.)
+        woken_tasks = 0
+        # (le coordinateur dev-chat est DÉPRÉCIÉ — réveil désactivé.)
         woken_coord = 0
 
         # V0.15 taskflow : tick FAILSAFE du task_supervisor (léger, rythme
