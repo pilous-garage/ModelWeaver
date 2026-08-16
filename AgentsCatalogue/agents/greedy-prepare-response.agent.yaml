@@ -47,7 +47,7 @@ entrypoints:
       type: call
       fn: workflow/ask_llm@v1
       inputs:
-        use_case: coding
+        use_case: chat
         agent_id: "{{agent_id}}"
       capture:
         provider_ref: _llm_provider
