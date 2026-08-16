@@ -42,7 +42,13 @@ def _api_token(port: int) -> str:
 
 
 def _build_task(bench: str, n: int):
-    """Construit la tâche Inspect selon le benchmark demandé."""
+    """Construit la tâche Inspect selon le benchmark demandé.
+
+    - "factorial" : mini-dataset de démo trivial (pas de HF).
+    - Tout autre nom : résolu dynamiquement dans inspect_evals (humaneval,
+      mbpp, gsm8k, mmlu, gpqa, swe_bench, ...). Le module doit exposer une
+      fonction du même nom que le module (convention inspect_evals).
+    """
     from inspect_ai import Task
     from inspect_ai.dataset import MemoryDataset, Sample
     from inspect_ai.solver import generate
@@ -67,8 +73,54 @@ def _build_task(bench: str, n: int):
         # Borner au nombre demandé via le solver génération (limit au eval).
         return task
 
-    raise ValueError(f"benchmark inconnu: {bench} "
-                     f"(disponibles: humaneval, mbpp, factorial)")
+    # Benchmark inspect_evals générique : import dynamique du module, appel de
+    # la fonction éponyme.
+    import importlib
+    try:
+        mod = importlib.import_module(f"inspect_evals.{bench}")
+    except ImportError as e:
+        raise ValueError(
+            f"benchmark inconnu: {bench} — n'est pas un module inspect_evals "
+            f"(trouvés: humaneval, mbpp, factorial, + tous inspect_evals). "
+            f"Détail: {e}")
+    fn = getattr(mod, bench, None)
+    if not callable(fn):
+        raise ValueError(f"module inspect_evals.{bench} n'expose pas la "
+                         f"fonction '{bench}()'")
+    return fn()
+
+
+def list_inspect_evals() -> list:
+    """Liste les benchmarks inspect_evals importables (modules avec une
+    fonction éponyme). Retourne les noms triés."""
+    from pathlib import Path
+    pkg = Path(_venv_inspect_evals_dir())
+    out = []
+    if not pkg.is_dir():
+        return out
+    for d in sorted(pkg.iterdir()):
+        if not d.is_dir() or d.name.startswith(("_", ".")):
+            continue
+        init = d / "__init__.py"
+        mod_file = d / f"{d.name}.py"
+        if not init.exists() and not mod_file.exists():
+            continue
+        out.append(d.name)
+    return out
+
+
+def _venv_inspect_evals_dir() -> str:
+    """Chemin du package inspect_evals (venv-bench)."""
+    import os
+    repo = Path(__file__).resolve().parent.parent
+    venv = repo / ".venv-bench" / "lib"
+    if venv.is_dir():
+        for py in sorted(venv.iterdir()):
+            p = py / "site-packages" / "inspect_evals"
+            if p.is_dir():
+                return str(p)
+    return str(repo / ".venv-bench" / "lib" / "python3.12"
+               / "site-packages" / "inspect_evals")
 
 
 def main() -> None:
@@ -79,9 +131,15 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8770)
-    parser.add_argument("--n", type=int, default=5)
+    parser.add_argument("--n", type=int, default=5,
+                        help="nb de problèmes (limit). Alias --max-prompts.")
+    parser.add_argument("--max-prompts", type=int, default=0,
+                        help="max de prompts (borne durée alternative à --n).")
     parser.add_argument("--bench", default="humaneval",
-                        choices=["humaneval", "mbpp", "factorial"])
+                        help="benchmark inspect_evals (humaneval, mbpp, gsm8k, "
+                             "mmlu, gpqa, swe_bench... — tout module inspect_evals)")
+    parser.add_argument("--bench-list", action="store_true",
+                        help="liste les benchmarks inspect_evals dispo et sort.")
     parser.add_argument("--proxy", action="store_true",
                         help="utilise le PROXY (modèle mw-proxy) au lieu du "
                              "swarm complet : prompt→ask_llm_autofallback→"
@@ -106,6 +164,15 @@ def main() -> None:
                              "5400 = 90 min — le swarm met 5-30 min par sample)")
     args = parser.parse_args()
 
+    if args.bench_list:
+        print("Benchmarks inspect_evals disponibles :")
+        for b in list_inspect_evals():
+            print(f"  {b}")
+        return
+
+    # --max-prompts alias de --n (borne "max de prompts").
+    n = args.max_prompts or args.n
+
     base_url = f"http://127.0.0.1:{args.port}/v1"
     token = _api_token(args.port)
     if not token:
@@ -124,17 +191,17 @@ def main() -> None:
     model = get_model(f"openai/{_model_name}",
                       base_url=base_url, api_key=token)
 
-    task = _build_task(args.bench, args.n)
+    task = _build_task(args.bench, n)
     # PHASE CANCELLATION préalable : annule les vieilles tâches du workspace
     # pour que le swarm ne traite QUE le benchmark (les tâches résiduelles
     # polluent le picker et détournent les greedy).
     _cancel_workspace("mw-llm-code",
                       reason="reset avant benchmark inspect (phase cancellation)")
-    print(f"→ évaluation {args.bench} x{args.n} (sandbox={args.sandbox}, "
+    print(f"→ évaluation {args.bench} x{n} (sandbox={args.sandbox}, "
           f"max_samples={args.max_parallel}, time_limit={args.time_limit}s, "
           "peut être long : le swarm orchestre des agents réels)…")
     try:
-        result = inspect_eval(task, model=model, limit=args.n,
+        result = inspect_eval(task, model=model, limit=n,
                               sample_shuffle=args.sample_shuffle or None,
                               sandbox=args.sandbox,
                               max_samples=args.max_parallel,
@@ -144,14 +211,7 @@ def main() -> None:
         _cancel_workspace("mw-llm-code",
                           reason="benchmark inspect interrompu")
         return
-    for r in result:
-        st = getattr(r, "status", "?")
-        sc = getattr(getattr(r, "results", None), "score", None)
-        acc = sc.accuracy if sc else float("nan")
-        answered = sc.total_answered if sc else 0
-        nm = getattr(getattr(r, "eval", None), "model", "?")
-        print(f"\n[score] {nm} : {st} "
-              f"| accuracy={acc:.2f} ({answered} réponses)")
+    _print_report(result)
     # PHASE CANCELLATION UNIQUEMENT si l'évaluation a échoué (statut non
     # completed) ou sur interruption. Si elle a réussi, on laisse les sessions
     # et le swarm finir de travailler au besoin — annuler casserait un run qui
@@ -161,6 +221,34 @@ def main() -> None:
     if failed:
         _cancel_workspace("mw-llm-code",
                           reason="benchmark inspect en échec (phase cancellation)")
+
+
+def _print_report(result) -> None:
+    """Affiche le rapport propre depuis l'objet inspect result.
+
+    Le format inspect a changé : les scores sont dans results.scores[]
+    (EvalScore) avec metrics = {nom: {value}}. Ancien champ results.score est
+    déprécié/None → l'affichage 'accuracy=nan' du runner original.
+    """
+    for r in result:
+        st = getattr(r, "status", "?")
+        nm = getattr(getattr(r, "eval", None), "model", "?")
+        print(f"\n[rapport] {nm} : {st}")
+        scored = unscored = 0
+        scores = getattr(getattr(r, "results", None), "scores", None)
+        if scores:
+            for s in scores:
+                name = getattr(s, "name", "?")
+                metrics = getattr(s, "metrics", {}) or {}
+                scored = getattr(s, "scored_samples", 0)
+                unscored = getattr(s, "unscored_samples", 0)
+                parts = [f"  {name} ({scored} samples)"]
+                for mname, m in metrics.items():
+                    val = m.get("value") if isinstance(m, dict) else getattr(m, "value", "?")
+                    parts.append(f"    {mname} = {val:.4f}" if isinstance(val, float)
+                                 else f"    {mname} = {val}")
+                print("\n".join(parts))
+        print(f"  total: {scored} répondus / {scored + unscored}")
 
 
 def _cancel_workspace(workspace: str, reason: str = "") -> None:
