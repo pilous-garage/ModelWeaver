@@ -273,7 +273,11 @@ class TaskSupervisor:
                         task_id=tid, sub_task_type="respond",
                         difficulty="easy", status="unattributed",
                         team_id=team_id,
-                        repo=task.get("repo", ""), branch=task.get("branch", ""))
+                        repo=task.get("repo", ""), branch=task.get("branch", ""),
+                        # La question est dans la description de la TÂCHE →
+                        # le respond la reçoit pour pouvoir répondre.
+                        description=(task.get("title") or "") + "\n"
+                                    + (task.get("description") or ""))
                 continue
             open_ = sc.conn.execute(
                 "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
@@ -292,7 +296,9 @@ class TaskSupervisor:
                         task_id=tid, sub_task_type="respond",
                         difficulty="easy", status="unattributed",
                         team_id=team_id,
-                        repo=task.get("repo", ""), branch=task.get("branch", ""))
+                        repo=task.get("repo", ""), branch=task.get("branch", ""),
+                        description=(task.get("title") or "") + "\n"
+                                    + (task.get("description") or ""))
                     continue  # attend le prepare-response
             sc.tasks.update(tid, status="supervised", tag=task.get("tag") or "ok")
             sc.conn.execute(
