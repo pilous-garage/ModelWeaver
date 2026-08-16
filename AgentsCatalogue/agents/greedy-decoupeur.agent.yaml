@@ -123,6 +123,12 @@ entrypoints:
           OU cas simple (rien à découper) : types: [] + difficulty
           (easy|medium|hard|expert). Fournis TOUJOURS `analyse` (ton rapport).
         - workspace/ask_intel@v1 : manque d'info → intels précis à chercher.
+
+        DÉCISION : si la demande est SIMPLE — question factuelle, calcul
+        arithmétique, réponse courte, texte à produire SANS code — tu
+        CLÔTURES en cas simple (types: [] + difficulty), tu ne découpes PAS en
+        coding. La découpe en coding est réservée aux tâches qui exigent
+        réellement écrire/modifier du code.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
