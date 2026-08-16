@@ -79,8 +79,17 @@ def op_openai_chat_completions(params: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(params.get("files"), dict):
         files.update(params.get("files"))
     try:
-        from services.swarm_llm_manager import run_completion
-        res = run_completion(prompt, files=files or None)
+        # MODE PROXY : modèle demandé contenant "proxy"/"fallback" → l'agent
+        # proxy_llm_fallback répond (ask_llm si pas de modèle + bridge direct),
+        # pas le swarm complet. Idéal pour diagnostiquer le benchmark.
+        _ml = (model or "").lower()
+        if "proxy" in _ml or "fallback" in _ml or "direct" in _ml:
+            from services.swarm_llm_manager import run_proxy_completion
+            res = run_proxy_completion(prompt, model=model,
+                                       use_case=params.get("use_case", "chat"))
+        else:
+            from services.swarm_llm_manager import run_completion
+            res = run_completion(prompt, files=files or None)
     except Exception as e:  # noqa: BLE001
         return {"ok": False,
                 "error": {"message": str(e), "type": "server_error"}}

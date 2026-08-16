@@ -347,3 +347,83 @@ def _taskflow_reply(task_id: int, response: Any = None,
                   "task_id": task_id,
                   "requete_id": requete_id},
     }
+
+
+def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
+                         use_case: str = "chat") -> Dict[str, Any]:
+    """Réponse OpenAI DIRECTE via l'agent proxy_llm_fallback (sans swarm).
+
+    Le proxy simule un endpoint LLM unique : ask_llm (sélection du modèle
+    selon use_case + scoring) → bridge (appel direct) → réponse formatée
+    /chat/completions. TOUT est loggé (prompt, allocation, réponse) :
+      - {agent_home}/<id>/proxy_llm.log (par le skill)
+      - ~/.modelweaver/logs/swarm_exchange.jsonl (kind=proxy_*)
+
+    DIAGNOSTIC benchmark : si le proxy répond correctement mais le benchmark
+    est à 0, le problème est la CONCEPTION prompt/réponse (format attendu vs
+    produit). Si le proxy échoue, c'est l'allocation/ask_llm.
+    """
+    t0 = time.monotonic()
+    _log_exchange("proxy_request", {"prompt": (prompt or "")[:2000],
+                                    "model": model, "use_case": use_case})
+    try:
+        from services.skill_manager import call_skill
+        # 1. ask_llm : sélection d'un modèle (scoring pénalisant + fallback).
+        alloc = call_skill("ask_llm", {"use_case": use_case}, home=PROXY_HOME)
+        if not alloc.get("ok") or not alloc.get("model_ref"):
+            err = alloc.get("error", "aucun modèle alloué")
+            _log_exchange("proxy_alloc_error", {"error": err})
+            return {"ok": False, "error": err}
+        p_ref = alloc["provider_ref"]
+        m_ref = alloc["model_ref"]
+        _log_exchange("proxy_alloc", {"provider": p_ref, "model": m_ref})
+        # 2. bridge : envoie la prompt et récupère la réponse (retry autre
+        #    modèle sur échec).
+        r = call_skill("ask_llm_with_prompt", {
+            "use_case": use_case, "prompt": prompt,
+            "max_essais": 3, "timeout": 90,
+        }, home=PROXY_HOME)
+        if not r.get("ok") or not r.get("response"):
+            err = r.get("error", "réponse vide")
+            _log_exchange("proxy_call_error", {"error": err})
+            return {"ok": False, "error": err}
+        content = r["response"]
+        # 3. format OpenAI.
+        resp = {
+            "ok": True,
+            "object": "chat.completion",
+            "model": model or "proxy_llm_fallback",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": content},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0,
+                      "completion_tokens": max(1, len(content) // 4),
+                      "total_tokens": max(1, len(content) // 4)},
+            "proxy": {"provider": p_ref, "model_real": m_ref,
+                      "duration_ms": int((time.monotonic() - t0) * 1000)},
+        }
+        _log_exchange("proxy_response", {"content": content[:2000],
+                                         "model_real": m_ref})
+        # Log local {home}/proxy_llm.log (prompt → allocation → réponse).
+        try:
+            from pathlib import Path
+            _p = Path(PROXY_HOME) / "proxy_llm.log"
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            with open(_p, "a", encoding="utf-8") as _fh:
+                _fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                          f"prompt: {prompt[:500]}\n")
+                _fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                          f"alloc: {p_ref}/{m_ref}\n")
+                _fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                          f"response: {content[:500]}\n")
+        except Exception:
+            pass
+        return resp
+    except Exception as e:  # noqa: BLE001
+        _log_exchange("proxy_error", {"error": str(e)})
+        return {"ok": False, "error": str(e)}
+
+
+# Home du proxy (log dédié {home}/proxy_llm.log). Un répertoire stable permet
+# de retrouver les logs du proxy par rapport aux runs des agents.
+PROXY_HOME = str(MW_HOME / "agent_home" / "proxy_llm_fallback")
