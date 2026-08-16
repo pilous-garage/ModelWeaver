@@ -476,6 +476,12 @@ members:
     occupation: continue
     resources:
       llm: true
+  - agent_name: supervisor
+    ref: supervisor
+    role: supervisor
+    occupation: continue
+    resources:
+      llm: false
 
 resources:
   budget_per_hour: 100

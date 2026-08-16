@@ -1,0 +1,28 @@
+name: supervisor/relay@v1
+category: supervisor
+description: >
+  Relay — step de l'AGENT task_supervisor (ordonnancement des tâches sans LLM) :
+  supervise une passe du taskflow pour le workspace/team de l'agent
+  (unattributed→assigned→doing→done→supervised) et pose des signaux wakeup
+  aux agents capables quand une sub_task devient dispo.
+inputs:
+  workspace_id:
+    type: string
+    required: false
+  team_id:
+    type: integer
+    required: false
+outputs:
+  ok:
+    type: boolean
+  released:
+    type: integer
+  supervised:
+    type: integer
+  created:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: supervisor.supervisor.relay

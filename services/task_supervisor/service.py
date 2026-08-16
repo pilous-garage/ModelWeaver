@@ -474,40 +474,4 @@ def _level_rank(level: str) -> int:
         str(level or "").strip().lower(), 1)
 
 
-def run_service(interval: float = 1.0) -> None:
-    """Boucle du task_supervisor PAR TEAM (service à tick).
-
-    Supervise chaque (workspace, team) présent dans sub_tasks :
-      - release des waiting_dependencies satisfaites → unattributed (+ signal)
-      - règles sur les sub_tasks done/cancelled → suivante (+ signal)
-      - finalise les tâches closes → supervised (+ signal respond)
-      - réveille par SIGNAL (wakeup) les agents capables des types dispo.
-
-    C'est LE service qui fait tourner la supervision — l'agent_manager ne
-    supervise plus (signaux + lifecycle seulement).
-    """
-    from services._common import acquire_instance_lock
-    if not acquire_instance_lock("task_supervisor"):
-        return
-    import time as _t
-    sup = TaskSupervisor()
-    while True:
-        try:
-            rows = sup.db.conn.execute(
-                "SELECT DISTINCT workspace_id, team_id FROM sub_tasks "
-                "WHERE team_id != -1").fetchall()
-            for r in rows:
-                try:
-                    sup.supervise_team(r["workspace_id"], r["team_id"])
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        _t.sleep(interval)
-
-
-if __name__ == "__main__":
-    run_service()
-
-
 __all__ = ["TaskSupervisor", "_level_rank"]
