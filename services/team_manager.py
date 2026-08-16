@@ -58,6 +58,13 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         # spec n'en définit plus → allocation automatique par le LLMManager).
         updates = ["resources_json = ?"]
         params = [resources_json]
+        # L'agent SUPERVISOR doit toujours connaître son workspace/team
+        # (pas de pick) → on injecte/maj variables_json.
+        if workspace_id and effective_role == "supervisor":
+            import json as _json
+            updates.append("variables_json = ?")
+            params.append(_json.dumps(
+                {"workspace_id": workspace_id, "team_id": team_id}))
         # Mettre à jour config_json si le spec définit un config (workflow…)
         if spec.config:
             updates.append("config_json = ?")
