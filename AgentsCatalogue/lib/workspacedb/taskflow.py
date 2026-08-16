@@ -464,7 +464,15 @@ def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
     (clone du repo, checkout de la branche, snapshot du commit de départ) et de
     pousser ses livrables sur la bonne branche à la fin. workspace_id est aussi
     injecté : l'agent greedy doit connaître le workspace du run pour les steps
-    suivants (ask_intel/sub_task_done reçoivent {{workspace_id}})."""
+    suivants (ask_intel/sub_task_done reçoivent {{workspace_id}}).
+
+    Variables pour le respond (réponse finale) :
+      - task_message : le MESSAGE ORIGINAL (la question de l'utilisateur) —
+        « Réponds au message : {{task_message}} ».
+      - task_context : le CONTEXTE ORIGINAL (rapports/produits des autres
+        agents) — fourni tel quel, « Contexte original : {{task_context}} ».
+    Le respond répond au message en s'appuyant sur le contexte, SANS aller-
+    chercher agentic (les outils classiques ne lui sont PAS donnés)."""
     try:
         task = sc.tasks.get(int(task_id))
         if task:
@@ -474,6 +482,24 @@ def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
             payload.setdefault("commit_start",
                                task.get("commit_start") or "")
             payload.setdefault("project_id", task.get("repo") or "mw-swarm")
+            # Message original (la question de l'utilisateur).
+            title = (task.get("title") or "").strip()
+            desc = (task.get("description") or "").strip()
+            msg = title
+            if desc and desc != title:
+                msg = f"{title}\n{desc}".strip()
+            payload["task_message"] = msg
+            # Contexte original : rapports/produits des autres agents.
+            try:
+                parts = []
+                for r in (sc.tasks.get_reports(int(task_id)) or []):
+                    role = r.get("role", "work")
+                    body = str(r.get("content") or "").strip()
+                    if body:
+                        parts.append(f"### {role}\n{body}")
+                payload["task_context"] = "\n\n".join(parts)
+            except Exception:
+                payload["task_context"] = ""
     except Exception:
         pass
     return payload

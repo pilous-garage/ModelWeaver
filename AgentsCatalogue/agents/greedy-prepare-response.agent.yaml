@@ -38,6 +38,8 @@ entrypoints:
         sub_task_id: sub_task_id
         task_id: task_id
         workspace_id: workspace_id
+        task_message: task_message
+        task_context: task_context
         conv_id: _conv_id
       on_error: sleep
       next: ask_llm
@@ -55,24 +57,15 @@ entrypoints:
     - id: do_respond
       type: llm_call
       skill_prompt: |
-        Prépare la réponse finale de la tâche {{task_id}} (sub_task {{sub_task_id}}
-        type respond). Rassemble les livrables (rapports, commits, résumé) en :
-        - un texte final clair qui RÉPOND à la question de la tâche (pour les
-          tâches simple/texte, c'est LA réponse à renvoyer à l'utilisateur ;
-          pour le code, le résumé du travail effectué) ;
-        - la liste des tool_calls effectués ;
-        - un JSON de synthèse (si pertinent).
-        Utilise workspace/sub_task_get@v1 et sub_task_list@v1 pour lire le
-        contexte de la tâche si besoin (PAS d'exploration : la réponse se
-        construit depuis les rapports/livrables existants). Termine par le
-        texte final de réponse uniquement (le step FSM s'occupe de
-        sub_task_done avec ce texte en `rapport`).
+        Réponds au message : {{task_message}}
+        Contexte original : {{task_context}}
+        Termine par le texte final de réponse uniquement (le step FSM s'occupe
+        de sub_task_done avec ce texte en `rapport`).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
       base_tools: false
-      skills: ["workspace/sub_task_get@v1",
-               "workspace/sub_task_list@v1"]
+      skills: []
       max_tokens: 4096
       temperature: 0.4
       output_capture: respond_out
