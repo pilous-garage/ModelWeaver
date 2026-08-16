@@ -49,6 +49,14 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         resources.setdefault("llm_pref", {})["model"] = spec.model_ref
     resources_json = json.dumps(resources)
 
+    # role effectif (avant le row : utilisé pour le supervisor).
+    if isinstance(spec, TeamLeaderSpec):
+        effective_role = role
+        effective_occupation = spec.occupation or occupation
+    else:
+        effective_role = spec.role or role
+        effective_occupation = spec.occupation or occupation
+
     row = db.conn.execute(
         "SELECT agent_id, resources_json FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
@@ -97,13 +105,6 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
                                          catalogue_ref=getattr(spec, "ref", ""))
         if loaded:
             config_json = json.dumps(loaded)
-
-    if isinstance(spec, TeamLeaderSpec):
-        effective_role = role
-        effective_occupation = spec.occupation or occupation
-    else:
-        effective_role = spec.role or role
-        effective_occupation = spec.occupation or occupation
 
     ref = f"agent:{scoped_name}"
     db.conn.execute("""
