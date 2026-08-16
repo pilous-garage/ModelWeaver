@@ -120,7 +120,11 @@ def _call_bridge(p_ref: str, m_ref: str, messages: List[Dict[str, str]],
     temperature = float(inputs.get("temperature", 0.7) or 0.7)
     max_tokens = inputs.get("max_tokens") or None
     timeout = int(inputs.get("timeout", 90) or 90)
-    fallback = bool(inputs.get("resilient", True))
+    # fallback resilient : désactivé si un restrict_llm est fourni — sinon
+    # resilient_chat fait son PROPRE assign_llm (hors allowlist) et peut
+    # choisir un modèle hors liste. Le wrapper gère le fallback (boucle
+    # d'essais + exclusion) en respectant le restrict.
+    fallback = bool(inputs.get("resilient", True)) and not inputs.get("restrict_llm")
     tools = inputs.get("tools") or None
     tool_choice = inputs.get("tool_choice") or None
     bridge = LLMManager(CatalogueDB()).get_bridge()
