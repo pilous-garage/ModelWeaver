@@ -102,6 +102,7 @@ class RuntimeDB:
                     endpoint_id   INTEGER,
                     key_ref       TEXT,
                     model_ref     TEXT,
+                    adresse_id    INTEGER,
                     agent_id      TEXT,
                     sent_at       INTEGER NOT NULL,
                     received_at   INTEGER,
@@ -138,6 +139,7 @@ class RuntimeDB:
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     endpoint_id   INTEGER,
                     model_ref     TEXT,
+                    adresse_id    INTEGER,
                     agent_id      TEXT,
                     requests      INTEGER DEFAULT 0,
                     tokens_in     INTEGER DEFAULT 0,
@@ -191,8 +193,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -208,8 +212,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -225,8 +231,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -242,8 +250,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -259,8 +269,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -276,8 +288,10 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     agent_id        TEXT,
                     requests        INTEGER DEFAULT 0,
+                    success_count   INTEGER DEFAULT 0,
                     tokens_in       INTEGER DEFAULT 0,
                     tokens_out      INTEGER DEFAULT 0,
                     tokens_thinking INTEGER DEFAULT 0,
@@ -298,6 +312,7 @@ class RuntimeDB:
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
                     provider_ref    TEXT NOT NULL,
                     model_ref       TEXT NOT NULL,
+                    adresse_id      INTEGER,
                     seq_start       INTEGER NOT NULL,
                     seq_end         INTEGER,
                     duration_s      INTEGER,
@@ -326,6 +341,7 @@ class RuntimeDB:
                     caller_id       TEXT NOT NULL,
                     provider_ref    TEXT,
                     model_ref       TEXT,
+                    adresse_id      INTEGER,
                     seq_start       INTEGER NOT NULL,
                     seq_end         INTEGER,
                     duration_s      INTEGER,
@@ -364,6 +380,7 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT NOT NULL,
                     model_ref       TEXT NOT NULL,
+                    adresse_id      INTEGER,
                     requests        INTEGER DEFAULT 0,
                     fail_count      INTEGER DEFAULT 0,
                     total_latency_ms REAL DEFAULT 0,
@@ -374,6 +391,7 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT NOT NULL,
                     model_ref       TEXT NOT NULL,
+                    adresse_id      INTEGER,
                     requests        INTEGER DEFAULT 0,
                     fail_count      INTEGER DEFAULT 0,
                     total_latency_ms REAL DEFAULT 0,
@@ -384,6 +402,7 @@ class RuntimeDB:
                     bucket          INTEGER NOT NULL,
                     provider_ref    TEXT NOT NULL,
                     model_ref       TEXT NOT NULL,
+                    adresse_id      INTEGER,
                     requests        INTEGER DEFAULT 0,
                     fail_count      INTEGER DEFAULT 0,
                     total_latency_ms REAL DEFAULT 0,
@@ -397,6 +416,7 @@ class RuntimeDB:
                 CREATE TABLE IF NOT EXISTS score_batch (
                     provider_ref    TEXT NOT NULL,
                     model_ref       TEXT NOT NULL,
+                    adresse_id      INTEGER,
                     requests_5m     INTEGER DEFAULT 0,
                     requests_1h     INTEGER DEFAULT 0,
                     requests_1j     INTEGER DEFAULT 0,
@@ -421,6 +441,11 @@ class RuntimeDB:
                     score_latency   REAL DEFAULT 0,
                     score_etire     REAL DEFAULT 0,
                     score_final     REAL DEFAULT 0,
+                    score_last_5    REAL DEFAULT 0,
+                    score_1h        REAL DEFAULT 0,
+                    score_1d        REAL DEFAULT 0,
+                    score_1w        REAL DEFAULT 0,
+                    score_all       REAL DEFAULT 0,
                     updated_at      INTEGER DEFAULT (strftime('%s','now')),
                     UNIQUE(provider_ref, model_ref)
                 );
@@ -430,14 +455,15 @@ class RuntimeDB:
                 -- Refonte (V0.16) : on stocke des COMPTEURS nb_success / nb_fail
                 -- par bucket (jamais des scores — un bucket vide ≠ succès). Les
                 -- scores de zone sont calculés à la demande par somme :
+                --   score_durée = sqrt((1+succ)/(1+tot)) — chacun ∈ [0,1]
                 --   score_1h = f(Σ 12×5m), score_1d = f(Σ 12×5m + Σ 23×1h),
-                --   score_1w = f(Σ 12×5m + Σ 23×1h + Σ 6×1d)
-                --   f(succ,tot) = (1 + succ) / (1 + tot)
-                -- score_total (0–3) = score_1h + score_1d + score_1w ; à la
-                -- demande score_fail = (score_last_5 + score_total) / 4.
+                --   score_1w = f(Σ 12×5m + Σ 23×1h + Σ 6×1d), score_all = f(cumul)
+                -- score_last_5 = f(5 dernières min, log direct)
+                -- score_total (0–1) = moyenne des 5 scores de zone.
                 CREATE TABLE IF NOT EXISTS model_bucket_counts (
                     provider_ref TEXT NOT NULL,
                     model_ref    TEXT NOT NULL,
+                    adresse_id   INTEGER,
                     s5_succ_0 INTEGER DEFAULT 0, s5_tot_0 INTEGER DEFAULT 0,
                     s5_succ_1 INTEGER DEFAULT 0, s5_tot_1 INTEGER DEFAULT 0,
                     s5_succ_2 INTEGER DEFAULT 0, s5_tot_2 INTEGER DEFAULT 0,
@@ -486,6 +512,7 @@ class RuntimeDB:
                     score_1d      REAL DEFAULT 1.0,
                     score_1w      REAL DEFAULT 1.0,
                     score_all     REAL DEFAULT 1.0,
+                    score_last_5  REAL DEFAULT 1.0,
                     score_total   REAL DEFAULT 4.0,  -- 0..4
                     updated_at    INTEGER DEFAULT (strftime('%s','now')),
                     PRIMARY KEY (provider_ref, model_ref)
@@ -591,6 +618,53 @@ class RuntimeDB:
         except Exception:
             self.conn.rollback()
 
+        # Migration adresse_id : clé de référence vers provider_model_address
+        # (répertoire provider×model). Les tables d'usage/score/log référencent
+        # désormais leur adresse par id (pas par textes).
+        try:
+            for _t in ("real_call_models", "endpoint_model_usage",
+                       "usage_history_1m", "usage_history_15m",
+                       "usage_history_3h", "usage_history_1d",
+                       "usage_history_1w", "usage_history_1mo",
+                       "model_success_runs", "llm_caller_sessions",
+                       "score_batch_blocks_5m", "score_batch_blocks_1h",
+                       "score_batch_blocks_1d", "score_batch",
+                       "model_bucket_counts"):
+                _add_column_if_missing(self.conn, _t, "adresse_id", "INTEGER")
+        except Exception:
+            self.conn.rollback()
+
+        # Migration 5 scores : last_5 / 1h / 1d / 1w / all stockés séparément
+        # (avant : fusionnés en un seul score_fail_rate).
+        try:
+            for _c, _d in (("score_last_5", "REAL DEFAULT 1.0"),
+                           ("score_1h", "REAL DEFAULT 1.0"),
+                           ("score_1d", "REAL DEFAULT 1.0"),
+                           ("score_1w", "REAL DEFAULT 1.0"),
+                           ("score_all", "REAL DEFAULT 1.0")):
+                _add_column_if_missing(self.conn, "model_bucket_counts", _c, _d)
+            for _c, _d in (("score_last_5", "REAL DEFAULT 0"),
+                           ("score_1h", "REAL DEFAULT 0"),
+                           ("score_1d", "REAL DEFAULT 0"),
+                           ("score_1w", "REAL DEFAULT 0"),
+                           ("score_all", "REAL DEFAULT 0")):
+                _add_column_if_missing(self.conn, "score_batch", _c, _d)
+        except Exception:
+            self.conn.rollback()
+
+        # Migration success_count : usage_history_* agrège les appels en batchs
+        # mais ne gardait pas la répartition succès/échec — le scoring des
+        # buckets (model_bucket_counts) ne pouvait pas reconstruire succ/tot
+        # depuis les batchs. On ajoute success_count (le total = requests).
+        try:
+            for _t in ("usage_history_1m", "usage_history_15m",
+                       "usage_history_3h", "usage_history_1d",
+                       "usage_history_1w", "usage_history_1mo"):
+                _add_column_if_missing(self.conn, _t, "success_count",
+                                       "INTEGER DEFAULT 0")
+        except Exception:
+            self.conn.rollback()
+
         self.conn.commit()
 
     def data_version(self) -> int:
@@ -605,11 +679,13 @@ class RuntimeDB:
     def list_responded_models(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Modèles ayant déjà répondu (score_batch), classés par score final.
 
-        Tableau : score benchmark global × score latence × (1 − score_fail).
-        score_fail est le nouveau score des buckets stables (V0.16)."""
+        Tableau : score benchmark global × score latence × score succès (moyenne
+        des 5 fenêtres last_5/1h/1d/1w/all, chacun sqrt((1+succ)/(1+tot)))."""
         rows = self.conn.execute("""
             SELECT provider_ref, model_ref, score_etire, score_fail_rate,
-                   score_latency, score_final, updated_at
+                   score_latency, score_final,
+                   score_last_5, score_1h, score_1d, score_1w, score_all,
+                   updated_at
             FROM score_batch
             WHERE score_final IS NOT NULL
             ORDER BY score_final DESC
@@ -621,7 +697,12 @@ class RuntimeDB:
                 "provider_ref": r["provider_ref"],
                 "score_benchmark": round(float(r["score_etire"] or 0.0), 4),
                 "score_latency": round(float(r["score_latency"] or 0.0), 4),
-                "score_fail_rate": round(float(r["score_fail_rate"] or 0.0), 4),
+                "score_success": round(float(r["score_fail_rate"] or 0.0), 4),
+                "score_last_5": round(float(r["score_last_5"] or 0.0), 4),
+                "score_1h": round(float(r["score_1h"] or 0.0), 4),
+                "score_1d": round(float(r["score_1d"] or 0.0), 4),
+                "score_1w": round(float(r["score_1w"] or 0.0), 4),
+                "score_all": round(float(r["score_all"] or 0.0), 4),
                 "score_total": round(float(r["score_final"] or 0.0), 4),
             })
         out.sort(key=lambda x: x["score_total"], reverse=True)

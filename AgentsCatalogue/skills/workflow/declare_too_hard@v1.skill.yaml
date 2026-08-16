@@ -1,0 +1,36 @@
+name: workflow/declare_too_hard@v1
+category: workflow
+description: >
+  DÉCLARE que la tâche/step courante est TROP DIFFICILE (MÉCANIQUE, pas de LLM).
+  À utiliser quand tu as déjà fait plusieurs tentatives sans succès : au lieu de
+  boucler, déclare trop difficile avec une raison claire. Le système prendra le
+  relais (bump de difficulté, re-découpe, ou vérification par un autre agent).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  task_id:
+    type: integer
+    required: false
+    default: null
+    description: Tâche concernée (si applicable)
+  sub_task_id:
+    type: integer
+    required: false
+    default: null
+    description: Sub_task concernée (si applicable)
+  reason:
+    type: string
+    required: true
+    description: Pourquoi c'est trop difficile (précis et factuel)
+outputs:
+  ok:
+    type: boolean
+  too_hard:
+    type: boolean
+    description: true (toujours)
+  reason:
+    type: string
+implementation:
+  type: python
+  function: workflow.declare_too_hard.exec

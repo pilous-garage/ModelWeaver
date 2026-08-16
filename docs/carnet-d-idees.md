@@ -498,3 +498,34 @@ modèles, réglages des workflows. C'est un second niveau d'évaluation, à part
   le benchmark par expérience.
 - L'évaluation agent pourrait croiser : difficulté assignée vs difficulté perçue,
   pertinence de la découpe, choix du modèle selon la tâche.
+
+## Idée 15 — Swarm-as-llm : repo par requête + team_leader de management (LLM simple)
+
+**Statut** : idée notée, NON implémenté. Source : session benchmark HumanEval (2026-08-15).
+
+### Problème
+Le swarm-as-llm (`run_completion`) ne crée **aucun repo** pour une requête
+(`task.repo` vide). Conséquences :
+- les codeurs n'ont pas de repo où écrire → aucun fichier produit → le respond
+  et les explorers bouclent sur des « livrables inexistants » (`git log` échoue,
+  `ls` vide), chaque sample benchmark prend 10-60 min.
+- la réponse finale est un résumé texte, pas le code produit.
+
+### Solution : repo par requête (géré par l'agent endpoint)
+- `run_completion` (l'agent qui sert l'endpoint, as_llm_leader / un service)
+  crée un repo de session `sessions/<requete_id>` via `create_session` (déjà
+  existant !) avec la prompt seed + fichiers fournis, puis rattache le repo à
+  la tâche (`task.repo = sessions/<requete_id>`).
+- Les codeurs `git_clone sessions/<requete_id>`, écrivent, commitent.
+- `_taskflow_reply` construit la réponse = **prompt originelle + `git diff`
+  entre le commit seed (début) et le commit final (où la réponse se prépare)**.
+  On peut même se servir du contexte pré-généré (le diff) pour répondre
+  directement, sans llm_call coûteux.
+
+### Évolution : team_leader de management sur un LLM simple
+- Actuellement `as_llm_leader` est team_leader SANS LLM (mécanique pure).
+- Idée : un AUTRE team_leader dédié au MANAGEMENT (ask_auth, arbitrage,
+  décision simple) sur un LLM très simple/rapide, permettant de BIFURQUER
+  quand la question est assez simple pour ne pas justifier le swarm complet
+  (consensus direct). Ex. une requête « dis bonjour » ne devrait pas déclencher
+  analysis → coding → review → respond ; un leader simple répondrait direct.

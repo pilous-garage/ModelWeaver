@@ -1,0 +1,31 @@
+name: workflow/reset_variable_after_change_task@v1
+category: workflow
+description: >
+  Réinitialise les variables de run dépendantes de la TÂCHE quand l'agent
+  change de tâche (MÉCANIQUE, pas de LLM). Quand l'agent ne REPREND pas une
+  sub_task doing (resumed=False), les variables du cycle précédent (repo,
+  conv, rapports, sorties de steps) doivent être purgées — sinon elles
+  polluent le nouveau travail. Si l'agent reprend une doing (resumed=True),
+  on ne reset RIEN (on reprend où on en était).
+inputs:
+  agent_id:
+    type: string
+    required: false
+    description: Agent dont on purge les variables (défaut vide, résolu depuis le home)
+  keys:
+    type: list
+    required: false
+    default: []
+    description: >
+      Liste de clés de variables à purger. Si vide, purge les clés par défaut
+      du cycle (repo_eff, work_out, respond_out, review_out, _conv_id,
+      _last_call_error, _last_call_ok).
+outputs:
+  ok:
+    type: boolean
+  cleared:
+    type: list
+    description: Clés effectivement purgées
+implementation:
+  type: python
+  function: workflow.reset_variable_after_change_task.exec

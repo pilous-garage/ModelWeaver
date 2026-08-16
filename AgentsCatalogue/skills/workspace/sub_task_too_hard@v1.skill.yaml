@@ -1,0 +1,29 @@
+name: workspace/sub_task_too_hard@v1
+category: workspace
+description: >
+  ABANDON — l'agent juge sa sub_task TROP DIFFICILE (MÉCANIQUE, pas de LLM).
+  Passe la sub_task doing → too_hard (avec reason + compteur incrémenté). Le
+  supervisor décidera ensuite : bump_difficulty + re-attribution, ou
+  re-découpe (analysis) si on a déjà trop tenté (limite de boucle).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  sub_task_id:
+    type: integer
+    required: true
+  reason:
+    type: string
+    required: false
+    default: ''
+    description: Pourquoi c'est trop difficile (ex. "conflit irrésoluble", "outil absent")
+outputs:
+  ok:
+    type: boolean
+  sub_task:
+    type: object
+  too_hard_count:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.sub_task_too_hard

@@ -32,8 +32,8 @@ members:
     resources:
       llm: false
 
-  # ── DÉCOUPEUR : découpe les demandes en tâches. Déclare son sous-agent
-  # EXPLORATEUR (par référence) : instancié avec le home du découpeur. ──
+  # ── DÉCOUPEURS : découpent les demandes en tâches (plusieurs pour absorber
+  # le parallélisme des benchmarks). Déclarent leur sous-agent EXPLORATEUR. ──
   - agent_name: decoupeur
     ref: greedy-decoupeur
     role: architecte
@@ -47,8 +47,61 @@ members:
         occupation: continue
         resources:
           llm: true
+  - agent_name: decoupeur-2
+    ref: greedy-decoupeur
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: decoupeur-3
+    ref: greedy-decoupeur
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: decoupeur-4
+    ref: greedy-decoupeur
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: decoupeur-5
+    ref: greedy-decoupeur
+    role: architecte
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
-  # ── CODEURS : produisent le code (difficulté variable) ──
+  # ── CODEURS : produisent le code (difficulté variable). 8 pour absorber
+  # le parallélisme des benchmarks (le goulot est la production de code). ──
   - agent_name: coder-junior
     ref: greedy-coder
     role: codeur
@@ -75,9 +128,139 @@ members:
         occupation: continue
         resources:
           llm: true
+  - agent_name: coder-3
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: coder-4
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: coder-5
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: coder-6
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: coder-7
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: coder-8
+    ref: greedy-coder
+    role: codeur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
-  # ── TEST / REVIEW / MERGE : validations et intégration ──
+  # ── TEST / REVIEW / MERGE : validations et intégration (5 de chaque) ──
   - agent_name: tester
+    ref: greedy-tester
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: tester-2
+    ref: greedy-tester
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: tester-3
+    ref: greedy-tester
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: tester-4
+    ref: greedy-tester
+    role: test_runner
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: tester-5
     ref: greedy-tester
     role: test_runner
     occupation: continue
@@ -103,7 +286,111 @@ members:
         occupation: continue
         resources:
           llm: true
+  - agent_name: reviewer-2
+    ref: greedy-reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: reviewer-3
+    ref: greedy-reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: reviewer-4
+    ref: greedy-reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: reviewer-5
+    ref: greedy-reviewer
+    role: relecteur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
   - agent_name: merger
+    ref: greedy-merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: merger-2
+    ref: greedy-merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: merger-3
+    ref: greedy-merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: merger-4
+    ref: greedy-merger
+    role: orchestrateur
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: merger-5
     ref: greedy-merger
     role: orchestrateur
     occupation: continue
@@ -131,10 +418,62 @@ members:
         occupation: continue
         resources:
           llm: true
+  - agent_name: prepare-response-2
+    ref: greedy-prepare-response
+    role: prepare_response
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: prepare-response-3
+    ref: greedy-prepare-response
+    role: prepare_response
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: prepare-response-4
+    ref: greedy-prepare-response
+    role: prepare_response
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
+  - agent_name: prepare-response-5
+    ref: greedy-prepare-response
+    role: prepare_response
+    occupation: continue
+    resources:
+      llm: true
+    sub_agents:
+      - agent_name: explore
+        ref: greedy-explore
+        role: explorateur
+        occupation: continue
+        resources:
+          llm: true
 
 resources:
   budget_per_hour: 100
-  max_concurrent: 8
+  max_concurrent: 20
   llm_quota_per_day: 1000
 
 # ── Task_supervisor : tableau de règles (in_type, in_tag) → (out_type, out_tag) ──

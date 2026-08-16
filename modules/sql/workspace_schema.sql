@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS sub_tasks (
     description  TEXT DEFAULT '',          -- consigne/description de l'étape (ex. intels de l'exploration)
     assigned_to  TEXT DEFAULT '',
     freedby      TEXT DEFAULT '',
+    priority     INTEGER DEFAULT 0,        -- score de pioche (le supervisor met à jour)
+    too_hard_count INTEGER DEFAULT 0,      -- nb d'abandons (limite de boucle too_hard)
+    too_hard_reason TEXT DEFAULT '',       -- dernière raison d'abandon
     supervised   INTEGER DEFAULT 0,        -- groupe complet clos par le supervisor
     repo         TEXT DEFAULT '',
     branch       TEXT DEFAULT '',
@@ -107,6 +110,8 @@ CREATE INDEX IF NOT EXISTS idx_subtasks_team_status
     ON sub_tasks(team_id, status, supervised, sub_task_type);
 CREATE INDEX IF NOT EXISTS idx_subtasks_assigned
     ON sub_tasks(assigned_to, status);
+CREATE INDEX IF NOT EXISTS idx_subtasks_assigned_priority
+    ON sub_tasks(assigned_to, status, priority);
 CREATE INDEX IF NOT EXISTS idx_subtasks_task
     ON sub_tasks(task_id);
 CREATE INDEX IF NOT EXISTS idx_subtasks_workspace_status

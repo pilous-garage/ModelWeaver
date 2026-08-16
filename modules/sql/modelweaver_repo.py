@@ -179,6 +179,14 @@ class ModelWeaverDB(AgentDBMixin, OrchestrationDBMixin):
         except Exception as e:
             self.conn.rollback()
             print(f"⚠️  Migration classes_outils (local) ignorée: {e}")
+        # Migration adresse_id : tables usage écrites par le collector local
+        # (real_call_models / endpoint_model_usage) référencent l'adresse par id.
+        try:
+            _add_column_if_missing(self.conn, "real_call_models", "adresse_id", "INTEGER")
+            _add_column_if_missing(self.conn, "endpoint_model_usage", "adresse_id", "INTEGER")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
         # Commit final : ferme la transaction implicite du DDL ci-dessus
         # (sinon le lock d'écriture WAL reste tenu par le process toute sa vie).
         try:

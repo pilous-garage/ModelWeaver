@@ -1798,7 +1798,10 @@ class AgentManager:
                     "  SELECT 1 FROM sub_task_dependencies d "
                     "  JOIN sub_tasks p ON p.sub_task_id = d.parent_id "
                     "  WHERE d.child_id = s.sub_task_id "
-                    "    AND (p.status != d.required_state "
+                    "    AND ("
+                    "      NOT (p.status = d.required_state "
+                    "           OR (p.status = 'supervised' "
+                    "               AND d.required_state = 'done')) "
                     "      OR (d.required_tag != '' "
                     "          AND p.tag != d.required_tag))) "
                 ).fetchall()}
@@ -2065,6 +2068,27 @@ class AgentManager:
             # grossit sans fin (les codeurs produisent plus vite que 2-3
             # reviewers ne valident). Les reviewers en premier, puis le reste.
             _reviewer_first = "1" if next_tokens else "0"
+            # Tri : les relecteurs d'abord (si backlog review), puis les agents
+            # dont le rôle a une sub_task DISPO (sub_work) — sinon le LIMIT 40
+            # place les agents d'autres teams/explorateurs en tête et les
+            # greedy utiles sont écartés (le swarm reste inactif).
+            _role_priority = {}
+            for _w, _t, _s in sub_work:
+                for _rt, _st in ROLE_TO_SUBTASK.items():
+                    if _st == _s:
+                        _role_priority[_rt] = 1
+            # Team llm-code d'abord : l'amorce sert le swarm actif (benchmark).
+            # Sans ça, les agents d'autres teams (installer, bug-busters…)
+            # épuisent le LIMIT 40 + _target avant les greedy du swarm.
+            _order_cases = [f"CASE WHEN name LIKE 'team:llm-code/%' "
+                            f"THEN 1 ELSE 0 END"]
+            _order_cases.append(
+                f"CASE WHEN role_type = 'relecteur' "
+                f"THEN {_reviewer_first} ELSE 0 END")
+            for _rt, _prio in _role_priority.items():
+                _order_cases.append(
+                    f"CASE WHEN role_type = '{_rt}' THEN {_prio} ELSE 0 END")
+            _order_by = " DESC,".join(_order_cases) + " DESC, agent_id ASC"
             rows = self.db.conn.execute(f"""
                 SELECT agent_id, name, role_type FROM agents
                 WHERE (config_json LIKE '%"pick"%'
@@ -2075,7 +2099,7 @@ class AgentManager:
                   AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
                   AND agent_id NOT IN (SELECT agent_id FROM wait_for WHERE status='waiting')
                   AND status NOT IN ('TERMINATED', 'STOPPED')
-                ORDER BY CASE WHEN role_type = 'relecteur' THEN {_reviewer_first} ELSE 0 END DESC
+                ORDER BY {_order_by}
                 LIMIT 40
             """).fetchall()
             # Cible d'actifs DYNAMIQUE : si un backlog review existe, garantir

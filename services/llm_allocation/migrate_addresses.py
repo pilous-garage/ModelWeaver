@@ -66,12 +66,14 @@ def _resolve_rows(cat, provider_ref, model_ref):
     return None
 
 
-def migrate(cat=None, dry_run: bool = False) -> dict:
+def migrate(cat=None, dry_run: bool = False,
+            db_path=None, tables=None) -> dict:
     cat = cat or CatalogueDB()
     ensure_addresses(cat)
-    rt_path = runtime_db_path()
+    db_path = db_path or runtime_db_path()
+    tables = tables or TABLES
     import sqlite3
-    rt = sqlite3.connect(rt_path)
+    rt = sqlite3.connect(db_path)
     rt.row_factory = sqlite3.Row
 
     # cache de résolution (provider_ref/model_ref → adresse_id)
@@ -79,7 +81,7 @@ def migrate(cat=None, dry_run: bool = False) -> dict:
     migrated = skipped = orphaned = 0
     orphan_rows = []
 
-    for table, _has_agent in TABLES:
+    for table, _has_agent in tables:
         cols = [c[1] for c in rt.execute(f"PRAGMA table_info({table})").fetchall()]
         has_p = "provider_ref" in cols
         has_m = "model_ref" in cols
@@ -139,5 +141,13 @@ if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
     cat = CatalogueDB()
     print("Table adresse :", ensure_addresses(cat))
-    print("Migration", "(dry-run)" if dry else "", ":", migrate(cat, dry_run=dry))
+    print("Migration runtime", "(dry-run)" if dry else "", ":",
+          migrate(cat, dry_run=dry))
+    # Tables usage écrites par le collector local (modelweaver.db).
+    from modules.sql.modelweaver_repo import _default_local_db
+    local_tables = [t for t in TABLES if t[0] in ("real_call_models",
+                                                   "endpoint_model_usage")]
+    print("Migration modelweaver", "(dry-run)" if dry else "", ":",
+          migrate(cat, dry_run=dry, db_path=_default_local_db(),
+                  tables=local_tables))
     cat.close()

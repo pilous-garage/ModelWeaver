@@ -651,10 +651,13 @@ class FSMInterpreter:
         _v_tid = result.variables.get("task_id")
         for _name, _args in parsed:
             _trace_tools.append(f"{_name}(translated)")
-            # Injection contexte : workspace_id/task_id souvent vides ou 0.
-            if _v_ws and (not _args.get("workspace_id")
-                          or str(_args.get("workspace_id")) in ("0",)
-                          or str(_args.get("workspace_id")) == str(_v_tid)):
+            # Injection contexte : workspace_id/task_id souvent vides, 0,
+            # "default" ou confondus avec le task_id (le modèle ne connaît pas
+            # le vrai workspace du run).
+            _ws_v = _args.get("workspace_id")
+            if _v_ws and (_ws_v is None
+                          or str(_ws_v) in ("0", "", "default", "default_ws")
+                          or str(_ws_v) == str(_v_tid)):
                 _args["workspace_id"] = _v_ws
             if _v_tid and _args.get("task_id") in (None, 0, "0", ""):
                 _args["task_id"] = _v_tid
@@ -734,6 +737,19 @@ class FSMInterpreter:
         else:
             msgs.extend(result.messages)
 
+        # ── AUTO declare_too_hard : seuils de boucle (défaut 5/20) ──
+        _too_hard_after = int(step.get("too_hard_after", 5) or 5)
+        _too_check_after = int(step.get("too_check_after", 20) or 20)
+        _it = result.iterations
+        if _it >= _too_hard_after and _it < _too_check_after and \
+                str(step.get("agentic", "maybe")).lower() != "false":
+            _hint = (f"[Boucle {_it}] Vous avez déjà fait {_it} requêtes sur "
+                     f"cette étape sans conclure. Si c'est trop difficile ou "
+                     f"que vous êtes bloqué(e), utilisez l'outil "
+                     f"workflow_declare_too_hard_v1 (reason précise) au lieu "
+                     f"de répéter les mêmes tentatives.")
+            msgs.append({"role": "user", "content": _hint})
+
         p_ref = step.get("provider_ref") or provider_ref
         m_ref = step.get("model_ref") or model_ref
         # Résolution des placeholders {{_llm_provider}} / {{_llm_model}} : le
@@ -796,9 +812,39 @@ class FSMInterpreter:
                 if _agentic_req == "false":
                     tools = []
                 else:
+                    # Bundle DYNAMIQUE : si le step référence un bundle nommé
+                    # (bundle: <nom>), on utilise l'état courant du run
+                    # (variables["_bundle_<nom>"] = liste de refs de skills),
+                    # enrichi par les bundles/skills statiques du step. Les
+                    # steps bundle_init/add/remove/reset pilotent cet état.
+                    dyn_skills = list(step.get("skills") or [])
+                    _bname = step.get("bundle")
+                    if _bname:
+                        _bstate = result.variables.get(f"_bundle_{_bname}")
+                        if isinstance(_bstate, list):
+                            dyn_skills = _bstate + [s for s in dyn_skills
+                                                    if s not in _bstate]
                     tools = self._build_llm_tools(
-                        step.get("bundles"), step.get("skills"),
+                        step.get("bundles"), dyn_skills,
                         base=bool(step.get("base_tools", True)))
+                # ── AUTO declare_too_hard : injecte le tool à partir du
+                # seuil too_hard_after (5) ; au-delà de too_check_after (20),
+                # auto too_check → pour l'instant too_hard direct (l'agent
+                # n'a pas conclu à temps). Seuils calculés plus haut.
+                if tools and _it >= _too_hard_after and _agentic_req != "false":
+                    try:
+                        th_tool = self._build_llm_tools(
+                            [], ["workflow/declare_too_hard@v1"], base=False)
+                        if th_tool:
+                            th_name = th_tool[0].get("function", {}).get("name", "")
+                            if not any(
+                                t.get("function", {}).get("name") == th_name
+                                for t in tools):
+                                tools = tools + th_tool
+                            if _it >= _too_check_after:
+                                result.variables["_auto_too_hard"] = True
+                    except Exception:
+                        pass
                 # DÉCISION du mode agentic (au niveau BRIDGE, via capacites) :
                 #   native      → tools API (agentic prouvé ≥ 0.7)
                 #   translation → tools dans le prompt (###tool_call:...###),
@@ -1023,9 +1069,11 @@ class FSMInterpreter:
                         _v_ws = result.variables.get("workspace_id", "")
                         _v_tid = result.variables.get("task_id")
                         _v_sid = result.variables.get("sub_task_id")
-                        if _v_ws and (not raw_args.get("workspace_id")
-                                      or str(raw_args.get("workspace_id")) in ("0",)
-                                      or str(raw_args.get("workspace_id")) == str(_v_tid)):
+                        _ws_raw = raw_args.get("workspace_id")
+                        if _v_ws and (_ws_raw is None
+                                      or str(_ws_raw) in ("0", "", "default",
+                                                          "default_ws")
+                                      or str(_ws_raw) == str(_v_tid)):
                             raw_args["workspace_id"] = _v_ws
                         if _agent_id and not raw_args.get("agent_id"):
                             raw_args["agent_id"] = _agent_id
@@ -1103,6 +1151,32 @@ class FSMInterpreter:
             return False
         except Exception as e:
             return self._branch_on_error(step, result, f"LLM call error: {e}")
+
+        # ── AUTO too_hard : l'agent n'a pas conclu avant too_check_after (20).
+        # Pour l'instant on déclare directement too_hard (le too_check — faire
+        # vérifier par un autre agent si ça avance — viendra ensuite).
+        if result.variables.get("_auto_too_hard"):
+            result.variables["_auto_too_hard"] = False
+            _sid = result.variables.get("sub_task_id")
+            _ws = result.variables.get("workspace_id", "")
+            if _sid is not None and _ws:
+                try:
+                    from AgentsCatalogue.lib.workspacedb.taskflow import sub_task_too_hard
+                    sub_task_too_hard({
+                        "workspace_id": _ws,
+                        "sub_task_id": _sid,
+                        "reason": f"auto too_hard (≥ {_too_check_after} "
+                                  "itérations sans conclure)",
+                    }, self._agent_work_home(
+                        result.variables.get("agent_id", ""), result.variables))
+                except Exception:
+                    pass
+            # on_error → le step de sortie (ou too_hard)
+            if step.get("on_error"):
+                result.next_step_id = step.get("on_error")
+                return True
+            result.status = "failed"
+            result.end_reason = f"auto too_hard (≥ {_too_check_after} itérations)"
 
         if step.get("strip_fences"):
             content = _strip_code_fences(content)
@@ -1507,14 +1581,61 @@ class FSMInterpreter:
         result.next_step_id = step.get("next")
         return True
 
+    def _step_bundle(
+        self, step: Dict, result: FSMResult,
+        provider_ref: str = "", model_ref: str = "",
+        **kwargs: Any,
+    ) -> bool:
+        """Gestion dynamique d'un BUNDLE de tools pour les llm_call.
+
+        op ∈ init | add | remove | reset.
+        L'état vit dans result.variables["_bundle_<name>"] = liste de refs de
+        skills (ex. ["workspace/sub_task_get@v1", "git/git_commit@v1"]).
+          - init   : fixe la liste de base du bundle (remplace l'état).
+          - add    : ajoute des refs (sans doublon).
+          - remove : retire des refs.
+          - reset  : vide le bundle.
+        Un llm_call avec `bundle: <name>` utilisera l'état courant (plus les
+        skills/bundles statiques du step).
+        """
+        op = (step.get("op") or "init").strip().lower()
+        name = step.get("name", "")
+        if not name:
+            result.status = "failed"
+            result.end_reason = "bundle: name requis"
+            return False
+        key = f"_bundle_{name}"
+        state = result.variables.get(key)
+        if not isinstance(state, list):
+            state = []
+        refs = step.get("skills") or step.get("refs") or []
+        if isinstance(refs, str):
+            refs = [refs]
+        if op == "init":
+            state = [str(r) for r in refs]
+        elif op == "add":
+            for r in refs:
+                r = str(r)
+                if r not in state:
+                    state.append(r)
+        elif op == "remove":
+            state = [s for s in state if s not in {str(r) for r in refs}]
+        elif op == "reset":
+            state = []
+        else:
+            result.status = "failed"
+            result.end_reason = f"bundle: op inconnue '{op}'"
+            return False
+        result.variables[key] = state
+        result.next_step_id = step.get("next")
+        return True
+
     def _step_obj_call(
         self, step: Dict, result: FSMResult,
         provider_ref: str = "", model_ref: str = "",
         **kwargs: Any,
     ) -> bool:
-        """Appelle un OBJET RUNTIME via le langage de résolution typée.
-
-        step: {type: obj_call, path, capture, next, on_error}.
+        """Appelle un OBJET RUNTIME via le langage de résolution typée.        step: {type: obj_call, path, capture, next, on_error}.
 
         ``path`` : une chaîne de résolution, résolue au niveau du step :
             team.chatroom.send({{msg}})          → envoie via l'objet team

@@ -109,11 +109,13 @@ def compute_block_5m(cat, rt, cutoff: int) -> int:
         for r in rows:
             rt.conn.execute("""
                 INSERT OR REPLACE INTO score_batch_blocks_5m
-                    (bucket, provider_ref, model_ref, requests, fail_count,
-                     total_latency_ms)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (r["bucket"], r["provider_ref"], r["model_ref"], r["requests"] or 0,
-                  r["fail_count"] or 0, r["total_latency_ms"] or 0))
+                    (bucket, provider_ref, model_ref, adresse_id, requests,
+                     fail_count, total_latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (r["bucket"], r["provider_ref"], r["model_ref"],
+                  _resolve_adresse_blocks(r["provider_ref"], r["model_ref"]),
+                  r["requests"] or 0, r["fail_count"] or 0,
+                  r["total_latency_ms"] or 0))
         _set_meta(rt, _META_5M, b5)
         rt.conn.commit()
         return len(rows)
@@ -152,11 +154,13 @@ def _rollup(rt, cutoff: int, src: str, dst: str, block_s: int,
         for r in rows:
             rt.conn.execute(f"""
                 INSERT OR REPLACE INTO {dst}
-                    (bucket, provider_ref, model_ref, requests, fail_count,
-                     total_latency_ms)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (r["bucket"], r["provider_ref"], r["model_ref"], r["requests"] or 0,
-                  r["fail_count"] or 0, r["total_latency_ms"] or 0))
+                    (bucket, provider_ref, model_ref, adresse_id, requests,
+                     fail_count, total_latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (r["bucket"], r["provider_ref"], r["model_ref"],
+                  _resolve_adresse_blocks(r["provider_ref"], r["model_ref"]),
+                  r["requests"] or 0, r["fail_count"] or 0,
+                  r["total_latency_ms"] or 0))
         _set_meta(rt, meta_key, b_dst)
         rt.conn.commit()
         return len(rows)
@@ -321,18 +325,27 @@ def update_scores(rt, latence_penalise: Optional[float] = None,
                 score_latence = math.exp(-(lat_s - latence_penalise) / latence_regule)
             score_etire = bench.get(model, 0.1)
             score_final = score_etire * score_latence * (1.0 - score_fail_rate)
+            aid = _resolve_adresse_blocks(prov, model)
+            # Scores de zone (1 - score de fail) pour ne pas écraser les
+            # colonnes 5-scores de V0.16 (score_buckets) lors d'un run manuel.
+            s_last5 = 1.0 - (r5_[3] if r5_[0] else 0.0)
+            s_1h = 1.0 - (rh_[3] if rh_[0] else 0.0)
+            s_1d = 1.0 - (rj_[3] if rj_[0] else 0.0)
+            s_1w = 1.0 - (rw_[3] if rw_[0] else 0.0)
+            s_all = 1.0 - score_fail_rate
             rt.conn.execute("""
                 INSERT OR REPLACE INTO score_batch
-                    (provider_ref, model_ref,
+                    (provider_ref, model_ref, adresse_id,
                      requests_5m, requests_1h, requests_1j, requests_1w,
                      fail_count_5m, fail_count_1h, fail_count_1j, fail_count_1w,
                      total_lat_ms_5m, total_lat_ms_1h, total_lat_ms_1j, total_lat_ms_1w,
                      fr_5m, fr_1h, fr_1j, fr_1w,
                      lat_5m_ms, lat_1h_ms, lat_1j_ms, lat_1w_ms,
                      score_fail_rate, score_latency, score_etire, score_final,
+                     score_last_5, score_1h, score_1d, score_1w, score_all,
                      updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-            """, (prov, model,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+            """, (prov, model, aid,
                   r5_[0], rh_[0], rj_[0], rw_[0],
                   r5_[1], rh_[1], rj_[1], rw_[1],
                   r5_[2], rh_[2], rj_[2], rw_[2],
@@ -342,7 +355,8 @@ def update_scores(rt, latence_penalise: Optional[float] = None,
                   rj_[2] / rj_[0] if rj_[0] else 0.0,
                   rw_[2] / rw_[0] if rw_[0] else 0.0,
                   score_fail_rate, score_latence,
-                  score_etire, score_final))
+                  score_etire, score_final,
+                  s_last5, s_1h, s_1d, s_1w, s_all))
             upserts += 1
         rt.conn.commit()
         return upserts
@@ -372,6 +386,17 @@ def main() -> None:
     rt = RuntimeDB()
     frontier = int(time.time())
     print(f"run manuel (frontier={frontier}) →", run(cat, rt, frontier))
+
+
+def _resolve_adresse_blocks(provider_ref: str, model_ref: str):
+    """Résout (provider_ref, model_ref) → adresse_id (répertoire), sinon 0."""
+    try:
+        from services.llm_allocation.address import resolve_address
+        from modules.sql.db import CatalogueDB
+        aid = resolve_address(provider_ref, model_ref, CatalogueDB())
+        return aid if aid is not None else 0
+    except Exception:
+        return 0
 
 
 if __name__ == "__main__":

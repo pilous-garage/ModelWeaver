@@ -437,6 +437,62 @@ def git_snapshot_start(inputs: dict, home: str) -> dict:
     return {"ok": True, "commit_start": commit, "branch": br}
 
 
+def git_get_first_commit(inputs: dict, home: str) -> dict:
+    """git_get_first_commit — hash du commit VIERGE du repo global swarm-as-llm.
+
+    Le commit vierge (racine, sans parent) de llm_as_swarm_repo est le point de
+    départ commun de toutes les requêtes : diff(first_commit..HEAD) sur une
+    branche requete/<id> = livrable produit par le swarm. Mécanique, pas de LLM.
+    """
+    try:
+        from services.swarm_repo import first_commit as _swarm_first
+        fc = _swarm_first()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    if not fc:
+        from services.swarm_repo import ensure as _ensure
+        r = _ensure()
+        fc = r.get("first_commit")
+    if not fc:
+        return {"ok": False, "error": "commit vierge introuvable (reset ?)"}
+    return {"ok": True, "first_commit": fc}
+
+
+def git_prepare_workspace(inputs: dict, home: str) -> dict:
+    """git_prepare_workspace — prépare le workspace d'un greedy (MÉCANIQUE).
+
+    Enchaîne : git_clone (project_id) → git_checkout (branch) →
+    git_snapshot_start (pose commit_start sur la tâche). À appeler après le
+    pick d'une sub_task, avant le travail. Les sous-agents read-only (explore)
+    n'utilisent PAS ce skill.
+    """
+    pid = inputs.get("project_id", "")
+    aid = inputs.get("agent_id", "")
+    if not pid or not aid:
+        return {"ok": False, "error": "project_id + agent_id requis"}
+    # clone (idempotent : fetch+clean si déjà cloné)
+    c = git_clone({"project_id": pid, "agent_id": aid}, home)
+    if not c.get("ok"):
+        return c
+    path = c.get("path")
+    branch = inputs.get("branch", "")
+    commit_start = ""
+    if branch:
+        co = git_checkout({"project_id": pid, "agent_id": aid, "name": branch}, home)
+        if not co.get("ok"):
+            return co
+    # pose commit_start si tâche fournie
+    if inputs.get("task_id") is not None:
+        snap = git_snapshot_start({
+            "project_id": pid, "agent_id": aid,
+            "workspace_id": inputs.get("workspace_id", ""),
+            "task_id": inputs.get("task_id"),
+        }, home)
+        commit_start = snap.get("commit_start", "")
+    return {"ok": True, "path": path, "branch": branch,
+            "commit_start": commit_start}
+
+
 def git_read_files(inputs: dict, home: str) -> dict:
     """git_read_files — lit le contenu de fichiers à un commit (MÉCANIQUE).
 
@@ -858,5 +914,6 @@ __skills__ = [
     "git_commit", "git_diff", "git_log", "git_status", "git_merge", "git_add",
     "git_resolve_conflict", "git_fetch", "git_pull", "git_push",
     "git_push_remote", "end_exec", "git_verify",
-    "git_review_diff", "git_snapshot_start", "git_read_files",
+    "git_review_diff", "git_snapshot_start", "git_get_first_commit",
+    "git_prepare_workspace", "git_read_files",
 ]

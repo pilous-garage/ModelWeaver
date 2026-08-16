@@ -1,0 +1,46 @@
+name: git/prepare_workspace@v1
+category: git
+description: >
+  Prépare le workspace de travail d'un greedy : clone le repo (project_id),
+  checkout de la branche (branch), et pose commit_start sur la tâche
+  (MÉCANIQUE, pas de LLM). À appeler APRÈS le pick d'une sub_task, avant le
+  travail. Les sous-agents (explore) n'utilisent PAS ce skill (read-only).
+inputs:
+  project_id:
+    type: string
+    required: true
+    description: Identifiant du repo central à cloner (ex. llm_as_swarm_repo)
+  agent_id:
+    type: string
+    required: false
+    description: Agent propriétaire du clone (injecté par le FSM si absent)
+  branch:
+    type: string
+    required: false
+    default: ''
+    description: Branche à checkout (ex. requete/<id>)
+  workspace_id:
+    type: string
+    required: false
+    default: ''
+    description: Workspace de la tâche (pour poser commit_start)
+  task_id:
+    type: integer
+    required: false
+    default: null
+    description: Tâche dont on pose commit_start (optionnel)
+outputs:
+  ok:
+    type: boolean
+  path:
+    type: string
+    description: Chemin du clone
+  branch:
+    type: string
+  commit_start:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: git.git_prepare_workspace

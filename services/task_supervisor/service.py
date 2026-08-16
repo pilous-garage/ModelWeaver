@@ -70,6 +70,7 @@ class TaskSupervisor:
            supervised (tag du sujet)."""
         sc = self.db.for_workspace(workspace_id)
         created, released, supervised_st, finalized = 0, 0, 0, 0
+        bumped, resplit = 0, 0
 
         # 1) Dépendances satisfaites → unattributed
         for st in sc.sub_tasks.list_by_team_status(
@@ -78,6 +79,50 @@ class TaskSupervisor:
                 sc.sub_tasks.set_status(st["sub_task_id"], "unattributed")
                 released += 1
 
+        # 1bis) TOO_HARD : l'agent a abandonné (doing → too_hard). Le
+        # supervisor décide :
+        #   - too_hard_count <= MAX_TOO_HARD → bump_difficulty + re-attribution
+        #     (unattributed, priorité augmentée pour être re-piocher vite).
+        #   - sinon (trop de tentatives) → re-découpe : une sub_task `analysis`
+        #     est créée pour que l'analyste découpe autrement (le node too_hard
+        #     passe supervised — la découpe repart du sujet).
+        MAX_TOO_HARD = 3
+        try:
+            from modules.sql.workspace import _DIFFICULTY_RANK as _DR
+        except Exception:
+            _DR = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}
+        for st in sc.sub_tasks.list_by_team_status(
+                team_id, ["too_hard"], limit=limit):
+            cnt = int(st.get("too_hard_count") or 0)
+            if cnt <= MAX_TOO_HARD:
+                # bump difficulté (easy→medium→hard→expert, plafond expert)
+                diff = (st.get("difficulty") or "medium").strip().lower()
+                rank = _DR.get(diff, 1)
+                new_diff = diff
+                if rank < 3:
+                    for _d, _r in sorted(_DR.items(), key=lambda x: x[1]):
+                        if _r == rank + 1:
+                            new_diff = _d
+                            break
+                sc.sub_tasks.update(
+                    st["sub_task_id"],
+                    difficulty=new_diff,
+                    priority=(st.get("priority") or 0) + 5,  # re-piocher vite
+                    tag="", freedby="", too_hard_reason="")
+                sc.sub_tasks.set_status(st["sub_task_id"], "unattributed")
+                bumped += 1
+            else:
+                # trop de tentatives → re-découpe
+                sc.sub_tasks.mark_supervised(st["sub_task_id"])
+                sc.sub_tasks.create(
+                    task_id=st["task_id"], sub_task_type="analysis",
+                    difficulty="medium", status="unattributed",
+                    team_id=team_id, priority=10,
+                    description=(f"Re-découper la sous-tâche "
+                                 f"{st['sub_task_type']} (trop difficile, "
+                                 f"{cnt} tentatives) — "
+                                 f"{st.get('too_hard_reason', '')}"))
+                resplit += 1
         # 2) Règles sur les sub_tasks terminées (done/cancelled) non supervisées
         for st in sc.sub_tasks.list_by_team_status(
                 team_id, ["done", "cancelled"], limit=limit):
@@ -101,7 +146,8 @@ class TaskSupervisor:
         finalized = self._finalize_closed_tasks(sc, team_id)
 
         return {"created": created, "released": released,
-                "supervised": supervised_st, "tasks_finalized": finalized}
+                "supervised": supervised_st, "tasks_finalized": finalized,
+                "too_hard_bumped": bumped, "too_hard_resplit": resplit}
 
     def _create_followup(self, sc: WorkspaceScope, st: Dict[str, Any],
                          rule: Dict[str, Any]) -> int:
@@ -132,23 +178,80 @@ class TaskSupervisor:
         d'abord la sub_task `respond` (réponse finale de l'exitpoint) si elle
         n'existe pas — la tâche n'est finalisée que quand le respond est
         terminé."""
+        # TTL explorations : une exploration doing depuis > 3 min (l'explorer
+        # n'a pas conclu, souvent un intel sur du code inexistant) est libérée
+        # en done/ok — sinon elle bloque le respond (waiting_dependencies) et la
+        # tâche reste todo pour toujours. NB : updated_at est en ISO avec 'T' →
+        # on compare via julianday (pas de comparaison lexicographique naive).
+        try:
+            import time as _t
+            _cutoff_ts = _t.time() - 180
+            sc.conn.execute("""
+                UPDATE sub_tasks SET status = 'done', tag = 'ok', supervised = 1
+                WHERE sub_task_type = 'exploration'
+                  AND status = 'doing'
+                  AND julianday(updated_at) < julianday(?, 'unixepoch')
+            """, (_cutoff_ts,))
+            sc.conn.commit()
+        except Exception:
+            pass
         rows = sc.conn.execute(
             "SELECT task_id FROM sub_tasks WHERE team_id = ? GROUP BY task_id",
             (team_id,)).fetchall()
         n = 0
         for r in rows:
             tid = r["task_id"]
+            task = sc.tasks.get(tid)
+            if not task or task.get("status") in ("supervised", "done", "cancelled"):
+                continue
+            stype = (task.get("task_type") or "").lower()
+            # Entrées swarm-as-llm : la tâche est finalisée quand le respond est
+            # terminé (done/supervised), indépendamment des sub_tasks orphelines
+            # (explorations laissées doing par un ask_intel dont l'explorer n'a
+            # pas conclu). Sinon la tâche reste todo pour toujours.
+            if stype in ("chat_entry", "completion_entry"):
+                respond_done = sc.conn.execute(
+                    "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
+                    "AND sub_task_type = 'respond' "
+                    "AND status IN ('done','supervised')",
+                    (tid,)).fetchone()[0]
+                if respond_done:
+                    # Clôturer les sub_tasks orphelines restantes (explorations
+                    # en doing/unattributed) pour ne pas laisser de résidus.
+                    sc.conn.execute(
+                        "UPDATE sub_tasks SET supervised = 1, "
+                        "status = 'supervised' WHERE task_id = ? "
+                        "AND status IN ('doing','unattributed',"
+                        "'waiting_dependencies')",
+                        (tid,))
+                    sc.tasks.update(tid, status="supervised",
+                                    tag=task.get("tag") or "ok")
+                    sc.conn.execute(
+                        "UPDATE sub_tasks SET supervised = 1, "
+                        "status = 'supervised' WHERE task_id = ?",
+                        (tid,))
+                    n += 1
+                    continue
+                # Pas encore de respond : le créer (réponse finale de
+                # l'exitpoint), le prepare-response le piochera.
+                has_respond = sc.conn.execute(
+                    "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
+                    "AND sub_task_type = 'respond'",
+                    (tid,)).fetchone()[0]
+                if not has_respond:
+                    sc.sub_tasks.create(
+                        task_id=tid, sub_task_type="respond",
+                        difficulty="easy", status="unattributed",
+                        team_id=team_id,
+                        repo=task.get("repo", ""), branch=task.get("branch", ""))
+                continue
             open_ = sc.conn.execute(
                 "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
                 "AND status IN ('unattributed', 'doing', 'waiting_dependencies')",
                 (tid,)).fetchone()[0]
-            task = sc.tasks.get(tid)
-            if not task or task.get("status") in ("supervised", "done", "cancelled"):
-                continue
             if open_ > 0:
                 continue
             # Création du respond pour les entrées du swarm-as-llm.
-            stype = (task.get("task_type") or "").lower()
             if stype in ("chat_entry", "completion_entry"):
                 has_respond = sc.conn.execute(
                     "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
@@ -209,7 +312,7 @@ class TaskSupervisor:
         if candidates:
             candidates.sort(key=lambda s: s["_score"], reverse=True)
             pick = candidates[0]
-            if sc.sub_tasks.claim(pick["sub_task_id"], agent_name):
+            if sc.sub_tasks.assign(pick["sub_task_id"], agent_name):
                 return self._answer(sc, workspace_id, agent_id, pick)
         # Rien de dispo → en attente (l'agent se déshydrate).
         self._mark_wait(workspace_id, agent_id)

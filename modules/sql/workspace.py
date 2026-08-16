@@ -639,15 +639,16 @@ class SubTaskRepository:
                difficulty: str = "medium", status: str = "unattributed",
                tag: str = "", repo: str = "", branch: str = "",
                team_id: int = -1, assigned_to: str = "",
-               description: str = "") -> Dict[str, Any]:
+               description: str = "", priority: int = 0) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         cur = self.conn.execute("""
             INSERT INTO sub_tasks (workspace_id, task_id, team_id, sub_task_type,
                                    status, tag, difficulty, description, assigned_to,
-                                   repo, branch, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   repo, branch, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, task_id, team_id, sub_task_type, status, tag,
-              difficulty, description, assigned_to, repo, branch, now, now))
+              difficulty, description, assigned_to, repo, branch, priority,
+              now, now))
         self.conn.commit()
         return self.get(cur.lastrowid)
 
@@ -677,6 +678,25 @@ class SubTaskRepository:
         return _rows(self.conn.execute(
             "SELECT * FROM sub_tasks WHERE assigned_to = ? AND workspace_id = ? "
             "AND status = 'doing' ORDER BY updated_at", (agent_name, self.wid)).fetchall())
+
+    def pick_for(self, agent_name: str) -> Optional[Dict[str, Any]]:
+        """PREND la sub_task `attributed` assignée à l'agent, de plus haute
+        priorité : attributed → doing. Retourne la sub_task ou None si aucune.
+
+        Parcours basique remplace : on prend la 1re `attributed` à soi, puis on
+        change de pick si une suivante a une priorité STRICTEMENT supérieure.
+        """
+        rows = _rows(self.conn.execute(
+            "SELECT * FROM sub_tasks WHERE assigned_to = ? AND workspace_id = ? "
+            "AND status = 'attributed' AND supervised = 0 "
+            "ORDER BY priority DESC, sub_task_id ASC",
+            (agent_name, self.wid)).fetchall())
+        if not rows:
+            return None
+        best = rows[0]
+        if self.pick(best["sub_task_id"], agent_name):
+            return self.get(best["sub_task_id"])
+        return None
 
     def list_by_type(self, sub_task_type: str, status: str = "unattributed",
                      limit: int = 20) -> List[Dict[str, Any]]:
@@ -715,13 +735,30 @@ class SubTaskRepository:
             kwargs["commit_hash"] = commit_hash
         return self.update(sub_task_id, **kwargs)
 
-    def claim(self, sub_task_id: int, agent_name: str) -> bool:
-        """Attribution par le supervisor : unattributed → doing."""
+    def assign(self, sub_task_id: int, agent_name: str) -> bool:
+        """Attribution par le supervisor : unattributed → attributed.
+
+        Le supervisor CHOISIT l'agent : la sub_task passe `attributed` (avec
+        assigned_to). Ce n'est que quand l'agent réveillé la PREND réellement
+        (pick) qu'elle passe à `doing`. Le flux complet :
+        unattributed → attributed → doing → done → supervised."""
         cur = self.conn.execute(
-            "UPDATE sub_tasks SET status = 'doing', assigned_to = ?, updated_at = ? "
+            "UPDATE sub_tasks SET status = 'attributed', assigned_to = ?, updated_at = ? "
             "WHERE sub_task_id = ? AND workspace_id = ? AND status = 'unattributed'",
             (agent_name, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
              sub_task_id, self.wid))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def pick(self, sub_task_id: int, agent_name: str) -> bool:
+        """L'agent réveillé PREND une sub_task `attributed` qui lui est
+        assignée : attributed → doing (le travail commence réellement)."""
+        cur = self.conn.execute(
+            "UPDATE sub_tasks SET status = 'doing', updated_at = ? "
+            "WHERE sub_task_id = ? AND workspace_id = ? AND status = 'attributed' "
+            "AND assigned_to = ?",
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+             sub_task_id, self.wid, agent_name))
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -740,6 +777,26 @@ class SubTaskRepository:
     def mark_supervised(self, sub_task_id: int) -> Optional[Dict[str, Any]]:
         """Supervised : groupe complet clos par le supervisor (terminal)."""
         return self.update(sub_task_id, supervised=1, status="supervised")
+
+    def mark_too_hard(self, sub_task_id: int, freedby: str = "",
+                      reason: str = "") -> Optional[Dict[str, Any]]:
+        """L'agent ABANDONNE (doing → too_hard) : la sub_task est trop difficile
+        pour lui. Incrémente too_hard_count (le supervisor lira ce compteur pour
+        décider : bump_difficulty + re-attribution, ou re-découpe si on a déjà
+        trop tenté)."""
+        try:
+            self.conn.execute(
+                "UPDATE sub_tasks SET status = 'too_hard', freedby = ?, "
+                "too_hard_count = COALESCE(too_hard_count, 0) + 1, "
+                "too_hard_reason = ?, assigned_to = '', updated_at = ? "
+                "WHERE sub_task_id = ? AND workspace_id = ? AND status = 'doing'",
+                (freedby, (reason or "")[:500],
+                 datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                 sub_task_id, self.wid))
+            self.conn.commit()
+        except Exception:
+            return None
+        return self.get(sub_task_id)
 
     def waiting_dependencies(self, sub_task_id: int) -> Optional[Dict[str, Any]]:
         """Passe une sub_task en waiting_dependencies (avant unattributed)."""
@@ -1103,6 +1160,15 @@ class WorkspaceDB:
             # V0.15 : description de la sub_task (consigne de l'étape, ex.
             # intels de l'exploration).
             _add_column_if_missing(self.conn, "sub_tasks", "description",
+                                   "TEXT DEFAULT ''")
+            # V0.17 : priorité de pioche par sub_task (le supervisor met à
+            # jour ; le pick prend la plus haute pour l'agent).
+            _add_column_if_missing(self.conn, "sub_tasks", "priority",
+                                   "INTEGER DEFAULT 0")
+            # V0.17 : chemin too_hard (doing → too_hard → bump/découpe).
+            _add_column_if_missing(self.conn, "sub_tasks", "too_hard_count",
+                                   "INTEGER DEFAULT 0")
+            _add_column_if_missing(self.conn, "sub_tasks", "too_hard_reason",
                                    "TEXT DEFAULT ''")
             # V0.15 : dépendances qualifiées (étape + résultat attendus).
             _add_column_if_missing(self.conn, "task_dependencies", "required_tag",

@@ -157,17 +157,27 @@ def op_openai_responses(params: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": 0,
         "model": model,
         "status": "completed",
+        "parallel_tool_calls": False,
+        "tool_choice": "none",
+        "tools": [],
+        "metadata": {},
+        "instructions": None,
+        "incomplete_details": None,
         "output": [{
             "type": "message",
+            "id": "msg_swarm",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": text}],
+            "status": "completed",
+            # annotations est REQUIS par le SDK openai (ResponseOutputText) :
+            # sans lui, inspect_ai itère None → TypeError 'NoneType' not iterable.
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
         }],
         "usage": {
             "input_tokens": 0,
             "output_tokens": max(1, len(text) // 4),
             "total_tokens": 0,
-            "input_tokens_details": {},
-            "output_tokens_details": {},
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0, "audio_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
         },
         "swarm": res.get("swarm", {}),
     }

@@ -85,6 +85,12 @@ def main() -> None:
     parser.add_argument("--sandbox", default="local",
                         help="sandbox inspect_ai (local | docker ; défaut local — "
                              "pas de plugin docker compose requis)")
+    parser.add_argument("--max-parallel", type=int, default=20,
+                        help="samples exécutés en parallèle par Inspect (défaut "
+                             "20 — le swarm a 8 codeurs + max_concurrent 20)")
+    parser.add_argument("--time-limit", type=int, default=5400,
+                        help="limite de temps par sample en secondes (défaut "
+                             "5400 = 90 min — le swarm met 5-30 min par sample)")
     args = parser.parse_args()
 
     base_url = f"http://127.0.0.1:{args.port}/v1"
@@ -97,7 +103,6 @@ def main() -> None:
     print(f"→ swarm branché sur {base_url} (modèle mw-swarm-build)")
     # Pas de model_args : le SDK openai 2.x injecté par inspect_ai 0.3.255
     # les transmet tels quels à AsyncOpenAI (bug de compatibilité) → TypeError.
-    # Le timeout client défaut (~10 min) suffit pour le swarm-as-llm.
     model = get_model("openai/mw-swarm-build",
                       base_url=base_url, api_key=token)
 
@@ -107,11 +112,14 @@ def main() -> None:
     # polluent le picker et détournent les greedy).
     _cancel_workspace("mw-llm-code",
                       reason="reset avant benchmark inspect (phase cancellation)")
-    print(f"→ évaluation {args.bench} x{args.n} (sandbox={args.sandbox}, peut "
-          "être long : le swarm orchestre des agents réels)…")
+    print(f"→ évaluation {args.bench} x{args.n} (sandbox={args.sandbox}, "
+          f"max_samples={args.max_parallel}, time_limit={args.time_limit}s, "
+          "peut être long : le swarm orchestre des agents réels)…")
     try:
         result = inspect_eval(task, model=model, limit=args.n,
-                              sandbox=args.sandbox)
+                              sandbox=args.sandbox,
+                              max_samples=args.max_parallel,
+                              time_limit=args.time_limit)
     except KeyboardInterrupt:
         print("\n→ interruption — phase cancellation…", flush=True)
         _cancel_workspace("mw-llm-code",

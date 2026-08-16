@@ -63,6 +63,17 @@ def _cat_conn():
     return CatalogueDB()
 
 
+def _resolve_adresse_batcher(provider_ref: str, model_ref: str):
+    """Résout (provider_ref, model_ref) → adresse_id (répertoire), sinon 0."""
+    try:
+        from services.llm_allocation.address import resolve_address
+        from modules.sql.db import CatalogueDB
+        aid = resolve_address(provider_ref, model_ref, CatalogueDB())
+        return aid if aid is not None else 0
+    except Exception:
+        return 0
+
+
 def _data_frontier(cat) -> Optional[int]:
     """La donnée la plus récente de model_call_log (source de vérité)."""
     try:
@@ -109,6 +120,7 @@ def _batch_1m(cat, rt) -> int:
                 COALESCE(m.ref, '') AS model_ref,
                 COALESCE(l.agent_id, '') AS agent_id,
                 COUNT(*) AS requests,
+                SUM(l.success) AS success_count,
                 SUM(l.tokens_in) AS tokens_in,
                 SUM(l.tokens_out) AS tokens_out,
                 SUM(l.tokens_thinking) AS tokens_thinking,
@@ -141,13 +153,16 @@ def _batch_1m(cat, rt) -> int:
             return 0
         for r in rows:
             # req_total = requests (tous types), tok_total = tokens_in+out.
+            aid = _resolve_adresse_batcher(r["provider_ref"], r["model_ref"])
             sql_insert = """INSERT INTO usage_history_1m
-                (bucket, provider_ref, model_ref, agent_id,
-                 requests, tokens_in, tokens_out, tokens_thinking, cost,
+                (bucket, provider_ref, model_ref, adresse_id, agent_id,
+                 requests, success_count, tokens_in, tokens_out,
+                 tokens_thinking, cost,
                  first_call, last_call, req_total, tok_total)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?)"""
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?)"""
             sql_update = """ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
                 requests = usage_history_1m.requests + excluded.requests,
+                success_count = usage_history_1m.success_count + excluded.success_count,
                 tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
                 tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
                 tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
@@ -155,9 +170,12 @@ def _batch_1m(cat, rt) -> int:
                 last_call = MAX(usage_history_1m.last_call, excluded.last_call),
                 first_call = MIN(usage_history_1m.first_call, excluded.first_call),
                 req_total = usage_history_1m.req_total + excluded.req_total,
-                tok_total = usage_history_1m.tok_total + excluded.tok_total"""
-            params = [r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
-                      r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
+                tok_total = usage_history_1m.tok_total + excluded.tok_total,
+                adresse_id = excluded.adresse_id"""
+            params = [r["bucket"], r["provider_ref"], r["model_ref"], aid,
+                      r["agent_id"],
+                      r["requests"] or 0, r["success_count"] or 0,
+                      r["tokens_in"] or 0, r["tokens_out"] or 0,
                       r["tokens_thinking"] or 0, r["first_call"], r["last_call"],
                       r["requests"] or 0, (r["tokens_in"] or 0) + (r["tokens_out"] or 0)]
             # Colonnes par type (req_<type>/tok_<type>).
@@ -241,10 +259,13 @@ def _batch_1m(cat, rt) -> int:
                     else:
                         cur = rt.conn.execute("""
                             INSERT INTO model_success_runs
-                                (provider_ref, model_ref, seq_start, requests,
-                                 tokens_in, tokens_out, avg_latency_ms, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
-                        """, (prov, model, s["first_ok"] or int(time.time()),
+                                (provider_ref, model_ref, adresse_id, seq_start,
+                                 requests, tokens_in, tokens_out, avg_latency_ms,
+                                 status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
+                        """, (prov, model,
+                              _resolve_adresse_batcher(prov, model),
+                              s["first_ok"] or int(time.time()),
                               n, tin, tout, avg or 0))
                         run_id = cur.lastrowid if hasattr(cur, "lastrowid") else None
                 if ko > 0 and run_id:
@@ -260,6 +281,28 @@ def _batch_1m(cat, rt) -> int:
         except Exception:
             try:
                 rt.conn.rollback()
+            except Exception:
+                pass
+        # Archive le détail avant purge : copie les lignes batchées dans
+        # model_call_log_archive (dédupliqué par id). Sans ça, le détail
+        # disparaît à la purge et le scoring (reset_buckets/_counts) ne peut
+        # plus reconstruire succ/tot (usage_history ne le gardait pas).
+        try:
+            cat.conn.execute("""
+                INSERT OR IGNORE INTO model_call_log_archive
+                    (id, provider_id, model_id, provider_model_id, agent_id,
+                     success, tokens_in, tokens_out, tokens_thinking, latency_ms,
+                     error_code, error_msg, call_type, caller_id, created_at,
+                     archived_at)
+                SELECT id, provider_id, model_id, provider_model_id, agent_id,
+                       success, tokens_in, tokens_out, tokens_thinking, latency_ms,
+                       error_code, error_msg, call_type, caller_id, created_at,
+                       strftime('%s', 'now')
+                FROM model_call_log WHERE created_at <= ?
+            """, (cutoff,))
+        except Exception:
+            try:
+                cat.conn.rollback()
             except Exception:
                 pass
         # Supprimer les lignes détaillées batchées (idempotent).
@@ -293,27 +336,30 @@ def _cascade(cat, rt, frontier: int) -> int:
             # est entièrement <= cutoff (donc figée).
             cur = rt.conn.execute(f"""
                 INSERT INTO {dst}
-                    (bucket, provider_ref, model_ref, agent_id,
-                     requests, tokens_in, tokens_out, tokens_thinking, cost,
+                    (bucket, provider_ref, model_ref, adresse_id, agent_id,
+                     requests, success_count, tokens_in, tokens_out,
+                     tokens_thinking, cost,
                      first_call, last_call)
                 SELECT
                     CAST(s.bucket / {bucket_s} AS INTEGER) * {bucket_s},
                     COALESCE(s.provider_ref, ''), COALESCE(s.model_ref, ''),
-                    COALESCE(s.agent_id, ''),
-                    SUM(s.requests), SUM(s.tokens_in), SUM(s.tokens_out),
-                    SUM(s.tokens_thinking), SUM(s.cost),
+                    MAX(COALESCE(s.adresse_id, 0)), COALESCE(s.agent_id, ''),
+                    SUM(s.requests), SUM(s.success_count), SUM(s.tokens_in),
+                    SUM(s.tokens_out), SUM(s.tokens_thinking), SUM(s.cost),
                     MIN(s.first_call), MAX(s.last_call)
                 FROM {src} s
                 WHERE s.bucket + {bucket_s} <= ?
-                GROUP BY 1, 2, 3, 4
+                GROUP BY 1, 2, 3, 5
                 ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
                     requests = {dst}.requests + excluded.requests,
+                    success_count = {dst}.success_count + excluded.success_count,
                     tokens_in = {dst}.tokens_in + excluded.tokens_in,
                     tokens_out = {dst}.tokens_out + excluded.tokens_out,
                     tokens_thinking = {dst}.tokens_thinking + excluded.tokens_thinking,
                     cost = {dst}.cost + excluded.cost,
                     last_call = MAX({dst}.last_call, excluded.last_call),
-                    first_call = MIN({dst}.first_call, excluded.first_call)
+                    first_call = MIN({dst}.first_call, excluded.first_call),
+                    adresse_id = excluded.adresse_id
             """, (cutoff,))
             n += cur.rowcount if hasattr(cur, "rowcount") else 0
             # Purge des buckets source agrégés.
@@ -404,20 +450,23 @@ def _reconcile_archive(cat, rt, start_ts: int, end_ts: int) -> Dict[str, Any]:
     # 2. Upsert MAX dans usage_history_1m (ne réduit jamais).
     for r in rows:
         try:
+            aid = _resolve_adresse_batcher(r["provider_ref"], r["model_ref"])
             rt.conn.execute("""
                 INSERT INTO usage_history_1m
-                    (bucket, provider_ref, model_ref, agent_id,
+                    (bucket, provider_ref, model_ref, adresse_id, agent_id,
                      requests, tokens_in, tokens_out, tokens_thinking, cost,
                      first_call, last_call)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)
                 ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
                     requests = MAX(usage_history_1m.requests, excluded.requests),
                     tokens_in = MAX(usage_history_1m.tokens_in, excluded.tokens_in),
                     tokens_out = MAX(usage_history_1m.tokens_out, excluded.tokens_out),
                     tokens_thinking = MAX(usage_history_1m.tokens_thinking, excluded.tokens_thinking),
                     first_call = MIN(usage_history_1m.first_call, excluded.first_call),
-                    last_call = MAX(usage_history_1m.last_call, excluded.last_call)
-            """, (r["bucket"], r["provider_ref"], r["model_ref"], r["agent_id"],
+                    last_call = MAX(usage_history_1m.last_call, excluded.last_call),
+                    adresse_id = excluded.adresse_id
+            """, (r["bucket"], r["provider_ref"], r["model_ref"], aid,
+                  r["agent_id"],
                   r["requests"] or 0, r["tokens_in"] or 0, r["tokens_out"] or 0,
                   r["tokens_thinking"] or 0, r["first_call"], r["last_call"]))
             upserts += 1
@@ -502,10 +551,13 @@ def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
                     try:
                         cur = rt.conn.execute("""
                             INSERT INTO model_success_runs
-                                (provider_ref, model_ref, seq_start, requests,
-                                 tokens_in, tokens_out, avg_latency_ms, status)
-                            VALUES (?, ?, ?, 1, ?, ?, ?, 'open')
-                        """, (prov, model, c["created_at"], c["tokens_in"] or 0,
+                                (provider_ref, model_ref, adresse_id, seq_start,
+                                 requests, tokens_in, tokens_out, avg_latency_ms,
+                                 status)
+                            VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'open')
+                        """, (prov, model,
+                              _resolve_adresse_batcher(prov, model),
+                              c["created_at"], c["tokens_in"] or 0,
                               c["tokens_out"] or 0, c["latency_ms"] or 0))
                         run = {"id": cur.lastrowid if hasattr(cur, "lastrowid") else None,
                                "requests": 1, "tin": c["tokens_in"] or 0,
@@ -614,12 +666,15 @@ def _rebuild_caller_sessions(cat, rt) -> int:
                             (c["created_at"], cid))
                         rt.conn.execute("""
                             INSERT INTO llm_caller_sessions
-                                (caller_id, provider_ref, model_ref, seq_start,
-                                 requests, tokens_in, tokens_out, avg_latency_ms, status)
-                            VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'open')
-                        """, (cid, c["provider_ref"], c["model_ref"], c["created_at"],
-                              c["tokens_in"] or 0, c["tokens_out"] or 0,
-                              c["latency_ms"] or 0))
+                                (caller_id, provider_ref, model_ref, adresse_id,
+                                 seq_start, requests, tokens_in, tokens_out,
+                                 avg_latency_ms, status)
+                            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'open')
+                        """, (cid, c["provider_ref"], c["model_ref"],
+                              _resolve_adresse_batcher(c["provider_ref"],
+                                                       c["model_ref"]),
+                              c["created_at"], c["tokens_in"] or 0,
+                              c["tokens_out"] or 0, c["latency_ms"] or 0))
                         session = {"requests": 1, "tin": c["tokens_in"] or 0,
                                    "tout": c["tokens_out"] or 0,
                                    "lat": c["latency_ms"] or 0}

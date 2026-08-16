@@ -31,7 +31,13 @@ skills:
   - file/list_dir@v1
   - system/check_syntax@v1
   - shell/exec@v1
+  - git/git_clone@v1
+  - git/git_checkout@v1
+  - git/git_snapshot_start@v1
+  - git/git_prepare_workspace@v1
   - git/git_commit@v1
+  - git/git_push@v1
+  - workflow/reset_variable_after_change_task@v1
   - workspace/sub_task_get@v1
   - workspace/sub_task_done@v1
   - workspace/sub_task_release@v1
@@ -52,7 +58,7 @@ entrypoints:
     steps:
     - id: ask_new_task
       type: call
-      fn: workspace/task_ask_new@v1
+      fn: workspace/task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
         agent_id: "{{agent_id}}"
@@ -61,6 +67,39 @@ entrypoints:
         sub_task_id: sub_task_id
         task_id: task_id
         conv_id: _conv_id
+        repo: repo
+        branch: branch
+        commit_start: commit_start
+        project_id: project_id
+        resumed: resumed
+      on_error: sleep
+      next: decide_reset
+    # reset des variables du cycle UNIQUEMENT si on ne reprend pas une doing
+    # (resumed=False). Si on reprend (crash/relaunch), on garde le contexte.
+    - id: decide_reset
+      type: switch
+      variable: "{{resumed}}"
+      conditions:
+      - operator: NOT_EQUALS
+        value: "true"
+        next: reset_vars
+      default: prepare_workspace
+    - id: reset_vars
+      type: call
+      fn: workflow/reset_variable_after_change_task@v1
+      inputs:
+        agent_id: "{{agent_id}}"
+      next: prepare_workspace
+    # prépare le workspace : clone + checkout de la branche + commit_start.
+    - id: prepare_workspace
+      type: call
+      fn: git/prepare_workspace@v1
+      inputs:
+        project_id: "{{repo}}"
+        agent_id: "{{agent_id}}"
+        branch: "{{branch}}"
+        workspace_id: "{{workspace_id}}"
+        task_id: "{{task_id}}"
       on_error: sleep
       next: ask_llm
     - id: ask_llm
@@ -79,6 +118,11 @@ entrypoints:
       skill_prompt: |
         Code la sub_task {{sub_task_id}} (coding) de la tâche {{task_id}}.
 
+        TON WORKSPACE : le repo est déjà cloné (project {{repo}}) et tu es sur
+        la branche {{branch}}. Écris tes fichiers dans le clone git de ton
+        workspace, puis committe et POUSSE (git_git_commit_v1 puis
+        git_git_push_v1).
+
         ÉTAPE 1 — OBTIENS TA DESCRIPTION :
         Appelle l'OUTIL ###tool_call:workspace_sub_task_get_v1|{"sub_task_id":
         {{sub_task_id}}, "workspace_id": "{{workspace_id}}"}### pour lire la
@@ -88,7 +132,8 @@ entrypoints:
         ÉTAPE 2 — CODE : écris le fichier (file_write_file_v1), vérifie la
         syntaxe (system_check_syntax_v1).
 
-        ÉTAPE 3 — TERMINE : committe/pousse (git_git_commit_v1) puis appelle
+        ÉTAPE 3 — TERMINE : committe ET POUSSE (git_git_commit_v1 puis
+        git_git_push_v1 sur la branche {{branch}}) puis appelle
         ###tool_call:workspace_sub_task_done_v1|{"sub_task_id": {{sub_task_id}},
         "workspace_id": "{{workspace_id}}", "tag": "done/ok", "branch": "...",
         "commit_hash": "..."}###. Si impossible :
@@ -105,7 +150,9 @@ entrypoints:
       base_tools: false
       skills: ["file/read_file@v1", "file/write_file@v1", "file/append_file@v1",
                "file/glob@v1", "file/grep@v1", "file/list_dir@v1",
-               "system/check_syntax@v1", "shell/exec@v1", "git/git_commit@v1",
+               "system/check_syntax@v1", "shell/exec@v1",
+               "git/git_clone@v1", "git/git_checkout@v1", "git/git_commit@v1",
+               "git/git_push@v1",
                "workspace/sub_task_get@v1", "workspace/sub_task_done@v1",
                "workspace/sub_task_release@v1",
                "workspace/ask_intel@v1"]

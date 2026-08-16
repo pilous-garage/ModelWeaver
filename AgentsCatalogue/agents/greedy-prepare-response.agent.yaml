@@ -29,7 +29,7 @@ entrypoints:
     steps:
     - id: ask_new_task
       type: call
-      fn: workspace/task_ask_new@v1
+      fn: workspace/task_pick@v1
       inputs:
         workspace_id: "{{workspace_id}}"
         agent_id: "{{agent_id}}"

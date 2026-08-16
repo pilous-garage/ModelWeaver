@@ -207,8 +207,28 @@ def reply(session: Dict[str, Any], collect_res: Dict[str, Any]) -> Dict[str, Any
 
 # ── orchestration complète ───────────────────────────────────────────────
 
+def _log_exchange(kind: str, payload: Dict[str, Any]) -> None:
+    """Journalise un échange swarm-as-llm (requête benchmark → réponse).
+
+    Append-only JSONL dans ~/.modelweaver/logs/swarm_exchange.jsonl : on y
+    stocke le prompt reçu, la réponse renvoyée (ou l'erreur) et le task_id,
+    pour pouvoir debugger le format exact servi au benchmark (inspect_ai).
+    Best-effort : ne lève jamais."""
+    try:
+        import json as _json
+        log_path = MW_HOME / "logs"
+        log_path.mkdir(parents=True, exist_ok=True)
+        with open(log_path / "swarm_exchange.jsonl", "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps({"ts": int(time.time()),
+                                 "kind": kind, **payload},
+                                ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
-                   timeout_s: int = 600) -> Dict[str, Any]:
+                   timeout_s: int = 1800) -> Dict[str, Any]:
     """Exécute le flux complet d'un /v1/chat/completions — TASKFLOW V0.15.
 
     Retourne une réponse OpenAI {choices, files, summary} ou une erreur.
@@ -220,18 +240,39 @@ def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
       3. Poll entry_result jusqu'à `supervised`, puis réponse au format LLM.
     """
     from AgentsCatalogue.lib.workspacedb import taskflow
+    from services import swarm_repo
     t0 = time.monotonic()
     # 1. entry (as_llm_leader, sans LLM)
+    _log_exchange("request", {"prompt": (prompt or "")[:2000],
+                              "files": list((files or {}).keys())})
+    # repo global + branche par requête : le swarm produit les fichiers sur
+    # cette branche ; _taskflow_reply renverra prompt + git diff(first..HEAD).
+    requete_id = f"req-{uuid.uuid4().hex[:10]}"
+    swarm_repo.ensure()
+    br = swarm_repo.create_branch(requete_id)
+    if not br.get("ok"):
+        _log_exchange("entry_error", {"error": f"create_branch: {br.get('error')}"})
+        return {"ok": False, "error": f"create_branch: {br.get('error')}"}
+    branch = br["branch"]
+    # dépose prompt + fichiers fournis sur la branche (commit seed de la requête)
+    swarm_repo.write_seed(branch, prompt, files or {})
     e = taskflow.create_entry({
         "workspace_id": WORKSPACE,
         "title": (prompt or "")[:80],
         "description": prompt or "",
         "entry_type": "chat_entry",
         "team_id": TEAM_ID,
+        "repo": swarm_repo.GLOBAL_REPO_NAME,
+        "branch": branch,
     }, "")
     if not e.get("ok"):
-        return {"ok": False, "error": e.get("error", "entry échouée")}
+        err = e.get("error", "entry échouée")
+        _log_exchange("entry_error", {"error": err, "prompt": (prompt or "")[:500]})
+        return {"ok": False, "error": err}
     task_id = e["task_id"]
+    _log_exchange("entry_created", {"task_id": task_id,
+                                    "branch": branch,
+                                    "requete_id": requete_id})
     # 2. attendre la complétion (le swarm tourne en tâche de fond)
     status = ""
     while time.monotonic() - t0 < timeout_s:
@@ -242,31 +283,54 @@ def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
             break
         time.sleep(5)
     if status != "supervised":
-        return {"ok": False,
-                "error": f"timeout (task {task_id}, statut {status})"}
-    # 3. répondre au format LLM
-    return _taskflow_reply(task_id, er.get("response"))
+        err = f"timeout (task {task_id}, statut {status})"
+        _log_exchange("timeout", {"task_id": task_id, "status": status})
+        return {"ok": False, "error": err}
+    # 3. répondre au format LLM (prompt originelle + git diff du travail produit)
+    reply = _taskflow_reply(task_id, er.get("response"),
+                            prompt=prompt, requete_id=requete_id)
+    _log_exchange("reply", {"task_id": task_id,
+                            "reply_ok": reply.get("ok"),
+                            "reply": reply})
+    return reply
 
 
-def _taskflow_reply(task_id: int, response: Any = None) -> Dict[str, Any]:
-    """Réponse OpenAI depuis les livrables de la tâche (taskflow)."""
+def _taskflow_reply(task_id: int, response: Any = None,
+                    prompt: str = "", requete_id: str = "") -> Dict[str, Any]:
+    """Réponse OpenAI depuis les livrables de la tâche (taskflow).
+
+    La réponse = la PROMPT originelle + le `git diff` du travail produit sur la
+    branche requete/<requete_id> (first_commit..HEAD). C'est le livrable réel :
+    les fichiers écrits par les greedy (code/docs), pas un résumé texte.
+    """
     try:
-        from modules.sql.workspace import WorkspaceDB
-        db = WorkspaceDB()
-        sc = db.for_workspace(WORKSPACE)
-        task = sc.tasks.get(int(task_id))
-        reports = sc.tasks.get_reports(int(task_id)) or []
-        db.close()
+        from services import swarm_repo
+        d = swarm_repo.diff_for(requete_id) if requete_id else {}
     except Exception:
-        task, reports = None, []
-    title = (task.get("title") or "") if task else ""
-    parts = [f"### Résumé\n{title}"]
-    for r in reports:
-        role = r.get("role", "work")
-        body = str(r.get("content", "") or "").strip()
-        if body:
-            parts.append(f"### {role}\n{body}")
-    content = "\n\n".join(parts)
+        d = {}
+    if d.get("ok") and d.get("diff"):
+        content = f"### PROMPT\n{prompt}\n\n### DIFF (travail produit)\n{d['diff']}"
+        files = {f: None for f in d.get("files", [])}
+    else:
+        # repli : rapports (ancien comportement)
+        try:
+            from modules.sql.workspace import WorkspaceDB
+            db = WorkspaceDB()
+            sc = db.for_workspace(WORKSPACE)
+            task = sc.tasks.get(int(task_id))
+            reports = sc.tasks.get_reports(int(task_id)) or []
+            db.close()
+        except Exception:
+            task, reports = None, []
+        title = (task.get("title") or "") if task else ""
+        parts = [f"### Résumé\n{title}"]
+        for r in reports:
+            role = r.get("role", "work")
+            body = str(r.get("content", "") or "").strip()
+            if body:
+                parts.append(f"### {role}\n{body}")
+        content = "\n\n".join(parts)
+        files = {}
     return {
         "ok": True,
         "object": "chat.completion",
@@ -276,8 +340,10 @@ def _taskflow_reply(task_id: int, response: Any = None) -> Dict[str, Any]:
                      "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0,
                   "total_tokens": 0},
-        "files": {}, "summary": title,
+        "files": files,
+        "summary": (prompt or "")[:80],
         "swarm": {"session": f"task_{task_id}",
                   "response": response,
-                  "task_id": task_id},
+                  "task_id": task_id,
+                  "requete_id": requete_id},
     }

@@ -144,6 +144,23 @@ def decoupe(inputs: dict, home: str) -> dict:
                 sc.sub_tasks.update(cur["sub_task_id"], difficulty=diff)
                 sc.sub_tasks.set_status(cur["sub_task_id"], "done", tag="ok")
             _save_analyse(sc, task_id, inputs)
+            # Tâche d'entrée (swarm-as-llm) : le cas simple d'une demande de
+            # CODE doit produire le code. On crée une sub_task `coding` pour
+            # que le codeur l'implémente (le respond n'aura rien à synthétiser
+            # sinon). Non-entrée : tâche simple sans découpe → clôturée.
+            stype_task = (task.get("task_type") or "").lower()
+            if stype_task in ("chat_entry", "completion_entry"):
+                coding = sc.sub_tasks.create(
+                    task_id=int(task_id), sub_task_type="coding",
+                    difficulty=diff, status="unattributed",
+                    team_id=team_id,
+                    repo=task.get("repo", ""), branch=task.get("branch", ""),
+                    description=(inputs.get("analyse") or
+                                 task.get("description") or "")[:2000])
+                db.close()
+                return {"ok": True, "mode": "decoupe",
+                        "created": [coding.get("sub_task_id")],
+                        "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
             db.close()
             return {"ok": True, "mode": "assign_difficulte",
                     "difficulty": diff,
@@ -257,6 +274,22 @@ def ask_intel(inputs: dict, home: str) -> dict:
                             "exploration_sub_task_id": p["sub_task_id"],
                             "note": "l'analyse attend déjà une exploration — "
                                     "demande ignorée (anti-boucle)"}
+            # ── Plafond : le sub_task courant ne doit pas créer plus de 5
+            # explorations (ask_intel en boucle = goulot). Au-delà, on refuse :
+            # l'agent conclut avec le contenu disponible. ──
+            MAX_EXPLORATIONS = 5
+            try:
+                n_expl = sc.conn.execute(
+                    "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
+                    "AND sub_task_type = 'exploration' "
+                    "AND supervised = 1", (int(task_id),)).fetchone()[0]
+                if n_expl >= MAX_EXPLORATIONS:
+                    db.close()
+                    return {"ok": False, "too_many_explorations": True,
+                            "note": f"déjà {n_expl} explorations supervisées — "
+                                    "conclure avec le contenu disponible"}
+            except Exception:
+                pass
 
         # ── Redondance : mêmes intels déjà demandés ? ──
         norm = sorted(set(i.strip().lower() for i in intels if i.strip()))
@@ -344,28 +377,50 @@ def ask_new_task(inputs: dict, home: str) -> dict:
         aid = 0
     try:
         db, sc = _scope(workspace_id)
-        # 1) Déjà attribuées à l'agent → on les reprend en priorité.
         agent_name = f"agent:{aid}" if not str(aid).startswith("agent") else str(aid)
+        # 1) PRIORITÉ REPRISE : sub_task `doing` déjà assignée à l'agent
+        # (bug/crash → on reprend où on en était). On ne réinitialise PAS le
+        # home (resumed=True → pas de reset_variable_after_change_task).
         already = sc.sub_tasks.list_assigned_to(agent_name)
         if already:
-            st = sorted(already, key=lambda s: s["updated_at"])[0]
+            st = sorted(already, key=lambda s: s["priority"], reverse=True)[0]
+            payload = {"ok": True, "sub_task": dict(st),
+                       "sub_task_id": st["sub_task_id"],
+                       "task_id": st["task_id"], "type": st["sub_task_type"],
+                       "resumed": "true",
+                       "conv_id": _new_conv_id(st["task_id"])}
             db.close()
-            return {"ok": True, "sub_task": dict(st),
-                    "sub_task_id": st["sub_task_id"],
-                    "task_id": st["task_id"], "type": st["sub_task_type"],
-                    "conv_id": _new_conv_id(st["task_id"])}
-        # 2) Écrit la demande en BDD, puis appel synchrone au supervisor.
+            return _attach_task_ctx(sc, st["task_id"], payload)
+        # 2) PRIORITÉ PICK : sub_task `attributed` assignée à l'agent, la plus
+        # haute priorité (le supervisor a choisi l'agent, on la prend en doing).
+        mine = sc.sub_tasks.pick_for(agent_name)
+        if mine:
+            st = dict(mine)
+            payload = {"ok": True, "sub_task": st,
+                       "sub_task_id": st["sub_task_id"],
+                       "task_id": st["task_id"], "type": st["sub_task_type"],
+                       "resumed": "false",
+                       "conv_id": _new_conv_id(st["task_id"])}
+            db.close()
+            return _attach_task_ctx(sc, st["task_id"], payload)
+        # 3) Sinon : demande au supervisor (attribution unattributed → attributed).
         ask_id = sc.ask.create(aid, types)
         db.close()
         from services.task_supervisor.service import TaskSupervisor
         sup = TaskSupervisor()
         res = sup.assign(workspace_id, aid, types)
         if res.get("ok"):
-            return {"ok": True, "sub_task": res["sub_task"],
-                    "sub_task_id": res["sub_task_id"],
-                    "task_id": res["task_id"], "type": res["type"],
-                    "ask_id": ask_id,
-                    "conv_id": _new_conv_id(res["task_id"])}
+            # l'assign retourne la sub_task `attributed` → l'agent la prend
+            # immédiatement en doing (elle lui est assignée).
+            sc2 = _scope(workspace_id)[1]
+            sc2.sub_tasks.pick(res["sub_task_id"], agent_name)
+            payload = {"ok": True, "sub_task": res["sub_task"],
+                       "sub_task_id": res["sub_task_id"],
+                       "task_id": res["task_id"], "type": res["type"],
+                       "resumed": "false",
+                       "ask_id": ask_id,
+                       "conv_id": _new_conv_id(res["task_id"])}
+            return _attach_task_ctx(sc2, res["task_id"], payload)
         # Rien de dispo → l'agent se déshydrate, mais on l'enregistre en
         # wait_for (sub_task_available) pour que le waker le réveille quand une
         # sub_task de son type devient dispo.
@@ -380,6 +435,25 @@ def _new_conv_id(task_id: int) -> str:
     """Nouvelle conversation par run greedy : tâche + timestamp."""
     import time as _t
     return f"{task_id}_{int(_t.time())}"
+
+
+def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
+    """Enrichit le payload de pick avec le contexte git de la TÂCHE parente.
+
+    repo/branch/commit_start permettent au greedy d'initialiser son workspace
+    (clone du repo, checkout de la branche, snapshot du commit de départ) et de
+    pousser ses livrables sur la bonne branche à la fin."""
+    try:
+        task = sc.tasks.get(int(task_id))
+        if task:
+            payload.setdefault("repo", task.get("repo") or "")
+            payload.setdefault("branch", task.get("branch") or "")
+            payload.setdefault("commit_start",
+                               task.get("commit_start") or "")
+            payload.setdefault("project_id", task.get("repo") or "mw-swarm")
+    except Exception:
+        pass
+    return payload
 
 
 def _register_wait(workspace_id: str, agent_id: int, types: list) -> None:
@@ -478,6 +552,30 @@ def sub_task_release(inputs: dict, home: str) -> dict:
         st = sc.sub_tasks.release(int(sub_task_id), freedby=freedby, tag=tag)
         db.close()
         return {"ok": True, "sub_task": st}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def sub_task_too_hard(inputs: dict, home: str) -> dict:
+    """sub_task_too_hard — l'agent ABANDONNE (doing → too_hard).
+
+    Trop difficile pour lui : passe la sub_task à `too_hard` avec la raison et
+    incrémente too_hard_count. Le supervisor traitera les too_hard (bump de
+    difficulté + re-attribution, ou re-découpe si limite de boucle atteinte).
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    sub_task_id = inputs.get("sub_task_id")
+    reason = (inputs.get("reason") or "").strip()
+    if not workspace_id or sub_task_id is None:
+        return {"ok": False, "error": "workspace_id + sub_task_id requis"}
+    try:
+        db, sc = _scope(workspace_id)
+        st = sc.sub_tasks.mark_too_hard(int(sub_task_id), reason=reason)
+        db.close()
+        if not st:
+            return {"ok": False, "error": "sub_task introuvable ou pas doing"}
+        return {"ok": True, "sub_task": st,
+                "too_hard_count": st.get("too_hard_count", 0)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -610,4 +708,5 @@ def entry_result(inputs: dict, home: str) -> dict:
 
 __skills__ = ["decoupe", "ask_intel", "ask_new_task", "sub_task_done",
               "sub_task_release", "sub_task_get", "sub_task_list",
-              "analysis_report", "create_entry", "entry_result"]
+              "sub_task_too_hard", "analysis_report", "create_entry",
+              "entry_result"]

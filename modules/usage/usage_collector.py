@@ -48,6 +48,16 @@ def _agent_actif_max_rows() -> int:
         return 1000
 
 
+def _resolve_adresse_collector(cat, provider_ref: str, model_ref: str):
+    """Résout (provider_ref, model_ref) → adresse_id (répertoire), sinon 0."""
+    try:
+        from services.llm_allocation.address import resolve_address
+        aid = resolve_address(provider_ref, model_ref, cat)
+        return aid if aid is not None else 0
+    except Exception:
+        return 0
+
+
 def _cost_for(cat, provider_ref: str, model_ref: str,
               tokens_in: int, tokens_out: int,
               tokens_thinking: int = 0) -> float:
@@ -124,16 +134,18 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
                 cost = _cost_for(cat, provider_ref, model_ref,
                                  tokens_in, tokens_out, tokens_thinking)
 
+            aid = _resolve_adresse_collector(cat, provider_ref, model_ref)
             conn.execute("""
                 INSERT INTO real_call_models
-                    (provider_ref, endpoint_id, key_ref, model_ref, agent_id,
+                    (provider_ref, endpoint_id, key_ref, model_ref, adresse_id,
+                     agent_id,
                      sent_at, received_at, tokens_in, tokens_out,
                      tokens_thinking, cost,
                      status, error_code, error_detail, window_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 provider_ref, endpoint_id, rec.get("key_ref"),
-                model_ref, rec.get("agent_id"),
+                model_ref, aid, rec.get("agent_id"),
                 rec.get("sent_at"), rec.get("received_at"),
                 tokens_in, tokens_out, tokens_thinking, cost, status,
                 rec.get("error_code"), rec.get("error_detail"),
@@ -156,19 +168,21 @@ def _consume_file(path: Path, mw: ModelWeaverDB, cat: CatalogueDB) -> int:
                         cost = cost + ?,
                         last_call_at = ?,
                         last_call_working = ?,
-                        error_count = error_count + ?
+                        error_count = error_count + ?,
+                        adresse_id = ?
                     WHERE id = ?
                 """, (tokens_in, tokens_out, tokens_thinking, cost,
                       rec.get("received_at"),
-                      working, 0 if status == "ok" else 1, row["id"]))
+                      working, 0 if status == "ok" else 1, aid, row["id"]))
             else:
                 conn.execute("""
                     INSERT INTO endpoint_model_usage
-                        (endpoint_id, model_ref, agent_id, requests, tokens_in,
+                        (endpoint_id, model_ref, adresse_id, agent_id,
+                         requests, tokens_in,
                          tokens_out, tokens_thinking, cost,
                          last_call_at, last_call_working, error_count)
-                    VALUES (?,?,?,1,?,?,?,?,?,?,?)
-                """, (endpoint_id, model_ref, rec.get("agent_id"),
+                    VALUES (?,?,?,?,1,?,?,?,?,?,?,?)
+                """, (endpoint_id, model_ref, aid, rec.get("agent_id"),
                       tokens_in, tokens_out, tokens_thinking, cost,
                       rec.get("received_at"),
                       working, 0 if status == "ok" else 1))
@@ -307,21 +321,23 @@ def _rollup_1m_to_history(conn) -> int:
     try:
         cur = conn.execute("""
             INSERT INTO usage_history_1m
-                (bucket, provider_ref, model_ref, agent_id,
+                (bucket, provider_ref, model_ref, adresse_id, agent_id,
                  requests, tokens_in, tokens_out, tokens_thinking, cost)
             SELECT
                 CAST(sent_at / 60 AS INTEGER) * 60,
-                COALESCE(provider_ref, ''), COALESCE(model_ref, ''), COALESCE(agent_id, ''),
+                COALESCE(provider_ref, ''), COALESCE(model_ref, ''), COALESCE(adresse_id, 0),
+                COALESCE(agent_id, ''),
                 COUNT(*), SUM(tokens_in), SUM(tokens_out), SUM(tokens_thinking), SUM(cost)
             FROM real_call_models
             WHERE rolled_at IS NULL AND sent_at >= ?
-            GROUP BY 1, 2, 3, 4
+            GROUP BY 1, 2, 3, 4, 5
             ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
                 requests = usage_history_1m.requests + excluded.requests,
                 tokens_in = usage_history_1m.tokens_in + excluded.tokens_in,
                 tokens_out = usage_history_1m.tokens_out + excluded.tokens_out,
                 tokens_thinking = usage_history_1m.tokens_thinking + excluded.tokens_thinking,
-                cost = usage_history_1m.cost + excluded.cost
+                cost = usage_history_1m.cost + excluded.cost,
+                adresse_id = COALESCE(usage_history_1m.adresse_id, excluded.adresse_id)
         """, (cutoff_detail,))
         n = cur.rowcount
         conn.execute(
@@ -340,22 +356,24 @@ def _rollup_1h_from_1m(conn) -> int:
     cutoff_1m = int(time.time()) - _history_tiers()["m1"]
     conn.execute("""
         INSERT INTO usage_history_1h
-            (bucket, provider_ref, model_ref, agent_id,
+            (bucket, provider_ref, model_ref, adresse_id, agent_id,
              requests, tokens_in, tokens_out, tokens_thinking, cost)
         SELECT
             CAST(bucket / 3600 AS INTEGER) * 3600,
-            COALESCE(provider_ref, ''), COALESCE(model_ref, ''), COALESCE(agent_id, ''),
+            COALESCE(provider_ref, ''), COALESCE(model_ref, ''), MAX(COALESCE(adresse_id, 0)),
+            COALESCE(agent_id, ''),
             SUM(requests), SUM(tokens_in), SUM(tokens_out),
             SUM(tokens_thinking), SUM(cost)
         FROM usage_history_1m
         WHERE bucket < ?
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 5
         ON CONFLICT(bucket, provider_ref, model_ref, agent_id) DO UPDATE SET
             requests = usage_history_1h.requests + excluded.requests,
             tokens_in = usage_history_1h.tokens_in + excluded.tokens_in,
             tokens_out = usage_history_1h.tokens_out + excluded.tokens_out,
             tokens_thinking = usage_history_1h.tokens_thinking + excluded.tokens_thinking,
-            cost = usage_history_1h.cost + excluded.cost
+            cost = usage_history_1h.cost + excluded.cost,
+            adresse_id = COALESCE(usage_history_1h.adresse_id, excluded.adresse_id)
     """, (cutoff_1m,))
     conn.execute("DELETE FROM usage_history_1m WHERE bucket < ?", (cutoff_1m,))
     return 0

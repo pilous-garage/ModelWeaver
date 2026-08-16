@@ -1,0 +1,52 @@
+name: workspace/task_pick@v1
+category: workspace
+description: >
+  CYCLE GREEDY — PICK d'une sub_task (remplace l'ancien sleep+pick).
+  Ordre de priorité :
+    1) REPRISE : sub_task `doing` déjà assignée à l'agent (bug/crash) → on
+       reprend où on en était (resumed=true, NE PAS reset le home).
+    2) PICK : sub_task `attributed` assignée à l'agent, de PLUS HAUTE
+       priorité → on la prend (resumed=false).
+    3) SINON : demande d'attribution au supervisor (unattributed →
+       attributed) puis on la prend immédiatement.
+  Chaque sortie fournit repo/branch/commit_start de la tâche parente + resumed
+  (le FSM décide alors de reset_variable_after_change_task / prepare_workspace).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  agent_id:
+    type: integer
+    required: true
+  types:
+    type: list
+    required: true
+    description: >
+      [{type, level_max}] — types de sub_task traitables par l'agent + niveau
+      max de difficulté (easy|medium|hard|expert).
+outputs:
+  ok:
+    type: boolean
+  sub_task:
+    type: object
+  sub_task_id:
+    type: integer
+  task_id:
+    type: integer
+  type:
+    type: string
+  resumed:
+    type: string
+    description: "true si reprise d'une doing (pas de reset home), false sinon"
+  repo:
+    type: string
+  branch:
+    type: string
+  commit_start:
+    type: string
+  reason:
+    type: string
+    description: "wait si rien de dispo (l'agent se déshydrate)"
+implementation:
+  type: python
+  function: workspacedb.taskflow.ask_new_task

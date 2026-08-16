@@ -1778,7 +1778,6 @@ class CatalogueDB:
                     created_at INTEGER DEFAULT (strftime('%s','now')),
                     UNIQUE(endpoint_id, key_ref, model_id)
                 )
-            )
             """)
             self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS model_efficacy (

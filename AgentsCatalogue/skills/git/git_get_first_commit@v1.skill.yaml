@@ -1,0 +1,24 @@
+name: git/git_get_first_commit@v1
+category: git
+description: >
+  Retourne le hash du commit VIERGE d'origine du repo global swarm-as-llm
+  (llm_as_swarm_repo). Ce commit est le point de départ commun de toutes les
+  requêtes : le diff (first_commit..HEAD) d'une branche requete/<id> est le
+  livrable réel produit par le swarm pour cette requête. MÉCANIQUE, pas de LLM.
+inputs:
+  project_id:
+    type: string
+    required: false
+    default: llm_as_swarm_repo
+    description: Identifiant du repo global (défaut llm_as_swarm_repo)
+outputs:
+  ok:
+    type: boolean
+  first_commit:
+    type: string
+    description: Hash du commit vierge (racine) du repo global
+  error:
+    type: string
+implementation:
+  type: python
+  function: git.git_get_first_commit

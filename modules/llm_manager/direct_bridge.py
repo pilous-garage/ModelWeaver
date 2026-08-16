@@ -638,6 +638,15 @@ class DirectBridge(BaseBridge):
     """
 
     def __init__(self, cat=None, km=None):
+        # Tout appel LLM doit être journalisé (model_call_log). Si aucun
+        # catalogue n'est fourni, on en ouvre un pour que _log_call ne soit
+        # jamais silencieusement ignoré (probes, sync, appels ponctuels).
+        if cat is None:
+            try:
+                from modules.sql.catalogue_repo import CatalogueDB
+                cat = CatalogueDB()
+            except Exception:
+                cat = None
         self.cat = cat
         self.km = km
         self._endpoints: Dict[str, dict] = {}
