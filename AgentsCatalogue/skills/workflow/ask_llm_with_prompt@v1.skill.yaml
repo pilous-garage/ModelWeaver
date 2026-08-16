@@ -1,0 +1,80 @@
+name: workflow/ask_llm_with_prompt@v1
+category: workflow
+description: >
+  Alloue un LLM (args classiques de ask_llm : use_case, not_same_modele,
+  exclude_models, restrict_llm...) PUIS envoie la prompt au bridge et retourne
+  la réponse. Si l'appel échoue (auth/quota/timeout/429), on demande UN AUTRE
+  MODÈLE (exclusion du défaillant) et on retente — jusqu'à max_essais.
+  C'est le pont allocation → génération en un seul skill.
+inputs:
+  prompt:
+    type: string
+    required: true
+    description: "Prompt envoyé au LLM (rôle user)."
+  system:
+    type: string
+    required: false
+    default: ""
+    description: "Prompt système optionnel."
+  use_case:
+    type: string
+    required: false
+    default: coding
+    description: "coding (agentic), coding_high, chat, writing…"
+  not_same_modele:
+    type: array
+    required: false
+    default: []
+    description: >
+      Modèles DÉJÀ alloués/échoués → exclus (on redemande un modèle différent).
+      Accepte aussi une chaîne CSV. Retourné à jour dans used_models.
+  exclude_models:
+    type: array
+    required: false
+    default: []
+    description: "Exclusions explicites (ne jamais utiliser)."
+  restrict_llm:
+    type: array
+    required: false
+    default: []
+    description: "Allowlist de modèles (tout le reste est exclu)."
+  temperature:
+    type: number
+    required: false
+    default: 0.7
+  max_tokens:
+    type: integer
+    required: false
+    default: 4096
+  timeout:
+    type: integer
+    required: false
+    default: 90
+    description: "Timeout par appel (s)."
+  max_essais:
+    type: integer
+    required: false
+    default: 3
+    description: "Nb max d'essais (chaque échec → un autre modèle)."
+  min_window:
+    type: integer
+    required: false
+    default: 0
+outputs:
+  ok:
+    type: boolean
+  provider_ref:
+    type: string
+  model_ref:
+    type: string
+  response:
+    type: string
+  used_models:
+    type: array
+  fallbacks:
+    type: integer
+  error:
+    type: string
+implementation:
+  type: python
+  function: workflow.ask_llm.exec_with_prompt

@@ -553,8 +553,12 @@ un modèle DIFFÉRENT des autres déjà pris.
 - 5 answering_machine = sub-agents, chacun reçoit sa LLM (5 modèles DIFFÉRENTS).
 - `ask_llm` avec exclusion : `not_same_modele(list_llm_ref)` → demande au bridge
   5 modèles distincts ; fallback → redemander un modèle différent des autres.
-- Flux : spawn 5 → attendre 3 réponses + grace (1.5× le plus long des 3) → cancel
-  → jugement par les 5 (vote A/B/C ou NEW) → majorité absolue (2/3 ou 3/5)
+- `ask_llm_with_prompt` : alloue (args classiques de ask_llm) PUIS envoie la
+  prompt au bridge → réponse. Échec LLM → demande UN AUTRE modèle (exclusion
+  du défaillant) et retente (max_essais). C'est le pont alloc→génération.
+- Flux : 5 answering_machine (threads, ask_llm_with_prompt) → attendre 3
+  réponses + grace (1.5× le plus long des 3) → cancel → jugement par les 5
+  (vote A/B/C ou NEW) → majorité absolue (2/3 ou 3/5)
   → élimination des non-choisies → escalade :
     * tour new autorisé (max 5 tours avec NEW)
     * puis interdire NEW
@@ -562,6 +566,7 @@ un modèle DIFFÉRENT des autres déjà pris.
     * puis grader les autres (0-1, sans égalité) → meilleure note
     * toujours égalité → au hasard.
 - Un modèle peut n'avoir pas répondu (cancel) mais voter quand même.
+- Escalade humaine : `ask_human` → human_choice (issue bloquée) au lieu du hasard.
 - Similarité A≈B : non tranché (colonne similar_to envisagée).
 
 ### Système B — Tâches de sub-agent

@@ -779,70 +779,58 @@ def consensus_ask(inputs: dict, home: str) -> dict:
             return {"ok": False, "id_question": qid,
                     "error": "aucun modèle alloué pour les answering_machine"}
         n_alloc = len(models)
-        # 2. Spawn les answering_machine en THREADS (une par modèle).
+        # 2. POSER la question à chaque answering_machine (thread parallèle) :
+        #    ask_llm_with_prompt → allocation + prompt au bridge + retry sur
+        #    échec (un autre modèle). Écrit la réponse via reponse@v1.
+        #    Chaque thread utilise used_models CHAINÉ (models[i] déjà alloué) →
+        #    on appelle directement avec le modèle alloué, pas re-alloc.
         import threading
-        from services.agent_manager.service import AgentManager
-        results = [None] * n_alloc
+        reponses = []
         errors = []
 
-        def _run_one(i: int, m: dict) -> None:
+        def _ask_one(i: int, m: dict) -> None:
             try:
-                mgr = AgentManager()
-                cfg = {
-                    "entrypoints": {
-                        "main": {
-                            "max_iterations": 30,
-                            "steps": [
-                                {"id": "answer", "type": "llm_call",
-                                 "prompt": f"{question}\\nRéponds de façon concise et argumentée.",
-                                 "system": "answering_machine",
-                                 "provider_ref": m["provider_ref"],
-                                 "model_ref": m["model_ref"],
-                                 "capture": {"response": "ma_reponse"},
-                                 "next": "send_reponse"},
-                                {"id": "send_reponse", "type": "call",
-                                 "fn": "workspace/reponse@v1",
-                                 "inputs": {
-                                     "workspace_id": workspace_id,
-                                     "id_question": str(qid),
-                                     "contenu": "{{ma_reponse}}",
-                                     "model_ref": m["model_ref"]},
-                                 "next": "end"},
-                                {"id": "end", "type": "end",
-                                 "status": "SUCCESS"},
-                            ]
-                        }
-                    }
-                }
-                r = mgr.spawn_agent(
-                    name=f"answering_{qid}_{i}", role="answering_machine",
-                    request=question, occupation="disparate", config=cfg,
-                    provider_ref=m["provider_ref"], model_ref=m["model_ref"],
-                    keep_sleeping=True, id_proprietaire=inputs.get("id_creator"),
+                from services.skill_manager import call_skill
+                r = call_skill(
+                    "ask_llm_with_prompt",
+                    {"use_case": "coding",
+                     "prompt": f"{question}\nRéponds de façon concise et argumentée.",
+                     "system": "answering_machine",
+                     "not_same_modele": used[:i],   # différent des autres
+                     "max_essais": 3, "timeout": 90},
                     home=home)
-                results[i] = r
+                if not r.get("ok") or not r.get("response"):
+                    errors.append(f"answering_{i}: {r.get('error', 'vide')}")
+                    return
+                call_skill(
+                    "reponse",
+                    {"workspace_id": workspace_id,
+                     "id_question": qid,
+                     "contenu": r["response"],
+                     "id_agent": inputs.get("id_creator") or 0,
+                     "model_ref": r.get("model_ref", "")},
+                    home=home)
             except Exception as e:
-                errors.append(str(e))
-                results[i] = {"status": "error", "error": str(e)}
+                errors.append(f"answering_{i}: {e}")
 
-        threads = [threading.Thread(target=_run_one, args=(i, m))
+        threads = [threading.Thread(target=_ask_one, args=(i, m))
                    for i, m in enumerate(models)]
         for t in threads:
             t.start()
-        # 3. Attendre les réponses : au moins min(3, n) + grace 1.5×.
-        #    Le spawn est synchrone → attendre que les threads finissent.
+        # 3. Attendre les réponses : grace = 1.5× le plus long des 3 premières
+        #    (ici : join avec grace globale — les threads ont chacun un timeout).
         for t in threads:
             t.join()
         reponses = sc.consensus.get_reponses(qid)
         db.close()
-        ok = sum(1 for r in results if r and r.get("status") == "ok")
+        n_ok = sum(1 for r in reponses)
         return {"ok": True, "id_question": qid,
-                "n_alloue": n_alloc, "n_reponses": len(reponses),
-                "n_ok": ok, "errors": errors[:3],
+                "n_alloue": n_alloc, "n_reponses": n_ok,
+                "errors": errors[:3],
                 "models": [m["model_ref"] for m in models],
-                "status": "answered" if reponses else "awaiting",
+                "status": "answered" if n_ok else "awaiting",
                 "next": "judge",
-                "escalade": f"{len(reponses)} réponses sur {n_alloc} (grace appliquée)"}
+                "escalade": f"{n_ok} réponses sur {n_alloc} (grace appliquée)"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

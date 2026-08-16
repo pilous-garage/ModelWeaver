@@ -21,6 +21,14 @@ def _resolve_use_case(use_case: str, min_score: float) -> str:
 
 
 def exec(inputs: dict, home: str) -> dict:
+    """Alloue un LLM (sans envoyer de prompt) — ask_llm@v1."""
+    return _allocate(inputs, home)
+
+
+def _allocate(inputs: dict, home: str) -> dict:
+    """Alloue un LLM via LLMManager.assign_llm (logique partagée ask_llm /
+    ask_llm_with_prompt). Retourne {ok, provider_ref, model_ref, use_case,
+    used_models} (+ not_same = liste des modèles exclus)."""
     from modules.llm_manager.llm_manager import LLMManager
     from modules.sql.catalogue_repo import CatalogueDB
 
@@ -126,7 +134,70 @@ def exec(inputs: dict, home: str) -> dict:
     # consensus — not_same_modele du suivant = used_models du précédent).
     used_models = list(not_same) + [m_ref]
     return {"ok": True, "provider_ref": p_ref, "model_ref": m_ref,
-            "use_case": use_case, "used_models": used_models}
+            "use_case": use_case, "used_models": used_models,
+            "not_same": not_same}
 
 
-__skills__ = ["exec"]
+def exec_with_prompt(inputs: dict, home: str) -> dict:
+    """ask_llm_with_prompt : alloue un LLM (args classiques de ask_llm :
+    use_case, not_same_modele, exclude_models, restrict_llm...) PUIS envoie la
+    prompt au bridge et retourne la réponse.
+
+    Si l'appel échoue (BridgeError : auth/quota/timeout/429), on DEMANDE UN
+    AUTRE MODÈLE (exclusion du défaillant via not_same_modele) et on retente —
+    jusqu'à `max_essais` (défaut 3). Retourne {ok, provider_ref, model_ref,
+    used_models, response, fallbacks}.
+
+    C'est le pont allocation → génération en UN SEUL skill : l'agent ne doit
+    pas gérer lui-même le couple alloc puis chat + retry.
+    """
+    prompt = (inputs.get("prompt") or "").strip()
+    if not prompt:
+        return {"ok": False, "error": "prompt requis"}
+    system = inputs.get("system") or ""
+    temperature = float(inputs.get("temperature", 0.7) or 0.7)
+    max_tokens = int(inputs.get("max_tokens", 4096) or 4096)
+    timeout = int(inputs.get("timeout", 90) or 90)
+    max_essais = int(inputs.get("max_essais", 3) or 3)
+    agent_id = inputs.get("agent_id", "") or _agent_id_from_home(home)
+    # used_models : modèles déjà tentés/exclus → on en redemande un autre à
+    # chaque échec.
+    used = list(inputs.get("not_same_modele") or [])
+    if isinstance(used, str):
+        used = [m.strip() for m in used.split(",") if m.strip()]
+    used = [m for m in used if m]
+
+    last_err = ""
+    for essai in range(max_essais):
+        alloc = _allocate(dict(inputs, not_same_modele=used), home)
+        if not alloc.get("ok"):
+            last_err = alloc.get("error", "allocation échouée")
+            break
+        p_ref = alloc["provider_ref"]
+        m_ref = alloc["model_ref"]
+        if m_ref not in used:
+            used = list(used) + [m_ref]
+        msgs = ([{"role": "system", "content": system}] if system else []) + \
+               [{"role": "user", "content": prompt}]
+        try:
+            from modules.llm_manager.resilient import resilient_chat
+            resp = resilient_chat(
+                p_ref, m_ref, msgs, timeout=timeout, fallback=True,
+                use_case=alloc["use_case"], agent_id=agent_id or None,
+                temperature=temperature, max_tokens=max_tokens)
+            content = (getattr(resp, "content", "") or "").strip()
+            return {"ok": True, "provider_ref": p_ref, "model_ref": m_ref,
+                    "response": content, "used_models": used,
+                    "fallbacks": getattr(resp, "fallbacks", 0),
+                    "use_case": alloc["use_case"]}
+        except Exception as e:
+            last_err = str(e)
+            # Échec → demander un AUTRE modèle (le défaillant est exclu).
+            if m_ref not in used:
+                used = list(used) + [m_ref]
+    return {"ok": False, "provider_ref": "", "model_ref": "",
+            "response": "", "used_models": used,
+            "error": f"échec après {max_essais} essais: {last_err}"}
+
+
+__skills__ = ["exec", "exec_with_prompt"]
