@@ -135,12 +135,17 @@ def run_benchmark_on(agent_entry: str, type_test: str,
     model = get_model(f"openai/{model_name}", base_url=base_url, api_key=token)
 
     task = _build_task(type_test, n)
+    # SWE-bench (et assimilés) exigent un sandbox docker pour exécuter les tests.
+    _sandbox = "docker" if type_test in ("swe_bench", "swe_lancer",
+                                         "bigcodebench", "livecodebench_pro",
+                                         "apps", "ds1000") else "local"
     print(f"→ [{agent_entry}] {type_test} x{n} (parallel={parallel}, "
-          f"timeout={timeout}s, seed={shuffle_seed or 'ordre'})", flush=True)
+          f"timeout={timeout}s, seed={shuffle_seed or 'ordre'}, "
+          f"sandbox={_sandbox})", flush=True)
     try:
         result = inspect_eval(task, model=model, limit=n,
                               sample_shuffle=shuffle_seed or None,
-                              sandbox="local",
+                              sandbox=_sandbox,
                               max_samples=parallel,
                               time_limit=timeout)
     except Exception as e:

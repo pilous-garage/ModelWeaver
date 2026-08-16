@@ -74,8 +74,9 @@ def _build_task(bench: str, n: int):
         return task
 
     # Benchmark inspect_evals générique : import dynamique du module, appel de
-    # la fonction éponyme (convention), sinon la 1re fonction retournant un
-    # inspect_ai.Task (ex. mmlu → mmlu_0_shot, gpqa → gpqa_diamond).
+    # la fonction éponyme (convention), sinon la 1re fonction publique qui
+    # retourne un inspect_ai.Task (ex. mmlu → mmlu_0_shot, gpqa → gpqa_diamond).
+    # SWE-bench nécessite un sandbox docker (il exécute les tests du repo).
     import importlib
     try:
         mod = importlib.import_module(f"inspect_evals.{bench}")
@@ -84,6 +85,10 @@ def _build_task(bench: str, n: int):
             f"benchmark inconnu: {bench} — n'est pas un module inspect_evals "
             f"(trouvés: humaneval, mbpp, factorial, + tous inspect_evals). "
             f"Détail: {e}")
+    if bench in ("swe_bench", "swe_lancer"):
+        fn = getattr(mod, bench, None)
+        if callable(fn):
+            return fn(sandbox_type="docker")
     fn = getattr(mod, bench, None)
     if not callable(fn):
         # convention fallback : 1re fonction publique qui retourne un Task
