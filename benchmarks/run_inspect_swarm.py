@@ -94,6 +94,10 @@ def main() -> None:
     parser.add_argument("--sandbox", default="local",
                         help="sandbox inspect_ai (local | docker ; défaut local — "
                              "pas de plugin docker compose requis)")
+    parser.add_argument("--sample-shuffle", type=int, default=0,
+                        help="shuffle les samples avant de prendre les N premiers "
+                             "(seed entier > 0 ; 0 = ordre du dataset). HumanEval "
+                             "a 164 problèmes — limit prend les X après shuffle.")
     parser.add_argument("--max-parallel", type=int, default=20,
                         help="samples exécutés en parallèle par Inspect (défaut "
                              "20 — le swarm a 8 codeurs + max_concurrent 20)")
@@ -131,6 +135,7 @@ def main() -> None:
           "peut être long : le swarm orchestre des agents réels)…")
     try:
         result = inspect_eval(task, model=model, limit=args.n,
+                              sample_shuffle=args.sample_shuffle or None,
                               sandbox=args.sandbox,
                               max_samples=args.max_parallel,
                               time_limit=args.time_limit)
