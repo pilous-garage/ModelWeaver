@@ -596,39 +596,99 @@ unattributed → attributed → doing → done → supervised + too_hard → bum
 
 ## Idée 18 — Assignation LLM correcte et évolutive (niveaux + expérience)
 
-**Statut** : PLANIFICATION — ne pas coder avant d'avoir réglé les détails.
+**Statut** : PLANIFICATION DÉTAILLÉE — ne pas coder avant d'avoir réglé budgets/coûts.
 
-### Contexte
-- L'allocation actuelle maximise le score (score_etire × latence × succès).
-- Les benchmarks/scores actuels sont tirés du SCRAPING de benchmarks externes.
-- Objectif : utiliser ces scores comme INITIALISATION d'un modèle d'expérience
-  qui évolue avec nos résultats internes (benchmarks swarm qu'on lance).
+### A. Niveaux de compétence
+- Niveaux : debutant / junior / intermediaire / senior / expert.
+- Chaque niveau = un seuil de score + un rôle approprié (debutant suffit pour
+  la classification simple ; senior requis pour coding complexe).
 
-### Direction (à détailler)
-1. **Niveaux de note** : debutant / junior / intermediaire / senior / expert.
-   Chaque niveau = intervalle de score + rôle approprié (un niveau bas suffit
-   pour la classification simple ; un senior pour le coding complexe).
-2. **Assignation par niveau** : pour une tâche simple (classification), le
-   LLM le PLUS LÉGER (rapide, pas cher) qui atteint le niveau est choisi —
-   pas le meilleur score. Gain vitesse + coût.
-3. **Score par domaine** : le score doit être croisé par domaine (coding,
-   math, text_generation, reasoning...) — on a déjà score_coding/chat/
-   reasoning/knowledge/agentic mais le scoring final ne les utilise pas.
-4. **Expérience = initialisation + évolution** :
-   - INIT : scores externes scrappés (ce qu'on a) pour donner à chaque modèle
-     un score de départ par domaine.
-   - ÉVOLUTION : nos benchmarks swarm internes (gsm8k/humaneval/...) alimentent
-     les scores (score_etire / score_batch) → les modèles montent/descendent
-     de niveau selon leurs résultats RÉELS chez nous.
-5. **Rôle/level dans la requête d'allocation** : use_case + niveau demandé →
-     sélection du modèle le plus léger au-dessus du seuil du niveau.
+### B. Tables de score (par niveau, PAS de cube)
+- 2 tables plates, une ligne par couple, 5 colonnes niveau :
+    llm_domaine_score:   (llm_id, domaine_id, debutant, junior, intermediaire, senior, expert)
+    llm_task_type_score: (llm_id, task_type_id, debutant, junior, ...)
+- Domaine (nature) : text, code, math, vision, reasoning, data...
+- Type de tâche (pipeline) : planning, coding, reviewing, testing, merging,
+  respond, exploration...
+- Pourquoi par niveau : un LLM peut être excellent en debutant/junior mais
+  dégradé en senior (dégressif), un autre croissant linéairement. Le niveau
+  permet de recruter le LLM le plus CHEAP qui atteint la tranche demandée.
 
-### Points à régler en planification
-- [ ] Mapping rôle → (use_case, niveau min) pour chaque type d'agent.
-- [ ] Seuils de niveau (0.3/0.5/0.65/0.8/0.9 ?) — à valider.
-- [ ] Comment le benchmark interne met à jour le score (pondération avec l'init).
-- [ ] Priorité légèreté vs score quand le niveau est bas (simple → léger).
-- [ ] Classification simple : quel use_case ("simple") + niveau → modèle léger.
-- [ ] Migration des scores scrappés → init (ne PAS perdre l'existant).
-- [ ] La stratégie best-fallback doit intégrer le niveau (filtrer par seuil
-     PUIS choisir le plus léger si tâche simple, sinon meilleur score).
+### C. Init = 1.0 partout
+- On part de score=1.0 sur toutes les cases (neutre, PAS pénalisant).
+- Le scraping de benchmarks sert au plus de léger biais de départ, pas de
+  vérité. Aucun modèle n'est écarté injustement au départ.
+
+### D. Mise à jour : fraîcheur + stabilité, scoreur BATCH (pas instantané)
+- Les événements sont LOGGUÉS (pas de mutation du score à la volée).
+- Un SCOREUR BATCH recalcule périodiquement (toutes les 10 min pour l'instant ;
+  on loggue la durée du recalcul).
+- Fraîcheur : poids d'un événement = exp(-âge / demi_vie).
+- Demi-vie ADAPTATIVE : demi_vie = min(âge_premier_scoring,
+  âge_plus_vieux_scoring / 10). Un modèle récent converge vite, un éprouvé
+  est stable (5 échecs sur 10000 réussites ne le font pas chuter).
+- Stabilité : amortissement par volume (poids_effet ∝ 1/(1 + N_total*k)).
+- Score = (Σ poids × résultat) / (Σ poids) — moyenne pondérée temporelle (EWMA).
+
+### E. Table root_tasks (unicité durable)
+- Table séparée : root_tasks (root_id PK AUTOINCREMENT, workspace_id,
+  prompt_hash, created_at). root_id IMMUABLE (jamais réutilisé).
+- task_log référence root_id (PAS le task_id de la table tasks, qui peut être
+  vidée/purgée). Le log reste durable via root_tasks.
+
+### F. Log des tâches (base, sans grosses données)
+    task_log:
+      log_id        INTEGER PK
+      task_id       INTEGER
+      root_id       INTEGER      → root_tasks.root_id (racine utilisateur)
+      parent_task_id INTEGER NULL → qui a produit la tâche (cheminement)
+      ordre         INTEGER      → position pipeline
+      llm_id        INTEGER      → LLM qui a traité
+      role          TEXT         → planning/coder/reviewer/tester/merger/respond
+      domaine       TEXT
+      task_type     TEXT
+      exit_signal   TEXT         → done/too_hard/error_repéré/cancelled/bumped
+      created_at    TEXT
+- Colonne exit_signal AUSSI dans la table tasks (reflet).
+- On enregistre les tâches too_hard → modify_difficulty.
+
+### G. Cheminement (parent = qui PRODUIT, pas les dépendances de données)
+- Une DÉCOUPE ne crée que du MÊME type (coding OU testing OU review), jamais
+  un mix. Les n coding + le merge autogénéré ont la découpe (planning) comme
+  parent. PAS les étapes intermédiaires.
+- Chaîne type :
+    planning (découpe) → coding×n + merge_autogénéré → review (règle) →
+    testing (règle) → merge (règle) → respond (finalisation)
+- review.parent = coding ; testing.parent = review ; respond.parent = merge.
+- root_id = racine pour TOUS.
+- Trace d'erreur : testing échoue → parent=review → parent=coding →
+  parent=planning. On pénalise les maillons fautifs.
+
+### H. Renommage : analysis → planning
+- La sub_task du découpeur devient  (il planifie/split, n'analyse
+  pas). Impact : TASK_TAGS, ROLE_TO_SUBTASK, règles supervisor, greedies.
+
+### I. Récompense GLOBALE (par root_task, pas tâche isolée)
+- À la fin d'une root_task, le scoreur passe TOUTE la chaîne :
+  * Réussite → bonus à TOUS les (llm, rôle, domaine/type) qui ont contribué.
+  * Échec localisé → on remonte le parent → pénalité aux maillons fautifs
+    (testing échoue → tester + reviewer qui a raté + coder + découpeur si
+    mauvaise découpe).
+- Chaque événement = (root_id, llm_id, rôle, pénalité/bonus).
+
+### J. Signaux externes (renforcement)
+- En plus des événements supervisor, on injecte les benchmarks externes :
+  (llm, domaine, niveau, pass/fail) avec le même mécanisme fraîcheur/stabilité.
+- Table d'événements commune, source : supervisor | benchmark.
+
+### K. Allocation (reste à affiner avec budgets)
+- allocation(rôle, type, domaine, niveau) :
+  * candidats = llm dont score[domaine][niveau] ≥ seuil ET score[type][niveau] ≥ seuil
+  * choix = min_budget(candidats) — le plus cheap (temps/argent/thinking)
+- Option : score × task_cost au lieu de seuil+cheapest (à trancher avec budgets).
+
+### L. Budgets / coûts (PROCHAINE ÉTAPE — pas encore défini)
+- Dimensions : temps, argent, tokens, thinking_power.
+- Portées : per-requête (borne le choix), per-zone (team/projet/workspace),
+  per-état (service LLM manager).
+- Régulation : mode dégradé (modèles gratuits) ou blocage quand budget atteint.
