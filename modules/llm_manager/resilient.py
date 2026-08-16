@@ -79,7 +79,13 @@ def resilient_chat(provider_ref: str, model_ref: str,
     if agent_id is not None and "agent_id" not in kwargs:
         kwargs["agent_id"] = agent_id
 
-    for attempt in range(max_retries):
+    # Max de modèles DIFFÉRENTS essayés (fallback en chaîne). Les modèles morts
+    # (auth/quota/insufficient_balance — pas de crédit) échouent toujours : on
+    # les enchaîne jusqu'à trouver un modèle qui répond, au lieu de re-tenter
+    # le même max_retries fois puis abandonner.
+    max_fallbacks = max(max_retries, 5)
+    tried = {(provider_ref, model_ref)}
+    for attempt in range(max_fallbacks):
         try:
             resp = _run_with_timeout(bridge, cur_p, cur_m, messages,
                                      timeout, kwargs)
@@ -95,13 +101,22 @@ def resilient_chat(provider_ref: str, model_ref: str,
             return resp
 
         # Repli sur un autre LLM attribué par le gestionnaire de LLM.
-        if not fallback or attempt == max_retries - 1:
+        if not fallback:
             break
+        # Échec durable (auth/quota/insufficient_balance) → ce modèle est mort,
+        # on passe au suivant SANS re-tenter le même (le retry transitoire a déjà
+        # été fait par _run_with_timeout / le bridge).
+        if last_err and last_err.category == ErrorCategory.AUTH:
+            if len(tried) >= max_fallbacks:
+                break
         cand = LLMManager(cat, km=km).assign_llm(
             exclude_provider=cur_p, exclude_model=cur_m, use_case=use_case)
         if not cand:
             break
         cur_p, cur_m = cand["provider_ref"], cand["model_ref"]
+        if (cur_p, cur_m) in tried:
+            break
+        tried.add((cur_p, cur_m))
 
     if last_err is None:
         last_err = BridgeError(ErrorCategory.UNKNOWN,
