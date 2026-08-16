@@ -445,10 +445,13 @@ def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
 
     repo/branch/commit_start permettent au greedy d'initialiser son workspace
     (clone du repo, checkout de la branche, snapshot du commit de départ) et de
-    pousser ses livrables sur la bonne branche à la fin."""
+    pousser ses livrables sur la bonne branche à la fin. workspace_id est aussi
+    injecté : l'agent greedy doit connaître le workspace du run pour les steps
+    suivants (ask_intel/sub_task_done reçoivent {{workspace_id}})."""
     try:
         task = sc.tasks.get(int(task_id))
         if task:
+            payload.setdefault("workspace_id", sc.wid or "")
             payload.setdefault("repo", task.get("repo") or "")
             payload.setdefault("branch", task.get("branch") or "")
             payload.setdefault("commit_start",
