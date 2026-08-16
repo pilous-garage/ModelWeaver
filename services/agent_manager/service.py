@@ -430,6 +430,13 @@ class Agent:
         # le trigger est actif). Un entrypoint prioritaire (pause/cancel/auth)
         # peut rediriger vers son propre workflow.
         config = json.loads(self._data.get("config_json") or "{}")
+        # Inliner les entrypoints réservés par défaut (cancel/pause/reset/...)
+        # si l'agent ne les déclare pas — voir docs/entrypoints_spec.md.
+        try:
+            from services.skill_manager import with_default_entrypoints
+            config = with_default_entrypoints(config)
+        except Exception:
+            pass
         resolved_ep = entrypoint
         if entrypoint == "main":
             resolved_ep = self.resolve_entrypoint()
@@ -669,6 +676,22 @@ class Agent:
                     result._paused = False
                     mgr.ack_signal(sig["signal_id"])
                     mgr.complete_signal(sig["signal_id"], {"action": "resume"})
+                elif stype == "cancel":
+                    # CANCEL : interrompt le run (entrypoint prioritaire hard).
+                    # Le FSM capture CancelSignal → status 'cancelled'.
+                    mgr.ack_signal(sig["signal_id"])
+                    mgr.complete_signal(sig["signal_id"],
+                                        {"action": "cancel",
+                                         "task_id": payload.get("task_id")})
+                    result.variables["_cancel_task_id"] = payload.get("task_id")
+                    from AgentFrameWork.fsm_interpreter import CancelSignal
+                    raise CancelSignal()
+                elif stype == "reset":
+                    # RESET : efface les variables du run (hors identité).
+                    from AgentFrameWork.fsm_interpreter import ResetSignal
+                    mgr.ack_signal(sig["signal_id"])
+                    mgr.complete_signal(sig["signal_id"], {"action": "reset"})
+                    raise ResetSignal()
                 elif stype == "configure":
                     result.variables.update(payload.get("variables", {}))
                     if "state" in payload:
@@ -2245,7 +2268,8 @@ class AgentManager:
 
     # ── Phase 4 : canal de signaux ──
 
-    VALID_SIGNALS = ("pause", "resume", "wakeup", "sleep", "status", "health", "kill", "configure")
+    VALID_SIGNALS = ("pause", "resume", "wakeup", "sleep", "status", "health",
+                     "kill", "configure", "cancel", "reset")
 
     def send_signal(self, agent_id: int, signal_type: str,
                     payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

@@ -529,3 +529,62 @@ Le swarm-as-llm (`run_completion`) ne crée **aucun repo** pour une requête
   quand la question est assez simple pour ne pas justifier le swarm complet
   (consensus direct). Ex. une requête « dis bonjour » ne devrait pas déclencher
   analysis → coding → review → respond ; un leader simple répondrait direct.
+
+## Idée 16 — Règles de préférence de modèles pour le consensus (obtenu/pas_obtenu)
+
+**Statut** : idée notée, NON implémenté. Source : session agent consensus (2026-08-16).
+
+Quand l'agent consensus demande ses 5 modèles différents, on pourrait à terme
+utiliser des RÈGLES de préférence (espèce de heuristique) :
+`modèle → obtenu/pas_obtenu → nouveau_modèle` — un mapping qui guide le choix
+du modèle suivant selon si le précédent a été obtenu ou non. Pour l'instant :
+on demande juste au bridge 5 modèles différents (exclusion cumulée).
+
+Le fallback aussi : si un modèle échoue, on met à jour la liste et on redemande
+un modèle DIFFÉRENT des autres déjà pris.
+
+## Idée 17 — Architecture consensus + supervisor général + tâches de sub-agent
+
+**Statut** : architecture définie (session 2026-08-16), implémentation par étapes.
+
+### Système A — Agent consensus
+- Table `question` (id_question, question, id_creator, status_answering) + `reponse`
+  (id_question, id_agent, contenu, commit vide = texte clair).
+- 5 answering_machine = sub-agents, chacun reçoit sa LLM (5 modèles DIFFÉRENTS).
+- `ask_llm` avec exclusion : `not_same_modele(list_llm_ref)` → demande au bridge
+  5 modèles distincts ; fallback → redemander un modèle différent des autres.
+- Flux : spawn 5 → attendre 3 réponses + grace (1.5× le plus long des 3) → cancel
+  → jugement par les 5 (vote A/B/C ou NEW) → majorité absolue (2/3 ou 3/5)
+  → élimination des non-choisies → escalade :
+    * tour new autorisé (max 5 tours avec NEW)
+    * puis interdire NEW
+    * puis interdire de voter pour soi
+    * puis grader les autres (0-1, sans égalité) → meilleure note
+    * toujours égalité → au hasard.
+- Un modèle peut n'avoir pas répondu (cancel) mais voter quand même.
+- Similarité A≈B : non tranché (colonne similar_to envisagée).
+
+### Système B — Tâches de sub-agent
+- `task_for_subagent(id_subagent)` : crée une tâche attributed/id_agent (pas
+  unattributed). Simplifie les call explore.
+- `create_task` flag waiting/no_waiting ; `create_task_list` (liste, flag global :
+  attendre que toutes soient done/supervised/cancelled).
+- Table `blocking_agent` (id_task, id_agent) : réveille l'agent quand ses tâches
+  blocking sont terminées (le supervisor fait waker).
+
+### Système C — Supervisor général + teams
+- Un supervisor GÉNÉRAL vérifie que chaque team a son supervisor, les réveille.
+- team_default : tous les agents sans team, avec son propre supervisor.
+- Chaque team a son supervisor ; on déclare les RÈGLES, pas le supervisor lui-même.
+- Steps du supervisor :
+  * check_awake : attributed/doing → is_awake? sinon is_blocked? sinon waking.
+  * check_done/cancelled : statuts cancelled_done / cancelled_supervised à ajouter.
+  * step_cancel : tâche cancelled (mais pas cancelled_done/supervised) → envoyer
+    signal cancel à l'agent ; l'agent reçoit cancel_done → cancel_supervised.
+  * cancel = entrypoint de plus haute priorité (arrêt des calls LLM).
+- Entrypoints par défaut : un entrypoint peut être NON déclaré (version défaut)
+  ou déclaré. Lors de l'inlining d'un agent, prendre les défauts.
+  Tout signal = un entrypoint (cancel, pause, ask_auth, receive_auth...).
+
+### Système D — Flux pick/attribution (déjà committé 6c532ad)
+unattributed → attributed → doing → done → supervised + too_hard → bump/découpe.

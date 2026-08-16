@@ -668,6 +668,69 @@ def expand_workflow(workflow: dict) -> dict:
     return _get().expand(workflow)
 
 
+# ── Entrypoints réservés par défaut ───────────────────────────────────────
+# Un agent peut ne PAS déclarer les entrypoints de supervision (cancel, pause,
+# pause_hard, resume, reset, clear_home). Le FSM inlinera alors la version
+# DÉFAUT. Si l'agent les déclare, sa version prévaut. Voir docs/entrypoints_spec.md.
+_DEFAULT_ENTRYPOINT_STEPS = {
+    "cancel": [
+        {"id": "cancel_agent", "type": "end", "status": "CANCELLED"},
+    ],
+    "pause": [
+        {"id": "pause_wait", "type": "end", "status": "PAUSED"},
+    ],
+    "pause_hard": [
+        {"id": "pause_hard_do", "type": "end", "status": "PAUSED"},
+    ],
+    "resume": [
+        {"id": "resume_continue", "type": "end", "status": "RUNNING"},
+    ],
+    "reset": [
+        {"id": "reset_vars", "type": "call",
+         "fn": "workflow/reset_variable_after_change_task@v1",
+         "inputs": {"agent_id": "{{agent_id}}"},
+         "next": "reset_end"},
+        {"id": "reset_end", "type": "end", "status": "RESET"},
+    ],
+    "clear_home": [
+        {"id": "clear_home_do", "type": "call",
+         "fn": "host/clear_home@v1",
+         "next": "clear_end"},
+        {"id": "clear_end", "type": "end", "status": "RESET"},
+    ],
+}
+
+# hard : true = interruption immédiate ; false = attendre la fin de la step.
+_DEFAULT_ENTRYPOINT_FLAGS = {
+    "cancel": True,
+    "pause": False,
+    "pause_hard": True,
+    "resume": False,
+    "reset": True,
+    "clear_home": True,
+}
+
+
+def with_default_entrypoints(workflow: dict) -> dict:
+    """Garantit les entrypoints réservés par défaut dans un workflow d'agent.
+
+    Le workflow reçu est un dict {entrypoints: {nom: {steps, hard?...}}} (ou
+    {steps: [...]} si c'est déjà l'entrypoint résolu). Pour chaque entrypoint
+    réservé absent, on injecte la version par défaut (steps + flag hard).
+    """
+    wf = dict(workflow)
+    eps = wf.get("entrypoints")
+    if not isinstance(eps, dict):
+        return wf  # workflow simple (steps) — pas de réservé à injecter
+    for name, steps in _DEFAULT_ENTRYPOINT_STEPS.items():
+        if name not in eps:
+            eps[name] = {
+                "hard": _DEFAULT_ENTRYPOINT_FLAGS.get(name, False),
+                "steps": [dict(s) for s in steps],
+            }
+    return wf
+
+
 def call_skill(fn: str, inputs: dict, home: str = "/tmp",
                agent_id: str = "", entrypoint: str = "main") -> dict:
     return _get(home).call(fn, inputs, agent_id=agent_id, entrypoint=entrypoint)

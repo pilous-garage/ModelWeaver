@@ -661,6 +661,10 @@ def create_entry(inputs: dict, home: str) -> dict:
     entry_type = (inputs.get("entry_type") or "chat_entry").strip()
     priority = int(inputs.get("priority", 0) or 0)
     team_id = int(inputs.get("team_id", -1) or -1)
+    # repo/branch de la requête (le swarm-as-llm les pose via run_completion) :
+    # les greedy s'en servent pour prepare_workspace (clone + checkout).
+    repo = (inputs.get("repo") or "").strip()
+    branch = (inputs.get("branch") or "").strip()
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id + title requis"}
     try:
@@ -668,7 +672,8 @@ def create_entry(inputs: dict, home: str) -> dict:
         task = sc.tasks.create(
             title=title, description=description,
             priority=priority, task_type=entry_type,
-            team_id=team_id, primordial=1)
+            team_id=team_id, primordial=1,
+            repo=repo, branch=branch)
         st = sc.sub_tasks.create(
             task_id=task["task_id"], sub_task_type="analysis",
             difficulty="medium", status="unattributed", team_id=team_id,

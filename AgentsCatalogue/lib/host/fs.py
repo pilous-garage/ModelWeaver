@@ -78,4 +78,28 @@ def host_run(inputs: dict, home: str) -> dict:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
 
 
-__skills__ = ["host_read", "host_write", "host_run"]
+def host_clear_home(inputs: dict, home: str) -> dict:
+    """Efface le home de l'agent (agent_home/<id>) : work/, workspace/ et les
+    fichiers à la racine, HORS log/ (gardé par défaut). `with_log: true`
+    efface aussi log/. C'est le home PROPRE de l'agent (pas un chemin hôte
+    externe) → pas de grant FsAuth nécessaire. Mécanique, pas de LLM."""
+    import shutil
+    home_root = Path(home or "").resolve()
+    if not home_root.is_dir():
+        return {"ok": False, "error": f"home introuvable: {home_root}"}
+    removed = 0
+    for item in home_root.iterdir():
+        if item.name == "log" and not inputs.get("with_log"):
+            continue
+        try:
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink(missing_ok=True)
+            removed += 1
+        except Exception:
+            pass
+    return {"ok": True, "cleared": removed, "home": str(home_root)}
+
+
+__skills__ = ["host_read", "host_write", "host_run", "host_clear_home"]

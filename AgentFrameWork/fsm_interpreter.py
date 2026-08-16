@@ -108,6 +108,16 @@ class AgentAbort(Exception):
     """Levée par un signal_check (kill) pour interrompre le FSM."""
 
 
+class CancelSignal(Exception):
+    """Levée par un signal_check (cancel) : arrêt immédiat du run (entrypoint
+    cancel, hard). Le FSM capture → status 'cancelled' + finalisation."""
+
+
+class ResetSignal(Exception):
+    """Levée par un signal_check (reset) : efface les variables du run (hors
+    identité) puis relance l'entrypoint ciblé."""
+
+
 class PauseSignalError(Exception):
     """Levée par un signal_check (pause) pour mettre le FSM en attente."""
 
@@ -128,6 +138,7 @@ class FSMResult:
         self.budget: Dict[str, Any] = {}
         # Flags de contrôle (Phase 4 : signaux)
         self._paused: bool = False
+        self._reset_requested: bool = False
         # Contrôle de boucle : 'break' | 'continue' | None (consommé par for/while)
         self._loop_ctl: Optional[str] = None
 
@@ -265,6 +276,11 @@ class FSMInterpreter:
                         break
                     # Reprendre sans avancer l'étape
                     continue
+            # ── Reset : relancer depuis l'entrypoint principal ──
+            if getattr(result, "_reset_requested", False):
+                result._reset_requested = False
+                current_id = self._find_entry_point(steps) or current_id
+                continue
 
             # ── Pause globale projet/team/agent avant chaque step ──
             project_id = result.variables.get("project_id")
@@ -333,6 +349,19 @@ class FSMInterpreter:
         except AgentAbort:
             result.status = "aborted"
             result.end_reason = "Interrompu par signal kill"
+        except CancelSignal:
+            result.status = "cancelled"
+            result.end_reason = "Interrompu par signal cancel"
+        except ResetSignal:
+            # reset : efface les variables du run (hors identité), relance main.
+            _keep = ("agent_id", "home", "workspace_id", "team_id",
+                     "project_id", "team_name")
+            result.variables = {k: v for k, v in result.variables.items()
+                                if k in _keep}
+            result.next_step_id = None
+            result.status = "running"
+            result.end_reason = "Reset (entrypoint reset)"
+            result._reset_requested = True
 
     def _build_pause_check(self, variables: Dict[str, Any]) -> Any:
         """Retourne un callable utilisé par le bridge pour interrompre/reprendre

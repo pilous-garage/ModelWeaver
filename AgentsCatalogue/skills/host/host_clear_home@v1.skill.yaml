@@ -1,0 +1,27 @@
+name: host/host_clear_home@v1
+category: host
+description: >
+  Efface le home de l'agent (agent_home/<id> : work/, workspace/, fichiers à la
+  racine), HORS log/ par défaut. `with_log: true` efface aussi log/. Mécanique,
+  pas de LLM. Utilisé par l'entrypoint réservé clear_home.
+inputs:
+  agent_id:
+    type: string
+    required: true
+    description: Identifiant de l'agent (vérifié contre agent_fs_auth)
+  with_log:
+    type: boolean
+    required: false
+    default: false
+    description: true = effacer aussi le dossier log/
+outputs:
+  ok:
+    type: boolean
+  cleared:
+    type: integer
+    description: Nombre d'éléments effacés
+  home:
+    type: string
+implementation:
+  type: python
+  function: host.fs.host_clear_home
