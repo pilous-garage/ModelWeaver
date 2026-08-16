@@ -1,0 +1,53 @@
+name: workflow/ask_llm_autofallback_endpoint@v1
+category: workflow
+description: >
+  DOUBLE wrapper de ask_llm_autofallback : précise explicitement l'endpoint
+  SDK (chat/completion/responses) puis délègue. Idéal pour les agents qui
+  veulent contrôler le canal SDK (le bridge gère les différences par provider).
+inputs:
+  endpoint:
+    type: string
+    required: true
+    description: "chat | completion | responses"
+  prompt:
+    type: string
+    required: true
+  system:
+    type: string
+    required: false
+  llm_selectionne:
+    type: object
+    required: false
+  use_case:
+    type: string
+    required: false
+    default: coding
+  temperature:
+    type: number
+    required: false
+    default: 0.7
+  max_tokens:
+    type: integer
+    required: false
+  stream:
+    type: boolean
+    required: false
+    default: false
+  max_essais:
+    type: integer
+    required: false
+    default: 3
+outputs:
+  ok:
+    type: boolean
+  llm_used:
+    type: object
+  response:
+    type: string
+  endpoint:
+    type: string
+  error:
+    type: string
+implementation:
+  type: python
+  function: workflow.ask_llm_autofallback.ask_llm_autofallback_endpoint

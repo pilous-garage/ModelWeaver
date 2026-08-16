@@ -1,0 +1,76 @@
+name: workflow/ask_llm_autofallback@v1
+category: workflow
+description: >
+  WRAPPER LLM haute volée : mêmes arguments que ask_llm/ask_new_llm + un LLM
+  optionnel à tester en premier (l'agent reste sur le même modèle) + type
+  d'endpoint SDK (chat/completion/responses) + options (agentic, stream...).
+  Retourne DEUX résultats : le LLM finalement sélectionné (id_address,
+  model_name, provider_name, refs réutilisables) ET la réponse. Le routage
+  par api_type du provider (openai/anthropic/gemini/cohere) est délégué au
+  bridge. Échec LLM → fallback sur un autre modèle (exclusion du défaillant).
+inputs:
+  prompt:
+    type: string
+    required: true
+    description: "Texte à générer (role user)."
+  system:
+    type: string
+    required: false
+    default: ""
+  llm_selectionne:
+    type: object
+    required: false
+    description: >
+      LLM déjà sélectionné ({provider_ref, model_ref} ou {provider_name,
+      model_name}, ou "provider/model") — testé d'abord. Échec → ask_llm.
+  type_endpoint:
+    type: string
+    required: false
+    default: chat
+    description: "chat | completion | responses (endpoint SDK)."
+  use_case:
+    type: string
+    required: false
+    default: coding
+  agent_id:
+    type: string
+    required: false
+  not_same_modele:
+    type: array
+    required: false
+  exclude_models:
+    type: array
+    required: false
+  restrict_llm:
+    type: array
+    required: false
+  temperature:
+    type: number
+    required: false
+    default: 0.7
+  max_tokens:
+    type: integer
+    required: false
+  stream:
+    type: boolean
+    required: false
+    default: false
+  max_essais:
+    type: integer
+    required: false
+    default: 3
+outputs:
+  ok:
+    type: boolean
+  llm_used:
+    type: object
+    description: "{id_address, model_name, model_ref, provider_name, provider_ref}"
+  response:
+    type: string
+  fallback:
+    type: boolean
+  error:
+    type: string
+implementation:
+  type: python
+  function: workflow.ask_llm_autofallback.ask_llm_autofallback
