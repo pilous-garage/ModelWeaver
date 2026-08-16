@@ -303,11 +303,25 @@ class Agent:
         # → dehydrate() le fermera (évite la fuite de fds SQLite par run).
         self._owns_db = db is not None
 
-        # Marquer comme IDLE dans la BDD
-        db.conn.execute(
-            "UPDATE agents SET status = 'IDLE', last_active_at = datetime('now') "
-            "WHERE agent_id = ?", (agent_id,)
-        )
+        # Marquer comme IDLE dans la BDD (retry sur 'database is locked' —
+        # le daemon et l'agent_manager écrivent dans agents.db en parallèle).
+        import time as _tl
+        _last_locked2 = None
+        for _att2 in range(5):
+            try:
+                db.conn.execute(
+                    "UPDATE agents SET status = 'IDLE', last_active_at = datetime('now') "
+                    "WHERE agent_id = ?", (agent_id,)
+                )
+                db.conn.commit()
+                break
+            except sqlite3.OperationalError as _e2:
+                if "locked" not in str(_e2).lower():
+                    raise
+                _last_locked2 = _e2
+                _tl.sleep(0.1 * (_att2 + 1))
+        else:
+            raise _last_locked2 or RuntimeError("agents update locked")
 
         # Créer l'entrée runtime (thread actif)
         thread_id = f"agent:{self.name}:{int(time.time())}"
