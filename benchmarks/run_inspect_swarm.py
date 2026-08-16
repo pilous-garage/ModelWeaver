@@ -74,7 +74,8 @@ def _build_task(bench: str, n: int):
         return task
 
     # Benchmark inspect_evals générique : import dynamique du module, appel de
-    # la fonction éponyme.
+    # la fonction éponyme (convention), sinon la 1re fonction retournant un
+    # inspect_ai.Task (ex. mmlu → mmlu_0_shot, gpqa → gpqa_diamond).
     import importlib
     try:
         mod = importlib.import_module(f"inspect_evals.{bench}")
@@ -85,8 +86,23 @@ def _build_task(bench: str, n: int):
             f"Détail: {e}")
     fn = getattr(mod, bench, None)
     if not callable(fn):
-        raise ValueError(f"module inspect_evals.{bench} n'expose pas la "
-                         f"fonction '{bench}()'")
+        # convention fallback : 1re fonction publique qui retourne un Task
+        from inspect_ai import Task
+        fn = None
+        for name in dir(mod):
+            if name.startswith("_"):
+                continue
+            cand = getattr(mod, name)
+            if callable(cand):
+                try:
+                    if isinstance(cand(), Task):
+                        fn = cand
+                        break
+                except Exception:
+                    continue
+    if not callable(fn):
+        raise ValueError(f"module inspect_evals.{bench} n'expose pas de "
+                         f"fonction '{bench}()' (ni une fonction → Task)")
     return fn()
 
 

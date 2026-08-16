@@ -37,6 +37,41 @@ sys.path.insert(0, str(REPO))
 # simple, pas de sandbox lourd).
 DEFAULT_TESTS = ["humaneval", "mbpp"]
 
+# ── Catalogues de benchmarks par profil ────────────────────────────────────
+# Réponse COURTE (choix / un mot / nombre) — pas de sandbox d'exécution.
+SHORT_ANSWER_TESTS = [
+    "gsm8k",        # raisonnement math (réponse finale courte)
+    "mmlu",         # knowledge multi-tâches (choix A-D)
+    "arc",          # science (choix) — si importable
+    "boolq",        # compréhension binaire
+    "hellaswag",    # choix de continuation
+    "winogrande",   # pronoms (choix)
+    "piqa",         # bon sens physique
+    "commonsense_qa",  # bon sens
+    "truthfulqa",   # véracité
+    "bbh",          # BIG-Bench Hard (raisonnement)
+    "simpleqa",     # réponse factuelle courte
+]
+
+# Réponse LONGUE (génération / code / rédaction) — peut nécessiter sandbox.
+LONG_ANSWER_TESTS = [
+    "humaneval",        # code (scorer par tests)
+    "mbpp",             # code (scorer par exécution)
+    "aime2024",         # math olympiade (réponse numérique)
+    "math",             # math (réponse + raisonnement)
+    "drop",             # lecture compréhension (réponse longue)
+    "writingbench",     # rédaction
+    "ifeval",           # respect des instructions (longue)
+    "squad",            # QA extractive (texte)
+    "medqa",            # QA médicale
+]
+
+# Agents / sandbox lourds (non inclus par défaut — à activer explicitement).
+AGENT_TESTS = [
+    "swe_bench", "swe_lancer", "bigcodebench", "livecodebench_pro",
+    "ds1000", "apps", "osworld", "gaia", "mle_bench", "scicode",
+]
+
 # Tous les types inspect_evals disponibles (après filtrage des lourds/sandbox).
 HEAVY_TESTS = {"swe_bench", "swe_lancer", "cybergym", "browse_comp",
                "assistant_bench", "theagentcompany", "agentdojo",
@@ -134,14 +169,21 @@ def run_benchmark_on(agent_entry: str, type_test: str,
 
 def run_all_benchmark_on(agent_entry: str, timeout: int = 180,
                          parallel: int = 1, n: int = 10,
-                         tests: Optional[List[str]] = None) -> Dict[str, Any]:
+                         tests: Optional[List[str]] = None,
+                         profile: str = "default") -> Dict[str, Any]:
     """Exécute TOUS les types de test séquentiellement sur un agent entry.
 
     Chaque type est exécuté indépendamment (parallel/séparé) et ses résultats
     sont collectés. Si un type échoue en erreur de typage/format, il est noté
     mais on continue les autres (pour voir lesquels sont cohérents).
+
+    profile : "default" (humaneval+mbpp) | "short" (réponse courte) |
+              "long" (réponse longue) | "all" (short+long).
     """
-    tests = tests or DEFAULT_TESTS
+    tests = tests or {"short": SHORT_ANSWER_TESTS,
+                      "long": LONG_ANSWER_TESTS,
+                      "all": SHORT_ANSWER_TESTS + LONG_ANSWER_TESTS,
+                      }.get(profile, DEFAULT_TESTS)
     results: List[Dict[str, Any]] = []
     t_start = time.monotonic()
     for t in tests:
@@ -164,6 +206,9 @@ def main() -> None:
     parser.add_argument("agent_entry", choices=["proxy", "swarm"])
     parser.add_argument("--test", default="",
                         help="un type de test (humaneval, mbpp...) — vide = tous")
+    parser.add_argument("--profile", default="default",
+                        choices=["default", "short", "long", "all"],
+                        help="profil de la suite de tests (run_all)")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--n", type=int, default=10)
@@ -179,7 +224,8 @@ def main() -> None:
         print(json.dumps(report, indent=2, default=str))
     else:
         report = run_all_benchmark_on(args.agent_entry, timeout=args.timeout,
-                                      parallel=args.parallel, n=args.n)
+                                      parallel=args.parallel, n=args.n,
+                                      profile=args.profile)
         print(json.dumps(report, indent=2, default=str))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2, default=str))
