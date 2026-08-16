@@ -260,7 +260,9 @@ def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
         "workspace_id": WORKSPACE,
         "title": (prompt or "")[:80],
         "description": prompt or "",
-        "entry_type": "chat_entry",
+        # PREMIÈRE ÉTAPE : entry_type ABSENT → create_entry classifie la requête
+        # (prompt épurée → consensus) en simple/texte/code → route
+        # chat_entry/completion_entry/feature. Le swarm adapte son pipeline.
         "team_id": TEAM_ID,
         "repo": swarm_repo.GLOBAL_REPO_NAME,
         "branch": branch,

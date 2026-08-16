@@ -145,12 +145,14 @@ def decoupe(inputs: dict, home: str) -> dict:
                 sc.sub_tasks.update(cur["sub_task_id"], difficulty=diff)
                 sc.sub_tasks.set_status(cur["sub_task_id"], "done", tag="ok")
             _save_analyse(sc, task_id, inputs)
-            # Tâche d'entrée (swarm-as-llm) : le cas simple d'une demande de
-            # CODE doit produire le code. On crée une sub_task `coding` pour
-            # que le codeur l'implémente (le respond n'aura rien à synthétiser
-            # sinon). Non-entrée : tâche simple sans découpe → clôturée.
+            # Tâche d'entrée (swarm-as-llm) : cas simple.
+            #   - code (feature) : on crée une sub_task `coding` pour que le
+            #     codeur l'implémente (le respond n'aurait rien à synthétiser).
+            #   - simple (chat_entry) / texte (completion_entry) : PAS de code
+            #     → la réponse est produite par le respond directement (le cas
+            #     simple est clôturé ici, le respond synthétise la réponse).
             stype_task = (task.get("task_type") or "").lower()
-            if stype_task in ("chat_entry", "completion_entry"):
+            if stype_task == "feature":
                 coding = sc.sub_tasks.create(
                     task_id=int(task_id), sub_task_type="coding",
                     difficulty=diff, status="unattributed",
