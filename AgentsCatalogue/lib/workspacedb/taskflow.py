@@ -728,6 +728,7 @@ def create_entry(inputs: dict, home: str) -> dict:
     # PREMIÈRE ÉTAPE : classification si entry_type absent.
     classified = ""
     direct_response = ""
+    domain = ""
     if not entry_type:
         try:
             from services.skill_manager import call_skill
@@ -740,6 +741,7 @@ def create_entry(inputs: dict, home: str) -> dict:
                 home=home)
             if _cr.get("ok") and _cr.get("type"):
                 classified = _cr["type"]
+                domain = _cr.get("domain", "")
                 # RÉPONSE DIRECTE : la classification a répondu elle-même
                 # (requête simple ≤ 1000 chars, pas d'info requise) → on
                 # retourne la réponse SANS créer de tâche (le swarm répond).
@@ -763,7 +765,7 @@ def create_entry(inputs: dict, home: str) -> dict:
         task = sc.tasks.create(
             title=title, description=description,
             priority=priority, task_type=entry_type,
-            team_id=team_id, primordial=1,
+            domain=domain, team_id=team_id, primordial=1,
             repo=repo, branch=branch)
         st = sc.sub_tasks.create(
             task_id=task["task_id"], sub_task_type="analysis",
@@ -773,6 +775,7 @@ def create_entry(inputs: dict, home: str) -> dict:
         return {"ok": True, "task_id": task["task_id"],
                 "task": task, "sub_task_id": st["sub_task_id"],
                 "classified": classified,
+                "domain": domain,
                 "route": entry_type}
     except Exception as e:
         return {"ok": False, "error": str(e)}

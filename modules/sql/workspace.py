@@ -211,6 +211,7 @@ class TaskRepository:
     def create(self, title: str, description: str = "",
                priority: int = 0,
                difficulty: str = "medium", task_type: str = "",
+               domain: str = "",
                team_id: int = -1, repo: str = "",
                branch: str = "", base_commit: str = "",
                commit_start: str = "", branch_start: str = "",
@@ -227,14 +228,14 @@ class TaskRepository:
         bs = branch_start or branch or ""
         cur = self.conn.execute("""
             INSERT INTO tasks (workspace_id, title, description, priority,
-                               status, difficulty, task_type, team_id,
+                               status, difficulty, task_type, domain, team_id,
                                repo, branch, base_commit,
                                commit_start, branch_start, primordial,
                                deadline, estimated_minutes,
                                created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (self.wid, title, description, priority,
-              difficulty, task_type, team_id, repo, branch, base_commit,
+              difficulty, task_type, domain, team_id, repo, branch, base_commit,
               cs, bs, primordial, deadline, estimated_minutes,
               created, now))
         self.conn.commit()
@@ -1213,6 +1214,7 @@ class WorkspaceDB:
         try:
             from modules.sql.db import _add_column_if_missing
             _add_column_if_missing(self.conn, "tasks", "difficulty", "TEXT DEFAULT 'medium'")
+            _add_column_if_missing(self.conn, "tasks", "domain", "TEXT DEFAULT ''")
             _add_column_if_missing(self.conn, "tasks", "team_id", "INTEGER DEFAULT -1")
             # V0.9.x : une tâche pointe sur un repo local + branche (ou commit).
             _add_column_if_missing(self.conn, "tasks", "repo", "TEXT DEFAULT ''")

@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- sait traiter (liste passée au token_task_pick), avec un niveau max de
     -- difficulté par type.
     task_type    TEXT DEFAULT '',
+    -- DOMAINE de la requête (classification) : text_generation | coding |
+    -- math | data | reasoning | research | admin… Le type = route/pipeline,
+    -- le domaine = nature de la requête (utile pour le découpage, le choix
+    -- des agents, la réponse directe).
+    domain       TEXT DEFAULT '',
     -- Difficulté de la tâche (easy / medium / hard / expert). Le niveau de
     -- l'agent (débutant/junior/intermédiaire/senior) borne la difficulté
     -- piochable par type.
