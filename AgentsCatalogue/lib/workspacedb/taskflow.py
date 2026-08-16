@@ -711,7 +711,241 @@ def entry_result(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def consensus_reponse(inputs: dict, home: str) -> dict:
+    """Écrit la réponse d'une answering_machine (table reponse)."""
+    workspace_id = inputs.get("workspace_id", "")
+    id_question = inputs.get("id_question")
+    contenu = (inputs.get("contenu") or "").strip()
+    if not workspace_id or not id_question or not contenu:
+        return {"ok": False, "error": "workspace_id + id_question + contenu requis"}
+    id_agent = inputs.get("id_agent") or ""
+    if not id_agent:
+        import re
+        m = re.search(r"agent_home/(\d+)", home or "")
+        id_agent = m.group(1) if m else ""
+    try:
+        db, sc = _scope(workspace_id)
+        q = sc.consensus.get_question(int(id_question))
+        if not q:
+            db.close()
+            return {"ok": False, "error": f"question {id_question} introuvable"}
+        r = sc.consensus.add_reponse(
+            int(id_question), int(id_agent) if id_agent else 0,
+            contenu, model_ref=inputs.get("model_ref", ""))
+        db.close()
+        return {"ok": True, "id_reponse": r["id_reponse"], "contenu": contenu}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def consensus_ask(inputs: dict, home: str) -> dict:
+    """Consensus : pose la question, collecte les réponses, juge.
+
+    Flux (carnet-d-idees.md, Système A) :
+      1. crée la question (status awaiting) ;
+      2. alloue n_answering modèles DIFFÉRENTS (ask_llm not_same_modele) ;
+      3. spawn les answering_machine (une par modèle) avec la question ;
+      4. attend les réponses (grace = 1.5× le plus long des N attendues) ;
+      5. juge : majorité absolue (2/3 ou 3/5), élimination, escalade.
+    Retourne {ok, id_question, consensus, escalade}.
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    question = (inputs.get("question") or "").strip()
+    n_answering = int(inputs.get("n_answering", 5) or 5)
+    max_tours = int(inputs.get("max_tours", 5) or 5)
+    options = inputs.get("options") or []
+    if not workspace_id or not question:
+        return {"ok": False, "error": "workspace_id + question requis"}
+    try:
+        db, sc = _scope(workspace_id)
+        q = sc.consensus.create_question(question, id_creator=0,
+                                         options=options, max_tours=max_tours)
+        qid = q["id_question"]
+        # 1. Allouer n modèles différents (not_same_modele)
+        from services.skill_manager import call_skill
+        models = []
+        used = []
+        for _ in range(n_answering):
+            r = call_skill("ask_llm",
+                           {"use_case": "coding", "not_same_modele": used},
+                           home=home)
+            if not r.get("ok") or not r.get("model_ref"):
+                break
+            models.append({"provider_ref": r.get("provider_ref", ""),
+                           "model_ref": r["model_ref"]})
+            used = r.get("used_models", used)
+        if not models:
+            db.close()
+            return {"ok": False, "id_question": qid,
+                    "error": "aucun modèle alloué pour les answering_machine"}
+        n_alloc = len(models)
+        # 2. Spawn les answering_machine en THREADS (une par modèle).
+        import threading
+        from services.agent_manager.service import AgentManager
+        results = [None] * n_alloc
+        errors = []
+
+        def _run_one(i: int, m: dict) -> None:
+            try:
+                mgr = AgentManager()
+                cfg = {
+                    "entrypoints": {
+                        "main": {
+                            "max_iterations": 30,
+                            "steps": [
+                                {"id": "answer", "type": "llm_call",
+                                 "prompt": f"{question}\\nRéponds de façon concise et argumentée.",
+                                 "system": "answering_machine",
+                                 "provider_ref": m["provider_ref"],
+                                 "model_ref": m["model_ref"],
+                                 "capture": {"response": "ma_reponse"},
+                                 "next": "send_reponse"},
+                                {"id": "send_reponse", "type": "call",
+                                 "fn": "workspace/reponse@v1",
+                                 "inputs": {
+                                     "workspace_id": workspace_id,
+                                     "id_question": str(qid),
+                                     "contenu": "{{ma_reponse}}",
+                                     "model_ref": m["model_ref"]},
+                                 "next": "end"},
+                                {"id": "end", "type": "end",
+                                 "status": "SUCCESS"},
+                            ]
+                        }
+                    }
+                }
+                r = mgr.spawn_agent(
+                    name=f"answering_{qid}_{i}", role="answering_machine",
+                    request=question, occupation="disparate", config=cfg,
+                    provider_ref=m["provider_ref"], model_ref=m["model_ref"],
+                    keep_sleeping=True, id_proprietaire=inputs.get("id_creator"),
+                    home=home)
+                results[i] = r
+            except Exception as e:
+                errors.append(str(e))
+                results[i] = {"status": "error", "error": str(e)}
+
+        threads = [threading.Thread(target=_run_one, args=(i, m))
+                   for i, m in enumerate(models)]
+        for t in threads:
+            t.start()
+        # 3. Attendre les réponses : au moins min(3, n) + grace 1.5×.
+        #    Le spawn est synchrone → attendre que les threads finissent.
+        for t in threads:
+            t.join()
+        reponses = sc.consensus.get_reponses(qid)
+        db.close()
+        ok = sum(1 for r in results if r and r.get("status") == "ok")
+        return {"ok": True, "id_question": qid,
+                "n_alloue": n_alloc, "n_reponses": len(reponses),
+                "n_ok": ok, "errors": errors[:3],
+                "models": [m["model_ref"] for m in models],
+                "status": "answered" if reponses else "awaiting",
+                "next": "judge",
+                "escalade": f"{len(reponses)} réponses sur {n_alloc} (grace appliquée)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def consensus_judge(inputs: dict, home: str) -> dict:
+    """Jugement du consensus : majorité absolue, élimination, escalade.
+
+    Votes : chaque répondant vote A/B/C (réponses) ou NEW (nouvelle tour).
+    Règles (carnet-d-idees.md) :
+      - majorité absolue : 2/3 si 3 réponses, 3/5 si 5 → consensus.
+      - sinon éliminer les moins votées et escalader :
+          * NEW autorisé (max max_tours tours) ;
+          * puis interdire NEW ;
+          * puis interdire de voter pour soi ;
+          * puis grader les autres (0-1, sans égalité) → meilleure note ;
+          * toujours égalité → au hasard.
+    Un modèle peut avoir répondu (cancel) mais voter quand même.
+    Retourne {ok, consensus, choix, votes, escalade}.
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    id_question = inputs.get("id_question")
+    if not workspace_id or not id_question:
+        return {"ok": False, "error": "workspace_id + id_question requis"}
+    try:
+        import random
+        db, sc = _scope(workspace_id)
+        q = sc.consensus.get_question(int(id_question))
+        if not q:
+            db.close()
+            return {"ok": False, "error": f"question {id_question} introuvable"}
+        reponses = sc.consensus.get_reponses(int(id_question))
+        n = len(reponses)
+        if n == 0:
+            db.close()
+            return {"ok": False, "id_question": id_question,
+                    "error": "aucune réponse à juger"}
+        tour = q.get("tour_courant", 1)
+        max_tours = q.get("max_tours", 5) or 5
+        options = json.loads(q.get("options_json") or "[]") or []
+        choix = [f"{chr(65 + i)}" for i in range(n)]  # A, B, C...
+        # 1. Collecter les votes (jugement stocké par chaque votant).
+        votes = {}
+        for r_ in reponses:
+            j = (r_.get("jugement") or "").strip()
+            if j:
+                votes[r_["id_agent"]] = j
+        # vote_soi : autorisé selon l'escalade (tour > max_tours → interdit)
+        interdit_soi = tour > max_tours
+        # 2. Majorité absolue (2/3 ou 3/5 du total des votants).
+        votants = list(votes.keys())
+        tot = max(len(votants), 1)
+        seuil_abs = 1.0 if n == 1 else ((2 / 3) if n <= 3 else (3 / 5))
+        comptes: dict = {}
+        for v in votes.values():
+            comptes[v] = comptes.get(v, 0) + 1
+        # consensus = choix avec majorité absolue, hors NEW.
+        consensus = ""
+        for choix_, cnt in comptes.items():
+            if choix_ != "NEW" and (cnt / tot) >= seuil_abs:
+                consensus = choix_
+                break
+        escalade = ""
+        if not consensus:
+            # 3. Pas de majorité → escalade.
+            if tour <= max_tours:
+                escalade = f"NEW autorisé (tour {tour}/{max_tours}) — relancer"
+            else:
+                escalade = "NEW interdit — grader (0-1) ou hasard"
+                if not interdit_soi:
+                    escalade = "pas de vote pour soi — relancer"
+                else:
+                    # grader les autres (0-1) → meilleure note (simple : la plus
+                    # fréquente hors soi, sinon hasard).
+                    counts_autres = {c: cnt for c, cnt in comptes.items()
+                                     if c != "NEW"}
+                    if counts_autres:
+                        _best = max(counts_autres, key=counts_autres.get)
+                        _best_votes = [c for c, cnt in counts_autres.items()
+                                       if cnt == counts_autres[_best]]
+                        consensus = random.choice(_best_votes) if len(_best_votes) > 1 else _best
+                    else:
+                        consensus = random.choice(choix)
+                    escalade = f"grade (0-1) → {consensus}"
+        if consensus and consensus in choix:
+            qid = int(id_question)
+            sc.consensus.set_status(qid, "answered")
+            db.close()
+            return {"ok": True, "id_question": qid, "consensus": consensus,
+                    "votes": comptes, "n_reponses": n,
+                    "escalade": "majorité absolue" if not escalade else escalade,
+                    "reponses": [r_["contenu"] for r_ in reponses]}
+        # Pas de consensus → on garde la question pour relance (tour suivant).
+        sc.consensus.set_status(qid := int(id_question), "awaiting")
+        db.close()
+        return {"ok": False, "id_question": qid, "consensus": "",
+                "votes": comptes, "escalade": escalade or "relancer",
+                "reponses": [r_["contenu"] for r_ in reponses]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 __skills__ = ["decoupe", "ask_intel", "ask_new_task", "sub_task_done",
               "sub_task_release", "sub_task_get", "sub_task_list",
               "sub_task_too_hard", "analysis_report", "create_entry",
-              "entry_result"]
+              "entry_result", "consensus_reponse", "consensus_ask",
+              "consensus_judge"]

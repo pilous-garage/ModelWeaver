@@ -903,6 +903,74 @@ class SupervisorRulesRepository:
         self.conn = conn
         self.wid = workspace_id
 
+
+class ConsensusRepository:
+    """Consensus : question + réponses des answering_machine.
+
+    L'agent consensus pose une question (status_answering awaiting) ; les
+    answering_machine répondent (table reponse) ; le maître juge (vote
+    majorité / élimination / escalade / hasard). Voir carnet-d-idees.md."""
+
+    def __init__(self, conn: sqlite3.Connection, workspace_id: str = ""):
+        self.conn = conn
+        self.wid = workspace_id
+
+    def create_question(self, question: str, id_creator: int = 0,
+                        options: list = None, max_tours: int = 5) -> Dict[str, Any]:
+        cur = self.conn.execute(
+            "INSERT INTO question (workspace_id, question, id_creator, "
+            "options_json, max_tours, status_answering, tour_courant) "
+            "VALUES (?, ?, ?, ?, ?, 'awaiting', 1)",
+            (self.wid, question, id_creator or None,
+             json.dumps(options or []), max_tours))
+        self.conn.commit()
+        return {"id_question": cur.lastrowid, "question": question,
+                "status_answering": "awaiting", "tour_courant": 1,
+                "options": options or []}
+
+    def get_question(self, id_question: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM question WHERE id_question = ?",
+            (id_question,)).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def list_questions(self, status: str = "") -> List[Dict[str, Any]]:
+        q = ("SELECT * FROM question WHERE workspace_id = ?"
+             + (" AND status_answering = ?" if status else ""))
+        args = (self.wid,) + ((status,) if status else ())
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def set_status(self, id_question: int, status: str) -> None:
+        self.conn.execute(
+            "UPDATE question SET status_answering = ?, "
+            "answered_at = datetime('now') WHERE id_question = ?",
+            (status, id_question))
+        self.conn.commit()
+
+    def add_reponse(self, id_question: int, id_agent: int,
+                    contenu: str, model_ref: str = "") -> Dict[str, Any]:
+        cur = self.conn.execute(
+            "INSERT INTO reponse (id_question, id_agent, model_ref, contenu) "
+            "VALUES (?, ?, ?, ?)",
+            (id_question, id_agent, model_ref, contenu))
+        self.conn.commit()
+        return {"id_reponse": cur.lastrowid, "id_question": id_question,
+                "id_agent": id_agent, "contenu": contenu}
+
+    def get_reponses(self, id_question: int) -> List[Dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM reponse WHERE id_question = ? ORDER BY id_reponse",
+            (id_question,)).fetchall()]
+
+    def set_jugement(self, id_reponse: int, jugement: str) -> None:
+        self.conn.execute(
+            "UPDATE reponse SET jugement = ? WHERE id_reponse = ?",
+            (jugement, id_reponse))
+        self.conn.commit()
+
+
     def add_rule(self, in_type: str, in_tag: str, out_type: str,
                  out_tag: str = "", team_id: int = -1,
                  workspace_id: str = "", priority: int = 0) -> int:
@@ -1303,6 +1371,7 @@ class WorkspaceScope:
         self.sub_tasks = SubTaskRepository(conn, workspace_id)
         self.ask = AskNewTaskRepository(conn, workspace_id)
         self.rules = SupervisorRulesRepository(conn, workspace_id)
+        self.consensus = ConsensusRepository(conn, workspace_id)
 
 
 def chatroom_send_message(team_id=None, agent_id="", msg="",

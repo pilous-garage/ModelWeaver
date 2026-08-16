@@ -236,6 +236,36 @@ CREATE TABLE IF NOT EXISTS chatroom_messages (
     FOREIGN KEY (parent_id) REFERENCES chatroom_messages(id)
 );
 
+-- ── Consensus : question + réponses des answering_machine ────────────────
+-- L'agent consensus (maître) pose une question ; 5 answering_machine (sub-
+-- agents, modèles DIFFÉRENTS via ask_llm not_same_modele) y répondent ;
+-- le maître juge et détermine le consensus (vote majorité, élimination,
+-- escalade, hasard). Voir docs/carnet-d-idees.md (Idée 17, Système A).
+CREATE TABLE IF NOT EXISTS question (
+    id_question     INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id    TEXT NOT NULL DEFAULT '',
+    question        TEXT NOT NULL,
+    id_creator      INTEGER,                 -- agent maître qui pose
+    status_answering TEXT DEFAULT 'awaiting', -- awaiting / answered / cancelled
+    options_json    TEXT,                    -- A/B/C/... (le cas échéant)
+    max_tours       INTEGER DEFAULT 5,       -- tours NEW autorisés
+    tour_courant    INTEGER DEFAULT 1,
+    created_at      TEXT DEFAULT (datetime('now')),
+    answered_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reponse (
+    id_reponse      INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_question     INTEGER NOT NULL REFERENCES question(id_question) ON DELETE CASCADE,
+    id_agent        INTEGER NOT NULL,        -- answering_machine
+    model_ref       TEXT DEFAULT '',         -- modèle qui a répondu
+    contenu         TEXT NOT NULL,           -- texte clair (commit vide)
+    jugement        TEXT DEFAULT '',         -- vote A/B/C / NEW / note
+    similar_to      INTEGER,                 -- ≈ autre reponse (non tranché)
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reponse_question ON reponse(id_question);
+
 CREATE TABLE IF NOT EXISTS usage_files (
     path          TEXT NOT NULL,
     workspace_id  TEXT NOT NULL,

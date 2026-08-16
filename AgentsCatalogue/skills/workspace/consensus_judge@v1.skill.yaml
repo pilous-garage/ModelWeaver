@@ -1,0 +1,27 @@
+name: workspace/consensus_judge@v1
+category: workspace
+description: >
+  JUGEMENT du consensus : à partir des réponses des answering_machine, vote
+  (majorité absolue 2/3 ou 3/5), élimination, escalade progressive (NEW max
+  N tours → interdit NEW → pas de vote pour soi → grader 0-1 → hasard).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  id_question:
+    type: integer
+    required: true
+outputs:
+  ok:
+    type: boolean
+  consensus:
+    type: string
+  votes:
+    type: object
+  n_reponses:
+    type: integer
+  escalade:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.taskflow.consensus_judge

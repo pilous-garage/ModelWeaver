@@ -1,0 +1,30 @@
+name: workspace/reponse@v1
+category: workspace
+description: >
+  Réponse d'une answering_machine au consensus : écrit la réponse (texte clair)
+  dans la table reponse pour la question posée par l'agent consensus. Le maître
+  collecte ensuite les réponses, juge et détermine le consensus.
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  id_question:
+    type: integer
+    required: true
+    description: "Question du consensus (table question)."
+  contenu:
+    type: string
+    required: true
+    description: "Réponse en texte clair."
+  id_agent:
+    type: integer
+    required: false
+    description: "Par défaut = l'agent appelant."
+outputs:
+  ok:
+    type: boolean
+  id_reponse:
+    type: integer
+implementation:
+  type: python
+  function: workspacedb.taskflow.consensus_reponse

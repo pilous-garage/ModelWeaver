@@ -1,0 +1,39 @@
+name: answering_machine
+role: answering_machine
+extends: sub_agent_default
+description: >
+  Sub-agent qui répond à UNE question du consensus avec SON modèle (alloué par
+  le maître via ask_llm not_same_modele → 5 answering_machine = 5 modèles
+  différents). Il reçoit la question (variable question), y répond en texte
+  clair via workspace/reponse@v1, et (si demandé) juge les réponses des autres.
+personality:
+  tone: ''
+  system_prompt: >
+    Tu es une answering_machine du consensus. Tu réponds à la question posée
+    par l'agent consensus (variable question) de façon argumentée et concise.
+    Tu écris ta réponse via workspace/reponse@v1. Tu ne votes pas pour ta
+    propre réponse.
+entrypoints:
+  main:
+    max_iterations: 30
+    steps:
+    - id: answer
+      type: call
+      fn: workflow/llm_call@v1
+      inputs:
+        prompt: "{{question}} Réponds de façon concise et argumentée."
+        system: "answering_machine"
+      capture:
+        response: ma_reponse
+      next: send_reponse
+    - id: send_reponse
+      type: call
+      fn: workspace/reponse@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        id_question: "{{id_question}}"
+        contenu: "{{ma_reponse}}"
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

@@ -1,0 +1,43 @@
+name: workspace/consensus@v1
+category: workspace
+description: >
+  CONSENSUS (agent consensus, maître) : pose une question, spawn 5
+  answering_machine (chacune avec un modèle DIFFÉRENT via ask_llm
+  not_same_modele), attend les réponses (3 + grace 1.5×), puis juge :
+  vote majorité absolue (2/3 ou 3/5), élimination, escalade (NEW max N tours,
+  puis interdire NEW, puis pas de vote pour soi, puis grader 0-1, puis hasard).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  question:
+    type: string
+    required: true
+  options:
+    type: array
+    required: false
+    description: "Options proposées (A/B/C) — le juge choisit entre elles."
+  n_answering:
+    type: integer
+    required: false
+    default: 5
+    description: "Nombre d'answering_machine (défaut 5)."
+  max_tours:
+    type: integer
+    required: false
+    default: 5
+    description: "Tours NEW autorisés avant d'interdire NEW (défaut 5)."
+outputs:
+  ok:
+    type: boolean
+  id_question:
+    type: integer
+  consensus:
+    type: string
+  votes_json:
+    type: string
+  escalade:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.taskflow.consensus_ask
