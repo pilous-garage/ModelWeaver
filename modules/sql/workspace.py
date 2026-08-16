@@ -903,6 +903,45 @@ class SupervisorRulesRepository:
         self.conn = conn
         self.wid = workspace_id
 
+    def add_rule(self, in_type: str, in_tag: str, out_type: str,
+                 out_tag: str = "", team_id: int = -1,
+                 workspace_id: str = "", priority: int = 0) -> int:
+        cur = self.conn.execute("""
+            INSERT INTO task_supervisor_rules
+                (workspace_id, team_id, in_type, in_tag, out_type, out_tag, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (workspace_id or self.wid, team_id, in_type, in_tag,
+              out_type, out_tag, priority))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_rules(self, workspace_id: str = "", team_id: int = -1
+                   ) -> List[Dict[str, Any]]:
+        """Règles applicables : les plus spécifiques d'abord (workspace+team,
+        puis workspace, puis globales)."""
+        return _rows(self.conn.execute("""
+            SELECT * FROM task_supervisor_rules
+            WHERE enabled = 1
+              AND ((workspace_id = ? AND team_id = ?)
+                OR (workspace_id = ? AND team_id = -1)
+                OR (workspace_id = '' AND team_id = -1))
+            ORDER BY priority DESC, rule_id
+        """, (workspace_id or self.wid, team_id, workspace_id or self.wid)).fetchall())
+
+    def find_rule(self, in_type: str, in_tag: str,
+                  workspace_id: str = "", team_id: int = -1
+                  ) -> Optional[Dict[str, Any]]:
+        """Règle la plus spécifique qui matche (in_type, in_tag)."""
+        for r in self.list_rules(workspace_id, team_id):
+            it = r.get("in_type", "")
+            if it and it != in_type:
+                continue
+            ig = r.get("in_tag", "")
+            if ig and ig != in_tag:
+                continue
+            return r
+        return None
+
 
 class ConsensusRepository:
     """Consensus : question + réponses des answering_machine.
@@ -969,46 +1008,6 @@ class ConsensusRepository:
             "UPDATE reponse SET jugement = ? WHERE id_reponse = ?",
             (jugement, id_reponse))
         self.conn.commit()
-
-
-    def add_rule(self, in_type: str, in_tag: str, out_type: str,
-                 out_tag: str = "", team_id: int = -1,
-                 workspace_id: str = "", priority: int = 0) -> int:
-        cur = self.conn.execute("""
-            INSERT INTO task_supervisor_rules
-                (workspace_id, team_id, in_type, in_tag, out_type, out_tag, priority)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (workspace_id or self.wid, team_id, in_type, in_tag,
-              out_type, out_tag, priority))
-        self.conn.commit()
-        return cur.lastrowid
-
-    def list_rules(self, workspace_id: str = "", team_id: int = -1
-                   ) -> List[Dict[str, Any]]:
-        """Règles applicables : les plus spécifiques d'abord (workspace+team,
-        puis workspace, puis globales)."""
-        return _rows(self.conn.execute("""
-            SELECT * FROM task_supervisor_rules
-            WHERE enabled = 1
-              AND ((workspace_id = ? AND team_id = ?)
-                OR (workspace_id = ? AND team_id = -1)
-                OR (workspace_id = '' AND team_id = -1))
-            ORDER BY priority DESC, rule_id
-        """, (workspace_id or self.wid, team_id, workspace_id or self.wid)).fetchall())
-
-    def find_rule(self, in_type: str, in_tag: str,
-                  workspace_id: str = "", team_id: int = -1
-                  ) -> Optional[Dict[str, Any]]:
-        """Règle la plus spécifique qui matche (in_type, in_tag)."""
-        for r in self.list_rules(workspace_id, team_id):
-            it = r.get("in_type", "")
-            if it and it != in_type:
-                continue
-            ig = r.get("in_tag", "")
-            if ig and ig != in_tag:
-                continue
-            return r
-        return None
 
 
 class IssueRepository:
