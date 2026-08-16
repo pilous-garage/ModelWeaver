@@ -28,6 +28,7 @@ TASK_TAGS: Dict[str, List[str]] = {
     "merge": ["ok", "conflict"],
     "respond": ["ok"],
     "exploration": ["ok", "fail"],
+    "avis": ["ok", "fail"],  # demande d'avis → le consensus la pick
 }
 
 

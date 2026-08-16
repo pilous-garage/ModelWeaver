@@ -470,6 +470,12 @@ members:
         occupation: continue
         resources:
           llm: true
+  - agent_name: consensus-1
+    ref: greedy-consensus
+    role: consensus
+    occupation: continue
+    resources:
+      llm: true
 
 resources:
   budget_per_hour: 100
@@ -492,3 +498,5 @@ supervisor_rules:
   - {in_type: testing, in_tag: fail, out_type: coding, out_tag: ""}
   - {in_type: merge, in_tag: ok, out_type: "", out_tag: ""}
   - {in_type: merge, in_tag: conflict, out_type: coding, out_tag: ""}
+  - {in_type: avis, in_tag: ok, out_type: "", out_tag: ""}
+  - {in_type: avis, in_tag: fail, out_type: analysis, out_tag: ""}

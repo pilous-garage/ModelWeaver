@@ -1,0 +1,120 @@
+name: greedy-consensus
+role: consensus
+description: >
+  Agent CONSENSUS (sous-agent, taskflow) : pioche les sub_tasks `avis`
+  (demandes d'avis posées par n'importe quel agent — découpeur, analyste…) via
+  ask_new_task, exécute un CONSENSUS (5 answering_machine, modèles différents,
+  vote/escalade) sur la question, et livre le résultat (sub_task_done tag=ok
+  avec `rapport` = l'avis consensuel). One-pass par sub_task (pas de boucle de
+  ré-attribution). Si le consensus échoue : sub_task_release.
+personality:
+  tone: ''
+  system_prompt: "Tu es l'agent CONSENSUS d'un swarm (taskflow). Tu pioches
+    les sub_task de type `avis` (sub_task_id) via workspace/task_ask_new@v1.
+    La description contient la QUESTION / le CHOIX à trancher. Tu exécutes le
+    consensus via workspace/consensus@v1 (5 answering_machine, modèles
+    différents), puis workspace/consensus_judge@v1 (vote majorité/escalade).
+    Tu termines par workspace/sub_task_done@v1 avec tag=ok et `rapport` =
+    l'avis consensuel final (choix + votes + justification). Si impossible :
+    workspace/sub_task_release@v1. Réponds en français."
+skills:
+  - workspace/task_ask_new@v1
+  - workspace/consensus@v1
+  - workspace/consensus_judge@v1
+  - workspace/sub_task_get@v1
+  - workspace/sub_task_done@v1
+  - workspace/sub_task_release@v1
+model_requirements:
+  min_context_tokens: 16384
+  capabilities:
+  - text_generation
+contexts:
+- general
+default_config:
+  temperature: 0.2
+  max_tokens: 4096
+entrypoints:
+  main:
+    max_iterations: 20
+    steps:
+    - id: ask_new_task
+      type: call
+      fn: workspace/task_pick@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        agent_id: "{{agent_id}}"
+        types: "[{type: avis, level_max: expert}]"
+      capture:
+        sub_task_id: sub_task_id
+        task_id: task_id
+        conv_id: _conv_id
+      on_error: register_wait
+      next: get_sub_task
+    - id: get_sub_task
+      type: call
+      fn: workspace/sub_task_get@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+      capture:
+        sub_task: sub_task_now
+      next: consensus
+    - id: consensus
+      type: call
+      fn: workspace/consensus@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        question: "{{sub_task_now.description}}"
+        n_answering: 5
+      capture:
+        id_question: _id_question
+      on_error: release
+      next: judge
+    - id: judge
+      type: call
+      fn: workspace/consensus_judge@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        id_question: "{{_id_question}}"
+        ask_human: true
+      capture:
+        consensus: _consensus
+        votes: _votes
+        escalade: _escalade
+      on_error: release
+      next: check_consensus
+    - id: check_consensus
+      type: switch
+      variable: "{{_consensus}}"
+      conditions:
+      - operator: EQUALS
+        value: ""
+        next: release
+      default: done
+    - id: done
+      type: call
+      fn: workspace/sub_task_done@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+        tag: "ok"
+        rapport: "Consensus : {{_consensus}} (votes {{_votes}}, escalade {{_escalade}})"
+      next: register_wait
+    - id: release
+      type: call
+      fn: workspace/sub_task_release@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        sub_task_id: "{{sub_task_id}}"
+        freedby: "{{agent_id}}"
+      next: register_wait
+    - id: register_wait
+      type: call
+      fn: workspace/wait_for@v1
+      inputs:
+        workspace_id: "{{workspace_id}}"
+        types: "[{type: avis, level_max: expert}]"
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS

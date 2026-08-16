@@ -191,6 +191,8 @@ ROLE_TO_SUBTASK = {
     "relecteur": "review",
     "orchestrateur": "merge",
     "prepare_response": "respond",
+    "consensus": "avis",
+    "avis": "avis",
 }
 
 
