@@ -4,6 +4,9 @@ description: >
   ENTRYPOINT du swarm (as_llm_leader, SANS LLM) : crée la TASK d'entrée selon
   le type demandé (chat_entry, completion_entry…) + sa sub_task `analysis`
   initiale unattributed. Le supervisor/l'analyste prennent ensuite le relais.
+  PREMIÈRE ÉTAPE : si entry_type absent, la requête est classifiée (prompt
+  épurée → consensus) en simple/texte/code → route chat_entry/completion_entry/
+  feature.
 inputs:
   workspace_id:
     type: string
@@ -17,8 +20,18 @@ inputs:
   entry_type:
     type: string
     required: false
-    default: chat_entry
-    description: "chat_entry | completion_entry | feature…"
+    default: ""
+    description: "chat_entry | completion_entry | feature… (vide = auto-classifié)"
+  classify_consensus:
+    type: boolean
+    required: false
+    default: true
+    description: "Classification via consensus (défaut true)."
+  n_answering:
+    type: integer
+    required: false
+    default: 5
+    description: "Nb d'answering_machine pour la classification."
   priority:
     type: integer
     required: false

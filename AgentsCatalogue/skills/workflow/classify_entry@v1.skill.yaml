@@ -1,0 +1,42 @@
+name: workflow/classify_entry@v1
+category: workflow
+description: >
+  CLASSIFIE la requête d'entrée du swarm-as-llm (première étape, sans LLM de
+  l'agent) : envoie la PROMPT ÉPURÉE (juste la requête) en consensus et déduit
+  le type de route :
+    - simple : réponse courte, ne nécessite qu'un consensus / une réponse
+    - texte  : tâche complexe mais RÉDACTION (pas de code)
+    - code   : tâche qui exige écrire/modifier du code
+  Un seul appel LLM possible si non ambigu (fast_path) ; consensus si doute.
+inputs:
+  prompt:
+    type: string
+    required: true
+    description: "La requête épurée (juste la prompt, sans contexte)."
+  workspace_id:
+    type: string
+    required: true
+  use_consensus:
+    type: boolean
+    required: false
+    default: true
+    description: "true = consensus (défaut) ; false = appel LLM unique."
+  n_answering:
+    type: integer
+    required: false
+    default: 5
+outputs:
+  ok:
+    type: boolean
+  type:
+    type: string
+    description: "simple | texte | code"
+  confiance:
+    type: number
+  consensus_used:
+    type: boolean
+  votes:
+    type: object
+implementation:
+  type: python
+  function: workflow.ask_llm.classify_entry

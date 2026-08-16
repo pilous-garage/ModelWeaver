@@ -200,4 +200,89 @@ def exec_with_prompt(inputs: dict, home: str) -> dict:
             "error": f"échec après {max_essais} essais: {last_err}"}
 
 
-__skills__ = ["exec", "exec_with_prompt"]
+def classify_entry(inputs: dict, home: str) -> dict:
+    """CLASSIFIE la requête d'entrée du swarm-as-llm (première étape).
+
+    Envoie la PROMPT ÉPURÉE en consensus (ou appel LLM unique si
+    use_consensus=false) pour déterminer le type de route :
+      - simple : réponse courte (ne nécessite qu'un consensus / une réponse)
+      - texte  : tâche complexe mais RÉDACTION (pas de code)
+      - code   : tâche qui exige écrire/modifier du code
+
+    Retourne {ok, type, confiance, consensus_used, votes}. Si le consensus
+    échoue (aucun modèle), fallback sur un appel unique ; si même ça échoue,
+    défaut "texte".
+    """
+    prompt = (inputs.get("prompt") or "").strip()
+    workspace_id = inputs.get("workspace_id", "")
+    if not prompt:
+        return {"ok": False, "type": "", "error": "prompt requis"}
+    use_consensus = bool(inputs.get("use_consensus", True))
+    n_answering = int(inputs.get("n_answering", 5) or 5)
+    # La question épurée posée aux answering_machine.
+    question = (
+        f"Classe cette requête utilisateur en EXACTEMENT un type parmi : "
+        f"'simple' (réponse courte, pas de code), 'texte' (tâche de rédaction "
+        f"complexe), 'code' (nécessite écrire ou modifier du code). "
+        f"Réponds en UN mot uniquement.\n\nRequête : {prompt}"
+    )
+    try:
+        from services.skill_manager import call_skill
+        if use_consensus:
+            r = call_skill(
+                "consensus",
+                {"workspace_id": workspace_id, "question": question,
+                 "n_answering": n_answering},
+                home=home)
+            if r.get("ok") and r.get("n_reponses", 0) >= 1:
+                # Comptabiliser les types répondus (votes simples).
+                from modules.sql.workspace import WorkspaceDB
+                wdb = WorkspaceDB()
+                sc = wdb.for_workspace(workspace_id)
+                reps = sc.consensus.get_reponses(r["id_question"])
+                comptes: dict = {}
+                for rep in reps:
+                    t = (rep.get("contenu") or "").strip().lower()
+                    for cand in ("simple", "texte", "code"):
+                        if cand in t:
+                            comptes[cand] = comptes.get(cand, 0) + 1
+                            break
+                for rep in reps:
+                    wdb.conn.execute(
+                        "DELETE FROM reponse WHERE id_reponse=?",
+                        (rep["id_reponse"],))
+                wdb.conn.execute(
+                    "DELETE FROM question WHERE id_question=?",
+                    (r["id_question"],))
+                wdb.conn.commit()
+                wdb.close()
+                if comptes:
+                    _type = max(comptes, key=comptes.get)
+                    _n = sum(comptes.values())
+                    return {"ok": True, "type": _type,
+                            "confiance": comptes[_type] / max(_n, 1),
+                            "consensus_used": True, "votes": comptes}
+            # Consensus sans réponse → fallback appel unique.
+        # Appel LLM unique (fast_path ou fallback).
+        r2 = call_skill(
+            "ask_llm_with_prompt",
+            {"use_case": "chat", "prompt": question,
+             "system": "Tu classifies des requêtes. Réponds en UN mot: "
+                       "simple, texte ou code.",
+             "max_essais": 2, "timeout": 40},
+            home=home)
+        if r2.get("ok") and r2.get("response"):
+            t = r2["response"].strip().lower()
+            for cand in ("simple", "texte", "code"):
+                if cand in t:
+                    return {"ok": True, "type": cand, "confiance": 1.0,
+                            "consensus_used": False, "votes": {}}
+        return {"ok": False, "type": "texte", "confiance": 0.0,
+                "consensus_used": False,
+                "error": f"classification indéterminée: {r2.get('error')}"}
+    except Exception as e:
+        return {"ok": False, "type": "texte", "confiance": 0.0,
+                "consensus_used": False, "error": str(e)}
+
+
+__skills__ = ["exec", "exec_with_prompt", "classify_entry"]

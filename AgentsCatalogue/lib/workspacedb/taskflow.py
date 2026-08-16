@@ -650,15 +650,23 @@ def create_entry(inputs: dict, home: str) -> dict:
     + sa sub_task `analysis` initiale unattributed. Le supervisor/l'analyste
     prennent ensuite le relais (découpe → coding/testing/review/merge → respond).
 
+    PREMIÈRE ÉTAPE : si entry_type non fourni, classifie la requête (prompt
+    épurée → consensus) en `simple` / `texte` / `code`, puis route :
+      - simple → task_type chat_entry (réponse courte, sans découpe code)
+      - texte  → task_type completion_entry (rédaction)
+      - code   → task_type feature (découpe code)
+
     inputs :
       - workspace_id, title, description
-      - entry_type : chat_entry | completion_entry | feature…
+      - entry_type : chat_entry | completion_entry | feature… (optionnel —
+        sinon classifié automatiquement)
+      - classify_consensus : bool (défaut true) — classification via consensus
       - priority, team_id
     """
     workspace_id = inputs.get("workspace_id", "")
     title = (inputs.get("title") or "").strip()
     description = (inputs.get("description") or "").strip()
-    entry_type = (inputs.get("entry_type") or "chat_entry").strip()
+    entry_type = (inputs.get("entry_type") or "").strip()
     priority = int(inputs.get("priority", 0) or 0)
     team_id = int(inputs.get("team_id", -1) or -1)
     # repo/branch de la requête (le swarm-as-llm les pose via run_completion) :
@@ -667,6 +675,28 @@ def create_entry(inputs: dict, home: str) -> dict:
     branch = (inputs.get("branch") or "").strip()
     if not workspace_id or not title:
         return {"ok": False, "error": "workspace_id + title requis"}
+    # PREMIÈRE ÉTAPE : classification si entry_type absent.
+    classified = ""
+    if not entry_type:
+        try:
+            from services.skill_manager import call_skill
+            _cr = call_skill(
+                "classify_entry",
+                {"workspace_id": workspace_id,
+                 "prompt": f"{title}\n{description}".strip(),
+                 "use_consensus": bool(inputs.get("classify_consensus", True)),
+                 "n_answering": int(inputs.get("n_answering", 5) or 5)},
+                home=home)
+            if _cr.get("ok") and _cr.get("type"):
+                classified = _cr["type"]
+                entry_type = {
+                    "simple": "chat_entry",
+                    "texte": "completion_entry",
+                    "code": "feature",
+                }.get(_cr["type"], "chat_entry")
+        except Exception:
+            entry_type = entry_type or "chat_entry"
+    entry_type = entry_type or "chat_entry"
     try:
         db, sc = _scope(workspace_id)
         task = sc.tasks.create(
@@ -680,7 +710,9 @@ def create_entry(inputs: dict, home: str) -> dict:
             description=f"{title}\n{description}".strip())
         db.close()
         return {"ok": True, "task_id": task["task_id"],
-                "task": task, "sub_task_id": st["sub_task_id"]}
+                "task": task, "sub_task_id": st["sub_task_id"],
+                "classified": classified,
+                "route": entry_type}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
