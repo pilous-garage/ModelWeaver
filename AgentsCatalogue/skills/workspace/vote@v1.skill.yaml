@@ -1,0 +1,39 @@
+name: workspace/vote@v1
+category: workspace
+description: >
+  VOTE d'un agent au consensus : pose le jugement d'un votant sur une réponse
+  (A/B/C = choisir la réponse X, NEW = nouvelle tour, ou un choix libre). Le
+  maître (consensus_judge) agrège ensuite les votes pour déterminer la majorité
+  absolue. One-pass : chaque votant vote une seule fois (avec un seul réessai
+  toléré si l'appel tool échoue).
+inputs:
+  workspace_id:
+    type: string
+    required: true
+  id_question:
+    type: integer
+    required: true
+  id_votant:
+    type: integer
+    required: false
+    description: "Agent qui vote (défaut = l'agent appelant)."
+  id_reponse:
+    type: integer
+    required: false
+    description: "Réponse ciblée par le vote (A/B/C)."
+  choix:
+    type: string
+    required: true
+    description: "A, B, C… (id_reponse) | NEW (nouvelle tour) | option libre."
+  note:
+    type: number
+    required: false
+    description: "Note 0-1 (grade — pas d'égalité)."
+outputs:
+  ok:
+    type: boolean
+  vote:
+    type: string
+implementation:
+  type: python
+  function: workspacedb.taskflow.consensus_vote

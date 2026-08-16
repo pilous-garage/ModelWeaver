@@ -835,6 +835,71 @@ def consensus_ask(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def consensus_vote(inputs: dict, home: str) -> dict:
+    """VOTE d'un agent au consensus : pose le jugement d'un votant.
+
+    One-pass (l'agent vote une seule fois) :
+      - choix = "A"/"B"/"C"… → cible la réponse id_reponse
+      - choix = "NEW"       → nouvelle tour
+      - choix = autre       → option libre (note 0-1 optionnelle, grade)
+    L'agent peut retenter UNE fois si l'appel tool a échoué (retry).
+    """
+    workspace_id = inputs.get("workspace_id", "")
+    id_question = inputs.get("id_question")
+    choix = (inputs.get("choix") or "").strip()
+    if not workspace_id or not id_question or not choix:
+        return {"ok": False, "error": "workspace_id + id_question + choix requis"}
+    id_votant = inputs.get("id_votant") or ""
+    if not id_votant:
+        import re
+        m = re.search(r"agent_home/(\d+)", home or "")
+        id_votant = m.group(1) if m else ""
+    try:
+        db, sc = _scope(workspace_id)
+        q = sc.consensus.get_question(int(id_question))
+        if not q:
+            db.close()
+            return {"ok": False, "error": f"question {id_question} introuvable"}
+        # jugement : A/B/C → "A…" ; NEW → "NEW" ; sinon le choix tel quel.
+        jugement = choix
+        if id_reponse := inputs.get("id_reponse"):
+            # cibler la réponse id_reponse : on vérifie qu'elle existe.
+            reps = sc.consensus.get_reponses(int(id_question))
+            if not any(str(r["id_reponse"]) == str(id_reponse) for r in reps):
+                db.close()
+                return {"ok": False, "error": f"réponse {id_reponse} introuvable"}
+            # le jugement "A/B/C…" référence l'INDEX de la réponse.
+            for i, r in enumerate(reps):
+                if str(r["id_reponse"]) == str(id_reponse):
+                    jugement = chr(65 + i)
+                    break
+        # note (grade 0-1) : "note=X" en suffixe du jugement.
+        if (note := inputs.get("note")) is not None:
+            jugement = f"{jugement}:{float(note):.2f}"
+        # Le votant vote : on stocke son jugement (une ligne = un votant).
+        # (la reponse du votant lui-même porte son jugement s'il a répondu ;
+        # sinon on crée une ligne vote-only.)
+        reps = sc.consensus.get_reponses(int(id_question))
+        ligne = None
+        for r in reps:
+            if str(r["id_agent"]) == str(id_votant):
+                ligne = r
+                break
+        if ligne:
+            sc.consensus.set_jugement(ligne["id_reponse"], jugement)
+        else:
+            # votant sans réponse (cancel) : ligne vote-only, contenu vide.
+            ligne = sc.consensus.add_reponse(
+                int(id_question), int(id_votant) if id_votant else 0,
+                "", model_ref=inputs.get("model_ref", ""))
+            sc.consensus.set_jugement(ligne["id_reponse"], jugement)
+        db.close()
+        return {"ok": True, "id_question": int(id_question),
+                "id_votant": id_votant, "vote": jugement}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def consensus_judge(inputs: dict, home: str) -> dict:
     """Jugement du consensus : majorité absolue, élimination, escalade.
 
@@ -966,4 +1031,4 @@ __skills__ = ["decoupe", "ask_intel", "ask_new_task", "sub_task_done",
               "sub_task_release", "sub_task_get", "sub_task_list",
               "sub_task_too_hard", "analysis_report", "create_entry",
               "entry_result", "consensus_reponse", "consensus_ask",
-              "consensus_judge"]
+              "consensus_judge", "consensus_vote"]

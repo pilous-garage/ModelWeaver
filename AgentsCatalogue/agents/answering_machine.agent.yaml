@@ -37,3 +37,34 @@ entrypoints:
     - id: end
       type: end
       status: SUCCESS
+  vote:
+    # VOTE one_pass + UN SEUL retry si l'appel tool (ou tools_as_text) échoue.
+    # Pas de boucle : vote → (échec) → vote_retry → (échec) → end.
+    max_iterations: 10
+    steps:
+    - id: vote
+      type: llm_call
+      prompt: >
+        Tu juges les réponses du consensus. Vote pour la meilleure
+        (A/B/C = id_reponse) ou NEW si aucune ne convient. Utilise le tool
+        workspace/vote@v1 avec {workspace_id, id_question, choix}.
+      agentic: always
+      skills:
+      - workspace/vote@v1
+      timeout: 30
+      on_error: vote_retry
+      next: end
+    - id: vote_retry
+      type: llm_call
+      prompt: >
+        Dernier essai de vote (un seul retry autorisé). Utilise le tool
+        workspace/vote@v1.
+      agentic: always
+      skills:
+      - workspace/vote@v1
+      timeout: 30
+      on_error: end
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS
