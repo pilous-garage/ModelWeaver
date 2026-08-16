@@ -1232,6 +1232,23 @@ class AgentManager:
         woken_tasks = 0
         # (le coordinateur dev-chat est DÉPRÉCIÉ — réveil désactivé.)
         woken_coord = 0
+        # Réveiller les agents SUPERVISOR (ils tournent en continu pour
+        # superviser + poser les signaux wakeup). Garde anti re-spawn dans
+        # _run_sleeping_agent.
+        try:
+            for r in self.db.conn.execute(
+                "SELECT agent_id FROM agents "
+                "WHERE role_type = 'supervisor' AND occupation = 'continue' "
+                "AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)"
+            ).fetchall():
+                threading.Thread(
+                    target=self._run_sleeping_agent,
+                    args=(r["agent_id"],
+                          "wakeup: supervisor loop"),
+                    daemon=True).start()
+                woken += 1
+        except Exception:
+            pass
 
         # (la supervision du taskflow = task_supervisor PAR TEAM, service
         # séparé — plus dans l'agent_manager. Ici : signaux + lifecycle.)
