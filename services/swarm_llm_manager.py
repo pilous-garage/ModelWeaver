@@ -271,6 +271,29 @@ def run_completion(prompt: str, files: Optional[Dict[str, str]] = None,
         err = e.get("error", "entry échouée")
         _log_exchange("entry_error", {"error": err, "prompt": (prompt or "")[:500]})
         return {"ok": False, "error": err}
+    # RÉPONSE DIRECTE de la classification (requête simple, pas de découpe) :
+    # le swarm répond directement au format OpenAI.
+    if e.get("direct"):
+        content = e.get("response") or ""
+        _log_exchange("direct_answer", {"content": content[:500],
+                                        "classified": e.get("classified", "")})
+        return {
+            "ok": True,
+            "object": "chat.completion",
+            "model": "mw-swarm",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": content},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0,
+                      "completion_tokens": max(1, len(content) // 4),
+                      "total_tokens": max(1, len(content) // 4)},
+            "files": {},
+            "summary": (prompt or "")[:80],
+            "swarm": {"session": "direct",
+                      "classified": e.get("classified", ""),
+                      "requete_id": requete_id,
+                      "direct": True},
+        }
     task_id = e["task_id"]
     _log_exchange("entry_created", {"task_id": task_id,
                                     "branch": branch,

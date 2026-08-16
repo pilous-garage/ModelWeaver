@@ -727,6 +727,7 @@ def create_entry(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id + title requis"}
     # PREMIÈRE ÉTAPE : classification si entry_type absent.
     classified = ""
+    direct_response = ""
     if not entry_type:
         try:
             from services.skill_manager import call_skill
@@ -739,6 +740,11 @@ def create_entry(inputs: dict, home: str) -> dict:
                 home=home)
             if _cr.get("ok") and _cr.get("type"):
                 classified = _cr["type"]
+                # RÉPONSE DIRECTE : la classification a répondu elle-même
+                # (requête simple ≤ 1000 chars, pas d'info requise) → on
+                # retourne la réponse SANS créer de tâche (le swarm répond).
+                if _cr.get("response"):
+                    direct_response = _cr["response"]
                 entry_type = {
                     "simple": "chat_entry",
                     "texte": "completion_entry",
@@ -746,6 +752,11 @@ def create_entry(inputs: dict, home: str) -> dict:
                 }.get(_cr["type"], "chat_entry")
         except Exception:
             entry_type = entry_type or "chat_entry"
+    # Réponse directe de la classification → pas de tâche à découper.
+    if direct_response:
+        return {"ok": True, "response": direct_response,
+                "classified": classified, "route": entry_type,
+                "direct": True}
     entry_type = entry_type or "chat_entry"
     try:
         db, sc = _scope(workspace_id)

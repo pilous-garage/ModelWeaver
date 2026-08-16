@@ -259,9 +259,15 @@ def classify_entry(inputs: dict, home: str) -> dict:
       - texte  : tâche complexe mais RÉDACTION (pas de code)
       - code   : tâche qui exige écrire/modifier du code
 
-    Retourne {ok, type, confiance, consensus_used, votes}. Si le consensus
-    échoue (aucun modèle), fallback sur un appel unique ; si même ça échoue,
-    défaut "texte".
+    RÉPONSE DIRECTE : si la requête est SIMPLE (réponse ≤ 1000 chars, aucune
+    info supplémentaire requise), les answering_machine répondent DIRECTEMENT
+    à la question au lieu de dire "simple" → la classification retourne
+    {ok, type: 'simple', response: '<réponse>'} et le swarm répond sans
+    découper.
+
+    Retourne {ok, type, confiance, response?, consensus_used, votes}. Si le
+    consensus échoue (aucun modèle), fallback sur un appel unique ; si même ça
+    échoue, défaut "texte".
     """
     prompt = (inputs.get("prompt") or "").strip()
     workspace_id = inputs.get("workspace_id", "")
@@ -269,12 +275,17 @@ def classify_entry(inputs: dict, home: str) -> dict:
         return {"ok": False, "type": "", "error": "prompt requis"}
     use_consensus = bool(inputs.get("use_consensus", True))
     n_answering = int(inputs.get("n_answering", 5) or 5)
-    # La question épurée posée aux answering_machine.
+    # La question épurée posée aux answering_machine. Si la requête est SIMPLE
+    # (réponse ≤ 1000 chars, aucune info supplémentaire requise), répondre
+    # DIRECTEMENT avec la réponse. Sinon répondre en UN mot : simple/texte/code.
     question = (
-        f"Classe cette requête utilisateur en EXACTEMENT un type parmi : "
-        f"'simple' (réponse courte, pas de code), 'texte' (tâche de rédaction "
-        f"complexe), 'code' (nécessite écrire ou modifier du code). "
-        f"Réponds en UN mot uniquement.\n\nRequête : {prompt}"
+        f"Réponds à la requête utilisateur ci-dessous.\n"
+        f"- Si elle est SIMPLE (la réponse est courte, ≤ 1000 caractères, et "
+        f"ne nécessite AUCUNE information supplémentaire ni exploration ni "
+        f"code) : réponds DIRECTEMENT avec la réponse à la requête.\n"
+        f"- Sinon : réponds en UN mot uniquement parmi 'simple', 'texte' "
+        f"(tâche de rédaction complexe) ou 'code' (nécessite écrire/modifier "
+        f"du code).\n\nRequête : {prompt}"
     )
     try:
         from services.skill_manager import call_skill
@@ -285,18 +296,26 @@ def classify_entry(inputs: dict, home: str) -> dict:
                  "n_answering": n_answering},
                 home=home)
             if r.get("ok") and r.get("n_reponses", 0) >= 1:
-                # Comptabiliser les types répondus (votes simples).
+                # Comptabiliser les types répondus (votes simples) ET les
+                # réponses directes.
                 from modules.sql.workspace import WorkspaceDB
                 wdb = WorkspaceDB()
                 sc = wdb.for_workspace(workspace_id)
                 reps = sc.consensus.get_reponses(r["id_question"])
                 comptes: dict = {}
+                directes: dict = {}  # réponse directe → nb de fois
                 for rep in reps:
                     t = (rep.get("contenu") or "").strip().lower()
+                    matched = False
                     for cand in ("simple", "texte", "code"):
                         if cand in t:
                             comptes[cand] = comptes.get(cand, 0) + 1
+                            matched = True
                             break
+                    if not matched and (rep.get("contenu") or "").strip():
+                        # Réponse directe (pas un type) : la garder.
+                        directe = (rep.get("contenu") or "").strip()
+                        directes[directe] = directes.get(directe, 0) + 1
                 for rep in reps:
                     wdb.conn.execute(
                         "DELETE FROM reponse WHERE id_reponse=?",
@@ -306,6 +325,14 @@ def classify_entry(inputs: dict, home: str) -> dict:
                     (r["id_question"],))
                 wdb.conn.commit()
                 wdb.close()
+                # Si des réponses DIRECTES dominent → c'est une requête simple,
+                # on renvoie la réponse (la plus fréquente).
+                if directes and sum(directes.values()) > len(reps) // 2:
+                    _best = max(directes, key=directes.get)
+                    return {"ok": True, "type": "simple", "response": _best,
+                            "confiance": directes[_best] / max(len(reps), 1),
+                            "consensus_used": True, "votes": comptes,
+                            "answered_direct": True}
                 if comptes:
                     _type = max(comptes, key=comptes.get)
                     _n = sum(comptes.values())
@@ -317,8 +344,9 @@ def classify_entry(inputs: dict, home: str) -> dict:
         r2 = call_skill(
             "ask_llm_with_prompt",
             {"use_case": "chat", "prompt": question,
-             "system": "Tu classifies des requêtes. Réponds en UN mot: "
-                       "simple, texte ou code.",
+             "system": "Tu classifies des requêtes : si simple (réponse ≤ "
+                       "1000 chars, pas d'info requise) réponds DIRECTEMENT ; "
+                       "sinon réponds en UN mot: simple, texte ou code.",
              "max_essais": 2, "timeout": 40},
             home=home)
         if r2.get("ok") and r2.get("response"):
@@ -327,6 +355,11 @@ def classify_entry(inputs: dict, home: str) -> dict:
                 if cand in t:
                     return {"ok": True, "type": cand, "confiance": 1.0,
                             "consensus_used": False, "votes": {}}
+            # Réponse directe (pas un type).
+            return {"ok": True, "type": "simple",
+                    "response": r2["response"].strip(),
+                    "confiance": 1.0, "consensus_used": False,
+                    "votes": {}, "answered_direct": True}
         return {"ok": False, "type": "texte", "confiance": 0.0,
                 "consensus_used": False,
                 "error": f"classification indéterminée: {r2.get('error')}"}
