@@ -272,7 +272,8 @@ def run_proxy_benchmark(benchmark_name: str = "proxy-basic",
     for t in tasks:
         step_t0 = time.monotonic()
         try:
-            res = run_proxy_completion(t["prompt"], use_case=use_case)
+            res = run_proxy_completion(t["prompt"], use_case=use_case,
+                                       restrict_llm=restrict["models"])
         except Exception as e:  # noqa: BLE001
             steps.append({"task": t["id"], "status": "error", "error": str(e),
                           "duration_s": round(time.monotonic() - step_t0, 3)})

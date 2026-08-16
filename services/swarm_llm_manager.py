@@ -350,7 +350,8 @@ def _taskflow_reply(task_id: int, response: Any = None,
 
 
 def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
-                         use_case: str = "chat") -> Dict[str, Any]:
+                         use_case: str = "chat",
+                         restrict_llm: Optional[list] = None) -> Dict[str, Any]:
     """Réponse OpenAI DIRECTE via le proxy (ask_llm_autofallback, sans swarm).
 
     Le proxy simule un endpoint LLM unique : un SEUL appel LLM réussi par
@@ -376,6 +377,7 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
         r = call_skill("ask_llm_autofallback", {
             "prompt": prompt, "use_case": use_case,
             "type_endpoint": "chat",
+            "restrict_llm": restrict_llm,
             "max_essais": 3, "timeout": 90,
         }, home=PROXY_HOME)
         if not r.get("ok") or not r.get("response"):
