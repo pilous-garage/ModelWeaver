@@ -134,6 +134,22 @@ class TaskSupervisor:
                 except Exception:
                     pass
 
+        # 1ter) sub_tasks DÉJÀ unattributed (créées par create_entry, découpe,
+        # etc.) avec deps satisfaites → réveiller un agent du type (signal).
+        try:
+            for st in sc.sub_tasks.list_by_team_status(
+                    team_id, ["unattributed"], limit=limit):
+                if st.get("supervised"):
+                    continue
+                if not sc.sub_tasks.dependencies_satisfied(st["sub_task_id"]):
+                    continue
+                # Éviter de spammer : ne réveille que si aucun agent du type
+                # n'est déjà actif.
+                self._wake_for_type(workspace_id, team_id,
+                                    st["sub_task_type"])
+        except Exception:
+            pass
+
         # 1bis) TOO_HARD : l'agent a abandonné (doing → too_hard). Le
         # supervisor décide :
         #   - too_hard_count <= MAX_TOO_HARD → bump_difficulty + re-attribution
