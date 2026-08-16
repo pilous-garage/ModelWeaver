@@ -314,13 +314,13 @@ def _taskflow_reply(task_id: int, response: Any = None,
     elif isinstance(response, dict):
         resp_text = str(response.get("content") or response.get("text") or "")
     if not resp_text:
-        # chercher dans les rapports de la task (role=respond)
+        # chercher dans les rapports de la task (role=respond ou work legacy)
         try:
             from modules.sql.workspace import WorkspaceDB
             db = WorkspaceDB()
             sc = db.for_workspace(WORKSPACE)
             for r in (sc.tasks.get_reports(int(task_id)) or []):
-                if (r.get("role") == "respond" and r.get("content")):
+                if r.get("role") in ("respond", "work") and r.get("content"):
                     resp_text = str(r["content"]).strip()
                     break
             db.close()

@@ -746,7 +746,8 @@ def entry_result(inputs: dict, home: str) -> dict:
         if response:
             try:
                 for r in (sc.tasks.get_reports(int(task_id)) or []):
-                    if r.get("role") == "respond" and r.get("content"):
+                    # role=respond (nouveau) ou role=work (respond legacy)
+                    if r.get("role") in ("respond", "work") and r.get("content"):
                         response_text = str(r["content"]).strip()
                         break
             except Exception:
