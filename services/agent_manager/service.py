@@ -1261,7 +1261,8 @@ class AgentManager:
             "supervised": supervised,
         }
 
-    _SUPERVISE_INTERVAL = 15.0   # tick failsafe du taskflow (s)
+    _SUPERVISE_INTERVAL = 1.0    # tick failsafe du taskflow (s) — SQL + tri +
+                                 # signal : pas de LLM, peut tourner à 1s
     _supervise_last: float = 0.0
 
     def _supervise_taskflow(self, force: bool = False) -> int:

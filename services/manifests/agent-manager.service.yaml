@@ -8,7 +8,7 @@ launch:
   command: python3
   args:
     - -c
-    - "import sys; sys.path.insert(0, '.'); from services.agent_manager.service import run_service; run_service(interval=5.0)"
+    - "import sys; sys.path.insert(0, '.'); from services.agent_manager.service import run_service; run_service(interval=1.0)"
   mode: loop
 
 supervisor:
