@@ -70,7 +70,7 @@ class TaskSupervisor:
            supervised (tag du sujet)."""
         sc = self.db.for_workspace(workspace_id)
         created, released, supervised_st, finalized = 0, 0, 0, 0
-        bumped, resplit = 0, 0
+        bumped, resplit, cancelled = 0, 0, 0
 
         # 1) Dépendances satisfaites → unattributed
         for st in sc.sub_tasks.list_by_team_status(
@@ -123,6 +123,35 @@ class TaskSupervisor:
                                  f"{cnt} tentatives) — "
                                  f"{st.get('too_hard_reason', '')}"))
                 resplit += 1
+        # 1ter) CANCEL : les sub_tasks doing/attributed dont la TÂCHE est
+        # annulée (flag cancelled) → envoyer le signal cancel à l'agent assigné.
+        # L'agent répond cancelled_done, puis on marque cancelled_supervised.
+        try:
+            from services.agent_manager.service import AgentManager
+            _amgr = AgentManager()
+            _cancel_rows = sc.conn.execute("""
+                SELECT s.sub_task_id, s.assigned_to, t.task_id
+                FROM sub_tasks s JOIN tasks t ON t.task_id = s.task_id
+                WHERE s.workspace_id = ? AND s.team_id = ?
+                  AND s.status IN ('doing','attributed')
+                  AND t.cancelled = 1
+                  AND s.assigned_to != ''
+            """, (workspace_id, team_id)).fetchall()
+            for cr in _cancel_rows:
+                _aid = str(cr["assigned_to"]).replace("agent:", "")
+                try:
+                    _amgr.send_signal(int(_aid), "cancel",
+                                      {"task_id": cr["task_id"]})
+                except Exception:
+                    pass
+                cancelled += 1
+        except Exception:
+            pass
+        # 1quater) finaliser les sub_tasks `cancelled_done` → `cancelled_supervised`
+        for st in sc.sub_tasks.list_by_team_status(
+                team_id, ["cancelled_done"], limit=limit):
+            sc.sub_tasks.mark_supervised(st["sub_task_id"])
+            supervised_st += 1
         # 2) Règles sur les sub_tasks terminées (done/cancelled) non supervisées
         for st in sc.sub_tasks.list_by_team_status(
                 team_id, ["done", "cancelled"], limit=limit):
@@ -147,7 +176,8 @@ class TaskSupervisor:
 
         return {"created": created, "released": released,
                 "supervised": supervised_st, "tasks_finalized": finalized,
-                "too_hard_bumped": bumped, "too_hard_resplit": resplit}
+                "too_hard_bumped": bumped, "too_hard_resplit": resplit,
+                "cancel_signals": cancelled}
 
     def _create_followup(self, sc: WorkspaceScope, st: Dict[str, Any],
                          rule: Dict[str, Any]) -> int:

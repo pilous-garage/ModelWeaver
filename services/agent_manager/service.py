@@ -692,6 +692,20 @@ class Agent:
                     mgr.ack_signal(sig["signal_id"])
                     mgr.complete_signal(sig["signal_id"], {"action": "reset"})
                     raise ResetSignal()
+                elif stype in ("entrypoint_hard", "entrypoint_soft"):
+                    # Signal générique → exécuter l'entrypoint nommé (payload.
+                    # entrypoint). hard : interruption immédiate ; soft : fin de
+                    # step (le FSM décide). Lève EntrypointSignal pour basculer.
+                    _ep_name = payload.get("entrypoint", "")
+                    if _ep_name:
+                        from AgentFrameWork.fsm_interpreter import EntrypointSignal
+                        mgr.ack_signal(sig["signal_id"])
+                        mgr.complete_signal(
+                            sig["signal_id"],
+                            {"action": stype, "entrypoint": _ep_name})
+                        result.variables["_signal_entrypoint"] = _ep_name
+                        result.variables["_signal_hard"] = (stype == "entrypoint_hard")
+                        raise EntrypointSignal()
                 elif stype == "configure":
                     result.variables.update(payload.get("variables", {}))
                     if "state" in payload:
@@ -2269,7 +2283,11 @@ class AgentManager:
     # ── Phase 4 : canal de signaux ──
 
     VALID_SIGNALS = ("pause", "resume", "wakeup", "sleep", "status", "health",
-                     "kill", "configure", "cancel", "reset")
+                     "kill", "configure",
+                     # entrypoints par défaut (jouent avec la pile)
+                     "cancel", "reset",
+                     # signaux génériques → entrypoint custom (hard/soft)
+                     "entrypoint_hard", "entrypoint_soft")
 
     def send_signal(self, agent_id: int, signal_type: str,
                     payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

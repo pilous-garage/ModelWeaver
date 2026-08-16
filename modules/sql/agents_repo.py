@@ -134,6 +134,46 @@ class AgentsDB:
         _add_column_if_missing(self.conn, "agents", "home", "TEXT DEFAULT ''")
         # Migration V0.8.5 : nouveaux types de signaux (wakeup, sleep)
         _add_column_if_missing(self.conn, "agent_signals", "source_agent_id", "INTEGER")
+        # Migration V0.17 : agent_signals.type doit accepter les signaux
+        # génériques entrypoint_hard/soft + tout futur entrypoint. L'ancienne
+        # contrainte CHECK(type IN (...)) est retirée en recréant la table
+        # (SQLite ne peut pas modifier une CHECK).
+        try:
+            _sql = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='agent_signals'").fetchone()
+            if _sql and "CHECK(type" in (_sql["sql"] or ""):
+                self.conn.execute("ALTER TABLE agent_signals RENAME TO agent_signals_old")
+                self.conn.execute("""
+                    CREATE TABLE agent_signals (
+                        signal_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                        agent_id        INTEGER NOT NULL
+                                        REFERENCES agents(agent_id) ON DELETE CASCADE,
+                        type            TEXT NOT NULL,
+                        payload_json    TEXT,
+                        status          TEXT DEFAULT 'PENDING'
+                                        CHECK(status IN ('PENDING','ACKED',
+                                                         'COMPLETED','FAILED')),
+                        created_at      TEXT DEFAULT (datetime('now')),
+                        acknowledged_at TEXT,
+                        completed_at    TEXT,
+                        source_agent_id INTEGER
+                    )
+                """)
+                self.conn.execute(
+                    "INSERT INTO agent_signals (signal_id, agent_id, type, "
+                    "payload_json, status, created_at, acknowledged_at, "
+                    "completed_at, source_agent_id) "
+                    "SELECT signal_id, agent_id, type, payload_json, status, "
+                    "created_at, acknowledged_at, completed_at, source_agent_id "
+                    "FROM agent_signals_old")
+                self.conn.execute("DROP TABLE agent_signals_old")
+                self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
         # Migration V0.8.9 : wait_for — agents endormis en attente d'une
         # condition (tâche/issue dispo). Le waker les réveille quand la
         # condition est remplie (un à la fois).

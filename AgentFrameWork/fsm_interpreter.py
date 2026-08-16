@@ -118,6 +118,11 @@ class ResetSignal(Exception):
     identité) puis relance l'entrypoint ciblé."""
 
 
+class EntrypointSignal(Exception):
+    """Levée par un signal_check (entrypoint_hard/soft) : bascule sur un
+    entrypoint custom (payload entrypoint). La pile d'états gère le passage."""
+
+
 class PauseSignalError(Exception):
     """Levée par un signal_check (pause) pour mettre le FSM en attente."""
 
@@ -282,6 +287,24 @@ class FSMInterpreter:
                 current_id = self._find_entry_point(steps) or current_id
                 continue
 
+            # ── Entrypoint générique (entrypoint_hard/soft) ──
+            _ep = getattr(result, "_entrypoint_requested", "")
+            if _ep:
+                result._entrypoint_requested = ""
+                if not getattr(result, "_entrypoint_hard", False):
+                    # soft : on exécute la step courante, puis on bascule
+                    # (résolu après le handler via _entrypoint_soft_pending).
+                    result._entrypoint_soft_pending = _ep
+                else:
+                    _ep_steps = steps_by_id.get(_ep)
+                    if _ep_steps is None:
+                        result.status = "failed"
+                        result.end_reason = f"Entrypoint '{_ep}' introuvable"
+                        break
+                    current_id = _ep
+                    continue
+
+
             # ── Pause globale projet/team/agent avant chaque step ──
             project_id = result.variables.get("project_id")
             team_name = result.variables.get("team_name")
@@ -326,6 +349,13 @@ class FSMInterpreter:
 
             current_id = result.next_step_id
 
+            # ── Bascule soft vers un entrypoint après la step courante ──
+            _ep_soft = getattr(result, "_entrypoint_soft_pending", "")
+            if _ep_soft:
+                result._entrypoint_soft_pending = ""
+                if steps_by_id.get(_ep_soft) is not None:
+                    current_id = _ep_soft
+
         if result.iterations >= max_iter and result.status == "running":
             result.status = "failed"
             result.end_reason = f"Limite d'itérations atteinte ({max_iter})"
@@ -362,6 +392,17 @@ class FSMInterpreter:
             result.status = "running"
             result.end_reason = "Reset (entrypoint reset)"
             result._reset_requested = True
+        except EntrypointSignal:
+            # bascule sur un entrypoint custom (payload entrypoint). hard =
+            # interruption immédiate ; soft = après la step courante. Le FSM
+            # lira result._entrypoint_requested pour exécuter l'entrypoint.
+            result._entrypoint_requested = result.variables.get(
+                "_signal_entrypoint", "")
+            result._entrypoint_hard = result.variables.get("_signal_hard", False)
+            if result._entrypoint_hard:
+                # hard : on interrompt la step courante pour basculer.
+                result.status = "running"
+                result.end_reason = f"Entrypoint {result._entrypoint_requested} (hard)"
 
     def _build_pause_check(self, variables: Dict[str, Any]) -> Any:
         """Retourne un callable utilisé par le bridge pour interrompre/reprendre
@@ -1571,7 +1612,11 @@ class FSMInterpreter:
           {team_outputs: content} → result.content = variables['team_outputs']
         """
         end_status = step.get("status", "SUCCESS")
-        result.status = "success" if end_status == "SUCCESS" else "failed"
+        # Mappage des statuts terminaux : SUCCESS → success, CANCELLED →
+        # cancelled, RESET → reset, PAUSED → paused, sinon failed.
+        _term_map = {"SUCCESS": "success", "CANCELLED": "cancelled",
+                     "RESET": "reset", "PAUSED": "paused", "FAILED": "failed"}
+        result.status = _term_map.get(end_status, "failed")
         result.end_reason = end_status
         capture = step.get("capture", {})
         for source_var, target_field in capture.items():

@@ -97,18 +97,81 @@ resume (soft) : on dépile pause → pile : [agent, main] → on continue main.
 
 ## Canal de signaux → entrypoints
 
-Tout **signal** est un entrypoint. Les signaux de supervision mappent sur les
-entrypoints réservés :
+Deux catégories de signaux, distinguées par leur interaction avec la pile
+d'états.
 
-| Signal | Entrypoint | hard | Comportement |
-|--------|-----------|------|--------------|
-| `cancel` | `cancel` | hard | Arrêt complet : interrompt calls LLM, finalise la tâche en `cancelled_done` |
-| `pause_hard` | `pause_hard` | hard | Interruption immédiate, suspend le run |
-| `pause` | `pause` | soft | Attend la fin de la step courante puis suspend |
-| `resume` | `resume` | soft | Reprend un run suspendu |
-| `reset` | `reset` | hard | Efface les variables de l'agent (PAS le home), relance à l'entrypoint ciblé |
-| `clear_home` | `clear_home` | hard | Efface le home de l'agent |
-| `kill` | (géré FSM) | hard | Arrêt brutal (existant) |
+### A. Signaux BASIQUES (non-entrypoint) — implémentés dans FSM/agent_manager
+Ils ne jouent PAS avec la pile d'états. Types fixes :
+| Signal | Comportement |
+|--------|--------------|
+| `kill` | Arrêt brutal (AgentAbort) |
+| `pause` | Suspend (soft : fin de step) |
+| `pause_hard` | Suspend immédiatement (hard) |
+| `resume` | Reprend |
+| `status` | Info de run (+ `get_timestep` : timestamp de la step courante) |
+| `health` | Heartbeat |
+| `sleep` | Endort |
+| `wakeup` | Réveille |
+| `configure` | Met à jour variables |
+
+### B. Signaux = ENTRYPOINT par défaut (jouent avec la stack)
+Ce sont des entrypoints réservés (liste croissante), définis dans l'agent
+hérité (agent_default). Ils ont leurs propres steps :
+| Signal | Entrypoint | hard |
+|--------|-----------|------|
+| `cancel` | `cancel` | hard |
+| `reset` | `reset` | hard |
+| (futurs) | ... | ... |
+
+### C. Signal générique → entrypoint custom
+| Signal | payload | hard |
+|--------|---------|------|
+| `entrypoint_hard` | `{entrypoint: <nom>}` | hard |
+| `entrypoint_soft` | `{entrypoint: <nom>}` | soft |
+
+`entrypoint_hard`/`entrypoint_soft` invoquent n'importe quel entrypoint custom
+(déclaré dans l'agent) sans créer de type de signal dédié. On interdit de
+redéfinir les signaux basiques via ce canal (les basiques restent fixes).
+
+## Héritage d'agents : agent_default / sub_agent_default
+
+Tous les agents héritent d'un **agent_default** ; tous les sub-agents d'un
+**sub_agent_default** (qui hérite lui-même d'agent_default).
+
+### agent_default
+```yaml
+name: agent_default
+entrypoints:
+  main:
+    max_iterations: 100
+    steps: []              # vide — les agents déclarent leur main
+  cancel: { hard: true, steps: [cancel_agent → end CANCELLED] }
+  reset:  { hard: true, steps: [reset_vars → end RESET] }
+variables:                 # variables basiques héritées
+  team_name: ""
+  # ...
+```
+
+### sub_agent_default (hérite d'agent_default)
+```yaml
+name: sub_agent_default
+extends: agent_default
+variables:
+  master: ""              # identifiant de l'agent maître (parent)
+```
+Le sub-agent connaît son `master` (l'agent qui l'a spawné).
+
+### Règles d'héritage
+- `extends: agent_default` (ou un agent nommé) → l'agent hérite des entrypoints
+  et variables non redéfinies.
+- `main` : si l'agent ne déclare pas main, il hérite du main du parent (vide
+  pour agent_default → un agent SANS main déclaré ne répond qu'aux signaux).
+- Les entrypoints réservés (cancel/reset) : si l'agent ne les redéfinit pas,
+  il hérite de la version par défaut.
+
+## get_timestep
+Le signal `status` inclut le **timestep** de la step courante : identifiant /
+timestamp de la step en cours d'exécution, pour superviser la progression.
 
 ## Steps par défaut des entrypoints réservés
 
@@ -192,13 +255,13 @@ Ajouter les statuts de tâche : `cancelled_done`, `cancelled_supervised`.
 
 ## Priorité
 
-Les entrypoints réservés (signal) ont priorité sur `main`. `cancel` a la plus
-haute priorité, puis `pause_hard`, `pause`, `reset`, `resume`. Un signal hard
-préempte toujours le flow courant.
+Les signaux basiques et entrypoints réservés ont priorité sur `main`.
+Ordre : `cancel` > `pause_hard` > `pause` > `reset` > `resume` > entrypoints
+custom. Un signal hard préempte toujours le flow courant.
 
 ## À noter
 
-- `clear_home` nécessite un skill `host/clear_home@v1` (à créer).
+- `clear_home` nécessite un skill `host/clear_home@v1` (créé).
 - `reset` réutilise le skill existant `reset_variable_after_change_task`.
 - Les statuts `PAUSED`/`RESET`/`CANCELLED` du FSM : à ajouter au modèle d'état
   du run (petri_runtime / FSMResult.status).
