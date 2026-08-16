@@ -109,7 +109,11 @@ def _call_bridge(p_ref: str, m_ref: str, messages: List[Dict[str, str]],
 
     Le routage par api_type (openai/anthropic/gemini/cohere) est fait par
     DirectBridge ; resilient_chat ajoute le retry transitoire (timeout/429)
-    avec repli sur un autre LLM alloué. Retourne {ok, response}."""
+    avec repli sur un autre LLM alloué. Retourne {ok, response, tool_calls}.
+
+    `tools` (liste de schémas OpenAI, optionnel) : si fournis, le LLM peut
+    répondre par des tool_calls (transmis tels quels au caller — SWE-bench et
+    autres benchmarks d'agents en dépendent)."""
     from modules.llm_manager.resilient import resilient_chat
     from modules.llm_manager.llm_manager import LLMManager
     from modules.sql.catalogue_repo import CatalogueDB
@@ -117,17 +121,26 @@ def _call_bridge(p_ref: str, m_ref: str, messages: List[Dict[str, str]],
     max_tokens = inputs.get("max_tokens") or None
     timeout = int(inputs.get("timeout", 90) or 90)
     fallback = bool(inputs.get("resilient", True))
+    tools = inputs.get("tools") or None
+    tool_choice = inputs.get("tool_choice") or None
     bridge = LLMManager(CatalogueDB()).get_bridge()
+    kwargs: Dict[str, Any] = {"temperature": temperature}
+    if max_tokens:
+        kwargs["max_tokens"] = int(max_tokens)
+    if tools:
+        kwargs["tools"] = tools
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
     resp = resilient_chat(
         p_ref, m_ref, messages,
         timeout=timeout, fallback=fallback,
         use_case=_resolve_use_case(inputs.get("use_case", "coding")),
         agent_id=agent_id or None, bridge=bridge,
-        temperature=temperature,
-        max_tokens=int(max_tokens) if max_tokens else None,
+        **kwargs,
     )
     content = (getattr(resp, "content", "") or "").strip()
-    return {"ok": True, "response": content,
+    tool_calls = getattr(resp, "tool_calls", None) or None
+    return {"ok": True, "response": content, "tool_calls": tool_calls,
             "fallbacks": getattr(resp, "fallbacks", 0),
             "model_used": getattr(resp, "model_used", m_ref),
             "provider_used": getattr(resp, "provider_used", p_ref)}
@@ -208,6 +221,7 @@ def ask_llm_autofallback(inputs: dict, home: str) -> dict:
                 "llm_used": _llm_info(p_used, m_used),
                 "provider_ref": p_used, "model_ref": m_used,
                 "response": out["response"],
+                "tool_calls": out.get("tool_calls"),
                 "fallback": not alloc.get("from_selection"),
                 "resilient_fallbacks": out.get("fallbacks", 0),
                 "endpoint": endpoint,

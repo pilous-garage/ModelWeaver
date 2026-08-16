@@ -85,8 +85,12 @@ def op_openai_chat_completions(params: Dict[str, Any]) -> Dict[str, Any]:
         _ml = (model or "").lower()
         if "proxy" in _ml or "fallback" in _ml or "direct" in _ml:
             from services.swarm_llm_manager import run_proxy_completion
-            res = run_proxy_completion(prompt, model=model,
-                                       use_case=params.get("use_case", "chat"))
+            res = run_proxy_completion(
+                prompt, model=model,
+                use_case=params.get("use_case", "chat"),
+                tools=params.get("tools"),
+                tool_choice=params.get("tool_choice"),
+                messages=params.get("messages"))
         else:
             from services.swarm_llm_manager import run_completion
             res = run_completion(prompt, files=files or None)
@@ -152,7 +156,9 @@ def op_openai_responses(params: Dict[str, Any]) -> Dict[str, Any]:
             from services.swarm_llm_manager import run_proxy_completion
             res = run_proxy_completion(
                 prompt, model=model,
-                use_case=params.get("use_case", "chat"))
+                use_case=params.get("use_case", "chat"),
+                tools=params.get("tools"),
+                tool_choice=params.get("tool_choice"))
         else:
             from services.swarm_llm_manager import run_completion
             res = run_completion(prompt, files=files or None)

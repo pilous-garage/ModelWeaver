@@ -351,13 +351,22 @@ def _taskflow_reply(task_id: int, response: Any = None,
 
 def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
                          use_case: str = "chat",
-                         restrict_llm: Optional[list] = None) -> Dict[str, Any]:
+                         restrict_llm: Optional[list] = None,
+                         tools: Optional[list] = None,
+                         tool_choice: Any = None,
+                         messages: Optional[list] = None) -> Dict[str, Any]:
     """Réponse OpenAI DIRECTE via le proxy (ask_llm_autofallback, sans swarm).
 
     Le proxy simule un endpoint LLM unique : un SEUL appel LLM réussi par
     prompt (sélection du modèle via ask_llm_autofallback → bridge → réponse
     formatée /chat/completions). Retry SEULEMENT sur erreur (re-alloc autre
     modèle, excluant le défaillant) — PAS de boucle.
+
+    `tools`/`tool_choice` (schémas OpenAI, optionnels) : si fournis, le LLM
+    peut répondre par des tool_calls — ils sont transmis au bridge et renvoyés
+    tels quels au format OpenAI (les benchmarks d'agents, ex. SWE-bench, en
+    dépendent). `messages` : historique complet éventuel (le dernier user
+    message sert de prompt).
 
     TOUT est loggé (prompt, allocation, réponse) :
       - {PROXY_HOME}/ask_llm_autofallback.log (par le wrapper)
@@ -369,7 +378,8 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
     """
     t0 = time.monotonic()
     _log_exchange("proxy_request", {"prompt": (prompt or "")[:2000],
-                                    "model": model, "use_case": use_case})
+                                    "model": model, "use_case": use_case,
+                                    "has_tools": bool(tools)})
     try:
         from services.skill_manager import call_skill
         # ask_llm_autofallback : sélection (LLM fourni ou ask_llm) + UN appel
@@ -381,23 +391,28 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
             # Surchargeable via restrict_llm (paramètre).
             "restrict_llm": restrict_llm or _PROXY_FAST_MODELS,
             "max_essais": 3, "timeout": 90,
+            "tools": tools, "tool_choice": tool_choice,
         }, home=PROXY_HOME)
-        if not r.get("ok") or not r.get("response"):
+        if not r.get("ok") or (not r.get("response") and not r.get("tool_calls")):
             err = r.get("error", "réponse vide")
             _log_exchange("proxy_call_error", {"error": err})
             return {"ok": False, "error": err}
-        content = r["response"]
+        content = r.get("response") or ""
+        tool_calls = r.get("tool_calls")
         llm_used = r.get("llm_used") or {}
         p_ref = r.get("provider_ref") or llm_used.get("provider_ref", "")
         m_ref = r.get("model_ref") or llm_used.get("model_ref", "")
         # format OpenAI.
+        message: Dict[str, Any] = {"role": "assistant", "content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         resp = {
             "ok": True,
             "object": "chat.completion",
             "model": model or "proxy_llm_fallback",
             "choices": [{"index": 0,
-                         "message": {"role": "assistant", "content": content},
-                         "finish_reason": "stop"}],
+                         "message": message,
+                         "finish_reason": "tool_calls" if tool_calls else "stop"}],
             "usage": {"prompt_tokens": 0,
                       "completion_tokens": max(1, len(content) // 4),
                       "total_tokens": max(1, len(content) // 4)},
