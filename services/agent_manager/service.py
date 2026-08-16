@@ -314,8 +314,12 @@ class Agent:
         # persistées dans `agents`) ; on les reflète dans agent_runtime.
         owner = row["id_proprietaire"] if "id_proprietaire" in row.keys() else None
         team = row["id_team"] if "id_team" in row.keys() else None
+        # INSERT OR REPLACE : deux réveils concurrents peuvent passer la garde
+        # SELECT (agent_runtime) AVANT que l'un insère → UNIQUE constraint
+        # failed. OR REPLACE rend l'insert idempotent : le gagnant écrase
+        # l'entrée runtime (état re-créé, pas de crash de réveil).
         db.conn.execute("""
-            INSERT INTO agent_runtime
+            INSERT OR REPLACE INTO agent_runtime
                 (agent_id, thread_id, pid, heartbeat_at, started_at, current_step,
                  id_proprietaire, id_team)
             VALUES (?, ?, ?, datetime('now'), datetime('now'), 'hydrated', ?, ?)
@@ -1193,10 +1197,9 @@ class AgentManager:
         woken = self._wake_sleeping_agents()
         # Réveiller les agents quand des tâches workspace sont dispo (greedy)
         woken_tasks = self._wake_for_tasks()
-        # Réveiller périodiquement le COORDINATEUR (surveillant) : il explore
-        # le taskflow et vérifie la complétion chat → swarm → chat, même sans
-        # tâches à piocher.
-        woken_coord = self._wake_coordinator()
+        # (le coordinateur dev-chat est DÉPRÉCIÉ depuis le taskflow V0.15 —
+        # le réveil est désactivé pour ne pas créer de wake_up parasite.)
+        woken_coord = 0
 
         # V0.15 taskflow : tick FAILSAFE du task_supervisor (léger, rythme
         # lent). Le chemin nominal est synchrone (skill task_ask_new → assign) ;
