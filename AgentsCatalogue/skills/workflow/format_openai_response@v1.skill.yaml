@@ -1,0 +1,24 @@
+name: workflow/format_openai_response@v1
+category: workflow
+description: >
+  Formate la réponse d'un LLM au format OpenAI /chat/completions :
+  {"choices": [{"message": {"role": "assistant", "content": "<réponse>"},
+  "finish_reason": "stop"}]}. Utilisé par proxy_llm_fallback.
+inputs:
+  response:
+    type: string
+    required: true
+    description: "Texte produit par le LLM."
+  model:
+    type: string
+    required: false
+    default: ""
+    description: "Référence du modèle (echo)."
+outputs:
+  ok:
+    type: boolean
+  openai_response:
+    type: object
+implementation:
+  type: python
+  function: workflow.ask_llm.format_openai_response

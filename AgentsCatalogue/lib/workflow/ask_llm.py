@@ -6,6 +6,56 @@ et les réutilise pour les steps llm_call suivants.
 """
 
 import re
+import time
+
+
+def _proxy_log(home: str, kind: str, message: str) -> None:
+    """Log PROXY dédié : {home}/proxy_llm.log (prompts, réponses, erreurs).
+
+    Append-only, un fichier par agent — facile à debugger (le benchmark tape
+    le proxy : on voit exactement ce qui entre et sort).
+    """
+    try:
+        from pathlib import Path
+        p = Path(home) / "proxy_llm.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {kind}: "
+                     f"{message}\n")
+    except Exception:
+        pass
+
+
+def format_openai_response(inputs: dict, home: str) -> dict:
+    """Formate la réponse au format OpenAI /chat/completions + log.
+
+    {choices: [{message: {role: assistant, content}, finish_reason}]}.
+    """
+    response = (inputs.get("response") or "").strip()
+    model = inputs.get("model", "") or ""
+    if not response:
+        return {"ok": False, "error": "response requis"}
+    payload = {
+        "id": "chatcmpl-proxy",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model or "proxy_llm_fallback",
+        "choices": [{"index": 0,
+                     "message": {"role": "assistant", "content": response},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": len(response) // 4,
+                  "total_tokens": len(response) // 4},
+    }
+    _proxy_log(home, "response", response[:500])
+    return {"ok": True, "openai_response": payload}
+
+
+def format_openai_error(inputs: dict, home: str) -> dict:
+    """Formate une erreur au format OpenAI + log."""
+    error = (inputs.get("error") or "erreur inconnue").strip()
+    payload = {"error": {"message": error, "type": "server_error"}}
+    _proxy_log(home, "error", error[:500])
+    return {"ok": True, "openai_error": payload}
 
 
 def _agent_id_from_home(home: str) -> str:
@@ -285,4 +335,5 @@ def classify_entry(inputs: dict, home: str) -> dict:
                 "consensus_used": False, "error": str(e)}
 
 
-__skills__ = ["exec", "exec_with_prompt", "classify_entry"]
+__skills__ = ["exec", "exec_with_prompt", "classify_entry",
+              "format_openai_response", "format_openai_error"]

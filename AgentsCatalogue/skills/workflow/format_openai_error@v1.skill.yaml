@@ -1,0 +1,19 @@
+name: workflow/format_openai_error@v1
+category: workflow
+description: >
+  Formate une ERREUR LLM au format OpenAI /chat/completions :
+  {"error": {"message": "<erreur>", "type": "server_error"}}. Utilisé par
+  proxy_llm_fallback en cas d'échec d'allocation ou d'appel.
+inputs:
+  error:
+    type: string
+    required: true
+    description: "Message d'erreur."
+outputs:
+  ok:
+    type: boolean
+  openai_error:
+    type: object
+implementation:
+  type: python
+  function: workflow.ask_llm.format_openai_error

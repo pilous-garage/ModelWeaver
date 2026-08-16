@@ -1,0 +1,83 @@
+name: proxy_llm_fallback
+role: proxy_llm_fallback
+description: >
+  PROXY LLM FALLBACK — simule un endpoint API LLM (compatible SDK OpenAI,
+  /chat/completions + /v1/responses). Son unique job : recevoir une requête
+  classique (model, messages, temperature, max_tokens), faire un ask_llm s'il
+  n'a pas de modèle assigné, envoyer la prompt au bridge, et renvoyer la
+  réponse AU FORMAT OpenAI ({choices: [{message: {role, content}}]}).
+
+  DIAGNOSTIC : si un benchmark posé sur ce proxy renvoie 0 alors que les
+  réponses sont correctes, c'est un problème de CONCEPTION prompt/réponse
+  (format attendu par le benchmark vs format produit). Si le proxy répond
+  mal, c'est un problème d'allocation/ask_llm.
+personality:
+  tone: ''
+  system_prompt: >
+    Tu es un proxy LLM. Tu reçois une requête au format OpenAI (chat/
+    completions ou responses). Tu extrais le dernier message user, tu
+    sélectionnes un LLM (ask_llm si aucun modèle fourni), tu envoies la
+    prompt au bridge, et tu renvoies UNIQUEMENT la réponse au format OpenAI
+    JSON exact : {"choices": [{"message": {"role": "assistant",
+    "content": "<réponse>"}, "finish_reason": "stop"}]}. Ne discute pas du
+    format : renvoie le JSON pur.
+entrypoints:
+  main:
+    max_iterations: 30
+    steps:
+    - id: log_prompt
+      type: call
+      fn: system/log@v1
+      inputs:
+        level: info
+        message: "proxy prompt={{prompt}} model={{model}}"
+      next: ask_llm
+    - id: ask_llm
+      type: call
+      fn: workflow/ask_llm@v1
+      inputs:
+        use_case: chat
+        agent_id: "{{agent_id}}"
+        not_same_modele: "{{not_same_modele}}"
+      capture:
+        provider_ref: _llm_provider
+        model_ref: _llm_model
+      on_error: fail
+      next: log_model
+    - id: log_model
+      type: call
+      fn: system/log@v1
+      inputs:
+        level: info
+        message: "proxy alloc provider={{_llm_provider}} model={{_llm_model}}"
+      next: bridge_call
+    - id: bridge_call
+      type: llm_call
+      prompt: |
+        {{prompt}}
+        Renvoie ta réponse de façon concise et correcte.
+      system: "proxy_llm_fallback"
+      provider_ref: "{{_llm_provider}}"
+      model_ref: "{{_llm_model}}"
+      capture:
+        response: _response
+      on_error: fail
+      next: format_reponse
+    - id: format_reponse
+      type: call
+      fn: workflow/format_openai_response@v1
+      inputs:
+        response: "{{_response}}"
+        model: "{{model}}"
+      capture:
+        openai_response: _openai_response
+      next: end
+    - id: fail
+      type: call
+      fn: workflow/format_openai_error@v1
+      inputs:
+        error: "{{_last_error}}"
+      next: end
+    - id: end
+      type: end
+      status: SUCCESS
