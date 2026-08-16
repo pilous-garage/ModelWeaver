@@ -527,7 +527,8 @@ def sub_task_done(inputs: dict, home: str) -> dict:
             sc.sub_tasks.update(int(sub_task_id), branch=branch)
         # Rapport produit (ex. rapport d'exploration) → task_reports.
         if rapport:
-            role = "exploration" if st["sub_task_type"] == "exploration" else "work"
+            role = {"exploration": "exploration", "respond": "respond"}.get(
+                st["sub_task_type"], "work")
             try:
                 sc.tasks.add_report(st["task_id"], role, rapport)
             except Exception:
@@ -737,8 +738,21 @@ def entry_result(inputs: dict, home: str) -> dict:
         response = None
         for s in respond_rows:
             if s["status"] in ("done", "supervised"):
-                response = {"tag": s.get("tag", ""), "commit_hash": s.get("commit_hash", "")}
+                response = {"tag": s.get("tag", ""),
+                            "commit_hash": s.get("commit_hash", "")}
                 break
+        # La réponse TEXTE du respond (rapport role=respond) → contenu final.
+        response_text = ""
+        if response:
+            try:
+                for r in (sc.tasks.get_reports(int(task_id)) or []):
+                    if r.get("role") == "respond" and r.get("content"):
+                        response_text = str(r["content"]).strip()
+                        break
+            except Exception:
+                pass
+            if response_text:
+                response["content"] = response_text
         db.close()
         return {"ok": True, "task_status": task.get("status") if task else None,
                 "response": response}

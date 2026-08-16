@@ -56,11 +56,15 @@ entrypoints:
       skill_prompt: |
         Prépare la réponse finale de la tâche {{task_id}} (sub_task {{sub_task_id}}
         type respond). Rassemble les livrables (rapports, commits, résumé) en :
-        - un texte final clair (résumé du travail effectué) ;
+        - un texte final clair qui RÉPOND à la question de la tâche (pour les
+          tâches simple/texte, c'est LA réponse à renvoyer à l'utilisateur ;
+          pour le code, le résumé du travail effectué) ;
         - la liste des tool_calls effectués ;
         - un JSON de synthèse (si pertinent).
         Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent
-        explore ira chercher). Termine par workspace/sub_task_done@v1 (tag=ok).
+        explore ira chercher). Termine par workspace/sub_task_done@v1 (tag=ok)
+        en fournissant `rapport` = le TEXTE FINAL de réponse (ce qui sera
+        renvoyé à l'utilisateur).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always

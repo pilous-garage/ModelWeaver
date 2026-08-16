@@ -301,10 +301,49 @@ def _taskflow_reply(task_id: int, response: Any = None,
                     prompt: str = "", requete_id: str = "") -> Dict[str, Any]:
     """Réponse OpenAI depuis les livrables de la tâche (taskflow).
 
-    La réponse = la PROMPT originelle + le `git diff` du travail produit sur la
-    branche requete/<requete_id> (first_commit..HEAD). C'est le livrable réel :
-    les fichiers écrits par les greedy (code/docs), pas un résumé texte.
+    Priorité :
+      1. Le `response` du respond (la vraie réponse texte produite — c'est le
+         livrable pour les tâches simple/texte, classifiées par le consensus).
+      2. Sinon la PROMPT + le `git diff` du travail produit (tâches code).
+      3. Sinon les rapports (repli).
     """
+    # 1. La réponse du respond (sub_task respond) : contenu texte réel.
+    resp_text = ""
+    if isinstance(response, str) and response.strip():
+        resp_text = response.strip()
+    elif isinstance(response, dict):
+        resp_text = str(response.get("content") or response.get("text") or "")
+    if not resp_text:
+        # chercher dans les rapports de la task (role=respond)
+        try:
+            from modules.sql.workspace import WorkspaceDB
+            db = WorkspaceDB()
+            sc = db.for_workspace(WORKSPACE)
+            for r in (sc.tasks.get_reports(int(task_id)) or []):
+                if (r.get("role") == "respond" and r.get("content")):
+                    resp_text = str(r["content"]).strip()
+                    break
+            db.close()
+        except Exception:
+            pass
+    if resp_text:
+        return {
+            "ok": True,
+            "object": "chat.completion",
+            "model": "mw-swarm",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": resp_text},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0,
+                      "total_tokens": 0},
+            "files": {},
+            "summary": (prompt or "")[:80],
+            "swarm": {"session": f"task_{task_id}",
+                      "response": response,
+                      "task_id": task_id,
+                      "requete_id": requete_id},
+        }
+    # 2. Travail produit (code) : PROMPT + git diff.
     try:
         from services import swarm_repo
         d = swarm_repo.diff_for(requete_id) if requete_id else {}
