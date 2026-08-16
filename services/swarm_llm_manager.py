@@ -377,7 +377,9 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
         r = call_skill("ask_llm_autofallback", {
             "prompt": prompt, "use_case": use_case,
             "type_endpoint": "chat",
-            "restrict_llm": restrict_llm,
+            # Par défaut : modèles RAPIDES (nvidia est lent, ~40s/réponse).
+            # Surchargeable via restrict_llm (paramètre).
+            "restrict_llm": restrict_llm or _PROXY_FAST_MODELS,
             "max_essais": 3, "timeout": 90,
         }, home=PROXY_HOME)
         if not r.get("ok") or not r.get("response"):
@@ -429,3 +431,13 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
 # Home du proxy (log dédié {home}/proxy_llm.log). Un répertoire stable permet
 # de retrouver les logs du proxy par rapport aux runs des agents.
 PROXY_HOME = str(MW_HOME / "agent_home" / "proxy_llm_fallback")
+
+
+# Modèles RAPIDES par défaut pour le proxy (nvidia est lent, ~40s/réponse ;
+# groq/opencode-zen répondent en ~5s). Surchargeable via restrict_llm.
+_PROXY_FAST_MODELS = [
+    "groq/llama-3.3-70b-versatile",
+    "opencode-zen/mimo-v2.5-free",
+    "opencode-zen/deepseek-v4-flash-free",
+    "groq/llama-3.1-8b-instant",
+]
