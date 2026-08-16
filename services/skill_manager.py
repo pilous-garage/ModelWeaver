@@ -711,17 +711,42 @@ _DEFAULT_ENTRYPOINT_FLAGS = {
 }
 
 
-def with_default_entrypoints(workflow: dict) -> dict:
+def with_default_entrypoints(workflow: dict, is_sub_agent: bool = False) -> dict:
     """Garantit les entrypoints réservés par défaut dans un workflow d'agent.
 
     Le workflow reçu est un dict {entrypoints: {nom: {steps, hard?...}}} (ou
     {steps: [...]} si c'est déjà l'entrypoint résolu). Pour chaque entrypoint
     réservé absent, on injecte la version par défaut (steps + flag hard).
+
+    Conforme à docs/entrypoints_spec.md : tous les agents héritent d'agent_default
+    (entrypoints basiques + variables) ; les SUB-agents (spawnés par un maître,
+    is_sub_agent=True) héritent de sub_agent_default (variable `master` en plus).
+    Les entrypoints déclarés par l'agent lui-même GAGNENT (redéfinition).
     """
     wf = dict(workflow)
     eps = wf.get("entrypoints")
     if not isinstance(eps, dict):
         return wf  # workflow simple (steps) — pas de réservé à injecter
+    # Héritage agent_default / sub_agent_default (catalogue).
+    try:
+        from services.api.catalogue_agents import _load_agent_yaml_config
+        _base_name = "sub_agent_default" if is_sub_agent else "agent_default"
+        base = _load_agent_yaml_config("", agent_name=_base_name) or {}
+        base_eps = base.get("entrypoints") or {}
+        base_vars = base.get("variables") or {}
+    except Exception:
+        base_eps, base_vars = {}, {}
+    for name, body in (base_eps or {}).items():
+        if name not in eps and isinstance(body, dict):
+            eps[name] = {
+                "hard": body.get("hard", False),
+                "steps": [dict(s) for s in (body.get("steps") or [])],
+            }
+    # Variables basiques héritées (agent_default / sub_agent_default).
+    wf.setdefault("variables", {})
+    for k, v in (base_vars or {}).items():
+        wf["variables"].setdefault(k, v)
+    # Fallback : steps réservés inline (si catalogue indisponible).
     for name, steps in _DEFAULT_ENTRYPOINT_STEPS.items():
         if name not in eps:
             eps[name] = {

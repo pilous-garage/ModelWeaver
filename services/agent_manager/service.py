@@ -432,9 +432,12 @@ class Agent:
         config = json.loads(self._data.get("config_json") or "{}")
         # Inliner les entrypoints réservés par défaut (cancel/pause/reset/...)
         # si l'agent ne les déclare pas — voir docs/entrypoints_spec.md.
+        # Les SUB-agents (spawnés par un maître) héritent de sub_agent_default
+        # (variable `master`). Héritage agent_default/sub_agent_default.
         try:
             from services.skill_manager import with_default_entrypoints
-            config = with_default_entrypoints(config)
+            _is_sub = bool(self._data.get("id_proprietaire"))
+            config = with_default_entrypoints(config, is_sub_agent=_is_sub)
         except Exception:
             pass
         resolved_ep = entrypoint
@@ -872,6 +875,9 @@ class Agent:
                 provider_ref=spec.get("provider_ref", ""),
                 model_ref=spec.get("model_ref", ""),
                 home=str(self._data.get("home") or ""),
+                # sub_agent : le spawner devient le master (variable héritée
+                # via sub_agent_default).
+                id_proprietaire=self.agent_id,
             )
         return _spawn
 
@@ -2402,13 +2408,19 @@ class AgentManager:
         if config and isinstance(config, dict) and "steps" in config and "workflow" not in config:
             config = {"workflow": config}
         try:
+            # Sub-agent : la variable `master` (spawner) est injectée dans les
+            # variables du sub-agent (héritée via sub_agent_default).
+            _vars = {}
+            if id_proprietaire:
+                _vars["master"] = id_proprietaire
             self.db.conn.execute("""
                 INSERT INTO agents (name, ref, role_type, occupation, config_json,
                                     resources_json, variables_json,
                                     id_proprietaire, id_team, home)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (name, ref, role, occupation,
-                  json.dumps(config or {}), json.dumps(resources or {}), "{}",
+                  json.dumps(config or {}), json.dumps(resources or {}),
+                  json.dumps(_vars),
                   id_proprietaire, id_team, home or ""))
             self.db.conn.commit()
             agent_id = self.db.conn.execute(

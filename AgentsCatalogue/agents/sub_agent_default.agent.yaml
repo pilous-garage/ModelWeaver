@@ -1,0 +1,16 @@
+name: sub_agent_default
+role: sub_agent
+description: >
+  Agent de base hérité par TOUS les SUB-agents (agents spawnés par un maître).
+  Hérite de agent_default (entrypoints basiques + variables) et ajoute la
+  variable `master` : l'identifiant de l'agent MAÎTRE (spawner) qui l'a créé.
+  Le sub-agent peut appeler son master via agent_call / handoff.
+extends: agent_default
+personality:
+  tone: ''
+  system_prompt: >
+    Sub-agent. Tu dépends d'un agent maître (master). Tu réponds aux signaux
+    et entrypoints hérités d'agent_default. La variable master identifie ton
+    parent.
+variables:
+  master: ""

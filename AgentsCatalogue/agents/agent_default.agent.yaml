@@ -1,0 +1,67 @@
+name: agent_default
+role: default
+description: >
+  Agent DE BASE hérité par TOUS les agents (fichier par défaut). Main VIDE :
+  un agent qui ne déclare pas son propre main ne répond qu'aux signaux /
+  entrypoints. Les entrypoints réservés (cancel, pause, pause_hard, resume,
+  reset, clear_home) sont déclarés ici : chaque agent les hérite s'il ne les
+  redéfinit pas. Contient aussi les VARIABLES BASIQUES héritées.
+personality:
+  tone: ''
+  system_prompt: >
+    Agent de base. Tu réponds aux signaux et entrypoints réservés (cancel,
+    pause, reset...). Les agents spécialisés héritent de ce workflow de base
+    et ajoutent leur propre main.
+entrypoints:
+  main:
+    max_iterations: 100
+    steps: []
+  cancel:
+    hard: true
+    steps:
+    - id: cancel_agent
+      type: end
+      status: CANCELLED
+  pause:
+    hard: false
+    steps:
+    - id: pause_wait
+      type: end
+      status: PAUSED
+  pause_hard:
+    hard: true
+    steps:
+    - id: pause_hard_do
+      type: end
+      status: PAUSED
+  resume:
+    hard: false
+    steps:
+    - id: resume_continue
+      type: end
+      status: RUNNING
+  reset:
+    hard: true
+    steps:
+    - id: reset_vars
+      type: call
+      fn: workflow/reset_variable_after_change_task@v1
+      inputs:
+        agent_id: "{{agent_id}}"
+      next: reset_end
+    - id: reset_end
+      type: end
+      status: RESET
+  clear_home:
+    hard: true
+    steps:
+    - id: clear_home_do
+      type: call
+      fn: host/clear_home@v1
+      next: clear_end
+    - id: clear_end
+      type: end
+      status: RESET
+variables:
+  team_name: ""
+  team_id: ""

@@ -79,23 +79,68 @@ def inline_agent(normal: Dict[str, Any]) -> Dict[str, Any]:
 
     Si le YAML source a `entrypoints`, on les préserve. Sinon on migre
     l'ancien `workflow.steps` vers `entrypoints.main.steps`.
+
+    HÉRITAGE : si `extends` est présent (ex. agent_default / sub_agent_default),
+    on résout récursivement le parent et on fusionne ses entrypoints +
+    variables (l'agent REDÉFINIT → sa version gagne).
     """
-    personality = resolve_personality(normal.get("personality"))
+    resolved = _resolve_extends(normal)
+
+    personality = resolve_personality(resolved.get("personality"))
 
     inline: Dict[str, Any] = {
-        "name": normal.get("name", ""),
-        "role": normal.get("role", ""),
+        "name": resolved.get("name", ""),
+        "role": resolved.get("role", ""),
         "personality": personality,
-        "skills": normal.get("skills", []),
-        "bundles": normal.get("bundles", []),
-        "entrypoints": _migrate_entrypoints(normal),
+        "skills": resolved.get("skills", []),
+        "bundles": resolved.get("bundles", []),
+        "entrypoints": _migrate_entrypoints(resolved),
+        "variables": resolved.get("variables", {}),
     }
     # Champs optionnels préservés
     for k in ("description", "contexts", "default_config", "model_requirements",
               "hooks", "permissions", "generates", "tags"):
-        if k in normal:
-            inline[k] = normal[k]
+        if k in resolved:
+            inline[k] = resolved[k]
     return inline
+
+
+def _resolve_extends(normal: Dict[str, Any]) -> Dict[str, Any]:
+    """Résout l'héritage `extends` : fusionne le parent (récursif) dans l'agent.
+
+    Les entrypoints/variables de l'agent GAGNENT (redéfinition). Le parent est
+    chargé depuis le catalogue d'agents. `extends` peut être un string (nom du
+    parent) — ex. `sub_agent_default` extends `agent_default`.
+    """
+    parent_ref = normal.get("extends")
+    if not parent_ref:
+        return normal
+    parent_ref = str(parent_ref).strip()
+    try:
+        parent = _load_agent_yaml_config("", agent_name=parent_ref)
+    except Exception:
+        parent = None
+    if not parent or not isinstance(parent, dict):
+        return normal
+    merged = dict(parent)
+    for k in ("name", "role", "description", "personality", "skills", "bundles",
+              "hooks", "permissions", "generates", "tags", "default_config",
+              "model_requirements", "contexts"):
+        if k in normal:
+            merged[k] = normal[k]
+    # entrypoints : fusion profonde (les siens gagnent)
+    pe = merged.get("entrypoints") or {}
+    ne = normal.get("entrypoints") or {}
+    for ep_name, ep_body in ne.items():
+        pe[ep_name] = ep_body
+    merged["entrypoints"] = pe
+    # variables : fusion
+    pv = merged.get("variables") or {}
+    nv = normal.get("variables") or {}
+    pv.update(nv)
+    merged["variables"] = pv
+    return merged
+
 
 
 def _load_agent_yaml_config(role: str, agent_name: str = "", catalogue_ref: str = "") -> Optional[Dict[str, Any]]:
