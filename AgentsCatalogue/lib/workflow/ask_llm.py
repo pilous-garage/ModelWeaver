@@ -33,6 +33,13 @@ def exec(inputs: dict, home: str) -> dict:
     # exclusions explicites (exclude_models) ajoutées.
     exclude_models = list(inputs.get("exclude_models") or [])
     exclude_providers = list(inputs.get("exclude_providers") or [])
+    # not_same_modele : modèles DÉJÀ alloués à d'autres agents (consensus) →
+    # on les exclut pour obtenir un modèle DIFFÉRENT. Chaîne CSV acceptée.
+    not_same = inputs.get("not_same_modele") or []
+    if isinstance(not_same, str):
+        not_same = [m.strip() for m in not_same.split(",") if m.strip()]
+    not_same = [m for m in not_same if m]
+    exclude_models = list(set(exclude_models) | set(not_same))
     allow = inputs.get("restrict_llm") or []
     if isinstance(allow, str):
         allow = [m.strip() for m in allow.split(",") if m.strip()]
@@ -115,8 +122,11 @@ def exec(inputs: dict, home: str) -> dict:
         return {"ok": False, "provider_ref": p_ref, "model_ref": m_ref,
                 "use_case": use_case,
                 "error": "assign_llm a retourné provider/model vides"}
+    # used_models : liste à jour des modèles occupés (pour le prochain appel
+    # consensus — not_same_modele du suivant = used_models du précédent).
+    used_models = list(not_same) + [m_ref]
     return {"ok": True, "provider_ref": p_ref, "model_ref": m_ref,
-            "use_case": use_case}
+            "use_case": use_case, "used_models": used_models}
 
 
 __skills__ = ["exec"]

@@ -295,6 +295,11 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
     exclude_set = set(request.exclude or [])
     excl_p = set(exclude_providers or [])
     excl_m = set(exclude_models or [])
+    # Normalisation : matcher aussi par nom de modèle seul (dernier segment
+    # après '/') — les callers passent souvent "mimo-v2.5-free" sans préfixe
+    # provider (ex. not_same_modele du consensus), alors que provider_model_name
+    # est préfixé (opencode-zen/xiaomi/mimo-v2.5-free).
+    excl_m_suffix = {m.split("/", 1)[-1] for m in excl_m if m}
 
     for row in raw_rows:
         # Ref complète provider/model (ref brute côté provider)
@@ -310,7 +315,7 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
             continue
         if row["provider_ref"] in excl_p:
             continue
-        if raw_model in excl_m:
+        if raw_model in excl_m or raw_model.split("/", 1)[-1] in excl_m_suffix:
             continue
 
         # Vérifier clé API

@@ -302,6 +302,10 @@ class LLMManager:
         excl_m = set(exclude_models or [])
         if exclude_model:
             excl_m.add(exclude_model)
+        # Normalisation : matcher aussi par nom de modèle seul (suffixe après
+        # '/') — les callers passent souvent "mimo-v2.5-free" sans préfixe
+        # provider (ex. not_same_modele consensus).
+        excl_m_suffix = {m.split("/", 1)[-1] for m in excl_m if m and "/" in m}
 
         bridge = DirectBridge(cat=self.cat, km=self.km)
         req = USE_CASE_REQUIREMENTS.get(use_case, {})
@@ -344,7 +348,8 @@ class LLMManager:
                 continue
             for m in models:
                 mref = m["ref"]
-                if mref in excl_m or (pref, mref) in rest_models:
+                if mref in excl_m or mref.split("/", 1)[-1] in excl_m_suffix \
+                        or (pref, mref) in rest_models:
                     continue
                 # Vérifier les capacités si possible
                 if needs_fc:

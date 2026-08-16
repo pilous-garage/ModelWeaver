@@ -24,6 +24,20 @@ inputs:
     required: false
     default: 0
     description: "Score benchmark minimum exigé (0 = pas de contrainte)."
+  not_same_modele:
+    type: array
+    required: false
+    default: []
+    description: >
+      Liste de model_ref DÉJÀ alloués à d'autres agents (consensus) → on les
+      EXCLUT pour obtenir un modèle différent. Le fallback met à jour la liste
+      (retourne used_models = liste à jour pour le prochain appel). Accepte
+      aussi une chaîne CSV.
+  exclude_models:
+    type: array
+    required: false
+    default: []
+    description: "Exclusions explicites de model_ref (ne jamais utiliser)."
 outputs:
   ok:
     type: boolean
