@@ -54,17 +54,23 @@ class TaskSupervisor:
         if not roles:
             return 0
         ph = ",".join("?" for _ in roles)
-        team_filter = "" if team_id == -1 else "AND id_team = ?"
-        team_params = () if team_id == -1 else (team_id,)
+        team_filter = ""
+        team_params: tuple = ()
+        if team_id != -1:
+            # Cibler les agents de la team (id_team) — les greedy du taskflow
+            # ont id_team=519 (llm-code) dans variables_json.
+            team_filter = "AND json_extract(variables_json, '$.team_id') = ?"
+            team_params = (team_id,)
+        ws_filter = "AND json_extract(variables_json, '$.workspace_id') = ?"
         try:
             rows = self.db.conn.execute(
                 f"SELECT agent_id FROM agents "
-                f"WHERE role_type IN ({ph}) {team_filter} "
+                f"WHERE role_type IN ({ph}) {team_filter} {ws_filter} "
                 f"AND occupation = 'continue' "
                 f"AND agent_id NOT IN (SELECT agent_id FROM agent_runtime) "
                 f"AND status NOT IN ('TERMINATED', 'STOPPED', 'PAUSED') "
                 f"ORDER BY agent_id LIMIT 3",
-                (*roles, *team_params)).fetchall()
+                (*roles, *team_params, workspace_id)).fetchall()
         except Exception:
             return 0
         n = 0
