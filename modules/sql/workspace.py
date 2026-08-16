@@ -665,12 +665,19 @@ class SubTaskRepository:
     def list_by_team_status(self, team_id: int, statuses: List[str],
                             limit: int = 50) -> List[Dict[str, Any]]:
         """Sub_tasks d'une team dans un ensemble de statuts (non supervisées) —
-        requête ciblée indexée (le ticker ne scanne jamais toute la table)."""
+        requête ciblée indexée (le ticker ne scanne jamais toute la table).
+        Exclut les sub_tasks dont la TÂCHE est cancelled/supervisée/done (les
+        résidus ne remplissent pas le LIMIT avant les sub_tasks actives)."""
         ph = ",".join("?" for _ in statuses)
         args = tuple([team_id] + statuses + [limit])
         return _rows(self.conn.execute(
-            f"SELECT * FROM sub_tasks WHERE team_id = ? AND status IN ({ph}) "
-            f"AND supervised = 0 ORDER BY sub_task_id LIMIT ?", args).fetchall())
+            f"SELECT s.* FROM sub_tasks s "
+            f"JOIN tasks t ON t.task_id = s.task_id "
+            f"WHERE s.team_id = ? AND s.status IN ({ph}) "
+            f"AND s.supervised = 0 "
+            f"AND COALESCE(t.cancelled, 0) = 0 "
+            f"AND t.status NOT IN ('supervised', 'done', 'cancelled') "
+            f"ORDER BY s.sub_task_id LIMIT ?", args).fetchall())
 
     def list_assigned_to(self, agent_name: str) -> List[Dict[str, Any]]:
         """Sub_tasks déjà attribuées à un agent — le greedy les reprend en
