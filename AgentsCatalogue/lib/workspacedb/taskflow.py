@@ -133,6 +133,14 @@ def decoupe(inputs: dict, home: str) -> dict:
         if not cur:
             cur = _current_analysis(db, sc, task_id)
 
+        # GARDE HARD : les tâches simple/texte (chat_entry/completion_entry,
+        # classifiées par le tri) ne sont JAMAIS découpées en coding — le
+        # découpeur LLM a tendance à sur-découper. On force le cas simple
+        # (types=[]) pour ces routes, quel que soit ce que le LLM propose.
+        _stype_task = (task.get("task_type") or "").lower()
+        if _stype_task in ("chat_entry", "completion_entry"):
+            types = []
+
         # ── Cas SIMPLE : rien à découper → assigner difficulté + clore ──
         if not types:
             diff = (inputs.get("difficulty") or "").strip().lower()
