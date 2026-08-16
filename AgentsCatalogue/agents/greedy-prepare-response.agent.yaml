@@ -49,6 +49,7 @@ entrypoints:
       inputs:
         use_case: chat
         agent_id: "{{agent_id}}"
+        restrict_llm: "groq/llama-3.3-70b-versatile,opencode-zen/mimo-v2.5-free,opencode-zen/deepseek-v4-flash-free"
       capture:
         provider_ref: _llm_provider
         model_ref: _llm_model
