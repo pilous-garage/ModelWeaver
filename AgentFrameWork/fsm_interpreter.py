@@ -1253,10 +1253,13 @@ class FSMInterpreter:
         # Inclure la trace des tools appelés dans le contenu capturé (les
         # check_work_state qui suivent cherchent it_is_done/too_hard dans le
         # texte ; un round tool_call pur a un content vide sinon).
-        if _trace_tools and content.strip():
-            content = content + "\n[tools appelés: " + ", ".join(_trace_tools) + "]"
-        elif _trace_tools:
-            content = "[tools appelés: " + ", ".join(_trace_tools) + "]"
+        # `no_tool_trace: true` sur le step : réponse PROPRE (ex. le respond —
+        # la trace des tools polluerait la réponse finale renvoyée au client).
+        if not step.get("no_tool_trace"):
+            if _trace_tools and content.strip():
+                content = content + "\n[tools appelés: " + ", ".join(_trace_tools) + "]"
+            elif _trace_tools:
+                content = "[tools appelés: " + ", ".join(_trace_tools) + "]"
         if output_capture:
             result.variables[output_capture] = content
         result.messages.append({"role": "assistant", "content": content})

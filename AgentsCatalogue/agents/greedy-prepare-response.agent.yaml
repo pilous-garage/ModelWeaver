@@ -76,6 +76,7 @@ entrypoints:
       max_tokens: 4096
       temperature: 0.4
       output_capture: respond_out
+      no_tool_trace: true
       on_error: respond_error
       next: done_task
     - id: done_task
