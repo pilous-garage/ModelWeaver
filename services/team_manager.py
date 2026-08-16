@@ -29,14 +29,16 @@ def _get_agent_db():
 
 
 def _ensure_agent_exists(spec, role: str, occupation: str,
-                         team_name: str = "", home: str = "") -> int:
+                         team_name: str = "", home: str = "",
+                         workspace_id: str = "", team_id: int = -1) -> int:
     """Crée l'agent dans agents.db s'il n'existe pas, retourne son agent_id.
 
     Le nom réel de l'agent est préfixé par le team_name pour garantir
     l'unicité inter-projets. Un agent_name 'lead-bug-hunter' dans l'équipe
     'bug-busters' devient 'bug-busters/lead-bug-hunter'.
     `home` : home déclaré (sous-agent = home du maître) posé sur agents.home.
-    """
+    `workspace_id`/`team_id` : injectés dans variables_json (les agents
+    supervisor en ont besoin pour savoir QUI superviser — pas de pick)."""
     db = _get_agent_db()
     scoped_name = f"{team_name}/{spec.agent_name}" if team_name else spec.agent_name
 
@@ -107,6 +109,15 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
     row = db.conn.execute(
         "SELECT agent_id FROM agents WHERE name = ?", (scoped_name,)
     ).fetchone()
+    # Les agents SUPERVISOR ont besoin de savoir QUI superviser : on injecte
+    # workspace_id/team_id dans variables_json (pas de pick pour eux).
+    if workspace_id and effective_role == "supervisor":
+        import json as _json
+        db.conn.execute(
+            "UPDATE agents SET variables_json = ? WHERE agent_id = ?",
+            (_json.dumps({"workspace_id": workspace_id, "team_id": team_id}),
+             row["agent_id"]))
+        db.conn.commit()
     return row["agent_id"]
 
 
@@ -166,8 +177,25 @@ class Team:
 
         # Members
         for m in self.spec.members:
+            # team_id numérique : le MIN(agent_id) de la team (convention
+            # utilisée par le taskflow) ou -1 si non résolu.
+            _tid = -1
+            try:
+                from services._common import mw_home
+                import sqlite3 as _sq
+                _adb = _sq.connect(str(mw_home() / "agents.db"))
+                _r = _adb.execute(
+                    "SELECT MIN(agent_id) FROM agents WHERE name LIKE ?",
+                    (f"{self.spec.team_name}/%",)).fetchone()
+                _adb.close()
+                if _r and _r[0]:
+                    _tid = _r[0]
+            except Exception:
+                _tid = -1
             aid = _ensure_agent_exists(m, m.role, m.occupation,
-                                       team_name=self.spec.team_name)
+                                       team_name=self.spec.team_name,
+                                       workspace_id=self.spec.workspace_id or "",
+                                       team_id=_tid)
             self.member_agent_ids[m.agent_name] = aid
             # Sous-agents déclarés par ce membre (par référence) : instanciés
             # avec le HOME du maître (le sous-agent travaille dans le home du
