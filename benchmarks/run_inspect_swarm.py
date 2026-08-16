@@ -82,6 +82,15 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=5)
     parser.add_argument("--bench", default="humaneval",
                         choices=["humaneval", "mbpp", "factorial"])
+    parser.add_argument("--proxy", action="store_true",
+                        help="utilise le PROXY (modèle mw-proxy) au lieu du "
+                             "swarm complet : prompt→ask_llm_autofallback→"
+                             "réponse. Diagnostic : si proxy ≈ 100% et swarm=0 "
+                             "→ problème de conception prompt/réponse du swarm.")
+    parser.add_argument("--restrict-llm", default="",
+                        help="allowlist de modèles pour le proxy "
+                             "(ex. 'groq/llama-3.3-70b-versatile,"
+                             "opencode-zen/mimo-v2.5-free')")
     parser.add_argument("--sandbox", default="local",
                         help="sandbox inspect_ai (local | docker ; défaut local — "
                              "pas de plugin docker compose requis)")
@@ -100,10 +109,15 @@ def main() -> None:
               "tourne-t-il ?")
         return
 
-    print(f"→ swarm branché sur {base_url} (modèle mw-swarm-build)")
+    if args.proxy:
+        _model_name = "mw-proxy"
+        print(f"→ PROXY branché sur {base_url} (modèle {_model_name})")
+    else:
+        _model_name = "mw-swarm-build"
+        print(f"→ swarm branché sur {base_url} (modèle {_model_name})")
     # Pas de model_args : le SDK openai 2.x injecté par inspect_ai 0.3.255
     # les transmet tels quels à AsyncOpenAI (bug de compatibilité) → TypeError.
-    model = get_model("openai/mw-swarm-build",
+    model = get_model(f"openai/{_model_name}",
                       base_url=base_url, api_key=token)
 
     task = _build_task(args.bench, args.n)

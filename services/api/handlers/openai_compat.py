@@ -145,8 +145,17 @@ def op_openai_responses(params: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(params.get("files"), dict):
         files.update(params.get("files"))
     try:
-        from services.swarm_llm_manager import run_completion
-        res = run_completion(prompt, files=files or None)
+        # MODE PROXY (comme chat/completions) : modèle contenant "proxy" →
+        # réponse directe ask_llm_autofallback, pas le swarm complet.
+        _ml = (model or "").lower()
+        if "proxy" in _ml or "fallback" in _ml or "direct" in _ml:
+            from services.swarm_llm_manager import run_proxy_completion
+            res = run_proxy_completion(
+                prompt, model=model,
+                use_case=params.get("use_case", "chat"))
+        else:
+            from services.swarm_llm_manager import run_completion
+            res = run_completion(prompt, files=files or None)
     except Exception as e:  # noqa: BLE001
         return {"ok": False,
                 "error": {"message": str(e), "type": "server_error"}}
