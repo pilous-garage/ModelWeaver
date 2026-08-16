@@ -42,36 +42,21 @@ entrypoints:
         task_context: task_context
         conv_id: _conv_id
       on_error: sleep
-      next: ask_llm
-    - id: ask_llm
-      type: call
-      fn: workflow/ask_llm@v1
-      inputs:
-        use_case: chat
-        agent_id: "{{agent_id}}"
-      capture:
-        provider_ref: _llm_provider
-        model_ref: _llm_model
-      on_error: sleep
       next: do_respond
     - id: do_respond
-      type: llm_call
-      skill_prompt: |
-        Réponds au message : {{task_message}}
-        Contexte original : {{task_context}}
-        Termine par le texte final de réponse uniquement (le step FSM s'occupe
-        de sub_task_done avec ce texte en `rapport`).
-      provider_ref: "{{_llm_provider}}"
-      model_ref: "{{_llm_model}}"
-      agentic: false
-      base_tools: false
-      skills: []
-      max_tokens: 4096
-      temperature: 0.4
-      output_capture: respond_out
-      no_tool_trace: true
-      fallback: true
-      timeout: 60
+      type: call
+      fn: workflow/ask_llm_autofallback@v1
+      inputs:
+        prompt: |
+          Réponds au message : {{task_message}}
+          Contexte original : {{task_context}}
+          Termine par le texte final de réponse uniquement.
+        use_case: chat
+        agent_id: "{{agent_id}}"
+        max_essais: 8
+        timeout: 60
+      capture:
+        response: respond_out
       on_error: respond_error
       next: done_task
     - id: done_task
