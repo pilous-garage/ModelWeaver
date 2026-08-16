@@ -1,0 +1,33 @@
+name: task-supervisor
+version: 0.1.0
+description: >
+  Task_supervisor PAR TEAM — supervise chaque (workspace, team) présent dans
+  sub_tasks : release des dépendances satisfaites, règles → suivante,
+  finalise les tâches closes, et réveille par SIGNAL (wakeup) les agents
+  capables des types dispo. Aucun LLM (SQL + tri + signal). L'agent_manager
+  ne supervise plus : signaux + lifecycle seulement.
+parent: ""
+
+launch:
+  command: python3
+  args:
+    - -c
+    - "import sys; sys.path.insert(0, '.'); from services.task_supervisor.service import run_service; run_service(interval=1.0)"
+  mode: loop
+
+supervisor:
+  restart: true
+  max_restarts: 10
+  interval: 5
+
+health:
+  type: pid
+  interval: 15
+  timeout: 5
+
+entrypoints:
+  tick:
+    type: inline
+    handler: |
+      def handler(params):
+          return {"service": "task-supervisor", "mode": "loop"}

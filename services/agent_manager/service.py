@@ -1233,11 +1233,8 @@ class AgentManager:
         # (le coordinateur dev-chat est DÉPRÉCIÉ — réveil désactivé.)
         woken_coord = 0
 
-        # V0.15 taskflow : tick FAILSAFE du task_supervisor (léger, rythme
-        # lent). Le chemin nominal est synchrone (skill task_ask_new → assign) ;
-        # ici on rattrape les cas passifs (dépendances satisfaites, règles à
-        # appliquer, tâches à finaliser) quand personne n'a demandé.
-        supervised = self._supervise_taskflow()
+        # (la supervision du taskflow = task_supervisor PAR TEAM, service
+        # séparé — plus dans l'agent_manager. Ici : signaux + lifecycle.)
 
         active = len(self.list_active())
         # ACTIVITÉ RÉELLE : les agents greedy s'exécutent dans des threads
