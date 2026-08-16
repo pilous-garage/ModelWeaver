@@ -372,13 +372,28 @@ def ask_new_task(inputs: dict, home: str) -> dict:
             if entry:
                 parsed.append(entry)
         types = parsed
-    if not workspace_id or not agent_id:
-        return {"ok": False, "error": "workspace_id + agent_id requis"}
+    if not agent_id:
+        return {"ok": False, "error": "agent_id requis"}
     try:
         aid = int(str(agent_id).split("_")[-1])
     except (ValueError, TypeError):
         aid = 0
     try:
+        # Résolution du workspace : si workspace_id absent (l'agent est réveillé
+        # par le waker SANS contexte — variables vides), on retrouve la sub_task
+        # doing/attributed assignée à l'agent dans TOUT le workspace (la BDD
+        # sub_tasks est globale) et on résout son workspace_id.
+        if not workspace_id:
+            from modules.sql.workspace import WorkspaceDB as _WDB
+            _wdb = _WDB()
+            row = _wdb.conn.execute(
+                "SELECT workspace_id FROM sub_tasks "
+                "WHERE assigned_to = ? AND status IN ('doing','attributed') "
+                "ORDER BY updated_at LIMIT 1",
+                (f"agent:{aid}",)).fetchone()
+            if row:
+                workspace_id = row["workspace_id"]
+            _wdb.close()
         db, sc = _scope(workspace_id)
         agent_name = f"agent:{aid}" if not str(aid).startswith("agent") else str(aid)
         # 1) PRIORITÉ REPRISE : sub_task `doing` déjà assignée à l'agent
@@ -392,8 +407,9 @@ def ask_new_task(inputs: dict, home: str) -> dict:
                        "task_id": st["task_id"], "type": st["sub_task_type"],
                        "resumed": "true",
                        "conv_id": _new_conv_id(st["task_id"])}
+            _attach_task_ctx(sc, st["task_id"], payload)
             db.close()
-            return _attach_task_ctx(sc, st["task_id"], payload)
+            return payload
         # 2) PRIORITÉ PICK : sub_task `attributed` assignée à l'agent, la plus
         # haute priorité (le supervisor a choisi l'agent, on la prend en doing).
         mine = sc.sub_tasks.pick_for(agent_name)
@@ -404,8 +420,9 @@ def ask_new_task(inputs: dict, home: str) -> dict:
                        "task_id": st["task_id"], "type": st["sub_task_type"],
                        "resumed": "false",
                        "conv_id": _new_conv_id(st["task_id"])}
+            _attach_task_ctx(sc, st["task_id"], payload)
             db.close()
-            return _attach_task_ctx(sc, st["task_id"], payload)
+            return payload
         # 3) Sinon : demande au supervisor (attribution unattributed → attributed).
         ask_id = sc.ask.create(aid, types)
         db.close()
@@ -451,7 +468,7 @@ def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
     try:
         task = sc.tasks.get(int(task_id))
         if task:
-            payload.setdefault("workspace_id", sc.wid or "")
+            payload["workspace_id"] = sc.wid or payload.get("workspace_id") or ""
             payload.setdefault("repo", task.get("repo") or "")
             payload.setdefault("branch", task.get("branch") or "")
             payload.setdefault("commit_start",
