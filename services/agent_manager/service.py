@@ -1965,17 +1965,19 @@ class AgentManager:
                     if agent_id:
                         mine = wdb.conn.execute(
                             f"SELECT 1 FROM sub_tasks "
-                            f"WHERE workspace_id = ? AND team_id = ? "
+                            f"WHERE workspace_id = ? "
+                            f"AND (? = -1 OR team_id = ?) "
                             f"AND status = 'doing' AND supervised = 0 "
                             f"AND assigned_to = ? AND sub_task_type IN ({ph}) "
                             f"LIMIT 1",
-                            (ws, team, f"agent:{agent_id}", *stypes)).fetchone()
+                            (ws, team, team, f"agent:{agent_id}", *stypes)).fetchone()
                         if mine:
                             wdb.close()
                             return True
                     row = wdb.conn.execute(
                         f"SELECT s.sub_task_id FROM sub_tasks s "
-                        f"WHERE s.workspace_id = ? AND s.team_id = ? "
+                        f"WHERE s.workspace_id = ? "
+                        f"AND (? = -1 OR s.team_id = ?) "
                         f"AND s.status = 'unattributed' AND s.supervised = 0 "
                         f"AND s.sub_task_type IN ({ph}) "
                         f"AND NOT EXISTS ("
@@ -1986,7 +1988,7 @@ class AgentManager:
                         f"      OR (d.required_tag != '' "
                         f"          AND p.tag != d.required_tag))) "
                         f"LIMIT 1",
-                        (ws, team, *stypes)).fetchone()
+                        (ws, team, team, *stypes)).fetchone()
                     wdb.close()
                     return row is not None
                 except Exception:
