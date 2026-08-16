@@ -160,6 +160,166 @@ def run_benchmark(team: str, benchmark_name: str,
     return report
 
 
+# ── Benchmark PROXY (diagnostic prompt→réponse) ───────────────────────────
+
+PROXY_BENCHMARKS = {
+    "proxy-basic": {
+        "desc": "Réponses directes au proxy (sans swarm) : prompt → LLM → réponse",
+        "tasks": [
+            {"id": "capitale",
+             "prompt": "Quelle est la capitale de la France ? Réponds en un mot.",
+             "check": lambda c: "paris" in (c or "").lower()},
+            {"id": "calc",
+             "prompt": "Combien font 7 × 8 ? Réponds juste par le nombre.",
+             "check": lambda c: "56" in (c or "")},
+            {"id": "capital-en",
+             "prompt": "What is the capital of Japan? Answer in one word.",
+             "check": lambda c: "tokyo" in (c or "").lower()},
+            {"id": "lang",
+             "prompt": "Quelle langue est parlée au Brésil ? Un mot.",
+             "check": lambda c: "portugais" in (c or "").lower()
+                                or "portuguese" in (c or "").lower()},
+            {"id": "physics",
+             "prompt": "Combien de secondes dans une minute ? Un nombre.",
+             "check": lambda c: "60" in (c or "")},
+        ],
+    },
+    "proxy-reasoning": {
+        "desc": "Petits raisonnements (le benchmark swarm était à 0)",
+        "tasks": [
+            {"id": "r1",
+             "prompt": "Si un train roule à 60 km/h pendant 30 minutes, quelle "
+                       "distance parcourt-il ? Réponds avec le nombre en km.",
+             "check": lambda c: "30" in (c or "")},
+            {"id": "r2",
+             "prompt": "Quel est le prochain nombre de la suite : 2, 4, 6, 8, ?",
+             "check": lambda c: "10" in (c or "")},
+            {"id": "r3",
+             "prompt": "3 oeufs à 1.5 € chacun + 1 pain à 2 € = combien ? "
+                       "Réponds avec le nombre en euros.",
+             "check": lambda c: "6.5" in (c or "") or "6,5" in (c or "")},
+            {"id": "r4",
+             "prompt": "Inverse de la phrase : 'Le chat mange la souris'. "
+                       "Réponds juste avec la phrase inversée.",
+             "check": lambda c: ("souris" in (c or "").lower()
+                                 and "chat" in (c or "").lower()
+                                 and "mange" in (c or "").lower())},
+        ],
+    },
+    "proxy-code": {
+        "desc": "Génération de CODE en réponse texte (le swarm était à 0)",
+        "tasks": [
+            {"id": "fact",
+             "prompt": "Écris une fonction Python `fact(n)` récursive qui "
+                       "calcule la factorielle. Réponds avec le code.",
+             "check": lambda c: "def fact" in (c or "")
+                                and "return" in (c or "")
+                                and "fact(n-1)" in (c or "")},
+            {"id": "fib",
+             "prompt": "Écris une fonction Python `fib(n)` qui renvoie le "
+                       "n-ième nombre de Fibonacci. Réponds avec le code.",
+             "check": lambda c: "def fib" in (c or "")
+                                and "return" in (c or "")},
+            {"id": "fizzbuzz",
+             "prompt": "Écris une fonction Python `fizzbuzz(n)` qui imprime "
+                       "Fizz pour les multiples de 3, Buzz pour 5, FizzBuzz "
+                       "pour les deux. Réponds avec le code.",
+             "check": lambda c: "def fizzbuzz" in (c or "")
+                                and "% 3" in (c or "")
+                                and "% 5" in (c or "")},
+            {"id": "sort",
+             "prompt": "Écris une fonction Python `tri_bulle(arr)` qui trie "
+                       "une liste par tri à bulles. Réponds avec le code.",
+             "check": lambda c: "def tri_bulle" in (c or "")
+                                or "def bubble_sort" in (c or "")},
+            {"id": "palindrome",
+             "prompt": "Écris une fonction Python `est_palindrome(s)` qui "
+                       "vérifie si une chaîne est un palindrome. Réponds avec "
+                       "le code.",
+             "check": lambda c: "def est_palindrome" in (c or "")
+                                or "def is_palindrome" in (c or "")},
+        ],
+    },
+}
+
+
+def run_proxy_benchmark(benchmark_name: str = "proxy-basic",
+                        n: int = 5,
+                        restrict_llm: Any = None,
+                        use_case: str = "chat") -> Dict[str, Any]:
+    """Exécute le benchmark DIRECT sur le proxy (pas le swarm complet).
+
+    Prompt → proxy_llm_fallback (ask_llm + bridge) → réponse → check.
+    C'est le diagnostic pur : si le proxy répond juste et le benchmark swarm
+    est à 0, le problème est la conception prompt/réponse du pipeline swarm
+    (découpe/git/respond), pas l'allocation LLM.
+    """
+    restrict = _parse_restrict_llm(restrict_llm)
+    bench = PROXY_BENCHMARKS.get(benchmark_name, {})
+    tasks = bench.get("tasks", [])[:n] if bench else []
+    if not tasks:
+        return {"status": "error",
+                "error": f"benchmark proxy '{benchmark_name}' inconnu "
+                         f"(disponibles: {list(PROXY_BENCHMARKS)})"}
+    t_start = time.monotonic()
+    usage = {"nb_req": 0, "tok_in": 0, "tok_out": 0, "dollars": 0.0,
+             "time_s": 0.0}
+    per_provider: Dict[str, Any] = {}
+    steps: List[Dict[str, Any]] = []
+    notes: List[Dict[str, Any]] = []
+
+    from services.swarm_llm_manager import run_proxy_completion
+    for t in tasks:
+        step_t0 = time.monotonic()
+        try:
+            res = run_proxy_completion(t["prompt"], use_case=use_case)
+        except Exception as e:  # noqa: BLE001
+            steps.append({"task": t["id"], "status": "error", "error": str(e),
+                          "duration_s": round(time.monotonic() - step_t0, 3)})
+            notes.append({"type": "error", "task": t["id"], "detail": str(e)})
+            continue
+        if not res.get("ok"):
+            steps.append({"task": t["id"], "status": "error",
+                          "error": res.get("error", "proxy échoué"),
+                          "duration_s": round(time.monotonic() - step_t0, 3)})
+            notes.append({"type": "error", "task": t["id"],
+                          "detail": res.get("error", "proxy échoué")})
+            continue
+        content = ""
+        choices = res.get("choices") or []
+        if choices:
+            content = (choices[0].get("message", {}).get("content") or "")
+        ok = bool(t["check"](content))
+        steps.append({"task": t["id"], "status": "pass" if ok else "fail",
+                      "duration_s": round(time.monotonic() - step_t0, 3),
+                      "response": (content or "")[:120]})
+        pr = res.get("proxy", {})
+        _merge_usage(usage, per_provider, {
+            "provider": pr.get("provider", "?"),
+            "model": pr.get("model_real", "?"),
+            "nb_req": 1,
+            "tok_in": max(1, len(t["prompt"]) // 4),
+            "tok_out": max(1, len(content) // 4),
+            "dollars": 0.0,
+        })
+        notes.append({"type": "result", "task": t["id"], "ok": ok})
+
+    usage["time_s"] = round(time.monotonic() - t_start, 3)
+    passed = sum(1 for s in steps if s["status"] == "pass")
+    total = len(steps)
+    return {
+        "status": "ok",
+        "mode": "proxy",
+        "benchmark": benchmark_name,
+        "score": round(passed / total, 4) if total else 0.0,
+        "notes": notes,
+        "usage": usage,
+        "providers": per_provider,
+        "duration_s": usage["time_s"],
+        "steps": steps,
+    }
+
+
 def _chat(workspace: str, prompt: str, base_url: str, api_key: str,
           allow_models: List[str]) -> tuple:
     """Appelle l'endpoint swarm-as-llm branché sur la team (workspace).
