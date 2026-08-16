@@ -63,7 +63,9 @@ class TaskSupervisor:
             team_params = (team_id,)
         ws_filter = "AND json_extract(variables_json, '$.workspace_id') = ?"
         try:
-            rows = self.db.conn.execute(
+            from modules.sql.agents_repo import AgentsDB
+            _adb = AgentsDB()
+            rows = _adb.conn.execute(
                 f"SELECT agent_id FROM agents "
                 f"WHERE role_type IN ({ph}) {team_filter} {ws_filter} "
                 f"AND occupation = 'continue' "
@@ -71,13 +73,14 @@ class TaskSupervisor:
                 f"AND status NOT IN ('TERMINATED', 'STOPPED', 'PAUSED') "
                 f"ORDER BY agent_id LIMIT 3",
                 (*roles, *team_params, workspace_id)).fetchall()
+            _adb.close()
         except Exception:
             return 0
         n = 0
         for r in rows:
             try:
                 from services.agent_manager.service import AgentManager
-                AgentManager(db=self.db).send_signal(
+                AgentManager().send_signal(
                     r["agent_id"], "wakeup",
                     {"type": sub_task_type, "workspace_id": workspace_id})
                 n += 1
