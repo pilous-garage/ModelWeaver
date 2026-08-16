@@ -62,15 +62,17 @@ entrypoints:
           pour le code, le résumé du travail effectué) ;
         - la liste des tool_calls effectués ;
         - un JSON de synthèse (si pertinent).
-        Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent
-        explore ira chercher). Termine par le texte final de réponse uniquement
-        (le step FSM s'occupe de sub_task_done avec ce texte en `rapport`).
+        Utilise workspace/sub_task_get@v1 et sub_task_list@v1 pour lire le
+        contexte de la tâche si besoin (PAS d'exploration : la réponse se
+        construit depuis les rapports/livrables existants). Termine par le
+        texte final de réponse uniquement (le step FSM s'occupe de
+        sub_task_done avec ce texte en `rapport`).
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
       base_tools: false
       skills: ["workspace/sub_task_get@v1",
-               "workspace/sub_task_list@v1", "workspace/ask_intel@v1"]
+               "workspace/sub_task_list@v1"]
       max_tokens: 4096
       temperature: 0.4
       output_capture: respond_out
