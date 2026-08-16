@@ -614,6 +614,18 @@ unattributed → attributed → doing → done → supervised + too_hard → bum
   dégradé en senior (dégressif), un autre croissant linéairement. Le niveau
   permet de recruter le LLM le plus CHEAP qui atteint la tranche demandée.
 
+### B2. GRANULARITÉ DU SCORE : provider/model/ENDPOINT
+- Le score n'est pas par LLM générique, mais par (provider, model, endpoint) :
+  le MÊME modèle servi par 2 endpoints différents (ex. opencode-zen vs nvidia)
+  n'a ni les mêmes perfs ni les mêmes coûts ni la même fiabilité.
+- L'endpoint en général compte AUSSI (latence, quota, disponibilité, clé).
+- Les tables de score sont donc indexées par (provider_id, model_id,
+  endpoint_id, domaine/type, niveau) — l'adresse complète
+  (provider_model_address.adresse_id, cf. llm_allocation/address.py) est la
+  clé commune de référence.
+- Les événements d'expérience (task_log + signaux externes) référencent aussi
+  cette adresse, PAS un nom de modèle générique.
+
 ### C. Init = 1.0 partout
 - On part de score=1.0 sur toutes les cases (neutre, PAS pénalisant).
 - Le scraping de benchmarks sert au plus de léger biais de départ, pas de
