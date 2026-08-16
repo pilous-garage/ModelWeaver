@@ -450,9 +450,14 @@ PROXY_HOME = str(MW_HOME / "agent_home" / "proxy_llm_fallback")
 
 # Modèles RAPIDES par défaut pour le proxy (nvidia est lent, ~40s/réponse ;
 # groq/opencode-zen répondent en ~5s). Surchargeable via restrict_llm.
+# Liste ÉLARGIE : certains passent en repos (rate-limit/unavailable) après des
+# échecs → le fallback doit avoir de la marge.
 _PROXY_FAST_MODELS = [
     "groq/llama-3.3-70b-versatile",
     "opencode-zen/mimo-v2.5-free",
     "opencode-zen/deepseek-v4-flash-free",
     "groq/llama-3.1-8b-instant",
+    "opencode-zen/deepseek-v4-flash",
+    "opencode-zen/claude-sonnet-4-6",
+    "nvidia/meta/llama-3.3-70b-instruct",
 ]
