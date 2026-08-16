@@ -105,24 +105,32 @@ def _allocate(inputs: dict, home: str) -> dict:
 
 def _call_bridge(p_ref: str, m_ref: str, messages: List[Dict[str, str]],
                  inputs: dict, agent_id: str = "") -> Dict[str, Any]:
-    """Appelle le bridge (chat) — le routage par api_type (openai/anthropic/
-    gemini/cohere) est fait par DirectBridge.chat. Retourne {ok, response}."""
+    """Appelle le bridge via resilient_chat (retry + repli autre LLM).
+
+    Le routage par api_type (openai/anthropic/gemini/cohere) est fait par
+    DirectBridge ; resilient_chat ajoute le retry transitoire (timeout/429)
+    avec repli sur un autre LLM alloué. Retourne {ok, response}."""
+    from modules.llm_manager.resilient import resilient_chat
     from modules.llm_manager.llm_manager import LLMManager
     from modules.sql.catalogue_repo import CatalogueDB
     temperature = float(inputs.get("temperature", 0.7) or 0.7)
     max_tokens = inputs.get("max_tokens") or None
-    stream = bool(inputs.get("stream", False))
+    timeout = int(inputs.get("timeout", 90) or 90)
+    fallback = bool(inputs.get("resilient", True))
     bridge = LLMManager(CatalogueDB()).get_bridge()
-    resp = bridge.chat(
-        provider_ref=p_ref, model_ref=m_ref,
-        messages=messages,
+    resp = resilient_chat(
+        p_ref, m_ref, messages,
+        timeout=timeout, fallback=fallback,
+        use_case=_resolve_use_case(inputs.get("use_case", "coding")),
+        agent_id=agent_id or None, bridge=bridge,
         temperature=temperature,
         max_tokens=int(max_tokens) if max_tokens else None,
-        stream=stream,
-        agent_id=agent_id or None,
     )
     content = (getattr(resp, "content", "") or "").strip()
-    return {"ok": True, "response": content, "stream": stream}
+    return {"ok": True, "response": content,
+            "fallbacks": getattr(resp, "fallbacks", 0),
+            "model_used": getattr(resp, "model_used", m_ref),
+            "provider_used": getattr(resp, "provider_used", p_ref)}
 
 
 def _endpoint_payload(endpoint: str, prompt: str, system: str,
@@ -191,13 +199,17 @@ def ask_llm_autofallback(inputs: dict, home: str) -> dict:
             if not out.get("ok"):
                 last_err = out.get("error", "bridge échoué")
                 continue
+            # resilient a pu basculer sur un autre modèle → le refléter.
+            p_used = out.get("provider_used") or p_ref
+            m_used = out.get("model_used") or m_ref
             _log_proxy(home, "response", out["response"][:500])
             return {
                 "ok": True,
-                "llm_used": _llm_info(p_ref, m_ref),
-                "provider_ref": p_ref, "model_ref": m_ref,
+                "llm_used": _llm_info(p_used, m_used),
+                "provider_ref": p_used, "model_ref": m_used,
                 "response": out["response"],
                 "fallback": not alloc.get("from_selection"),
+                "resilient_fallbacks": out.get("fallbacks", 0),
                 "endpoint": endpoint,
                 "essais": essai + 1,
                 "use_case": _resolve_use_case(inputs.get("use_case", "coding")),

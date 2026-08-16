@@ -351,12 +351,15 @@ def _taskflow_reply(task_id: int, response: Any = None,
 
 def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
                          use_case: str = "chat") -> Dict[str, Any]:
-    """Réponse OpenAI DIRECTE via l'agent proxy_llm_fallback (sans swarm).
+    """Réponse OpenAI DIRECTE via le proxy (ask_llm_autofallback, sans swarm).
 
-    Le proxy simule un endpoint LLM unique : ask_llm (sélection du modèle
-    selon use_case + scoring) → bridge (appel direct) → réponse formatée
-    /chat/completions. TOUT est loggé (prompt, allocation, réponse) :
-      - {agent_home}/<id>/proxy_llm.log (par le skill)
+    Le proxy simule un endpoint LLM unique : un SEUL appel LLM réussi par
+    prompt (sélection du modèle via ask_llm_autofallback → bridge → réponse
+    formatée /chat/completions). Retry SEULEMENT sur erreur (re-alloc autre
+    modèle, excluant le défaillant) — PAS de boucle.
+
+    TOUT est loggé (prompt, allocation, réponse) :
+      - {PROXY_HOME}/ask_llm_autofallback.log (par le wrapper)
       - ~/.modelweaver/logs/swarm_exchange.jsonl (kind=proxy_*)
 
     DIAGNOSTIC benchmark : si le proxy répond correctement mais le benchmark
@@ -368,19 +371,11 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
                                     "model": model, "use_case": use_case})
     try:
         from services.skill_manager import call_skill
-        # 1. ask_llm : sélection d'un modèle (scoring pénalisant + fallback).
-        alloc = call_skill("ask_llm", {"use_case": use_case}, home=PROXY_HOME)
-        if not alloc.get("ok") or not alloc.get("model_ref"):
-            err = alloc.get("error", "aucun modèle alloué")
-            _log_exchange("proxy_alloc_error", {"error": err})
-            return {"ok": False, "error": err}
-        p_ref = alloc["provider_ref"]
-        m_ref = alloc["model_ref"]
-        _log_exchange("proxy_alloc", {"provider": p_ref, "model": m_ref})
-        # 2. bridge : envoie la prompt et récupère la réponse (retry autre
-        #    modèle sur échec).
-        r = call_skill("ask_llm_with_prompt", {
-            "use_case": use_case, "prompt": prompt,
+        # ask_llm_autofallback : sélection (LLM fourni ou ask_llm) + UN appel
+        # bridge ; échec → fallback autre modèle. Retourne llm_used + response.
+        r = call_skill("ask_llm_autofallback", {
+            "prompt": prompt, "use_case": use_case,
+            "type_endpoint": "chat",
             "max_essais": 3, "timeout": 90,
         }, home=PROXY_HOME)
         if not r.get("ok") or not r.get("response"):
@@ -388,7 +383,10 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
             _log_exchange("proxy_call_error", {"error": err})
             return {"ok": False, "error": err}
         content = r["response"]
-        # 3. format OpenAI.
+        llm_used = r.get("llm_used") or {}
+        p_ref = r.get("provider_ref") or llm_used.get("provider_ref", "")
+        m_ref = r.get("model_ref") or llm_used.get("model_ref", "")
+        # format OpenAI.
         resp = {
             "ok": True,
             "object": "chat.completion",
@@ -400,11 +398,13 @@ def run_proxy_completion(prompt: str, model: str = "proxy_llm_fallback",
                       "completion_tokens": max(1, len(content) // 4),
                       "total_tokens": max(1, len(content) // 4)},
             "proxy": {"provider": p_ref, "model_real": m_ref,
+                      "id_address": llm_used.get("id_address", -1),
+                      "fallback": r.get("fallback", False),
                       "duration_ms": int((time.monotonic() - t0) * 1000)},
         }
         _log_exchange("proxy_response", {"content": content[:2000],
                                          "model_real": m_ref})
-        # Log local {home}/proxy_llm.log (prompt → allocation → réponse).
+        # Log local {PROXY_HOME}/proxy_llm.log (prompt → allocation → réponse).
         try:
             from pathlib import Path
             _p = Path(PROXY_HOME) / "proxy_llm.log"
