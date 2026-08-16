@@ -593,3 +593,42 @@ un modèle DIFFÉRENT des autres déjà pris.
 
 ### Système D — Flux pick/attribution (déjà committé 6c532ad)
 unattributed → attributed → doing → done → supervised + too_hard → bump/découpe.
+
+## Idée 18 — Assignation LLM correcte et évolutive (niveaux + expérience)
+
+**Statut** : PLANIFICATION — ne pas coder avant d'avoir réglé les détails.
+
+### Contexte
+- L'allocation actuelle maximise le score (score_etire × latence × succès).
+- Les benchmarks/scores actuels sont tirés du SCRAPING de benchmarks externes.
+- Objectif : utiliser ces scores comme INITIALISATION d'un modèle d'expérience
+  qui évolue avec nos résultats internes (benchmarks swarm qu'on lance).
+
+### Direction (à détailler)
+1. **Niveaux de note** : debutant / junior / intermediaire / senior / expert.
+   Chaque niveau = intervalle de score + rôle approprié (un niveau bas suffit
+   pour la classification simple ; un senior pour le coding complexe).
+2. **Assignation par niveau** : pour une tâche simple (classification), le
+   LLM le PLUS LÉGER (rapide, pas cher) qui atteint le niveau est choisi —
+   pas le meilleur score. Gain vitesse + coût.
+3. **Score par domaine** : le score doit être croisé par domaine (coding,
+   math, text_generation, reasoning...) — on a déjà score_coding/chat/
+   reasoning/knowledge/agentic mais le scoring final ne les utilise pas.
+4. **Expérience = initialisation + évolution** :
+   - INIT : scores externes scrappés (ce qu'on a) pour donner à chaque modèle
+     un score de départ par domaine.
+   - ÉVOLUTION : nos benchmarks swarm internes (gsm8k/humaneval/...) alimentent
+     les scores (score_etire / score_batch) → les modèles montent/descendent
+     de niveau selon leurs résultats RÉELS chez nous.
+5. **Rôle/level dans la requête d'allocation** : use_case + niveau demandé →
+     sélection du modèle le plus léger au-dessus du seuil du niveau.
+
+### Points à régler en planification
+- [ ] Mapping rôle → (use_case, niveau min) pour chaque type d'agent.
+- [ ] Seuils de niveau (0.3/0.5/0.65/0.8/0.9 ?) — à valider.
+- [ ] Comment le benchmark interne met à jour le score (pondération avec l'init).
+- [ ] Priorité légèreté vs score quand le niveau est bas (simple → léger).
+- [ ] Classification simple : quel use_case ("simple") + niveau → modèle léger.
+- [ ] Migration des scores scrappés → init (ne PAS perdre l'existant).
+- [ ] La stratégie best-fallback doit intégrer le niveau (filtrer par seuil
+     PUIS choisir le plus léger si tâche simple, sinon meilleur score).

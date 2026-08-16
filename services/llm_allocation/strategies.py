@@ -70,6 +70,48 @@ class ModelOption:
 _STRATEGIES: Dict[str, Callable] = {}
 
 
+# ── Niveaux de compétence (assignation évolutive) ────────────────────────
+# Chaque niveau = un seuil de score (benchmark étiré) à atteindre pour le
+# rôle. Un modèle "debutant" suffit pour la classification simple ; un
+# "senior" est requis pour le coding complexe. Le but : utiliser le modèle le
+# PLUS LÉGER qui atteint le seuil (rapide + pas cher) au lieu de toujours le
+# meilleur score.
+NIVEAUX = {
+    "debutant":     {"seuil": 0.30, "role": "classification simple / chat"},
+    "junior":       {"seuil": 0.50, "role": "tâches courantes"},
+    "intermediaire": {"seuil": 0.65, "role": "coding/rédaction modérée"},
+    "senior":       {"seuil": 0.80, "role": "coding complexe / raisonnement"},
+    "expert":       {"seuil": 0.90, "role": "tâches critiques"},
+}
+
+# use_case → niveau MINIMUM raisonnable (par défaut).
+DEFAULT_NIVEAU = {
+    "simple": "debutant",
+    "chat": "debutant",
+    "writing": "junior",
+    "coding": "intermediaire",
+    "analysis": "junior",
+}
+
+
+def _score_niveau(option: ModelOption, request: AllocationRequest) -> float:
+    """Score benchmark étiré du modèle (le score du rôle/donné)."""
+    return option.score_etire if option.score_etire > 0 else 0.1
+
+
+def _legere(option: ModelOption) -> float:
+    """Indice de LÉGÈRETÉ : coût + latence (bas = léger, rapide, pas cher).
+
+    Utilisé pour les tâches SIMPLES : parmi les modèles qui atteignent le
+    niveau, on préfère le plus léger (le LLM le plus cheap capable de le
+    faire), pas le plus puissant."""
+    cost = (option.cost_per_input + option.cost_per_output)
+    lat = option.runtime_latency_ms if option.runtime_calls > 0 else 5000.0
+    # Poids : coût 60%, latence 40% — un modèle à 0$ est très léger même
+    # modérément lent ; un modèle lent ET cher est le plus lourd.
+    return 0.6 * cost + 0.4 * (lat / 1000.0)
+
+
 def register_strategy(name: str, fn: Callable):
     _STRATEGIES[name] = fn
 
