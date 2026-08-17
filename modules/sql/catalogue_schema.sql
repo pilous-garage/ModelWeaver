@@ -519,7 +519,7 @@ INSERT OR IGNORE INTO scoring_domaines (code, label) VALUES
     ('math', 'Calcul / mathématiques'),
     ('data', 'Données / analyse'),
     ('reasoning', 'Raisonnement'),
-    ('research', 'Recherche d\'information'),
+    ('research', 'Recherche d''information'),
     ('admin', 'Tâches administratives');
 
 -- Référentiel des TYPES DE TÂCHE (pipeline).

@@ -1167,3 +1167,64 @@ contenu + une notion de frontière de skill.
   (gap 342s) → burst ; constant (2/min étalé) → constant ; rien → unknown.
   Réallocateur : allocation sous-utilisée + inactive → libérée ; allocation
   active → conservée.
+
+#### P. AUDIT DU SOCLE (2026-08-17) + VÉRIFICATEUR DE COMPLÉTION
+
+##### P1. CONSTATS DE L'AUDIT (bases réelles)
+TROUS D'INITIALISATION :
+- task_budget_tracking (workspace) = 0 malgré 128 sub_tasks récentes → les
+  découpes datent d'avant l'intégration (normal) ; MAIS la découpe réelle
+  utilise sub_task_type='analysis' alors que scoring_task_types a
+  'planning' (renommage analysis→planning NON fait — section H du carnet).
+  → estimate_enveloppe cherche 'analysis' → 0 → enveloppe nulle.
+- llm_level_windows (catalogue) = 0 : les fenêtres thinking_power→coût ne
+  sont pas seedées (la synthèse ne les remplit pas encore).
+- task_log / root_tasks (workspace) = 0 : le scoreur ne tourne pas encore
+  (pas de fin de pipeline réel enregistré).
+- budget_user_key_id = 0 (normal : pas de budgets manuels posés).
+
+REDONDANCES SUSPECTES (à trancher) :
+- provider_models_mapping (1840) vs provider_model_address (3149) vs
+  provider_models (3510) : 3 tables qui décrivent l'offre provider×model.
+- catalogue_models (2903, catalogue.db) vs models (0, modelweaver.db).
+- budgets (0) vs budget_generique_key_tag (3) vs budget_final (9447).
+
+INFOS PERSO/PUBLIQUE : les clés API sont référencées par id (jamais en clair) —
+OK. Mais "qui peut écrire par domaine" n'est pas modélisé (pas de table de
+permissions par domaine d'écriture catalogue).
+
+##### P2. VÉRIFICATEUR DE COMPLÉTION (à implémenter)
+- Un module catalogue_verif qui scanne les tables : vides attendues, trous
+  d'init, redondances, obsolescences.
+- Fonctions add_* : add_model, add_task_type, add_provider, add_endpoint,
+  add_type_key(provider) — TOUTES via le catalogue, en CASCADE sur les tables
+  concernées (un ajout provider → provider_models + endpoints + adresses).
+- Accès par domaine (qui peut écrire) : à définir (phase suivante).
+
+##### P3. TEST RÉEL + VÉRIFICATEUR + add_* (FAIT — commité)
+- BUG SQL CORRIGÉ : catalogue_schema.sql line 522 — 'Recherche d\'information'
+  (`\'` invalide en SQLite, il faut `''`). Le script ne se rejouait jamais sur
+  les DB existantes → bug dormant. Maintenant le schéma se rejoue proprement
+  (41 tables).
+- services/catalogue_verif.py : VÉRIFICATEUR READ-ONLY de complétion. Reporte :
+  tables vides attendues, discordances de référentiels (sub_task_type utilisé
+  vs scoring_task_types), redondances (provider_models×3), absence d'allocations.
+  CONSTATS réels : 'analysis'/'merge'/'review' utilisés par le workflow mais
+  absents de scoring_task_types (qui a planning/merging/reviewing) — le
+  renommage analysis→planning (section H) n'est PAS fait.
+- services/catalogue_manage.py : fonctions add_* en CASCADE :
+  add_task_type (→ scores tous modèles + task_level_cost + stats),
+  add_domaine (→ llm_domaine_score), add_provider, add_endpoint,
+  add_model (→ scores domaine/type), add_model_to_provider (→ adresses +
+  budgets/cost via seed), add_type_key (→ api_key_tag sur adresses du provider).
+  Idempotentes, best-effort.
+- FIX add_model : catalogue_models.name est NOT NULL sans défaut.
+
+TEST RÉEL PASS :
+- Allocation quota 1% = 1000 ; 3 req → 999/998/997 ; consume_call (appel LLM
+  réel simulé) → 996 + budget time. Boucle allocation complète OK.
+- Calculateur (DB réelle déjà init → recompute passif = 0) ; enveloppe
+  coding×5/hard = {req 3.5, tok_in 3.5, ...}.
+- Allocateur par tâche : efficiency(coding/senior)→qwen3.5-plus ;
+  thinking(coding/expert)→qwen3.5-plus ; cost(respond/junior)→cohere aya ;
+  best-fallback(sans contexte)→claude-opus-5 (inchangé).
