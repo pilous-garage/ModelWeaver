@@ -968,6 +968,22 @@ class FSMInterpreter:
                 for _tool_round in range(15):
                     _meta = {"agentic_mode": _agentic_mode,
                              "agentic_tag": _agentic_req}
+                    # Lien structurel séquence→tâche : le FSM injecte la (sub)task
+                    # courante dans le meta → le bridge l'extrait en colonnes
+                    # dédiées de model_call_log (task_id/sub_task_id) pour le
+                    # suivi budgétaire par tâche (sans LIKE sur JSON).
+                    _v_tid = result.variables.get("task_id")
+                    _v_sid = result.variables.get("sub_task_id")
+                    if _v_tid is not None:
+                        try:
+                            _meta["task_id"] = int(_v_tid)
+                        except (TypeError, ValueError):
+                            pass
+                    if _v_sid is not None:
+                        try:
+                            _meta["sub_task_id"] = int(_v_sid)
+                        except (TypeError, ValueError):
+                            pass
                     if _need_translation:
                         # Mode TRADUCTION / GIVE_BOTH (modèle non-agentic) :
                         # le bloc ###tool_call:nom|JSON### est dans le prompt

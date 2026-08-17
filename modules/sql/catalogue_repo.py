@@ -1694,6 +1694,13 @@ class CatalogueDB:
             # Idée 18 : adresse_id (provider×endpoint×modèle) — les sessions
             # succès/fail (usage_batcher) sont tracées par adresse.
             _add_column_if_missing(self.conn, "model_call_log", "adresse_id", "INTEGER")
+            # Lien structurel séquence→tâche : colonnes DÉDIÉES (pas de JSON).
+            # Chaque appel LLM sait de quelle (sub)task il vient — injectées par
+            # le FSM (ask_new_task/sub_task_get) → le suivi budgétaire par tâche
+            # (task_budget_tracking) reconstruit le budget UTILISÉ par requête
+            # indexée, sans LIKE sur meta_json.
+            _add_column_if_missing(self.conn, "model_call_log", "task_id", "INTEGER")
+            _add_column_if_missing(self.conn, "model_call_log", "sub_task_id", "INTEGER")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
                 "ON model_call_log(provider_id, model_id, id)")
@@ -1736,6 +1743,13 @@ class CatalogueDB:
                 "ON model_call_log_archive(provider_id, model_id, id)")
             _add_column_if_missing(self.conn, "model_call_log_archive",
                                    "caller_id", "TEXT")
+            # Lien structurel séquence→tâche propagé à l'archive (le rebuild
+            # des séquences lit archive + détail — il faut y retrouver les
+            # tâches pour le suivi budgétaire rétroactif).
+            _add_column_if_missing(self.conn, "model_call_log_archive",
+                                   "task_id", "INTEGER")
+            _add_column_if_missing(self.conn, "model_call_log_archive",
+                                   "sub_task_id", "INTEGER")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_archive_caller "
                 "ON model_call_log_archive(caller_id, id)")

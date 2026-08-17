@@ -905,8 +905,15 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
   connexion, c'est une AttributeError silencieuse (masquée par le except).
 - service/llm_usage/task_track.py : SUIVI BUDGÉTAIRE PAR TÂCHE. Table workspace
   task_budget_tracking (par sub_task) : budget THÉORIQUE (calculé à l'ouverture
-  par le calculateur) + budget UTILISÉ (reconstruit à la fermeture depuis les
-  model_call_log dont le meta_json porte sub_task_id). C'est la BOUCLE :
-  théorique vs utilisé → on affine le travail/effort des tâches.
+  par le calculateur) + budget UTILISÉ (incrémenté EN TEMPS RÉEL par add_usage
+  appelé depuis consume_call). C'est la BOUCLE : théorique vs utilisé → on affine
+  le travail/effort des tâches.
+- LIEN appels→tâche : COLONNES DÉDIÉES sur model_call_log (task_id, sub_task_id) —
+  PAS de LIKE sur meta_json (fragile/lent). Le FSM injecte task_id/sub_task_id
+  dans le meta → le bridge les écrit en colonnes. Propagé à l'archive (rebuild
+  des séquences + suivi rétroactif).
+- LEÇON : test unitaire — task_budget_tracking.workspace_id est NOT NULL → un
+  INSERT sans workspace_id lève IntegrityError (masqué par le best-effort="False"
+  silencieux). Vérifier les contraintes NOT NULL au premier test réel.
 - Exemple validé : modèle 259, planning/junior ≤> travail(0.405) × effort(1.0)
   = 0.405 tok ; après effort tok_out=2.5 → 1.0125. Recompute passif → 0 écrits.

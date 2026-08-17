@@ -815,7 +815,9 @@ class DirectBridge(BaseBridge):
                   agent_id: Optional[str] = None,
                   error_msg: str = "", call_type: str = "chat",
                   caller_id: Optional[str] = None,
-                  meta: Optional[dict] = None) -> None:
+                  meta: Optional[dict] = None,
+                  task_id: Optional[int] = None,
+                  sub_task_id: Optional[int] = None) -> None:
         """Journalise un appel LLM réel dans model_call_log (métriques runtime).
 
         Référencé par ID (provider_id/model_id/provider_model_id), pas par nom.
@@ -839,6 +841,18 @@ class DirectBridge(BaseBridge):
             if not caller_id:
                 caller_id = f"agent:{agent_id}" if agent_id else "bridge"
             meta_json = json.dumps(meta, ensure_ascii=False) if meta else None
+            # Lien structurel séquence→tâche : extrait des colonnes dédiées (si
+            # non fournies directement, on les dérive du meta du FSM).
+            if task_id is None:
+                try:
+                    task_id = int(meta.get("task_id")) if meta and meta.get("task_id") else None
+                except (TypeError, ValueError):
+                    task_id = None
+            if sub_task_id is None:
+                try:
+                    sub_task_id = int(meta.get("sub_task_id")) if meta and meta.get("sub_task_id") else None
+                except (TypeError, ValueError):
+                    sub_task_id = None
             # model_id résolu en priorité via provider_models (le model_ref du
             # bridge = provider_model_name, ex. deepseek-ai/deepseek-v4-flash),
             # puis ref exact de catalogue_models, sinon 0 (non résolu → ignoré
@@ -857,7 +871,8 @@ class DirectBridge(BaseBridge):
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, adresse_id, agent_id, success,
                      tokens_in, tokens_out, tokens_thinking, latency_ms,
-                     error_code, error_msg, call_type, caller_id, meta_json)
+                     error_code, error_msg, call_type, caller_id, meta_json,
+                     task_id, sub_task_id)
                 VALUES (
                     COALESCE((SELECT id FROM catalogue_providers WHERE ref = ?), 0),
                     COALESCE(
@@ -870,7 +885,7 @@ class DirectBridge(BaseBridge):
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
                     ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, provider_ref, _short, model_ref,
                   provider_ref, _short,
                   _adresse_id,
@@ -879,7 +894,9 @@ class DirectBridge(BaseBridge):
                   toks["thinking"] or int(tokens_thinking or 0),
                   float(latency_ms or 0), (error_code or "")[:100],
                   (error_msg or "")[:200], (call_type or "chat")[:30],
-                  (str(caller_id)[:120] if caller_id else None), meta_json))
+                  (str(caller_id)[:120] if caller_id else None), meta_json,
+                  int(task_id) if task_id else None,
+                  int(sub_task_id) if sub_task_id else None))
             self.cat.conn.commit()
             # JONCTION Idée 18 : consommation budget/cost + états d'erreur +
             # scoring de fiabilité — synchrone à l'appel (régulation temps réel).
@@ -892,6 +909,7 @@ class DirectBridge(BaseBridge):
                     latency_ms=float(latency_ms or 0),
                     error_code=error_code or "",
                     agent_id=agent_id,
+                    task_id=task_id, sub_task_id=sub_task_id,
                     nb_requetes=1)
             except Exception:
                 # La consommation est best-effort : un souci ici ne casse pas

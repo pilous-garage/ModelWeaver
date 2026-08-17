@@ -102,42 +102,111 @@ def open_tracking(ws, cat, workspace_id: str, sub_task_id: int,
         return None
 
 
-def close_tracking(ws, cat, sub_task_id: int) -> bool:
-    """Ferme le suivi d'une sub_task en reconstruisant le budget UTILISÉ.
+def _workspace_for(sub_task_id: int, task_id: Optional[int]):
+    """Résout (WorkspaceDB, workspace_id) pour une sub_task/task donnée.
 
-    Le "utilisé" vient des appels LLM du catalogue dont le meta porte
-    sub_task_id (meta_json.sub_task_id) — cumul des tokens/latence.
+    La table task_budget_tracking vit dans la DB workspace (une par projet) —
+    il faut retrouver LE bon fichier .db et le workspace_id de la sub_task.
+    """
+    try:
+        from modules.sql.workspace import WorkspaceDB, _default_workspace_db
+        db = WorkspaceDB(db_path=_default_workspace_db())
+        if sub_task_id:
+            row = db.conn.execute(
+                "SELECT workspace_id FROM sub_tasks WHERE sub_task_id = ?",
+                (sub_task_id,)).fetchone()
+            if row:
+                return db, row["workspace_id"]
+        if task_id:
+            row = db.conn.execute(
+                "SELECT workspace_id FROM tasks WHERE task_id = ?",
+                (task_id,)).fetchone()
+            if row:
+                return db, row["workspace_id"]
+        db.close()
+        return None, None
+    except Exception:
+        return None, None
+
+
+def add_usage(sub_task_id: int, task_id: Optional[int] = None,
+              tok_in: int = 0, tok_out: int = 0, tok_think: int = 0,
+              temps: float = 0.0, req: int = 1) -> bool:
+    """Incrémente le budget UTILISÉ d'une sub_task (en temps réel, à l'appel).
+
+    Appelé par consume_call quand un LLM call est rattaché à une sub_task.
+    Résout le bon WorkspaceDB depuis la sub_task. Best-effort.
+    """
+    try:
+        db, ws_id = _workspace_for(sub_task_id, task_id)
+        if db is None:
+            return False
+        try:
+            ws = db.for_workspace(ws_id) if ws_id else db
+            conn = ws.conn if hasattr(ws, "conn") else db.conn
+            # Résout type + difficulté de la sub_task (pour le théorique futur).
+            st = conn.execute(
+                "SELECT sub_task_type, difficulty FROM sub_tasks WHERE sub_task_id = ?",
+                (sub_task_id,)).fetchone() if conn else None
+            st_type = st["sub_task_type"] if st else ""
+            st_diff = st["difficulty"] if st else "medium"
+            cur = conn.execute(
+                "SELECT tracking_id, model_id, assigned_to FROM task_budget_tracking "
+                "WHERE sub_task_id = ?", (sub_task_id,)).fetchone()
+            if cur is None:
+                # Suivi pas encore ouvert : on l'ouvre léger (sans théorique) — le
+                # théorique sera posé à l'ouverture réelle (attribution).
+                conn.execute("""
+                    INSERT INTO task_budget_tracking
+                        (workspace_id, task_id, sub_task_id, task_type, difficulty,
+                         used_tok_in, used_tok_out, used_tok_think, used_req,
+                         used_temps, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+                    ON CONFLICT(sub_task_id) DO UPDATE SET
+                        used_tok_in = task_budget_tracking.used_tok_in + excluded.used_tok_in,
+                        used_tok_out = task_budget_tracking.used_tok_out + excluded.used_tok_out,
+                        used_tok_think = task_budget_tracking.used_tok_think + excluded.used_tok_think,
+                        used_req = task_budget_tracking.used_req + excluded.used_req,
+                        used_temps = task_budget_tracking.used_temps + excluded.used_temps,
+                        updated_at = strftime('%s','now')
+                """, (ws_id or '', task_id, sub_task_id, st_type, st_diff,
+                      tok_in, tok_out, tok_think, req, temps))
+            else:
+                conn.execute("""
+                    UPDATE task_budget_tracking SET
+                        used_tok_in = used_tok_in + ?,
+                        used_tok_out = used_tok_out + ?,
+                        used_tok_think = used_tok_think + ?,
+                        used_req = used_req + ?,
+                        used_temps = used_temps + ?,
+                        updated_at = strftime('%s','now')
+                    WHERE sub_task_id = ?
+                """, (tok_in, tok_out, tok_think, req, temps, sub_task_id))
+            conn.commit()
+            return True
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
+def close_tracking(ws, cat, sub_task_id: int) -> bool:
+    """Ferme le suivi d'une sub_task (le budget utilisé a déjà été cumulé
+    en temps réel par add_usage — rien à reconstruire depuis le catalogue).
     Retourne True si le suivi a été fermé.
     """
     try:
         tr = ws.conn.execute(
-            "SELECT tracking_id, model_id FROM task_budget_tracking "
+            "SELECT tracking_id FROM task_budget_tracking "
             "WHERE sub_task_id = ? AND status = 'open'",
             (sub_task_id,)).fetchone()
         if not tr:
             return False
-        # Cumul des appels du catalogue rattachés à cette sub_task.
-        used = {"tok_in": 0, "tok_out": 0, "tok_think": 0, "req": 0, "temps": 0}
-        if cat:
-            rows = cat.conn.execute("""
-                SELECT success, tokens_in, tokens_out, tokens_thinking, latency_ms
-                FROM model_call_log
-                WHERE meta_json LIKE ?
-            """, (f'%"sub_task_id": {sub_task_id}%',)).fetchall()
-            for r in rows:
-                used["tok_in"] += r["tokens_in"] or 0
-                used["tok_out"] += r["tokens_out"] or 0
-                used["tok_think"] += r["tokens_thinking"] or 0
-                used["req"] += 1
-                used["temps"] += (r["latency_ms"] or 0) / 1000.0
         ws.conn.execute("""
             UPDATE task_budget_tracking SET
-                used_tok_in = ?, used_tok_out = ?, used_tok_think = ?,
-                used_req = ?, used_temps = ?, status = 'closed',
-                closed_at = ?, updated_at = ?
+                status = 'closed', closed_at = ?, updated_at = ?
             WHERE tracking_id = ?
-        """, (used["tok_in"], used["tok_out"], used["tok_think"], used["req"],
-              used["temps"], _now(), _now(), tr["tracking_id"]))
+        """, (_now(), _now(), tr["tracking_id"]))
         ws.conn.commit()
         return True
     except Exception:

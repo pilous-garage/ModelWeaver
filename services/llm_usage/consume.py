@@ -60,6 +60,8 @@ def consume_call(cat, adresse_id: int, success: bool,
                  error_code: str = "",
                  thinking_score: float = 0.0,
                  agent_id: Optional[str] = None,
+                 task_id: Optional[int] = None,
+                 sub_task_id: Optional[int] = None,
                  nb_requetes: int = 1) -> Dict[str, Any]:
     """Consomme un appel réel : budgets + coûts + états + scoring.
 
@@ -70,6 +72,8 @@ def consume_call(cat, adresse_id: int, success: bool,
     inconnu — on ne consomme pas de thinking_power sans cet indice).
     `agent_id` : si l'agent a une allocation sur cette adresse (allocation
     quota ou budget), son spent est consommé ici (la souplesse s'applique).
+    `task_id`/`sub_task_id` : alimente le suivi budgétaire par tâche
+    (task_budget_tracking) — le budget réellement utilisé de la (sub)task.
     Retourne {ok, consumed: {...}} — best-effort.
     """
     out: Dict[str, Any] = {"ok": False, "consumed": {}}
@@ -79,6 +83,19 @@ def consume_call(cat, adresse_id: int, success: bool,
         adr = _resolve_adresse_runtime(cat, adresse_id)
         if not adr:
             return out
+
+        # ── 0. SUIVI BUDGÉTAIRE PAR TÂCHE (avant coûts : boucle d'apprentissage).
+        # Le budget utilisé de la (sub)task est incrémenté à l'appel (ce qui
+        # alimente le théorique vs utilisé). Best-effort.
+        if sub_task_id:
+            try:
+                from services.llm_usage.task_track import add_usage
+                add_usage(sub_task_id, task_id,
+                          tok_in=tokens_in, tok_out=tokens_out,
+                          tok_think=tokens_thinking,
+                          temps=latency_ms / 1000.0, req=1)
+            except Exception:
+                pass
 
         # ── 1bis. ALLOCATION AGENT (avant coûts : la part de l'agent d'abord).
         # La consommation sur l'allocation de l'agent s'applique en unités
