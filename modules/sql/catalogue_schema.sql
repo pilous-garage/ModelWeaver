@@ -664,6 +664,78 @@ CREATE TABLE IF NOT EXISTS budgets (
 );
 
 -- ============================================================
+-- 12bis. BUDGETS PAR TAG DE CLÉ + MANUELS (Idée 18 — régulation des coûts).
+--    3 niveaux :
+--      budget_generique_key_tag : budgets TRACÉS par tag de clé (free/plus/
+--        premium) + budgets de RATE_LIMIT (limites fournisseur). Partageable
+--        entre toutes les clés du même tag.
+--      budget_user_key_id : budgets MANUELS (spécifiés par un utilisateur/team).
+--      budget_final : budget EFFECTIF d'une adresse = générique (tag) ∩ user —
+--        le plus restrictif des deux.
+--    Une requête peut dépenser dans PLUSIEURS budgets (min/day/month).
+-- ============================================================
+
+-- Budgets tracés (par tag de clé) + budgets de rate_limit.
+CREATE TABLE IF NOT EXISTS budget_generique_key_tag (
+    budget_generique_key_tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_tag    TEXT NOT NULL DEFAULT '',     -- free | plus | premium | '' (générique)
+    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),  -- req_per_min, tok_per_day, cost_per_day...
+    quota          REAL NOT NULL,                -- la limite
+    spent          REAL DEFAULT 0,               -- consommé (fenêtre courante)
+    -- politique de dépassement (souplesse)
+    souplesse      TEXT DEFAULT 'strict' CHECK(souplesse IN ('strict','souple','informatif')),
+    souplesse_taux REAL DEFAULT 0,               -- probabilité d'essai de dépassement (souple)
+    -- fenêtre de reset
+    interval_reset TEXT NOT NULL DEFAULT 'day' CHECK(interval_reset IN ('minute','hour','day','month')),
+    next_reset     INTEGER,                      -- timestamp du prochain reset
+    session_start  TEXT DEFAULT '',              -- fixed_hour: "02:00" | first_request | rolling
+    session_close  TEXT DEFAULT '',              -- ex. "02:00" (heure de clôture) | '' si first_request
+    rolling_hours  INTEGER DEFAULT 0,            -- si session_start='rolling'
+    -- erreur rate-limit
+    error_rate_limite INTEGER DEFAULT 0,         -- budget en erreur (rate-limit atteint)
+    created_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(api_key_tag, tag_id, interval_reset)
+);
+
+-- Budgets MANUELS (utilisateur/team spécifie sa limite).
+CREATE TABLE IF NOT EXISTS budget_user_key_id (
+    budget_user_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_ref       TEXT NOT NULL,                -- utilisateur / team / projet
+    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
+    quota          REAL NOT NULL,
+    spent          REAL DEFAULT 0,
+    souplesse      TEXT DEFAULT 'strict' CHECK(souplesse IN ('strict','souple','informatif')),
+    souplesse_taux REAL DEFAULT 0,
+    interval_reset TEXT NOT NULL DEFAULT 'day' CHECK(interval_reset IN ('minute','hour','day','month')),
+    next_reset     INTEGER,
+    session_start  TEXT DEFAULT '',
+    session_close  TEXT DEFAULT '',
+    rolling_hours  INTEGER DEFAULT 0,
+    created_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_ref, tag_id, interval_reset)
+);
+
+-- Budget EFFECTIF d'une adresse = générique (tag) ∩ user (le plus restrictif).
+CREATE TABLE IF NOT EXISTS budget_final (
+    budget_final_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+    budget_generique_key_tag_id INTEGER REFERENCES budget_generique_key_tag(budget_generique_key_tag_id),
+    budget_user_key_id INTEGER REFERENCES budget_user_key_id(budget_user_key_id),
+    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
+    quota_effectif REAL NOT NULL,                -- min(quota_générique, quota_user)
+    spent          REAL DEFAULT 0,
+    souplesse      TEXT DEFAULT 'strict',
+    souplesse_taux REAL DEFAULT 0,
+    interval_reset TEXT NOT NULL DEFAULT 'day',
+    next_reset     INTEGER,
+    error_rate_limite INTEGER DEFAULT 0,
+    created_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(adresse_runtime_id, tag_id, interval_reset)
+);
+CREATE INDEX IF NOT EXISTS idx_bf_adresse ON budget_final(adresse_runtime_id);
+CREATE INDEX IF NOT EXISTS idx_bg_tag ON budget_generique_key_tag(api_key_tag);
+
+-- ============================================================
 -- PROVIDER_MODEL_ADDRESS — Répertoire RÉSOLU des adresses LLM.
 --    Une adresse = provider × endpoint × provider_model (le nom du
 --    modèle CHEZ ce provider — plusieurs providers peuvent nommer un

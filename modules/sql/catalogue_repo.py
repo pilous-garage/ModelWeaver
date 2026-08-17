@@ -2215,6 +2215,75 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration scores par niveau ignorée: {e}")
 
+        # ── Migration budgets par tag de clé + manuels + finaux (Idée 18) ──
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_generique_key_tag (
+                    budget_generique_key_tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key_tag    TEXT NOT NULL DEFAULT '',
+                    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
+                    quota          REAL NOT NULL,
+                    spent          REAL DEFAULT 0,
+                    souplesse      TEXT DEFAULT 'strict' CHECK(souplesse IN ('strict','souple','informatif')),
+                    souplesse_taux REAL DEFAULT 0,
+                    interval_reset TEXT NOT NULL DEFAULT 'day' CHECK(interval_reset IN ('minute','hour','day','month')),
+                    next_reset     INTEGER,
+                    session_start  TEXT DEFAULT '',
+                    session_close  TEXT DEFAULT '',
+                    rolling_hours  INTEGER DEFAULT 0,
+                    error_rate_limite INTEGER DEFAULT 0,
+                    created_at     INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(api_key_tag, tag_id, interval_reset)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_user_key_id (
+                    budget_user_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_ref       TEXT NOT NULL,
+                    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
+                    quota          REAL NOT NULL,
+                    spent          REAL DEFAULT 0,
+                    souplesse      TEXT DEFAULT 'strict',
+                    souplesse_taux REAL DEFAULT 0,
+                    interval_reset TEXT NOT NULL DEFAULT 'day',
+                    next_reset     INTEGER,
+                    session_start  TEXT DEFAULT '',
+                    session_close  TEXT DEFAULT '',
+                    rolling_hours  INTEGER DEFAULT 0,
+                    created_at     INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(user_ref, tag_id, interval_reset)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_final (
+                    budget_final_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+                    budget_generique_key_tag_id INTEGER REFERENCES budget_generique_key_tag(budget_generique_key_tag_id),
+                    budget_user_key_id INTEGER REFERENCES budget_user_key_id(budget_user_key_id),
+                    tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
+                    quota_effectif REAL NOT NULL,
+                    spent          REAL DEFAULT 0,
+                    souplesse      TEXT DEFAULT 'strict',
+                    souplesse_taux REAL DEFAULT 0,
+                    interval_reset TEXT NOT NULL DEFAULT 'day',
+                    next_reset     INTEGER,
+                    error_rate_limite INTEGER DEFAULT 0,
+                    created_at     INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(adresse_runtime_id, tag_id, interval_reset)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bf_adresse ON budget_final(adresse_runtime_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bg_tag ON budget_generique_key_tag(api_key_tag)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration budgets par tag ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
