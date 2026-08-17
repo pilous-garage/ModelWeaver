@@ -11,7 +11,6 @@ Les tables (catalogue) :
   - task_level_stats   : ratios par niveau du cost_ref (équilibre combos peu remplis).
   - llm_task_cost      : CACHE du produit (modèle, type, niveau) — re-synthétisée
                         par le tick (jamais écrite ligne par ligne à l'appel).
-  - llm_level_windows  : fenêtres de thinking_power → coût estimable SANS données.
 
 MISE À JOUR PASSIVE (important au tick) : chaque écriture compare d'abord la
 valeur existante — si l'information n'a pas BOUGÉ, on n'écrit PAS (évite les

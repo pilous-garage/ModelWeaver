@@ -1023,25 +1023,9 @@ CREATE TABLE IF NOT EXISTS task_level_stats (
 );
 CREATE INDEX IF NOT EXISTS idx_tls_type ON task_level_stats(task_type_id);
 
--- 14e. llm_level_windows : évaluation du coût par niveau (fenêtres de
--- thinking_power). Si un modèle a un thinking_power DANS [tp_min, tp_max],
--- on peut ESPÉRER ce coût pour cette (tâche, niveau) — sans séquences du modèle.
-CREATE TABLE IF NOT EXISTS llm_level_windows (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
-    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
-    tp_min       REAL,                  -- plancher thinking_power (NULL = min)
-    tp_max       REAL,                  -- plafond (NULL = max)
-    tok_in       REAL DEFAULT 0,
-    tok_out      REAL DEFAULT 0,
-    tok_think    REAL DEFAULT 0,
-    req          REAL DEFAULT 0,
-    temps        REAL DEFAULT 0,
-    thinking_power REAL DEFAULT 0,
-    money        REAL DEFAULT 0,
-    updated_at   INTEGER DEFAULT (strftime('%s','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_llw_type ON llm_level_windows(task_type_id);
+-- 14e. ABANDONNÉE : llm_level_windows (fenêtres thinking_power→coût) n'a
+-- jamais été écrite ni lue — llm_task_cost + thinking_power_model couvrent
+-- l'estimation du coût. La table n'existe plus (DROP dans la migration).
 
 -- ============================================================
 -- 15. THINKING_POWER dérivé par le SCOREUR (Idée 18, section N6)

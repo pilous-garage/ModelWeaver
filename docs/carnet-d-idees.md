@@ -888,10 +888,10 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
    money/time) + ε-greedy d'exploration des modèles peu testés.
 
 ##### N8. TABLES DU CALCULATEUR + SUIVI PAR TÂCHE (FAIT — commitée)
-- 5 tables catalogue (section N3/N4) : task_level_cost (travail par type×niveau),
+- 4 tables catalogue (section N3/N4) : task_level_cost (travail par type×niveau),
   llm_effort_ratio (comportement du modèle par travail), task_level_stats (ratios
   par niveau du cost_ref senior), llm_task_cost (CACHE du produit, par
-  modèle×type×niveau), llm_level_windows (fenêtres thinking_power → coût).
+  modèle×type×niveau). (llm_level_windows a été créée puis ABANDONNÉE — voir Q6.)
 - services/llm_usage/calculator.py : recompute() = tick (seed stats + seed
   travail + seed effort + synthèse du produit). MISE À JOUR PASSIVE : on ne
   réécrit une ligne que si une valeur a changé (critique au tick — évite de
@@ -1177,8 +1177,7 @@ TROUS D'INITIALISATION :
   utilise sub_task_type='analysis' alors que scoring_task_types a
   'planning' (renommage analysis→planning NON fait — section H du carnet).
   → estimate_enveloppe cherche 'analysis' → 0 → enveloppe nulle.
-- llm_level_windows (catalogue) = 0 : les fenêtres thinking_power→coût ne
-  sont pas seedées (la synthèse ne les remplit pas encore).
+- ~~llm_level_windows~~ (catalogue) : jamais seedée → ABANDONNÉE et SUPPRIMÉE.
 - task_log / root_tasks (workspace) = 0 : le scoreur ne tourne pas encore
   (pas de fin de pipeline réel enregistré).
 - budget_user_key_id = 0 (normal : pas de budgets manuels posés).
@@ -1295,9 +1294,9 @@ TABLES DÉRIVÉES : COMPLÈTES (bonne nouvelle)
 - 2893 modèles (model_key≠'') → llm_domaine_score, llm_task_type_score,
   llm_effort_ratio, thinking_power_model, llm_task_cost : TOUS à 2893 modèles
   distincts. Le calculer est passé passif (rien à remplir).
-- En revanche llm_level_windows (fenêtres thinking_power→coût par niveau) est
-  VIDE : la synthèse ne la peuple pas → à implémenter (ou à abandonner si les
-  windows deviennent inutiles ?).
+- En revanche ~~llm_level_windows~~ (fenêtres thinking_power→coût par niveau)
+  était VIDE : jamais peuplée ni lue → ABANDONNÉE et SUPPRIMÉE (la table
+  n'existe plus ; llm_task_cost + thinking_power_model couvrent le besoin).
 
 ADRESSE_RUNTIME : manque les bornes d'usage
 - first_use / last_use et first_respond / last_respond ABSENTS → à ajouter
@@ -1324,7 +1323,9 @@ Actions concrètes (phase suivante) :
   adresse_runtime (+ éventuellement provider_model_address).
 - Étendre privileges avec kind='ref' (ressource catalogue) OU table
   domain_writers (domaine, writer, allowed_ops, tables).
-- Remplir ou décider de llm_level_windows.
+- ~~Remplir ou décider de llm_level_windows~~ → ABANDONNÉE (supprimée) :
+  jamais écrite ni lue, llm_task_cost + thinking_power_model couvrent
+  l'estimation du coût.
 - Auditer les 170 providers sans endpoint.
 - Activer le scoreur → task_log/root_tasks (fin de pipeline).
 

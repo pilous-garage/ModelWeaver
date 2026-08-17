@@ -2437,7 +2437,7 @@ class CatalogueDB:
             print(f"⚠️  Migration allocation ignorée: {e}")
 
         # ── Migration calculateur de coûts (Idée 18, section N) : task_level_cost,
-        # llm_effort_ratio, llm_task_cost, task_level_stats, llm_level_windows.
+        # llm_effort_ratio, llm_task_cost, task_level_stats.
         # Le coût d'une action = tokens(par modèle) × temps(par adresse) × prix.
         try:
             self.conn.execute("""
@@ -2510,25 +2510,10 @@ class CatalogueDB:
             """)
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tls_type ON task_level_stats(task_type_id)")
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS llm_level_windows (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
-                    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
-                    tp_min       REAL,
-                    tp_max       REAL,
-                    tok_in       REAL DEFAULT 0,
-                    tok_out      REAL DEFAULT 0,
-                    tok_think    REAL DEFAULT 0,
-                    req          REAL DEFAULT 0,
-                    temps        REAL DEFAULT 0,
-                    thinking_power REAL DEFAULT 0,
-                    money        REAL DEFAULT 0,
-                    updated_at   INTEGER DEFAULT (strftime('%s','now'))
-                )
-            """)
-            self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llw_type ON llm_level_windows(task_type_id)")
+            # llm_level_windows (fenêtres thinking_power→coût) ABANDONNÉE :
+            # jamais écrite ni lue (llm_task_cost + thinking_power_model
+            # couvrent l'estimation). Suppression pour les BDD existantes.
+            self.conn.execute("DROP TABLE IF EXISTS llm_level_windows")
             self.conn.commit()
         except Exception as e:
             try:
@@ -2597,7 +2582,7 @@ class CatalogueDB:
                  ["llm_domaine_score", "llm_task_type_score",
                   "score_thinking_power", "thinking_power_model",
                   "thinking_power_adress", "task_level_cost", "task_level_stats",
-                  "task_level_windows", "llm_effort_ratio", "llm_task_cost"],
+                  "llm_effort_ratio", "llm_task_cost"],
                  "Scores d'expérience + calculateur de coûts"),
                 ("batch", "usage_batcher",
                  ["model_call_log", "model_call_log_archive", "usage_history_1m",
