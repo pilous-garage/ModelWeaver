@@ -2328,6 +2328,39 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration coûts ignorée: {e}")
 
+        # ── Migration états d'erreur (Idée 18) : adress + budget_error_state ──
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS adress_error_state (
+                    adresse_runtime_id INTEGER PRIMARY KEY REFERENCES adresse_runtime(adresse_runtime_id),
+                    error_since    INTEGER,
+                    last_error_at  INTEGER,
+                    n_fail         INTEGER DEFAULT 0,
+                    backoff_until  INTEGER,
+                    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_error_state (
+                    budget_id      INTEGER PRIMARY KEY,
+                    adresse_count  INTEGER DEFAULT 0,
+                    adresse_error  INTEGER DEFAULT 0,
+                    error_since    INTEGER,
+                    last_error_at  INTEGER,
+                    backoff_until  INTEGER,
+                    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bes_budget ON budget_error_state(budget_id)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration états d'erreur ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci

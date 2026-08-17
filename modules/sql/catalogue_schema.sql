@@ -778,6 +778,35 @@ CREATE TABLE IF NOT EXISTS cost_final (
 CREATE INDEX IF NOT EXISTS idx_cf_adresse ON cost_final(adresse_runtime_id);
 
 -- ============================================================
+-- 12quater. ÉTATS D'ERREUR (rate-limit / quota) — backoff.
+--    adress_error_state : état d'erreur PAR ADRESSE (rafale de fails).
+--    budget_error_state : état d'erreur PAR BUDGET — RESTRICTION dérivée :
+--      le budget devient error UNIQUEMENT si TOUTES les adresses liées à ce
+--      budget sont en erreur (une seule adresse ne suffit pas).
+--    Le backoff (ne pas retenter) se fait par budget : quand un budget est
+--    error, ses adresses ne sont pas réallouées jusqu'à backoff_until.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS adress_error_state (
+    adresse_runtime_id INTEGER PRIMARY KEY REFERENCES adresse_runtime(adresse_runtime_id),
+    error_since    INTEGER,               -- 1er fail de la rafale
+    last_error_at  INTEGER,               -- dernier fail
+    n_fail         INTEGER DEFAULT 0,     -- fails consécutifs
+    backoff_until  INTEGER,               -- quand on peut retenter
+    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS budget_error_state (
+    budget_id      INTEGER PRIMARY KEY,   -- budget_generique_key_tag_id | budget_final_id
+    adresse_count  INTEGER DEFAULT 0,     -- nb d'adresses liées au budget
+    adresse_error  INTEGER DEFAULT 0,     -- nb d'adresses du budget en erreur
+    error_since    INTEGER,
+    last_error_at  INTEGER,
+    backoff_until  INTEGER,
+    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bes_budget ON budget_error_state(budget_id);
+
+-- ============================================================
 -- PROVIDER_MODEL_ADDRESS — Répertoire RÉSOLU des adresses LLM.
 --    Une adresse = provider × endpoint × provider_model (le nom du
 --    modèle CHEZ ce provider — plusieurs providers peuvent nommer un
