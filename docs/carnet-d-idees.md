@@ -1148,3 +1148,22 @@ contenu + une notion de frontière de skill.
   gemini uniquement.
 - Le use_case reste 'coding' par défaut (features) ; le vrai type est dans le
   task_context (le use_case ne pilote pas le tri, seulement les features).
+
+##### O11. PROFILEUR + RÉALLOCATEUR (FAIT — commité)
+- profileur.py : profile_agent — caractérise la consommation d'un agent depuis
+  model_call_log (fenêtre 10 min) : burst | constant | unknown.
+  * burst : rafales d'appels (fenêtre courte, appels rapprochés, ou plusieurs
+    groupes séparés par silence ≥ BURST_GAP_S=120s) ;
+  * constant : appels étalés régulièrement ;
+  * unknown : < MIN_CALLS=5 appels dans la fenêtre.
+  Le profil MESURÉ surcharge la déclaration (llm_call_type du manifest) — les
+  utilisateurs ne savent pas ce qu'ils font.
+- reallocateur.py : evaluate — passe les allocations actives :
+  1. profil burst → libérer (la rafale est finie) ;
+  2. sous-utilisation (spent/montant < 10%) + agent inactif (>10 min) → libérer.
+  dry_run (défaut) = évalue sans libérer ; dry_run=False = status → closed.
+  run() = point d'entrée du tick périodique.
+- Validé : burst 1 rafale (30 appels concentrés) → burst ; burst 2 rafales
+  (gap 342s) → burst ; constant (2/min étalé) → constant ; rien → unknown.
+  Réallocateur : allocation sous-utilisée + inactive → libérée ; allocation
+  active → conservée.
