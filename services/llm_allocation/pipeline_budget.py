@@ -128,46 +128,125 @@ def step_budget(part: Dict[str, float]) -> Dict[str, Dict[str, float]]:
     return {"opti": opti, "max": maxi}
 
 
-def allocate_step(cat, sub_task_id: int, step_type: str, difficulty: str,
-                  budget: Dict[str, Dict[str, float]],
-                  agent_id: str, adresse_runtime_id: int) -> bool:
-    """Ouvre l'allocation agent→budget d'une étape (nature quota).
+def open_agent_allocation_for_task(ws, cat, agent_id: str,
+                                   sub_task_id: int) -> Dict[str, Any]:
+    """Ouvre l'allocation agent→budget pour une sub_task attribuée.
 
-    L'enveloppe de l'étape (vecteur opti) devient le montant de l'allocation
-    QUOTA de l'agent sur cette adresse. La dimension de référence = money
-    (fallback req si money=0). Best-effort.
+    Appelé à l'attribution (supervisor.assign → _answer). L'enveloppe
+    théorique de la sub_task (task_budget_tracking.theo_req) devient le
+    montant de l'allocation QUOTA de l'agent sur l'adresse de son llm_pref
+    (provider/model privilégiés) si disponible.
+
+    Comme le modèle exact n'est choisi qu'à l'appel (assign_llm), l'allocation
+    porte sur l'adresse PRIVILÉGIÉE ; si l'agent n'en a pas, on signale qu'il
+    n'y a pas d'allocation dédiée (le consume_call gérera par l'adresse appelée).
+    Retourne {ok, allocation_id?, reason}.
     """
     try:
-        opti = budget.get("opti", {})
-        # dimension de référence : money, sinon req (les seules dimensions
-        # où l'allocation agent consomme actuellement).
-        ref_value = float(opti.get("money", 0) or 0)
-        ref_nature = "money"
-        if ref_value <= 0:
-            ref_value = float(opti.get("req", 0) or 0)
-            ref_nature = "req"
-        if ref_value <= 0:
-            return False
-        from services.llm_usage.allocation import allocate
-        from modules.sql.catalogue_repo import CatalogueDB
-        cat = cat or CatalogueDB()
-        # budget_final de l'adresse (tag req — l'allocation quota se fait sur
-        # une ligne budget_final précise).
+        from services.llm_usage.task_track import _workspace_for
+        if cat is None:
+            from modules.sql.catalogue_repo import CatalogueDB
+            cat = CatalogueDB()
+        # budget théorique de la sub_task (theo_req = la dimension de référence)
+        db, ws_id = _workspace_for(sub_task_id, None)
+        if db is None:
+            return {"ok": False, "reason": "sub_task introuvable"}
+        try:
+            theo = db.conn.execute(
+                "SELECT theo_req, model_id, assigned_to FROM task_budget_tracking "
+                "WHERE sub_task_id = ?", (sub_task_id,)).fetchone()
+        except Exception:
+            theo = None
+        if not theo:
+            db.close()
+            return {"ok": False, "reason": "pas de suivi budgétaire pour cette sub_task"}
+        theo_req = float(theo["theo_req"] or 0)
+        if theo_req <= 0:
+            db.close()
+            return {"ok": False, "reason": "theo_req nul (budget non estimé)"}
+        # adresse privilégiée de l'agent (llm_pref)
+        adresse_runtime_id = None
+        try:
+            from modules.sql.sql_module import AgentsDB
+            adb = AgentsDB()
+            ar = adb.conn.execute(
+                "SELECT resources_json FROM agents WHERE name = ?",
+                (agent_id,)).fetchone()
+            pref = {}
+            if ar:
+                import json as _json
+                res = _json.loads(ar["resources_json"] or "{}")
+                pref = res.get("llm_pref", {})
+            provider = pref.get("provider", "")
+            model = pref.get("model", "")
+            if provider and model:
+                from services.llm_allocation.address import resolve_address
+                adr = resolve_address(provider, model, cat)
+                if adr:
+                    row = cat.conn.execute(
+                        "SELECT adresse_runtime_id FROM adresse_runtime "
+                        "WHERE adresse_id = ? LIMIT 1", (adr,)).fetchone()
+                    adresse_runtime_id = row["adresse_runtime_id"] if row else None
+        except Exception:
+            adresse_runtime_id = None
+        db.close()
+        if not adresse_runtime_id:
+            return {"ok": False,
+                    "reason": "pas de llm_pref résolvable — allocation à l'appel"}
+        # budget_final de l'adresse (tag req) + allocation quota = theo_req.
         bf = cat.conn.execute(
-            "SELECT budget_final_id FROM budget_final WHERE adresse_runtime_id = ? "
-            "ORDER BY budget_final_id LIMIT 1", (adresse_runtime_id,)).fetchone()
+            "SELECT budget_final_id, quota_effectif FROM budget_final "
+            "WHERE adresse_runtime_id = ? AND tag_id = 2 LIMIT 1",
+            (adresse_runtime_id,)).fetchone()
         if not bf:
-            return False
-        # fraction = montant_etape / quota_effectif (si quota > 0)
-        bf_row = cat.conn.execute(
-            "SELECT quota_effectif FROM budget_final WHERE budget_final_id = ?",
-            (bf["budget_final_id"],)).fetchone()
-        quota = float(bf_row["quota_effectif"] or 0) if bf_row else 0
-        fraction = (ref_value / quota) if quota > 0 else 0.0
+            return {"ok": False, "reason": "pas de budget_final (tag req)"}
+        quota = float(bf["quota_effectif"] or 0)
+        fraction = min(theo_req / quota, 1.0) if quota > 0 else 0.0
+        from services.llm_usage.allocation import allocate
         alloc_id = allocate(
             cat, agent_id, adresse_runtime_id, bf["budget_final_id"],
-            nature="quota", fraction=min(fraction, 1.0),
-            souplesse="strict")
-        return alloc_id is not None
+            nature="quota", fraction=fraction, souplesse="strict")
+        return {"ok": alloc_id is not None, "allocation_id": alloc_id,
+                "adresse_runtime_id": adresse_runtime_id,
+                "theo_req": theo_req}
     except Exception:
-        return False
+        return {"ok": False, "reason": "erreur best-effort"}
+
+
+def open_pipeline_tracking(ws, cat, workspace_id: str, task_id: int,
+                           steps: List[tuple],
+                           strategy: Optional[Dict[str, float]] = None,
+                           task_difficulty: str = "medium") -> Dict[str, Any]:
+    """Ouvre le SUIVI BUDGÉTAIRE des sub_tasks créées par une découpe.
+
+    `steps` : liste de (sub_task_id, sub_task_type) créées par la découpe.
+    On estime l'enveloppe globale (estimate_enveloppe), on la répartit par
+    type (split_enveloppe) et on ouvre le suivi théorique de CHAQUE sub_task
+    avec sa part (theo_override).
+
+    Retourne {ok, enveloppe, par_type, tracked}.
+    """
+    try:
+        from services.llm_usage.task_track import open_tracking
+        step_types = [t for _, t in steps]
+        if not step_types:
+            return {"ok": False, "reason": "aucune étape"}
+        main_type = step_types[0]
+        enveloppe = estimate_enveloppe(cat, main_type, task_difficulty,
+                                       nb_steps=len(step_types))
+        parts = split_enveloppe(enveloppe, strategy or {}, step_types)
+        tracked = []
+        for sub_task_id, stype in steps:
+            part = parts.get(stype, {})
+            # le suivi théorique d'UNE instance = sa part du type
+            theo = {d: part.get(d, 0.0) for d in DIMS}
+            tid = open_tracking(
+                ws, cat, workspace_id, sub_task_id, task_id, stype,
+                task_difficulty, theo_override=theo)
+            if tid:
+                tracked.append({"sub_task_id": sub_task_id, "type": stype,
+                                "tracking_id": tid, "theo": theo})
+        return {"ok": True, "enveloppe": enveloppe, "par_type": parts,
+                "tracked": tracked}
+    except Exception:
+        return {"ok": False}

@@ -448,6 +448,16 @@ class TaskSupervisor:
     def _answer(self, sc: WorkspaceScope, workspace_id: str,
                 agent_id: int, st: Dict[str, Any]) -> Dict[str, Any]:
         self._serve(workspace_id, agent_id)
+        # Idée 18 (O4) : à l'attribution, on ouvre l'allocation agent→budget
+        # pour cette sub_task (l'enveloppe théorique devient le quota de
+        # l'agent sur son adresse privilégiée). Best-effort.
+        try:
+            from services.llm_allocation.pipeline_budget import (
+                open_agent_allocation_for_task)
+            open_agent_allocation_for_task(
+                None, None, f"agent:{agent_id}", st["sub_task_id"])
+        except Exception:
+            pass
         return {"ok": True, "sub_task": dict(st),
                 "sub_task_id": st["sub_task_id"],
                 "task_id": st["task_id"], "type": st["sub_task_type"]}

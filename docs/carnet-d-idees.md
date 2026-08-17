@@ -1110,3 +1110,22 @@ contenu + une notion de frontière de skill.
 - Route agent/reload (op_agent_reload, name ou agent_id).
 - Validé : chat-pilot (ref catalogue) → inline=False, config rechargé ; 
   lead-bug-hunter (inline) → inline=True ; inconnu → error propre.
+
+##### O9. INTÉGRATION ALLOCATION → DÉCOUPE/ATTRIBUTION (FAIT — commité)
+- À la DÉCOUPE (skill decoupe) : après création des sub_tasks + merge final,
+  on appelle open_pipeline_tracking — estime l'enveloppe globale (vecteur 6D
+  via llm_task_cost) et ouvre le suivi théorique de CHAQUE étape avec sa part
+  (theo_override). Cas simple (feature → coding) inclus.
+- open_tracking : + param theo_override (la part du pipeline remplace le
+  théorique calculé individuellement).
+- À l'ATTRIBUTION (supervisor._answer) : open_agent_allocation_for_task —
+  crée l'allocation agent→budget (quota) avec montant = theo_req de la
+  sub_task, sur l'adresse du llm_pref de l'agent si résolvable.
+- LEÇON D'ARCHITECTURE : le LLM est choisi à L'APPEL (assign_llm), pas à
+  l'attribution → on ne peut pas fixer l'adresse à l'attribution. L'allocation
+  porte sur l'adresse PRIVILÉGIÉE (llm_pref) si dispo, sinon "allocation à
+  l'appel" (le consume_call gère par l'adresse appelée). Adresse exacte
+  souvent non résolvable (noms suffixés, ex. gemini-2.5-flash-preview-tts) →
+  le fallback à l'appel est LE chemin normal.
+- Validé : 5 étapes découpées → 5 suivis théoriques (coding 40%/2 = 0.7 req
+  chacune) ; agent sans adresse résolvable → reason "allocation à l'appel".

@@ -168,6 +168,18 @@ def decoupe(inputs: dict, home: str) -> dict:
                     repo=task.get("repo", ""), branch=task.get("branch", ""),
                     description=(inputs.get("analyse") or
                                  task.get("description") or "")[:2000])
+                # Budget par pipeline (cas simple : 1 étape coding) — best-effort.
+                try:
+                    from services.llm_allocation.pipeline_budget import open_pipeline_tracking
+                    from modules.sql.catalogue_repo import CatalogueDB
+                    cat = CatalogueDB()
+                    open_pipeline_tracking(
+                        db, cat, workspace_id, int(task_id),
+                        [(coding.get("sub_task_id"), "coding")],
+                        task_difficulty=diff or "medium")
+                    cat.close()
+                except Exception:
+                    pass
                 db.close()
                 return {"ok": True, "mode": "decoupe",
                         "created": [coding.get("sub_task_id")],
@@ -237,12 +249,35 @@ def decoupe(inputs: dict, home: str) -> dict:
                                         merge_final["sub_task_id"], "done", "ok")
 
         _save_analyse(sc, task_id, inputs)
+        # ── Budget par pipeline (Idée 18, O4) : après création des sub_tasks,
+        # on estime l'enveloppe globale + on ouvre le suivi théorique de chaque
+        # étape (theo par part du pipeline). Best-effort (n'empêche pas la
+        # découpe si le calcul échoue).
+        try:
+            from services.llm_allocation.pipeline_budget import open_pipeline_tracking
+            from modules.sql.catalogue_repo import CatalogueDB
+            steps = []
+            for t in types:
+                stype = (t.get("type") or "").strip().lower()
+                for tsk in (t.get("tasks") or []):
+                    idx = tsk.get("task_id")
+                    if idx is not None and int(idx) in created and stype:
+                        steps.append((created[int(idx)], stype))
+            steps.append((merge_final["sub_task_id"], "merge"))
+            cat = CatalogueDB()
+            budget_res = open_pipeline_tracking(
+                db, cat, workspace_id, int(task_id), steps,
+                task_difficulty=diff or "medium")
+            cat.close()
+        except Exception:
+            budget_res = {"ok": False}
         db.close()
         return {"ok": True, "mode": "decoupe",
                 "created": list(created.values()),
                 "count": len(created),
                 "merge_sub_task_id": merge_final["sub_task_id"],
-                "analysis_sub_task_id": cur["sub_task_id"] if cur else None}
+                "analysis_sub_task_id": cur["sub_task_id"] if cur else None,
+                "budget_pipeline": budget_res}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

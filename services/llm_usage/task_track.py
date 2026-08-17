@@ -67,12 +67,14 @@ def open_tracking(ws, cat, workspace_id: str, sub_task_id: int,
                   task_id: Optional[int], sub_task_type: str,
                   difficulty: str, assigned_to: str = "",
                   model_id: Optional[int] = None,
-                  adresse_runtime_id: Optional[int] = None) -> Optional[int]:
+                  adresse_runtime_id: Optional[int] = None,
+                  theo_override: Optional[Dict[str, float]] = None) -> Optional[int]:
     """Ouvre le suivi budgétaire d'une sub_task (avec budget théorique).
 
     Idempotent : si un suivi open existe déjà pour cette sub_task, on ne le
     duplique pas (retourne son id). Le budget théorique est calculé dès
-    maintenant (le calculateur l'estime pour le modèle choisi).
+    maintenant (le calculateur l'estime pour le modèle choisi), OU fourni par
+    `theo_override` (ex. la part du pipeline posée par la découpe).
     """
     try:
         cur = ws.conn.execute(
@@ -81,8 +83,9 @@ def open_tracking(ws, cat, workspace_id: str, sub_task_id: int,
             (sub_task_id,)).fetchone()
         if cur:
             return cur["tracking_id"]
-        theo = _theoretical_budget(cat, sub_task_type, difficulty, model_id or 0) \
-            if cat and model_id else {}
+        theo = theo_override if theo_override is not None else (
+            _theoretical_budget(cat, sub_task_type, difficulty, model_id or 0)
+            if cat and model_id else {})
         cur = ws.conn.execute("""
             INSERT INTO task_budget_tracking
                 (workspace_id, task_id, sub_task_id, task_type, difficulty,
