@@ -91,7 +91,7 @@ def allocate(cat, agent_id: str, adresse_runtime_id: int,
     L'ancienne allocation active du même (agent, adresse, nature) est close.
     Retourne l'allocation_id créé, sinon None.
     """
-    from services.domain_access import guard
+    from services.domain_access import guard, WriteDenied
     guard("allocation", "allocateur", "agent_budget_allocation")
     try:
         # Fermer l'ancienne allocation active du même agent sur cette adresse.
@@ -126,11 +126,14 @@ def allocate(cat, agent_id: str, adresse_runtime_id: int,
               souplesse, souplesse_taux))
         cat.conn.commit()
         # Le budget_final engage la part allouée (réservée, pas consommée).
+        guard("budget", "allocateur", "budget_final")
         cat.conn.execute(
             "UPDATE budget_final SET alloue = alloue + ? "
             "WHERE budget_final_id = ?", (montant, budget_final_id))
         cat.conn.commit()
         return cur.lastrowid if hasattr(cur, "lastrowid") else None
+    except WriteDenied:
+        raise  # refus de sécurité : ne JAMAIS l'avaler
     except Exception:
         try:
             cat.conn.rollback()

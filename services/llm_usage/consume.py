@@ -19,6 +19,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
+from services.domain_access import WriteDenied
+
 
 def _now() -> int:
     return int(time.time())
@@ -210,6 +212,8 @@ def consume_call(cat, adresse_id: int, success: bool,
 
         out["ok"] = True
         return out
+    except WriteDenied:
+        raise  # refus de sécurité : ne JAMAIS l'avaler
     except Exception:
         try:
             cat.conn.rollback()

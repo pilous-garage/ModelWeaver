@@ -893,6 +893,23 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     else:
         os.chmod(token_file, 0o600)
 
+    # Tokens de domaine (défense d'app) : générés au premier boot,
+    # vérifiés à CHAQUE démarrage. Un mismatch = le domaine est désactivé
+    # (toutes ses écritures refusées) + alerte au boot.
+    try:
+        from services.domain_access import init_tokens, verify_tokens
+        init_tokens()
+        vt = verify_tokens()
+        for dom in vt.get("failed", []):
+            log.warning("Domaine désactivé (token mismatch/absent)",
+                        domaine=dom)
+        if not vt.get("ok"):
+            log.warning("Vérification des tokens de domaine incomplète",
+                        failed=vt.get("failed"))
+        log.info("Tokens de domaine vérifiés", domains=len(vt.get("domains", [])))
+    except Exception as e:
+        log.warning("Vérification tokens de domaine ignorée", error=str(e))
+
     # bind avec retry (port occupé au boot)
     server = None
     for attempt in range(10):
