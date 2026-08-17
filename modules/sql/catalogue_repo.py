@@ -2101,10 +2101,20 @@ class CatalogueDB:
                     error_since         INTEGER,
                     last_error_at       INTEGER,
                     backoff_until       INTEGER,
+                    first_use           INTEGER,
+                    last_use            INTEGER,
+                    first_respond       INTEGER,
+                    last_respond        INTEGER,
                     created_at          TEXT DEFAULT (datetime('now')),
                     UNIQUE(adresse_id, api_key_id)
                 )
             """)
+            # Bornes d'usage temporelles de l'adresse (Idée 18/P).
+            for _col, _dflt in (("first_use", "INTEGER"),
+                                ("last_use", "INTEGER"),
+                                ("first_respond", "INTEGER"),
+                                ("last_respond", "INTEGER")):
+                _add_column_if_missing(self.conn, "adresse_runtime", _col, _dflt)
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ar_adresse ON adresse_runtime(adresse_id)")
             self.conn.execute(

@@ -93,9 +93,36 @@ def consume_call(cat, adresse_id: int, success: bool,
                 add_usage(sub_task_id, task_id,
                           tok_in=tokens_in, tok_out=tokens_out,
                           tok_think=tokens_thinking,
-                          temps=latency_ms / 1000.0, req=1)
+                           temps=latency_ms / 1000.0, req=1)
             except Exception:
                 pass
+
+        # ── 1. BORNES D'USAGE DE L'ADRESSE (Idée 18/P) ──
+        # first_use / last_use à CHAQUE appel (réussi ou non) ; first_respond /
+        # last_respond à chaque SUCCÈS (l'adresse a répondu). Ces bornes
+        # permettent de juger fraîcheur/réactivité sans join sur les logs.
+        try:
+            _now_ts = _now()
+            if success:
+                cat.conn.execute("""
+                    UPDATE adresse_runtime SET
+                        last_use = ?,
+                        last_respond = ?,
+                        first_use = COALESCE(first_use, ?),
+                        first_respond = COALESCE(first_respond, ?)
+                    WHERE adresse_runtime_id = ?
+                """, (_now_ts, _now_ts, _now_ts, _now_ts,
+                      adr["adresse_runtime_id"]))
+            else:
+                cat.conn.execute("""
+                    UPDATE adresse_runtime SET
+                        last_use = ?,
+                        first_use = COALESCE(first_use, ?)
+                    WHERE adresse_runtime_id = ?
+                """, (_now_ts, _now_ts, adr["adresse_runtime_id"]))
+            cat.conn.commit()
+        except Exception:
+            pass
 
         # ── 1bis. ALLOCATION AGENT (avant coûts : la part de l'agent d'abord).
         # La consommation sur l'allocation de l'agent s'applique en unités

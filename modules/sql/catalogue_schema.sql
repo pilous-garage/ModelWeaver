@@ -879,6 +879,13 @@ CREATE TABLE IF NOT EXISTS adresse_runtime (
     error_since         INTEGER,                -- 1er fail de la rafale (état)
     last_error_at       INTEGER,
     backoff_until       INTEGER,
+    -- Bornes d'usage TEMPORELLES de l'adresse (Idée 18/P) : quand elle a été
+    -- appelée (use = tout appel) et quand elle a RÉPONDU (respond = succès).
+    -- Permettent de juger fraîcheur/réactivité d'une adresse sans join.
+    first_use           INTEGER,
+    last_use            INTEGER,
+    first_respond       INTEGER,
+    last_respond        INTEGER,
     created_at          TEXT DEFAULT (datetime('now')),
     UNIQUE(adresse_id, api_key_id)
 );

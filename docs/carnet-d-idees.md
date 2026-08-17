@@ -1327,3 +1327,11 @@ Actions concrètes (phase suivante) :
 - Remplir ou décider de llm_level_windows.
 - Auditer les 170 providers sans endpoint.
 - Activer le scoreur → task_log/root_tasks (fin de pipeline).
+
+##### Q8. BORNES D'USAGE DES ADRESSES (FAIT — commité)
+- adresse_runtime : + first_use, last_use, first_respond, last_respond.
+  * use = tout appel (réussi OU échec) ; respond = succès (l'adresse a répondu).
+  * first_ = posé une fois (COALESCE), last_ = mis à jour à chaque appel.
+- Alimentées dans consume_call (point unique de passage de tout appel LLM).
+- Validé : succès → les 4 posés ; échec → last_use avance, respond inchangé.
+- Usage : fraîcheur/réactivité d'une adresse sans join sur model_call_log.
