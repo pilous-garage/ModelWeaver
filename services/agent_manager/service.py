@@ -2750,6 +2750,131 @@ class AgentManager:
         return {"status": "ok", "reader": name, "source": other,
                 "messages": ov.get("messages", [])}
 
+    def reload_agent(self, name: str, reset_running: bool = True) -> Dict[str, Any]:
+        """RELOAD d'un agent BDD quel qu'il soit — y compris un SUB_AGENT.
+
+        Un sub_agent est un agent à part entière (name scoped
+        `team:<team>/<maître>/<sous-agent>`, config depuis sa ref catalogue).
+        On peut donc le recharger SANS recharger l'agent maître.
+
+        Mécanique (mêmes règles O1/O6, continue abandonné) :
+          1. hydrate l'agent (BDD) — on ne touche ni à l'agent maître ni à la team ;
+          2. résout sa ref catalogue → re-charge le config depuis le .agent.yaml
+             (catalogue_agents) — les skills référencés y sont déjà ;
+          3. réécrit config_json (sans toucher variables_json/state_json) ;
+          4. restart des entrypoints non finis (run en cours → reset) ;
+          5. remet les signaux ACKED → PENDING (re-traitement).
+        Retourne {status, reloaded, changed, restarted_entrypoints, ref}.
+        """
+        row = self.get_by_name(name)
+        if not row:
+            return {"status": "error", "error": f"agent introuvable: {name}"}
+        agent_id = row["agent_id"]
+        old_config = json.loads(row.get("config_json") or "{}")
+        ref = row.get("ref", "") or f"agent:{name}"
+        # Résout le config depuis la ref catalogue (fichier .agent.yaml ouvert
+        # → même protocole : open_manifest sur le fichier).
+        new_config = None
+        try:
+            from services.api.catalogue_agents import _load_agent_yaml_config
+            catalogue_ref = ref.removeprefix("agent:").strip()
+            # Ref complète d'abord (ex. team:dev-chat/chat-pilot), puis le
+            # dernier segment (chat-pilot) qui matche le fichier catalogue.
+            new_config = _load_agent_yaml_config(
+                "", agent_name="", catalogue_ref=catalogue_ref)
+            if new_config is None and "/" in catalogue_ref:
+                last = catalogue_ref.split("/")[-1].strip()
+                new_config = _load_agent_yaml_config(
+                    "", agent_name="", catalogue_ref=last)
+        except Exception:
+            new_config = None
+        if new_config is None:
+            # Pas de ref catalogue : l'agent est INLINE (défini dans le manifest
+            # team — ex. sub_agent d'un membre). Le rechargement de SON code
+            # passe par la team (setup re-synchronise les membres inline) ;
+            # on peut recharger ici les SKILLS référencés (relus au run par le
+            # FSM) sans toucher au workflow. On signale le cas.
+            return {
+                "status": "ok",
+                "reloaded": True,
+                "agent_id": agent_id,
+                "name": name,
+                "ref": ref,
+                "changed": False,
+                "is_sub_agent": "/" in name,
+                "inline": True,
+                "restarted_entrypoints": [],
+                "reason": "agent inline (pas de ref catalogue) — le code est "
+                          "rechargé via reload_team ; les skills référencés "
+                          "sont relus par le FSM au prochain run",
+            }
+        changed = new_config != old_config
+        if changed:
+            self.db.conn.execute(
+                "UPDATE agents SET config_json = ? WHERE agent_id = ?",
+                (json.dumps(new_config), agent_id))
+            self.db.conn.commit()
+        restarted = []
+        if changed and reset_running:
+            restarted = self._restart_unfinished_agent(agent_id)
+        self._reset_acked_signals(agent_id)
+        return {
+            "status": "ok",
+            "reloaded": True,
+            "agent_id": agent_id,
+            "name": name,
+            "ref": ref,
+            "changed": changed,
+            "is_sub_agent": "/" in name,
+            "inline": False,
+            "restarted_entrypoints": restarted,
+            "reason": "config rechargé depuis le catalogue" if changed
+                      else "aucun changement détecté",
+        }
+
+    def _restart_unfinished_agent(self, agent_id: int) -> List[str]:
+        """RESTART des entrypoints non finis d'un agent (run en cours → reset
+        de state_json/variables_json/current_step). Voir carnet O6."""
+        restarted: List[str] = []
+        try:
+            rt = self.db.conn.execute(
+                "SELECT current_step FROM agent_runtime WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            cur_step = rt["current_step"] if rt else None
+            if not cur_step:
+                return restarted
+            row = self.db.conn.execute(
+                "SELECT state_json FROM agents WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            ep = "main"
+            try:
+                st = json.loads((row["state_json"] if row else None) or "{}")
+                ep = st.get("current_entrypoint", "main")
+            except Exception:
+                pass
+            self.db.conn.execute(
+                "UPDATE agents SET state_json = ?, variables_json = ? "
+                "WHERE agent_id = ?",
+                (json.dumps({}), json.dumps({}), agent_id))
+            self.db.conn.execute(
+                "UPDATE agent_runtime SET current_step = NULL WHERE agent_id = ?",
+                (agent_id,))
+            self.db.conn.commit()
+            restarted.append(ep)
+        except Exception:
+            pass
+        return restarted
+
+    def _reset_acked_signals(self, agent_id: int) -> None:
+        """Signaux ACKED → PENDING (re-traitement après reload)."""
+        try:
+            self.db.conn.execute(
+                "UPDATE agent_signals SET status = 'PENDING' "
+                "WHERE agent_id = ? AND status = 'ACKED'", (agent_id,))
+            self.db.conn.commit()
+        except Exception:
+            pass
+
     # ── Interne ──
 
     @staticmethod

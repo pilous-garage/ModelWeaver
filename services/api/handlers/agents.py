@@ -370,6 +370,31 @@ def op_agent_get(params):
     return {"agent": agent}
 
 
+def op_agent_reload(params):
+    """Reload/regen_inline d'un agent BDD — y compris un SUB_AGENT sans
+    recharger l'agent maître (le sub_agent est un agent à part entière).
+
+    Recharge le config depuis la ref catalogue (.agent.yaml) si elle existe,
+    sinon signale que l'agent est inline (rechargé via reload_team). Restart
+    des entrypoints non finis + signaux ACKED→PENDING en cas de changement.
+    Paramètres : name (ou agent_id), reset_running (bool, défaut True)."""
+    db = _get_agent_db()
+    agent_id = params.get("agent_id")
+    name = params.get("name")
+    if agent_id:
+        row = db.conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+    elif name:
+        row = db.conn.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
+    else:
+        return {"status": "error", "error": "agent_id ou name requis"}
+    if not row:
+        return {"status": "error", "error": "agent introuvable"}
+    from services.agent_manager.service import AgentManager
+    mgr = AgentManager(db=db)
+    reset_running = bool(params.get("reset_running", True))
+    return mgr.reload_agent(row["name"], reset_running=reset_running)
+
+
 def op_agent_create(params):
     role = params.get("role")
     if not role:
@@ -839,6 +864,7 @@ register("agent/topology",           op_agent_topology)
 register("agent/taskflow",           op_agent_taskflow)
 register("capabilities",             op_agent_capabilities)
 register("agent/get",                op_agent_get)
+register("agent/reload",             op_agent_reload)
 register("agent/logs",               op_agent_logs)
 register("agent/graph",              op_agent_graph)
 register("agent/create",             op_agent_create)

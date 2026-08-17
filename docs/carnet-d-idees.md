@@ -1040,3 +1040,73 @@ Ce qu'on a retenu (FAIT — commité) :
   du run en cours) → _reload_signals (ACKED→PENDING pour re-traitement).
 - agent_runtime n'a PAS de colonne status (juste current_step) — le reset ne
   touche que current_step.
+
+##### O7. RELOAD "SKILL SEUL" — CONTINUE AU SORTIE DE SKILL (IDÉE, PAS ENCORE FAIT)
+
+Cas visé : le code de l'agent ET de la team n'a PAS changé, mais le code d'un
+SKILL utilisé a changé (ex. on modifie `coding@v1.skill.yaml`). Là, un CONTINUE
+serait justifié : on recharge l'agent en GARDANT les mêmes données (variables,
+step courant) et en ne changeant que le skill référencé.
+
+POURQUOI C'EST DIFFÉRENT DU CAS GÉNÉRAL (O6) :
+- O6 (step d'agent modifiée) = workflow déplié : comparer "la step courante"
+  est ambigu (niveau de dépliage), risque élevé → restart. ABANDONNÉ.
+- O7 = le workflow de l'agent est INCHANGÉ, seuls les BLOCS SKILLS référencés
+  ont changé → on peut continuer le run, et à chaque entrée dans un skill, on
+  utilise la NOUVELLE version. Le point d'injection = la sortie du skill en
+  cours (pas un milieu de step).
+
+MÉCANIQUE ENVISAGÉE :
+- On ne recharge PAS le workflow de l'agent (il n'a pas changé) — on recharge
+  le contenu des skills (skill_manager, fichiers .skill.yaml).
+- Au moment où l'agent SORT du skill courant (le FSM passe au step suivant),
+  le run continue avec les nouvelles versions des skills pour la SUITE.
+- Les données (variables_json, state_json, current_step) sont CONSERVÉES.
+- C'est le file_watcher qui détecte qu'un .skill.yaml a changé → marque
+  l'agent comme "skills_dirty" (au lieu de restart).
+
+QUESTIONS / PROBLÈMES ENCOURUS (à garder si on implémente un jour) :
+1. COMMENT SAVOIR QUELS SKILLS UN RUN VA ENCORE UTILISER ? Un run peut avoir
+   fini le skill modifié mais aller le RÉ-UTILISER plus tard (boucle) → la
+   nouvelle version s'applique au prochain passage, ok. Mais si le run est DANS
+   le skill modifié (milieu d'exécution) → on ne peut pas "changer le skill"
+   en plein milieu (la step courante est l'expansion dépliée) → on attend la
+   sortie. Il faut définir "sortie de skill" proprement (fin des steps du
+   bloc skill dans le workflow déplié ?).
+2. DEPENDANCES TRANSVERSES : un skill en appelle un autre (skills imbriqués) —
+   si un skill ENFANT change pendant que le parent tourne, la sortie du parent
+   suffit-elle ? Il faut propager le "skills_dirty" aux agents qui utilisent
+   le skill parent ET ses enfants.
+3. CACHE DU CONTENU : où vit la version "chargée" du skill ? Si le FSM lit le
+   .skill.yaml à chaque entrée de step, le changement est pris en compte
+   immédiatement (pas besoin de signal) ; mais ça relit le disque à chaque
+   step (coût). Il faut un cache de contenu + invalidation par hash/fraîcheur.
+4. INJECTION DU FSM : où s'accroche la "sortie de skill" ? Le FSM doit
+   connaître la FRONTIÈRE du skill (début/fin des steps) pour savoir quand
+   recharger. Sans ça, le continue au milieu d'un skill déplié redevient le
+   cas O6 (ambigu).
+5. SIGNATURE DES SKILLS : hash du .skill.yaml pour détecter le changement vs
+   le workflow de l'agent (qui doit rester identique pour justifier le continue).
+6. CONCURRENCE : si un agent A est en train d'utiliser le skill S et on modifie
+   S → les agents déjà dans S finissent avec l'ANCIENNE version, les prochains
+   passages prennent la NOUVELLE. Acceptable (pas de rollback).
+
+DÉCISION PROVISOIRE : PAS implémenté maintenant. Le file_watcher marque juste
+l'agent "skills_dirty" ; le reload reste le mécanisme O6 (restart) tant que O7
+n'est pas conçu en détail. À réévaluer quand le skill_manager aura un cache de
+contenu + une notion de frontière de skill.
+
+##### O8. RELOAD D'UN SUB_AGENT SEUL (FAIT — implémenté)
+- Un sub_agent est un agent BDD à part entière (name scoped
+  team:<team>/<maître>/<sous-agent>) → on peut le recharger SANS recharger
+  l'agent maître ni la team.
+- AgentManager.reload_agent(name) : hydrate l'agent, résout sa ref catalogue
+  (.agent.yaml via _load_agent_yaml_config — ref complète puis dernier segment),
+  réécrit config_json si changé, restart des entrypoints non finis, signaux
+  ACKED→PENDING.
+- Cas INLINE (pas de ref catalogue) : le sub_agent est déclaré dans le manifest
+  team → son code se recharge via reload_team ; les skills référencés sont
+  relus par le FSM au prochain run (inline=True, raison explicite).
+- Route agent/reload (op_agent_reload, name ou agent_id).
+- Validé : chat-pilot (ref catalogue) → inline=False, config rechargé ; 
+  lead-bug-hunter (inline) → inline=True ; inconnu → error propre.
