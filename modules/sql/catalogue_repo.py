@@ -1691,6 +1691,9 @@ class CatalogueDB:
             # Méta de l'appel agentic : {agentic_mode, success_tool,
             # success_translation} renseignés par le FSM à chaque llm_call.
             _add_column_if_missing(self.conn, "model_call_log", "meta_json", "TEXT")
+            # Idée 18 : adresse_id (provider×endpoint×modèle) — les sessions
+            # succès/fail (usage_batcher) sont tracées par adresse.
+            _add_column_if_missing(self.conn, "model_call_log", "adresse_id", "INTEGER")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_call_log_provider_model "
                 "ON model_call_log(provider_id, model_id, id)")

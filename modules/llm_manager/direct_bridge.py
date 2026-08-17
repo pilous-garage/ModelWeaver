@@ -848,7 +848,7 @@ class DirectBridge(BaseBridge):
                 _short = _short[len(provider_ref) + 1:]
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
-                    (provider_id, model_id, provider_model_id, agent_id, success,
+                    (provider_id, model_id, provider_model_id, adresse_id, agent_id, success,
                      tokens_in, tokens_out, tokens_thinking, latency_ms,
                      error_code, error_msg, call_type, caller_id, meta_json)
                 VALUES (
@@ -862,8 +862,11 @@ class DirectBridge(BaseBridge):
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
+                    COALESCE((SELECT adresse_id FROM provider_model_address
+                              WHERE provider_ref = ? AND provider_model_name = ?), 0),
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, provider_ref, _short, model_ref,
+                  provider_ref, _short,
                   provider_ref, _short,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), toks["prompt"], toks["completion"],
