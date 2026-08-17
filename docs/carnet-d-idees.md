@@ -939,12 +939,23 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
 
 #### O. ALLOCATEUR PERSONNALISABLE + BUDGET PAR PIPELINE (suite 2026-08-17)
 
-##### O1. MANIFEST = FICHIER OUVERT (spec — pas encore implémenté)
-- Le YAML n'est PAS un fichier chargé une fois : c'est un fichier OUVERT.
-  On ne le modifie pas directement ; ceux qui le LISENT (routes daemon / FSM /
-  agent_manager) vérifient sa fraîcheur et font les changements à chaud.
-- Valide pour les TEAMS comme pour les AGENTS (mutation d'agents, leader,
-  supervisor_rules, stratégie de répartition, comportement agent...).
+##### O1. MANIFEST = FICHIER OUVERT (FAIT — implémenté)
+- services/manifest_store.py : le manifest est un fichier OUVERT géré par
+  ModelWeaver. 3 règles :
+    1. modifications UNIQUEMENT via ModelWeaver ; modifs externes IGNORÉES à la
+       lecture (le fichier n'est relu que la 1re fois pour le process) ;
+    2. pas de réécriture si aucune modification via ModelWeaver (dirty=False) ;
+    3. à l'enregistrement, garde ANTI-ÉCRASEMENT : si le fichier a été réécrit
+       depuis le chargement (hash différent) → on refuse plutôt que d'écraser.
+- open_manifest/close_manifest/save_manifest/write_yaml + état (content, hash,
+  dirty, version).
+- TeamSpec : + _source_path, _dirty, mark_dirty(), save(), to_yaml_dict().
+  from_yaml passe par open_manifest. add_member/remove_member/set_leader
+  (team_manager) marquent dirty + sauvegardent.
+- Validé : save sans modif = written False ; modif via ModelWeaver = écrit ;
+  réécriture externe concurrente = écrasement REFUSÉ (fichier préservé).
+- À étendre : ServiceSpec/AgentSpec (agents), supervisor_rules à chaud,
+  allocation_strategy à chaud.
 
 ##### O2. RESSOURCES AGENTS (GPU/CPU/NPU) — spec, phase 2
 - Table dédiée agent_resources avec déclaration OPTIONNELLE (ex. ressource

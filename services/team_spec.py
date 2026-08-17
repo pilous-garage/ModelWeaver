@@ -78,6 +78,89 @@ class TeamSpec:
     # somme. Défaut : 40% coding, 20% reviewing, 20% testing, 10% planning,
     # 10% merging (budgets de référence, surtout pour les gratuits).
     allocation_strategy: Dict[str, float] = field(default_factory=dict)
+    # Fichier ouvert (Idée 18, O1) : le chemin du manifest + l'état dirty.
+    _source_path: str = ""
+    _dirty: bool = field(default=False, compare=False)
+
+    @property
+    def source_path(self) -> str:
+        return self._source_path
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    def mark_dirty(self):
+        """Marque le spec comme modifié via ModelWeaver (réécriture attendue)."""
+        self._dirty = True
+
+    def save(self) -> dict:
+        """Persiste le spec vers son fichier ouvert (manifest_store).
+
+        Règles : on n'écrit QUE si le spec a été modifié via ModelWeaver
+        (mark_dirty) ET que le fichier n'a pas été réécrit depuis le chargement
+        (garde anti-écrasement). Best-effort."""
+        if not self._source_path:
+            return {"ok": False, "written": False,
+                    "reason": "pas de fichier source (spec construit en code)"}
+        if not self._dirty:
+            return {"ok": True, "written": False,
+                    "reason": "aucune modification via ModelWeaver"}
+        from services.manifest_store import write_yaml, open_manifest
+        om = open_manifest(self._source_path)
+        om.mark_dirty()
+        res = write_yaml(self._source_path, self.to_yaml_dict())
+        if res.get("written"):
+            self._dirty = False
+        return res
+
+    def to_yaml_dict(self) -> dict:
+        """Reproduit le format YAML du manifest team (source de vérité disque).
+
+        C'est ce dict qu'on réécrit (uniquement sur modif via ModelWeaver).
+        On conserve les champs d'origine + les mutations (membres, leader,
+        supervisor_rules, allocation_strategy)."""
+        d = {
+            "name": self.name,
+            "version": self.version,
+            "description": self.description,
+            "workspace_id": self.workspace_id,
+            "project_id": self.project_id,
+            "topology": self.topology,
+            "team_leader": {
+                "agent_name": self.team_leader.agent_name,
+                "role": self.team_leader.role,
+                "occupation": self.team_leader.occupation,
+                "resources": self.team_leader.resources,
+                "config": self.team_leader.config,
+                "provider_ref": self.team_leader.provider_ref,
+                "model_ref": self.team_leader.model_ref,
+                "workflow": self.team_leader.workflow,
+                "ref": self.team_leader.ref,
+            } if self.team_leader else None,
+            "members": [
+                {
+                    "agent_name": m.agent_name,
+                    "role": m.role,
+                    "occupation": m.occupation,
+                    "resources": m.resources,
+                    "config": m.config,
+                    "provider_ref": m.provider_ref,
+                    "model_ref": m.model_ref,
+                    "ref": m.ref,
+                    "sub_agents": m.sub_agents,
+                }
+                for m in self.members
+            ],
+            "resources": {
+                "budget_per_hour": self.resources.budget_per_hour,
+                "max_concurrent": self.resources.max_concurrent,
+                "llm_quota_per_day": self.resources.llm_quota_per_day,
+            },
+            "supervisor_rules": self.supervisor_rules,
+            "allocation_strategy": self.allocation_strategy,
+        }
+        return d
 
     @property
     def team_name(self) -> str:
@@ -87,7 +170,12 @@ class TeamSpec:
     def from_yaml(path: Path | str) -> "TeamSpec":
         import yaml
         path = Path(path)
-        raw = yaml.safe_load(path.read_text())
+        # Fichier ouvert (Idée 18, O1) : on passe par manifest_store pour que le
+        # spec porte l'état (content, hash, dirty) et que save() puisse vérifier
+        # la garde anti-écrasement. Le contenu YAML vient du disque (source).
+        from services.manifest_store import open_manifest
+        om = open_manifest(path)
+        raw = yaml.safe_load(om.content.decode() or path.read_text())
         if not raw:
             raise ValueError(f"Fichier vide: {path}")
 
@@ -162,6 +250,7 @@ class TeamSpec:
             resources=resources,
             supervisor_rules=norm_rules,
             allocation_strategy=raw.get("allocation_strategy") or {},
+            _source_path=str(path),
         )
 
     def to_dict(self) -> dict:

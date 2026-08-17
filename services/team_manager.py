@@ -374,7 +374,7 @@ class Team:
     def add_member(self, agent_name: str, role: str,
                    occupation: str = "noncontinue",
                    provider_ref: str = "", model_ref: str = "") -> dict:
-        """Ajoute un membre à l'équipe à chaud (BDD + runtime)."""
+        """Ajoute un membre à l'équipe à chaud (BDD + runtime + manifest)."""
         spec = TeamMemberSpec(
             agent_name=agent_name,
             role=role,
@@ -385,17 +385,25 @@ class Team:
         aid = _ensure_agent_exists(spec, role, occupation,
                                    team_name=self.spec.team_name)
         self.member_agent_ids[agent_name] = aid
+        self.spec.members.append(spec)
+        self.spec.mark_dirty()
         self._seed_leader_workflow()
-        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
+        # Persiste vers le manifest (fichier ouvert) — uniquement si dirty + garde.
+        save_res = self.spec.save()
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name,
+                "manifest": save_res}
 
     def remove_member(self, agent_name: str) -> dict:
-        """Retire un membre de l'équipe à chaud (runtime + spec)."""
+        """Retire un membre de l'équipe à chaud (runtime + spec + manifest)."""
         aid = self.member_agent_ids.pop(agent_name, None)
         if aid is None:
             return {"status": "error", "error": f"membre '{agent_name}' introuvable"}
         # Retire du spec (pour ne pas le recréer au prochain setup)
         self.spec.members = [m for m in self.spec.members if m.agent_name != agent_name]
-        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
+        self.spec.mark_dirty()
+        save_res = self.spec.save()
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name,
+                "manifest": save_res}
 
     def set_leader(self, agent_name: str, role: str,
                    occupation: str = "continue",
@@ -410,13 +418,16 @@ class Team:
             model_ref=model_ref,
         )
         self.spec.team_leader = leader_spec
+        self.spec.mark_dirty()
         aid = _ensure_agent_exists(leader_spec, "team_leader", occupation,
                                    team_name=self.spec.team_name)
         self.team_leader_agent_id = aid
         self._seed_leader_workflow()
         if self.spec.workspace_id:
             _set_workspace_director(self.spec.workspace_id, self.spec.team_name)
-        return {"status": "ok", "agent_id": aid, "agent_name": agent_name}
+        save_res = self.spec.save()
+        return {"status": "ok", "agent_id": aid, "agent_name": agent_name,
+                "manifest": save_res}
 
     # ── Status / Health ─────────────────────────────────────────
 
