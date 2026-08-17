@@ -72,6 +72,12 @@ class TeamSpec:
     # Tableau de règles du task_supervisor : (in_type, in_tag) → (out_type,
     # out_tag). OBLIGATOIRE à la déclaration d'une team (V0.15 taskflow).
     supervisor_rules: List[Dict[str, Any]] = field(default_factory=list)
+    # Stratégie d'allocation des ressources du PIPELINE (Idée 18, O4) :
+    # répartition du budget global de la découpe par étape de sub_task.
+    # Format : {sub_task_type: poids} — les poids se normalisent sur leur
+    # somme. Défaut : 40% coding, 20% reviewing, 20% testing, 10% planning,
+    # 10% merging (budgets de référence, surtout pour les gratuits).
+    allocation_strategy: Dict[str, float] = field(default_factory=dict)
 
     @property
     def team_name(self) -> str:
@@ -155,6 +161,7 @@ class TeamSpec:
             members=members,
             resources=resources,
             supervisor_rules=norm_rules,
+            allocation_strategy=raw.get("allocation_strategy") or {},
         )
 
     def to_dict(self) -> dict:
@@ -180,4 +187,5 @@ class TeamSpec:
                 "llm_quota_per_day": self.resources.llm_quota_per_day,
             },
             "supervisor_rules": self.supervisor_rules,
+            "allocation_strategy": self.allocation_strategy,
         }

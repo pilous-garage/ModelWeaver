@@ -936,3 +936,58 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
 - Validé : modèle 259/junior initial 14.0 → échec coding → 13.638 (seul le
   niveau concerné baisse) ; événements multi-niveaux → TP par niveau
   différenciés (junior 13.789, senior 14.08, expert 13.638).
+
+#### O. ALLOCATEUR PERSONNALISABLE + BUDGET PAR PIPELINE (suite 2026-08-17)
+
+##### O1. MANIFEST = FICHIER OUVERT (spec — pas encore implémenté)
+- Le YAML n'est PAS un fichier chargé une fois : c'est un fichier OUVERT.
+  On ne le modifie pas directement ; ceux qui le LISENT (routes daemon / FSM /
+  agent_manager) vérifient sa fraîcheur et font les changements à chaud.
+- Valide pour les TEAMS comme pour les AGENTS (mutation d'agents, leader,
+  supervisor_rules, stratégie de répartition, comportement agent...).
+
+##### O2. RESSOURCES AGENTS (GPU/CPU/NPU) — spec, phase 2
+- Table dédiée agent_resources avec déclaration OPTIONNELLE (ex. ressource
+  docker). Ça ne concerne PAS le bridge — il faudra un ALLOCATEUR DE RESSOURCE
+  SÉPARÉ. À spécifier plus tard.
+
+##### O3. COMPORTEMENT DE CONSOMMATION DE L'AGENT (déclaré + profilé)
+- Champs agent : llm_call_type = burst | constant | unknown (défaut unknown si
+  non précisé).
+- MAIS TOUJOURS VÉRIFIÉ par un profileur (les utilisateurs ne savent pas ce
+  qu'ils font) — le profil mesuré surcharge la déclaration.
+- Burst : N appels concentrés puis silence 10 min → perd sa ressource vite
+  (le réallocateur libère son allocation).
+- Constant : 2-5 appels/min réguliers → garde son allocation.
+
+##### O4. ALLOCATEUR : tri personnalisable (héritable) + budget par pipeline
+- Module de tri (sorters.py) : classe SorterBase + sous-classes (score, coût,
+  efficacité compétence÷coût, thinking_power). Le défaut = best-fallback.
+- Budget par pipeline à la DÉCOUPE : enveloppe globale (Σ étapes estimées par
+  le calculateur) répartie par étape selon la stratégie de la team
+  (40% coding, 20% reviewing, 20% testing, 10% planning, 10% merging).
+- Chaque étape = VECTEUR 6D opti/max : {money, time, thinking_power, req,
+  tok_in, tok_out} avec budget_opti (part) ET budget_max (opti×~1.5, au-delà
+  ON S'ARRÊTE).
+- À l'attribution de la sub_task : l'enveloppe de l'étape ouvre une allocation
+  agent→budget (quota) — vérifiée par consume_call.
+- Réallocateur : détecte la sous-utilisation (patterns) → libère/réaffecte.
+
+##### O5. IMPLÉMENTÉ (à commiter)
+- services/llm_allocation/sorters.py : fonctions de tri PERSONNALISABLES par
+  héritage. Classe SorterBase (key + sort + pick + helpers réutilisables :
+  _cost/_latency_s/_succes_rate/_competence). Sorters par défaut enregistrés :
+  score (≈ _score_model), cost (moins cher), efficiency (compétence÷coût),
+  thinking (thinking_power), weighted (pondération custom qualité/coût/latence/
+  succès). registry register_sorter/get_sorter/list_sorters.
+- services/llm_allocation/pipeline_budget.py : budget par pipeline à la découpe.
+  normalize_strategy (défaut 40% coding / 20% reviewing / 20% testing / 10%
+  planning / 10% merging), estimate_enveloppe (vecteur 6D depuis llm_task_cost),
+  split_enveloppe (répartition par type puis par instance), step_budget (opti +
+  max=opti×1.5), allocate_step (ouvre l'allocation agent→budget à l'attribution).
+- team_spec.py : + allocation_strategy (répartition du pipeline, surchargé par
+  le manifest team).
+- service_spec.py (agent) : + llm_call_type (burst/constant/unknown, normalisé)
+  — comportement de consommation DÉCLARÉ, le profileur mesuré le surcharge.
+- Validé : sorters extensibles (sous-classe custom enregistrée), répartition
+  40/20/20/10/10 sur instances, opti/max ×1.5, TeamSpec/AgentSpec parsés.

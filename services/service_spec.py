@@ -49,6 +49,16 @@ class AgentSpec:
     role: str = "chat"
     occupation: str = "noncontinue"
     config: Dict[str, Any] = field(default_factory=dict)
+    # Comportement de consommation déclaré (Idée 18, O3) : burst | constant |
+    # unknown (défaut). Le profileur MESURÉ surcharge cette déclaration (les
+    # utilisateurs ne savent pas ce qu'ils font). Un agent burst libère vite
+    # son allocation (réallocateur), un constant la conserve.
+    llm_call_type: str = "unknown"
+
+    @staticmethod
+    def _normalize_call_type(v) -> str:
+        v = (v or "unknown").strip().lower()
+        return v if v in ("burst", "constant", "unknown") else "unknown"
 
 
 @dataclass
@@ -139,6 +149,8 @@ class ServiceSpec:
                 role=agent_raw.get("role", "chat"),
                 occupation=agent_raw.get("occupation", "noncontinue"),
                 config=agent_raw.get("config", {}),
+                llm_call_type=AgentSpec._normalize_call_type(
+                    agent_raw.get("llm_call_type")),
             )
 
         return ServiceSpec(
@@ -164,4 +176,9 @@ class ServiceSpec:
             "is_agent": self.is_agent,
             "entrypoints": list(self.entrypoints.keys()),
             "restart": self.supervisor.restart,
+            "agent": {
+                "role": self.agent.role,
+                "occupation": self.agent.occupation,
+                "llm_call_type": self.agent.llm_call_type,
+            } if self.agent else None,
         }
