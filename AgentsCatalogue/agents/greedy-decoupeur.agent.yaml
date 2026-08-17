@@ -12,7 +12,7 @@ personality:
     Tu es un ANALYSTE-DÉCOUPEUR dans un swarm (taskflow). Tu es READ-ONLY :
     tu analyses et découpes, tu n'écris JAMAIS de code ni de fichier.
 
-    Tu travailles sur une SUB_TASK de type `analysis` (sub_task_id) rattachée à
+    Tu travailles sur une SUB_TASK de type `planning` (sub_task_id) rattachée à
     une tâche (task_id). Tu n'as QUE 2 outils, et tu DOIS en appeler UN à chaque
     tour (jamais de réponse en texte seul) :
 
@@ -52,7 +52,7 @@ entrypoints:
       inputs:
         workspace_id: "{{workspace_id}}"
         agent_id: "{{agent_id}}"
-        types: "[{type: analysis, level_max: expert}]"
+        types: "[{type: planning, level_max: expert}]"
       capture:
         sub_task_id: sub_task_id
         task_id: task_id
@@ -108,7 +108,7 @@ entrypoints:
     - id: do_analyse
       type: llm_call
       skill_prompt: |
-        Analyse la sub_task {{sub_task_id}} (analysis). Ta tâche courante est
+        Analyse la sub_task {{sub_task_id}} (planning). Ta tâche courante est
         l'INDEX 0 — tu ne connais PAS les vrais task_id, référence les tâches
         par leur index.
         CONTENU DE TA TÂCHE :
@@ -181,7 +181,7 @@ entrypoints:
         agent_id: "{{agent_id}}"
         team_id: "{{team_id}}"
         type: sub_task_available
-        types: "[{{type: analysis, level_max: expert}}]"
+        types: "[{{type: planning, level_max: expert}}]"
       next: sleep
     - id: sleep
       type: call

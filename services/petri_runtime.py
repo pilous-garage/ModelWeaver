@@ -14,7 +14,7 @@ Sortie : un "snapshot de marquage" que la GUI / le diag peut afficher :
     "agents": { "<agent>": {"step": "do_work", "state": "running|dead",
                             "flow": "main|pause|..." } },
     "data":   { "coding": {"doing": 2, "done": 3, "supervised": 1},
-                "analysis": {...} },
+                "planning": {...} },
     "ts":     173...
   }
 

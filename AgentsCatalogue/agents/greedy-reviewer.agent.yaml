@@ -1,12 +1,12 @@
 name: greedy-reviewer
 role: relecteur
 description: >
-  Reviewer glouton — taskflow V0.15 : ask_new_task (pioche une sub_task review attribuée
+  Reviewer glouton — taskflow V0.15 : ask_new_task (pioche une sub_task reviewing attribuée
   par le supervisor) → allocation LLM → do_work (travail + sub_task_done
   tag) → re-boucle si nécessaire. sub_task_release en cas d'échec.
 personality:
   tone: ''
-  system_prompt: "Tu es un reviewer dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (review) de la tâche {{{{task_id}}}} : lis les livrables, vérifie la conformité, puis workspace/sub_task_done@v1 avec tag=ok (conforme) ou tag=fail (problèmes). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1. Réponds en français."
+  system_prompt: "Tu es un reviewer dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (reviewing) de la tâche {{{{task_id}}}} : lis les livrables, vérifie la conformité, puis workspace/sub_task_done@v1 avec tag=ok (conforme) ou tag=fail (problèmes). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1. Réponds en français."
 model_requirements:
   min_context_tokens: 16384
   capabilities:
@@ -26,7 +26,7 @@ entrypoints:
       inputs:
         workspace_id: "{workspace_id}"
         agent_id: "{agent_id}"
-        types: "[{{type: review, level_max: expert}}]"
+        types: "[{{type: reviewing, level_max: expert}}]"
       capture:
         sub_task_id: sub_task_id
         task_id: task_id
@@ -48,7 +48,7 @@ entrypoints:
     - id: do_work
       type: llm_call
       skill_prompt: |
-        Traite la sub_task {{sub_task_id}} (review) de la tâche {{task_id}} : lis les livrables (workspace/sub_task_get@v1), vérifie la conformité, puis workspace/sub_task_done@v1 (tag=ok | fail). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
+        Traite la sub_task {{sub_task_id}} (reviewing) de la tâche {{task_id}} : lis les livrables (workspace/sub_task_get@v1), vérifie la conformité, puis workspace/sub_task_done@v1 (tag=ok | fail). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
@@ -100,7 +100,7 @@ entrypoints:
         agent_id: "{{agent_id}}"
         team_id: "{{team_id}}"
         type: sub_task_available
-        types: "[{{type: review, level_max: expert}}]"
+        types: "[{{type: reviewing, level_max: expert}}]"
       next: sleep
     - id: sleep
       type: call

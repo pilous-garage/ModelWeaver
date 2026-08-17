@@ -188,13 +188,13 @@ resources:
 # sub_task de sortie (avec dépendance) et passe le groupe complet en supervised.
 # out_type vide = pas de création (le noeud est terminal → supervised).
 supervisor_rules:
-  - {in_type: analysis, in_tag: ok, out_type: "", out_tag: ""}
-  - {in_type: coding, in_tag: done/ok, out_type: review, out_tag: ""}
-  - {in_type: coding, in_tag: done/failure, out_type: analysis, out_tag: ""}
-  - {in_type: coding, in_tag: done/need_split, out_type: analysis, out_tag: ""}
-  - {in_type: review, in_tag: ok, out_type: testing, out_tag: ""}
-  - {in_type: review, in_tag: fail, out_type: coding, out_tag: ""}
-  - {in_type: testing, in_tag: ok, out_type: merge, out_tag: ""}
+  - {in_type: planning, in_tag: ok, out_type: "", out_tag: ""}
+  - {in_type: coding, in_tag: done/ok, out_type: reviewing, out_tag: ""}
+  - {in_type: coding, in_tag: done/failure, out_type: planning, out_tag: ""}
+  - {in_type: coding, in_tag: done/need_split, out_type: planning, out_tag: ""}
+  - {in_type: reviewing, in_tag: ok, out_type: testing, out_tag: ""}
+  - {in_type: reviewing, in_tag: fail, out_type: coding, out_tag: ""}
+  - {in_type: testing, in_tag: ok, out_type: merging, out_tag: ""}
   - {in_type: testing, in_tag: fail, out_type: coding, out_tag: ""}
-  - {in_type: merge, in_tag: ok, out_type: "", out_tag: ""}
-  - {in_type: merge, in_tag: conflict, out_type: coding, out_tag: ""}
+  - {in_type: merging, in_tag: ok, out_type: "", out_tag: ""}
+  - {in_type: merging, in_tag: conflict, out_type: coding, out_tag: ""}

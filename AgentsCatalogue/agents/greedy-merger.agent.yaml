@@ -1,12 +1,12 @@
 name: greedy-merger
 role: orchestrateur
 description: >
-  Mergeur glouton (try simple merge → resolve conflict) — taskflow V0.15 : ask_new_task (pioche une sub_task merge attribuée
+  Mergeur glouton (try simple merge → resolve conflict) — taskflow V0.15 : ask_new_task (pioche une sub_task merging attribuée
   par le supervisor) → allocation LLM → do_work (travail + sub_task_done
   tag) → re-boucle si nécessaire. sub_task_release en cas d'échec.
 personality:
   tone: ''
-  system_prompt: "Tu es un mergeur dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (merge) de la tâche {{{{task_id}}}} : tente le merge simple (git le gère bien sans conflit), puis en cas de conflit résous-le ; termine par workspace/sub_task_done@v1 avec tag=ok (merge réussi) ou tag=conflict (conflit non résolu → release). Réponds en français."
+  system_prompt: "Tu es un mergeur dans un swarm parallèle (taskflow). Tu traites la sub_task {{{{sub_task_id}}}} (merging) de la tâche {{{{task_id}}}} : tente le merge simple (git le gère bien sans conflit), puis en cas de conflit résous-le ; termine par workspace/sub_task_done@v1 avec tag=ok (merge réussi) ou tag=conflict (conflit non résolu → release). Réponds en français."
 model_requirements:
   min_context_tokens: 16384
   capabilities:
@@ -26,7 +26,7 @@ entrypoints:
       inputs:
         workspace_id: "{workspace_id}"
         agent_id: "{agent_id}"
-        types: "[{{type: merge, level_max: expert}}]"
+        types: "[{{type: merging, level_max: expert}}]"
       capture:
         sub_task_id: sub_task_id
         task_id: task_id
@@ -48,7 +48,7 @@ entrypoints:
     - id: do_work
       type: llm_call
       skill_prompt: |
-        Traite la sub_task {{sub_task_id}} (merge) de la tâche {{task_id}} : try simple merge (git auto), sinon resolve conflict ; puis workspace/sub_task_done@v1 (tag=ok | conflict). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
+        Traite la sub_task {{sub_task_id}} (merging) de la tâche {{task_id}} : try simple merge (git auto), sinon resolve conflict ; puis workspace/sub_task_done@v1 (tag=ok | conflict). Si tu manques d'information : workspace/ask_intel@v1 (le sous-agent explore ira chercher). Si impossible : workspace/sub_task_release@v1.
       provider_ref: "{{_llm_provider}}"
       model_ref: "{{_llm_model}}"
       agentic: always
@@ -100,7 +100,7 @@ entrypoints:
         agent_id: "{{agent_id}}"
         team_id: "{{team_id}}"
         type: sub_task_available
-        types: "[{{type: merge, level_max: expert}}]"
+        types: "[{{type: merging, level_max: expert}}]"
       next: sleep
     - id: sleep
       type: call

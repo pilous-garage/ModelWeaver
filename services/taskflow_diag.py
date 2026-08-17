@@ -23,9 +23,9 @@ from typing import Any, Dict, List
 
 # Carte skill → types de sub_tasks PRODUITS (créés) par le skill.
 SKILL_PRODUCES: Dict[str, List[str]] = {
-    "workspace/decoupe@v1": ["analysis", "coding", "testing", "review", "merge"],
+    "workspace/decoupe@v1": ["planning", "coding", "testing", "reviewing", "merging"],
     "workspace/ask_intel@v1": ["exploration"],
-    "workspace/entry_create@v1": ["analysis"],
+    "workspace/entry_create@v1": ["planning"],
 }
 
 # Skills qui REMETTENT le jeton (l'utilisent sans créer) — pas des productions.

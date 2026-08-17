@@ -18,7 +18,7 @@ inputs:
   sub_task_id:
     type: integer
     required: false
-    description: "La sub_task analysis courante (celle qui attend l'exploration)"
+    description: "La sub_task planning courante (celle qui attend l'exploration)"
   intels:
     type: list
     required: true

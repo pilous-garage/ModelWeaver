@@ -36,10 +36,10 @@ class TaskSupervisor:
     # par le FSM de l'agent. Quand une sub_task devient dispo, on réveille un
     # agent du rôle qui la pioche (ROLE_TO_SUBTASK).
     ROLE_TO_SUBTASK = {
-        "architecte": "analysis", "planificateur": "analysis",
+        "architecte": "planning", "planificateur": "planning",
         "explorateur": "exploration", "explore": "exploration",
         "codeur": "coding", "test_runner": "testing",
-        "relecteur": "review", "orchestrateur": "merge",
+        "relecteur": "reviewing", "orchestrateur": "merging",
         "prepare_response": "respond", "consensus": "avis", "avis": "avis",
     }
 
@@ -195,7 +195,7 @@ class TaskSupervisor:
                 # trop de tentatives → re-découpe
                 sc.sub_tasks.mark_supervised(st["sub_task_id"])
                 sc.sub_tasks.create(
-                    task_id=st["task_id"], sub_task_type="analysis",
+                    task_id=st["task_id"], sub_task_type="planning",
                     difficulty="medium", status="unattributed",
                     team_id=team_id, priority=10,
                     description=(f"Re-découper la sous-tâche "

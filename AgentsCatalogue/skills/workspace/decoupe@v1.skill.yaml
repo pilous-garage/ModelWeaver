@@ -20,7 +20,7 @@ inputs:
   sub_task_id:
     type: integer
     required: false
-    description: "La sub_task analysis courante (index 0)"
+    description: "La sub_task planning courante (index 0)"
   types:
     type: list
     required: false

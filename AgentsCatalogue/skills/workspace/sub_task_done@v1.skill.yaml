@@ -3,8 +3,8 @@ category: workspace
 description: >
   MARQUE une sub_task done + TAG (posé par l'agent d'exécution, contraint par
   type : coding→done/ok|done/failure|done/need_split ; testing→ok|fail|no_test ;
-  review→ok|fail ; merge→ok|conflict ; analysis→ok|failure|need_split). La garde
-  livrable (branch/commit_hash) reste pour coding/review/merge (sauf delivered).
+  reviewing→ok|fail ; merging→ok|conflict ; planning→ok|failure|need_split). La garde
+  livrable (branch/commit_hash) reste pour coding/reviewing/merging (sauf delivered).
 inputs:
   workspace_id:
     type: string

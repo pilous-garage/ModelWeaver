@@ -183,14 +183,14 @@ ROLE_TO_TASK = {
 
 # Taskflow V0.15 : mapping rôle greedy → type de sub_task (relais).
 ROLE_TO_SUBTASK = {
-    "architecte": "analysis",
-    "planificateur": "analysis",
+    "architecte": "planning",
+    "planificateur": "planning",
     "explorateur": "exploration",
     "explore": "exploration",
     "codeur": "coding",
     "test_runner": "testing",
-    "relecteur": "review",
-    "orchestrateur": "merge",
+    "relecteur": "reviewing",
+    "orchestrateur": "merging",
     "prepare_response": "respond",
     "consensus": "avis",
     "avis": "avis",
@@ -1966,7 +1966,7 @@ class AgentManager:
                 # assignée à lui (doing : reprise d'un run coupé/relaunch).
                 types = cond.get("types") or []
                 if isinstance(types, str):
-                    # wait_for créé avant parsing : "[{type: analysis, level_max: expert}]"
+                    # wait_for créé avant parsing : "[{type: planning, level_max: expert}]"
                     import re as _re
                     _parsed = []
                     for _m in _re.finditer(r"\{([^}]*)\}", types):

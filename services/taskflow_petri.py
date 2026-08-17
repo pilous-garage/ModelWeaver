@@ -40,9 +40,9 @@ PICK_SKILL = "workspace/task_ask_new@v1"
 RELEASE_SKILLS = {"workspace/sub_task_done@v1", "workspace/sub_task_release@v1"}
 # Skills qui CRÉENT des jetons : skill → types produits (global_<type>_unattributed).
 PRODUCE_SKILLS: Dict[str, List[str]] = {
-    "workspace/decoupe@v1": ["coding", "testing", "review", "merge"],
+    "workspace/decoupe@v1": ["coding", "testing", "reviewing", "merging"],
     "workspace/ask_intel@v1": ["exploration"],
-    "workspace/entry_create@v1": ["analysis"],
+    "workspace/entry_create@v1": ["planning"],
 }
 
 # Skills PRODUCE qui CLÔTURENT AUSSI la tâche courante (release) : le skill
@@ -192,8 +192,8 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
 
     walk((data or {}).get("entrypoints", {}).get("main", {}).get("steps", []))
 
-    types = sorted(consumes) if consumes else ["analysis", "coding", "testing",
-                                               "review", "merge", "respond",
+    types = sorted(consumes) if consumes else ["planning", "coding", "testing",
+                                               "reviewing", "merging", "respond",
                                                "exploration"]
     net = Petri(name, types)
     net.agent = name
@@ -273,12 +273,12 @@ def build_from_yaml(path: Path, agent_name: str = "") -> Dict[str, Any]:
         for tk, tk_types in classes:
             if tk == "pick":
                 tk_main = "pick"
-                for t in (tk_types or ["analysis"]):
+                for t in (tk_types or ["planning"]):
                     d_in.append(f"global_{t}_attributed")
                     d_out.append(f"agent_data_{name}_{t}_doing")
             elif tk == "release":
                 tk_main = tk_main if tk_main != "normal" else "release"
-                for t in sorted(consumes or ["analysis"]):
+                for t in sorted(consumes or ["planning"]):
                     d_in.append(f"agent_data_{name}_{t}_doing")
                     d_out.append(f"global_{t}_done")
             elif tk == "produce":
@@ -386,7 +386,7 @@ def supervisor_petri(rules: List[Dict[str, Any]] = (),
                      workspace: str = "supervisor") -> Petri:
     """Pétri COMPLET du SUPERVISOR (sans LLM) : ses places (les pots globaux)
     et ses transitions (assign, finalise, relais selon les règles, respond)."""
-    all_types = ["analysis", "coding", "testing", "review", "merge",
+    all_types = ["planning", "coding", "testing", "reviewing", "merging",
                  "respond", "exploration"]
     net = Petri(workspace, all_types)
     # Places d'activité du superviseur
@@ -405,7 +405,7 @@ def supervisor_petri(rules: List[Dict[str, Any]] = (),
             net.trans(f"sup_relay_{it}_{ot}", [f"global_{it}_done"],
                       [f"global_{ot}_unattributed"], f"{it}→{ot}")
     # respond : créé par le superviseur quand une entrée est close
-    net.trans("sup_make_respond", [f"global_analysis_done"],
+    net.trans("sup_make_respond", [f"global_planning_done"],
               [f"global_respond_unattributed"], "make_respond")
     return net
 
@@ -888,7 +888,7 @@ def supervisor_transitions(rules: List[Dict[str, Any]] = ()) -> List[Dict[str, A
         est done, crée le relais out_type → unattributed."""
     trans: List[Dict[str, Any]] = []
     # assign + finalise (par type connu)
-    for t in ("analysis", "coding", "testing", "review", "merge", "respond",
+    for t in ("planning", "coding", "testing", "reviewing", "merging", "respond",
               "exploration"):
         trans.append({"name": f"sup_assign_{t}",
                       "in": [f"global_{t}_unattributed"],

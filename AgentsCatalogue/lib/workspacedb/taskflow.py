@@ -21,11 +21,11 @@ from modules.sql.workspace import WorkspaceDB
 
 # Types de sub_task connus (noyau) + tags par type (posés par l'agent).
 TASK_TAGS: Dict[str, List[str]] = {
-    "analysis": ["ok", "failure", "need_split"],
+    "planning": ["ok", "failure", "need_split"],
     "coding": ["done/ok", "done/failure", "done/need_split"],
     "testing": ["ok", "fail", "no_test"],
-    "review": ["ok", "fail"],
-    "merge": ["ok", "conflict"],
+    "reviewing": ["ok", "fail"],
+    "merging": ["ok", "conflict"],
     "respond": ["ok"],
     "exploration": ["ok", "fail"],
     "avis": ["ok", "fail"],  # demande d'avis → le consensus la pick
@@ -57,10 +57,10 @@ def _current_analysis(db, sc, task_id: int):
     récente unattributed)."""
     rows = sc.sub_tasks.list_for_task(int(task_id))
     for r in rows:
-        if r["sub_task_type"] == "analysis" and r["status"] == "doing":
+        if r["sub_task_type"] == "planning" and r["status"] == "doing":
             return r
     for r in rows:
-        if r["sub_task_type"] == "analysis" and r["status"] in (
+        if r["sub_task_type"] == "planning" and r["status"] in (
                 "unattributed", "waiting_dependencies"):
             return r
     return None
@@ -226,7 +226,7 @@ def decoupe(inputs: dict, home: str) -> dict:
                 elif len(deps) > 1:
                     # merge intermédiaire : fusion des parents avant la tâche
                     m = sc.sub_tasks.create(
-                        task_id=int(task_id), sub_task_type="merge",
+                        task_id=int(task_id), sub_task_type="merging",
                         difficulty="medium", status="waiting_dependencies",
                         repo=repo, branch=branch, team_id=team_id)
                     for d in deps:
@@ -237,7 +237,7 @@ def decoupe(inputs: dict, home: str) -> dict:
 
         # ── Merge FINAL : toutes les sub_tasks → x (analysis) attend ──
         merge_final = sc.sub_tasks.create(
-            task_id=int(task_id), sub_task_type="merge",
+            task_id=int(task_id), sub_task_type="merging",
             difficulty="medium", status="waiting_dependencies",
             repo=repo, branch=branch, team_id=team_id)
         for idx in created:
@@ -263,7 +263,7 @@ def decoupe(inputs: dict, home: str) -> dict:
                     idx = tsk.get("task_id")
                     if idx is not None and int(idx) in created and stype:
                         steps.append((created[int(idx)], stype))
-            steps.append((merge_final["sub_task_id"], "merge"))
+            steps.append((merge_final["sub_task_id"], "merging"))
             cat = CatalogueDB()
             budget_res = open_pipeline_tracking(
                 db, cat, workspace_id, int(task_id), steps,
@@ -400,7 +400,7 @@ def ask_new_task(inputs: dict, home: str) -> dict:
     agent_id = inputs.get("agent_id", "")
     types = inputs.get("types") or []
     if isinstance(types, str):
-        # FSM : "[{type: analysis, level_max: expert}]" (littéral yaml)
+        # FSM : "[{type: planning, level_max: expert}]" (littéral yaml)
         import re
         parsed = []
         for m in re.finditer(r"\{([^}]*)\}", types):
@@ -604,7 +604,7 @@ def sub_task_done(inputs: dict, home: str) -> dict:
                     "error": f"tag '{tag}' invalide pour {st['sub_task_type']} "
                              f"(attendu: {allowed})"}
         # Garde livrable.
-        if st["sub_task_type"] in ("coding", "review", "merge") \
+        if st["sub_task_type"] in ("coding", "reviewing", "merging") \
                 and not (branch or commit_hash or delivered):
             db.close()
             return {"ok": False,
@@ -811,7 +811,7 @@ def create_entry(inputs: dict, home: str) -> dict:
             domain=domain, team_id=team_id, primordial=1,
             repo=repo, branch=branch)
         st = sc.sub_tasks.create(
-            task_id=task["task_id"], sub_task_type="analysis",
+            task_id=task["task_id"], sub_task_type="planning",
             difficulty="medium", status="unattributed", team_id=team_id,
             description=f"{title}\n{description}".strip())
         db.close()
