@@ -497,6 +497,80 @@ CREATE TABLE IF NOT EXISTS model_efficacy (
  CREATE INDEX IF NOT EXISTS idx_mps_model ON model_provider_scoring(model_id);
  CREATE INDEX IF NOT EXISTS idx_mps_endpoint ON model_provider_scoring(endpoint_id);
 
+-- ============================================================
+-- 11ter. SCORES PAR NIVEAU (Idée 18 — assignation LLM évolutive).
+--    Init = 1.0 partout (neutre, pas pénalisant). Le scraping/bonus sert de
+--    léger biais max. Les tables sont indexées par (modèle, domaine) et
+--    (modèle, task_type) avec 5 colonnes de niveau (debutant→expert) — PAS un
+--    cube (domaine × type × niveau) qui exploserait.
+--    L'expérience (supervisor + benchmarks) mettra à jour ces scores (batch,
+--    fraîcheur demi-vie + stabilité) — plus tard (Idée 18).
+-- ============================================================
+
+-- Référentiel des DOMAINES (nature de la requête).
+CREATE TABLE IF NOT EXISTS scoring_domaines (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,     -- coding | text_generation | math | data | reasoning | research | admin
+    label TEXT NOT NULL
+);
+INSERT OR IGNORE INTO scoring_domaines (code, label) VALUES
+    ('coding', 'Écriture/modification de code'),
+    ('text_generation', 'Rédaction / génération de texte'),
+    ('math', 'Calcul / mathématiques'),
+    ('data', 'Données / analyse'),
+    ('reasoning', 'Raisonnement'),
+    ('research', 'Recherche d\'information'),
+    ('admin', 'Tâches administratives');
+
+-- Référentiel des TYPES DE TÂCHE (pipeline).
+CREATE TABLE IF NOT EXISTS scoring_task_types (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,     -- planning | coding | reviewing | testing | merging | respond | exploration
+    label TEXT NOT NULL
+);
+INSERT OR IGNORE INTO scoring_task_types (code, label) VALUES
+    ('planning', 'Découpe / planification'),
+    ('coding', 'Écriture de code'),
+    ('reviewing', 'Relecture de code'),
+    ('testing', 'Tests'),
+    ('merging', 'Fusion'),
+    ('respond', 'Réponse finale'),
+    ('exploration', 'Exploration / intel');
+
+-- Score par MODÈLE × DOMAINE × NIVEAU (init 1.0).
+CREATE TABLE IF NOT EXISTS llm_domaine_score (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+    domaine_id   INTEGER NOT NULL REFERENCES scoring_domaines(id),
+    debutant     REAL DEFAULT 1.0,
+    junior       REAL DEFAULT 1.0,
+    intermediaire REAL DEFAULT 1.0,
+    senior       REAL DEFAULT 1.0,
+    expert       REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id, domaine_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lds_model ON llm_domaine_score(model_id);
+CREATE INDEX IF NOT EXISTS idx_lds_domaine ON llm_domaine_score(domaine_id);
+
+-- Score par MODÈLE × TASK_TYPE × NIVEAU (init 1.0).
+CREATE TABLE IF NOT EXISTS llm_task_type_score (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+    debutant     REAL DEFAULT 1.0,
+    junior       REAL DEFAULT 1.0,
+    intermediaire REAL DEFAULT 1.0,
+    senior       REAL DEFAULT 1.0,
+    expert       REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id, task_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lts_model ON llm_task_type_score(model_id);
+CREATE INDEX IF NOT EXISTS idx_lts_type ON llm_task_type_score(task_type_id);
+
  -- ============================================================
  -- 11b. ALIAS_MODEL — Noms d'un modèle chez les sources externes.
  -- Lie notre model_id au nom utilisé par une source (provider ou

@@ -2123,6 +2123,98 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration adresse_runtime ignorée: {e}")
 
+        # ── Migration scores par NIVEAU (Idée 18) : init 1.0 partout ──
+        # llm_domaine_score + llm_task_type_score : une ligne par (modèle,
+        # domaine) / (modèle, type) avec 5 colonnes de niveau à 1.0 (neutre).
+        # Le grain = catalogue_models (le modèle canonique). La mise à jour
+        # par l'expérience viendra plus tard.
+        try:
+            # Tables de référence (domaines + types) — créées ICI pour les BDD
+            # pré-existantes (l'executescript du schéma ne se rejoue que si
+            # vierge).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS scoring_domaines (
+                    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    label TEXT NOT NULL
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS scoring_task_types (
+                    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    label TEXT NOT NULL
+                )
+            """)
+            self.conn.execute("INSERT OR IGNORE INTO scoring_domaines (code, label) VALUES "
+                              "('coding','Code'),('text_generation','Texte'),('math','Maths'),"
+                              "('data','Données'),('reasoning','Raisonnement'),"
+                              "('research','Recherche'),('admin','Admin')")
+            self.conn.execute("INSERT OR IGNORE INTO scoring_task_types (code, label) VALUES "
+                              "('planning','Découpe'),('coding','Code'),('reviewing','Relecture'),"
+                              "('testing','Tests'),('merging','Fusion'),('respond','Réponse'),"
+                              "('exploration','Exploration')")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_domaine_score (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+                    domaine_id   INTEGER NOT NULL REFERENCES scoring_domaines(id),
+                    debutant     REAL DEFAULT 1.0,
+                    junior       REAL DEFAULT 1.0,
+                    intermediaire REAL DEFAULT 1.0,
+                    senior       REAL DEFAULT 1.0,
+                    expert       REAL DEFAULT 1.0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, domaine_id)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_task_type_score (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+                    debutant     REAL DEFAULT 1.0,
+                    junior       REAL DEFAULT 1.0,
+                    intermediaire REAL DEFAULT 1.0,
+                    senior       REAL DEFAULT 1.0,
+                    expert       REAL DEFAULT 1.0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, task_type_id)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lds_model ON llm_domaine_score(model_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lts_model ON llm_task_type_score(model_id)")
+            # Init : une ligne par (modèle × domaine) et (modèle × type), à 1.0.
+            # Seulement si vide (idempotent) — on ne recrée pas après l'expérience.
+            _lds = self.conn.execute(
+                "SELECT COUNT(*) c FROM llm_domaine_score").fetchone()
+            if _lds and _lds["c"] == 0:
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO llm_domaine_score (model_id, domaine_id)
+                    SELECT DISTINCT cm.id, sd.id
+                    FROM catalogue_models cm
+                    CROSS JOIN scoring_domaines sd
+                    WHERE cm.model_key != ''
+                """)
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO llm_task_type_score (model_id, task_type_id)
+                    SELECT DISTINCT cm.id, st.id
+                    FROM catalogue_models cm
+                    CROSS JOIN scoring_task_types st
+                    WHERE cm.model_key != ''
+                """)
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration scores par niveau ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
