@@ -133,6 +133,22 @@ def op_service_restart(params):
     return _service_command(name, "restart")
 
 
+def op_service_reload(params):
+    """Reload / regen_inline d'un service (agent).
+
+    Recharge le manifest OUVERT : si aucun changement via ModelWeaver, ne fait
+    rien ; sinon met à jour le workflow/entrypoints + RESTART des entrypoints
+    non finis (le continue step-à-step a été abandonné — carnet O6).
+    Paramètres : name (service), reset_running (bool, défaut True).
+    """
+    name = params.get("name", "")
+    reset_running = bool(params.get("reset_running", True))
+    svc = _mgr.get(name)
+    if svc:
+        return svc.reload(reset_running=reset_running)
+    return {"status": "error", "error": f"service introuvable: {name}"}
+
+
 def op_service_stop(params):
     name = params.get("name", "")
     svc = _mgr.get(name)
@@ -291,6 +307,7 @@ register("service/get",        op_service_get)
 register("service/routes",     op_service_routes)
 register("service/start",      op_service_start)
 register("service/restart",    op_service_restart)
+register("service/reload",     op_service_reload)
 register("service/stop",       op_service_stop)
 register("service/register",   op_service_register)
 register("service/unregister", op_service_unregister)

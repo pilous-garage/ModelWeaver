@@ -112,6 +112,144 @@ class Service:
         self.stop()
         self.start()
 
+    def reload(self, reset_running: bool = True) -> dict:
+        """RELOAD / REGEN_INLINE (Idée 18, O1/O6).
+
+        Recharge le service (agent-as-service) depuis son manifest OUVERT :
+          1. relit le manifest (fichier ouvert — les modifs externes restent
+             ignorées, seules les mutations via ModelWeaver comptent) ;
+          2. met à jour le spec en mémoire + config_json/workflow de l'agent BDD ;
+          3. RESTART des entrypoints NON FINIS (reset state_json/variables du
+             run en cours) + traitement des signaux en cours/non traités.
+        Le "continue step-à-step" a été ABANDONNÉ (carnet O6) : changement de
+        code → on redémarre les entrypoints concernés.
+        Retourne {reloaded, changed, reason, restarted_entrypoints}.
+        """
+        if not self.spec.source_path:
+            return {"status": "error",
+                    "error": "pas de manifest source (spec construit en code)"}
+        from services.manifest_store import open_manifest, close_manifest
+        from services.service_spec import ServiceSpec
+        # Re-charge depuis le DISQUE : on oublie le manifest mémorisé pour
+        # ré-ouvrir (les modifs faites via ModelWeaver sont déjà écrites sur
+        # disque ; les modifs externes sont prises en compte seulement ici,
+        # au reload explicite — pas à chaque accès).
+        close_manifest(self.spec.source_path)
+        try:
+            new_spec = ServiceSpec.from_yaml(self.spec.source_path)
+        except Exception as e:
+            return {"status": "error", "error": f"rechargement manifest: {e}"}
+        changed = new_spec.to_yaml_dict() != self.spec.to_yaml_dict()
+        old_spec = self.spec
+        self.spec = new_spec
+        self._reload_agent_bdd(new_spec)
+        restarted = []
+        if changed and reset_running:
+            restarted = self._restart_unfinished_entrypoints()
+        self._reload_signals()
+        return {
+            "status": "ok",
+            "reloaded": True,
+            "changed": changed,
+            "reason": "workflow/entrypoints rechargés depuis le manifest" if changed
+                      else "aucun changement détecté",
+            "restarted_entrypoints": restarted,
+            "previous_spec_name": old_spec.name,
+        }
+
+    def _reload_agent_bdd(self, spec: ServiceSpec) -> None:
+        """Met à jour config_json de l'agent BDD (workflow/entrypoints) depuis
+        le manifest rechargé."""
+        if not spec.is_agent or not spec.agent:
+            return
+        try:
+            from modules.sql.sql_module import AgentsDB
+            from modules.sql.agents_repo import _add_column_if_missing  # noqa
+            db = AgentsDB()
+            row = db.conn.execute(
+                "SELECT agent_id FROM agents WHERE name = ?", (spec.name,)).fetchone()
+            if not row:
+                return
+            config = dict(spec.agent.config or {})
+            # Entrypoints du manifest → config.entrypoints (pour le FSM).
+            if spec.entrypoints:
+                config["entrypoints"] = {
+                    ep_name: {"type": ep.type, "description": ep.description,
+                              "method": ep.method, "path": ep.path,
+                              "handler": ep.handler, "entrypoint": ep.entrypoint}
+                    for ep_name, ep in spec.entrypoints.items()
+                }
+            db.conn.execute(
+                "UPDATE agents SET config_json = ? WHERE agent_id = ?",
+                (__import__("json").dumps(config), row["agent_id"]))
+            db.conn.commit()
+        except Exception:
+            pass
+
+    def _restart_unfinished_entrypoints(self) -> List[str]:
+        """RESTART des entrypoints non finis (le run est en cours : on reset
+        l'état du run — state_json + variables — mais on ne tue pas l'agent).
+        Vérifie la terminaison via la stack (agent_runtime.current_step)."""
+        if not self.spec.is_agent:
+            return []
+        restarted: List[str] = []
+        try:
+            from modules.sql.sql_module import AgentsDB
+            db = AgentsDB()
+            row = db.conn.execute(
+                "SELECT agent_id, state_json FROM agents WHERE name = ?",
+                (self.name,)).fetchone()
+            if not row:
+                return []
+            agent_id = row["agent_id"]
+            # Entrypoint en cours (stack) : agent_runtime.current_step non null
+            # → le run n'est PAS terminé.
+            rt = db.conn.execute(
+                "SELECT current_step FROM agent_runtime WHERE agent_id = ?",
+                (agent_id,)).fetchone()
+            cur_step = rt["current_step"] if rt else None
+            if cur_step:
+                ep_name = "main"
+                try:
+                    st = __import__("json").loads(row["state_json"] or "{}")
+                    ep_name = st.get("current_entrypoint", "main")
+                except Exception:
+                    pass
+                # Reset de l'état du run en cours (on repart au début).
+                db.conn.execute(
+                    "UPDATE agents SET state_json = ?, variables_json = ? "
+                    "WHERE agent_id = ?",
+                    (__import__("json").dumps({}), __import__("json").dumps({}),
+                     agent_id))
+                db.conn.execute(
+                    "UPDATE agent_runtime SET current_step = NULL "
+                    "WHERE agent_id = ?", (agent_id,))
+                db.conn.commit()
+                restarted.append(ep_name)
+            return restarted
+        except Exception:
+            return restarted
+
+    def _reload_signals(self) -> None:
+        """Traite les signaux en cours/non traités au reload : les signaux
+        PENDING (jamais ACKED) restent — l'agent les reprendra à son réveil ;
+        les signaux en cours de traitement (ACKED non COMPLETED) sont remis à
+        PENDING pour être re-traités après le reload."""
+        try:
+            from modules.sql.sql_module import AgentsDB
+            db = AgentsDB()
+            row = db.conn.execute(
+                "SELECT agent_id FROM agents WHERE name = ?", (self.name,)).fetchone()
+            if not row:
+                return
+            agent_id = row["agent_id"]
+            db.conn.execute(
+                "UPDATE agent_signals SET status = 'PENDING' "
+                "WHERE agent_id = ? AND status = 'ACKED'", (agent_id,))
+            db.conn.commit()
+        except Exception:
+            pass
+
     def is_alive(self) -> bool:
         if self.pid <= 0:
             return False
@@ -167,7 +305,8 @@ class Service:
             ("start",   lambda p, _s=self: _s._start_handler(p)),
             ("stop",    lambda p, _s=self: _s._stop_handler(p)),
             ("restart", lambda p, _s=self: _s._restart_handler(p)),
-            ("routes",  lambda p, _s=self, _n=sn: _s._routes_handler(p, _n)),
+            ("reload",  lambda p, _s=self: _s._reload_handler(p)),
+            ("routes",  lambda p, _n=sn: _s._routes_handler(p, _n)),
         ]
         for suffix, handler in mandatory:
             route = f"service/{sn}/{suffix}"
@@ -292,6 +431,10 @@ class Service:
             "spec": self.spec.to_dict(),
         }
 
+    def _reload_handler(self, params: dict) -> dict:
+        """Route service/{name}/reload — voir Service.reload."""
+        return self.reload(reset_running=bool(params.get("reset_running", True)))
+
     # ── DB sync ──────────────────────────────────────────────────────────
 
     def _write_db(self):
@@ -378,6 +521,13 @@ class ServiceManager:
         svc = self._services.get(svc_name)
         if svc:
             svc.restart()
+
+    def reload(self, svc_name: str, reset_running: bool = True) -> dict:
+        """Reload/regen_inline d'un service (agent). Voir Service.reload."""
+        svc = self._services.get(svc_name)
+        if not svc:
+            return {"status": "error", "error": f"service inconnu: {svc_name}"}
+        return svc.reload(reset_running=reset_running)
 
     # ── Supervision ──────────────────────────────────────────────────────
 

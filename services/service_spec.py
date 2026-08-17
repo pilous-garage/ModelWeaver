@@ -79,6 +79,81 @@ class ServiceSpec:
     health: HealthCheckSpec = field(default_factory=HealthCheckSpec)
     entrypoints: Dict[str, EntrypointSpec] = field(default_factory=dict)
     agent: Optional[AgentSpec] = None
+    # Fichier ouvert (Idée 18, O1) — même protocole que TeamSpec.
+    _source_path: str = ""
+    _dirty: bool = field(default=False, compare=False)
+
+    @property
+    def source_path(self) -> str:
+        return self._source_path
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    def mark_dirty(self):
+        self._dirty = True
+
+    def save(self) -> dict:
+        """Persiste vers le manifest ouvert (règles manifest_store)."""
+        if not self._source_path:
+            return {"ok": False, "written": False,
+                    "reason": "pas de fichier source (spec construit en code)"}
+        if not self._dirty:
+            return {"ok": True, "written": False,
+                    "reason": "aucune modification via ModelWeaver"}
+        from services.manifest_store import write_yaml, open_manifest
+        om = open_manifest(self._source_path)
+        om.mark_dirty()
+        res = write_yaml(self._source_path, self.to_yaml_dict())
+        if res.get("written"):
+            self._dirty = False
+        return res
+
+    def to_yaml_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "description": self.description,
+            "parent": self.parent,
+            "launch": {
+                "command": self.launch.command,
+                "args": self.launch.args,
+                "workdir": self.launch.workdir,
+                "env": self.launch.env,
+                "mode": self.launch.mode,
+            },
+            "supervisor": {
+                "restart": self.supervisor.restart,
+                "max_restarts": self.supervisor.max_restarts,
+                "interval": self.supervisor.interval,
+            },
+            "health": {
+                "type": self.health.type,
+                "port": self.health.port,
+                "endpoint": self.health.endpoint,
+                "interval": self.health.interval,
+                "timeout": self.health.timeout,
+                "command": self.health.command,
+            },
+            "entrypoints": {
+                ep_name: {
+                    "type": ep.type,
+                    "description": ep.description,
+                    "method": ep.method,
+                    "path": ep.path,
+                    "handler": ep.handler,
+                    "entrypoint": ep.entrypoint,
+                }
+                for ep_name, ep in self.entrypoints.items()
+            },
+            "agent": {
+                "role": self.agent.role,
+                "occupation": self.agent.occupation,
+                "config": self.agent.config,
+                "llm_call_type": self.agent.llm_call_type,
+            } if self.agent else None,
+        }
 
     @property
     def is_agent(self) -> bool:
@@ -98,7 +173,10 @@ class ServiceSpec:
     def from_yaml(path: Path | str) -> "ServiceSpec":
         import yaml
         path = Path(path)
-        raw = yaml.safe_load(path.read_text())
+        # Fichier ouvert (Idée 18, O1) — même protocole que TeamSpec.
+        from services.manifest_store import open_manifest
+        om = open_manifest(path)
+        raw = yaml.safe_load(om.content.decode() or path.read_text())
         if not raw:
             raise ValueError(f"Fichier vide: {path}")
         raw.setdefault("version", "0.1.0")
@@ -163,6 +241,7 @@ class ServiceSpec:
             health=health,
             entrypoints=entrypoints,
             agent=agent,
+            _source_path=str(path),
         )
 
     def to_dict(self) -> dict:

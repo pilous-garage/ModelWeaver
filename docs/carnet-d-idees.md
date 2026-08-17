@@ -1002,3 +1002,41 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
   — comportement de consommation DÉCLARÉ, le profileur mesuré le surcharge.
 - Validé : sorters extensibles (sous-classe custom enregistrée), répartition
   40/20/20/10/10 sur instances, opti/max ×1.5, TeamSpec/AgentSpec parsés.
+
+##### O6. RELOAD D'AGENT — le "CONTINUE" ABANDONNÉ (2026-08-17)
+Contexte : reload/regen_inline recharge un agent depuis son manifest ouvert.
+On a envisagé de garder variables + step courant (continuer le run) si la step
+pointée est inchangée. ABANDONNÉ — trop de cas et de bugs en perspective.
+Décision : changement de code → RESTART des entrypoints non finis + signaux
+en cours/non traités.
+
+Raison de l'abandon (à garder au cas où on réessaie) :
+- Le workflow est DÉPLIÉ (skills inlinés) : comparer "la step courante" exige
+  de connaître le niveau de dépliage (si on est au début d'un skill, ok ; au
+  milieu, ambigu). Comparer au seul niveau courant est insuffisant.
+- Hash de step stocké au post_step : il faudrait que le FSM fige une signature
+  de la step exécutée (id + hash du contenu) — coût, et la signature peut
+  masquer un changement réel (même id, même inputs → même signature alors que
+  la logique du skill a changé).
+- Même nom goto + même contenu n'implique pas un comportement identique (les
+  variables/skills référencés changent sous le même nom).
+- Migration d'état (garder les variables encore valides) = le plus doux mais
+  le plus complexe, jamais fiable à 100 %.
+
+Ce qu'on a retenu (FAIT — commité) :
+- RELOAD SIMPLE = recharge config_json (workflow/entrypoints/skills) depuis le
+  manifest + re-hydrate l'agent.
+- STEP MODIFIÉE / entréepoint non fini → RESTART des entrypoints (reset
+  state_json/variables du run) + traitement des signaux en cours/non traités.
+- reload_team = route séparée qui utilise reload_agent pour chaque membre.
+- Vérifier la terminaison des entrypoints via la STACK : current_step non null
+  dans agent_runtime → run non fini → reset (state/variables/current_step).
+- Même protocole fichier ouvert pour les AGENTS (ServiceSpec : _source_path,
+  _dirty, mark_dirty, save, to_yaml_dict).
+- Routes : service/{name}/reload (via _reload_handler + op_service_reload) et
+  team/reload (op_team_reload, Team.reload → Service.reload par membre).
+- Service.reload : close_manifest → from_yaml → compare (changed) → met à jour
+  spec + config_json BDD de l'agent → _restart_unfinished_entrypoints (reset
+  du run en cours) → _reload_signals (ACKED→PENDING pour re-traitement).
+- agent_runtime n'a PAS de colonne status (juste current_step) — le reset ne
+  touche que current_step.

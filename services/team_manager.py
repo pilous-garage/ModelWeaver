@@ -362,6 +362,41 @@ class Team:
         self.stop()
         self.start()
 
+    def reload(self, reset_running: bool = True) -> dict:
+        """Reload de la team (manifest OUVERT) + reload_agent par membre.
+
+        Recharge le manifest team (fichier ouvert — mêmes 3 règles) ; si
+        changement, on re-synchronise membres/leader ET on reload chaque agent
+        membre via Service.reload (workflow/entrypoints + restart des
+        entrypoints non finis — le continue est abandonné, carnet O6)."""
+        if not self.spec.source_path:
+            return {"status": "error", "error": "team sans manifest source"}
+        from services.manifest_store import close_manifest
+        from services.team_spec import TeamSpec
+        close_manifest(self.spec.source_path)
+        try:
+            new_spec = TeamSpec.from_yaml(self.spec.source_path)
+        except Exception as e:
+            return {"status": "error", "error": f"rechargement manifest: {e}"}
+        changed = new_spec.to_yaml_dict() != self.spec.to_yaml_dict()
+        self.spec = new_spec
+        # Reload de chaque agent membre (reload_agent) — le leader aussi.
+        agents_reloaded = []
+        from services.service_manager import ServiceManager
+        mgr = ServiceManager()
+        for m in self.spec.members:
+            svc_name = f"chat:{self.team_name}/{m.agent_name}" if self.team_name else m.agent_name
+            res = mgr.reload(svc_name, reset_running=reset_running)
+            agents_reloaded.append({"agent": m.agent_name, **res})
+        return {
+            "status": "ok",
+            "reloaded": True,
+            "changed": changed,
+            "reason": "manifest team rechargé" if changed
+                      else "aucun changement détecté",
+            "agents_reloaded": agents_reloaded,
+        }
+
     def _set_agent_status(self, agent_name: str, status: str):
         db = _get_agent_db()
         scoped = f"{self.team_name}/{agent_name}" if self.team_name else agent_name
@@ -625,6 +660,16 @@ class TeamManager:
         team = self._teams.get(team_name)
         if team:
             team.restart()
+
+    def reload(self, team_name: str, reset_running: bool = True) -> dict:
+        """Reload de la team : recharge le manifest OUVERT + reload de chaque
+        agent membre via reload_agent (reload_team utilise reload_agent).
+        Décision O6 : le continue step-à-step est abandonné — on redémarre
+        les entrypoints non finis en cas de changement."""
+        team = self._teams.get(team_name)
+        if not team:
+            return {"status": "error", "error": f"team inconnue: {team_name}"}
+        return team.reload(reset_running=reset_running)
 
     def delegate(self, team_name: str, request: str,
                  entrypoint: str = "main", target: Optional[str] = None,

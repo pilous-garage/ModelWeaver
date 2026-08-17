@@ -59,6 +59,20 @@ def op_team_restart(params):
     return {"status": "ok", "name": name}
 
 
+def op_team_reload(params):
+    """Reload/regen_inline d'une équipe (manifest OUVERT).
+
+    Recharge le manifest team + reload_agent par membre (workflow/entrypoints,
+    restart des entrypoints non finis en cas de changement). Le continue
+    step-à-step est abandonné (carnet O6)."""
+    name = params.get("name", "")
+    if not name:
+        return {"status": "error", "error": "name requis"}
+    team_name = f"team:{name}" if not name.startswith("team:") else name
+    reset_running = bool(params.get("reset_running", True))
+    return _mgr.reload(team_name, reset_running=reset_running)
+
+
 def op_team_delegate(params):
     """Délègue une requête à un agent d'une équipe."""
     name = params.get("name", "")
@@ -229,6 +243,7 @@ register("team/get",               op_team_get)
 register("team/start",             op_team_start)
 register("team/stop",              op_team_stop)
 register("team/restart",           op_team_restart)
+register("team/reload",            op_team_reload)
 register("team/delegate",          op_team_delegate)
 register("team/chat",              op_team_chat)
 register("team/add-member",        op_team_add_member)
