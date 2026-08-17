@@ -1354,3 +1354,67 @@ Actions concrètes (phase suivante) :
   domaine inconnu REFUSÉ ; derive_thinking_power passe (garde OK).
 - RESTE : généraliser la garde aux autres domaines (batch/budget/allocation/
   adresse/manifest) + token réel par domaine (défense d'app par processus).
+
+#### R. REFONTE LOCAL_CATALOGUE — catalogue = référentiel méta (2026-08-17)
+
+##### R1. DÉCISIONS PRISES (design session)
+- **Périmètre** : le catalogue local est un référentiel MÉTA de données LÉGÈRES
+  (typées par `data_value_type`), pas un entrepôt de contenu. Les contenus
+  lourds vivent dans des FICHIERS référencés (`file`, ref_file), jamais dans
+  la table. Disque = seule vérité pour le contenu.
+- **data_value_type** (par data) : scalaires (`text[200ch]`, `string`, `int`,
+  `uint`, `float`, `bool`, `date`, `timestamp`, `json`) + composé
+  `row(model_id=int, model_name=string, …)` → colonnes matérielles
+  `data_value_*` créées à chaud (`add_colonne`) pour import de lignes typées.
+  Imbrication `row(row)` possible, pas `row(colonne)`. Data = TABLE → type
+  externe, pas row. + `file` = pure référence (jamais chargée).
+- **Types connus pré-créés** (seed, même schéma que le DDL dynamique
+  `create_type`) : `fichier` (hash), `skill` (yaml, 196), `agent` (yaml, 29),
+  `agent_inline` (value json embarquée — YAML inline dans le manifest parent),
+  `team` (yaml, 8) ; `bench` en réserve.
+- **data_id stable** : hash(ref) par type (pas d'AUTOINCREMENT) → identique
+  entre load/reload et RAM/HDD ; couple (data_type_id, data_id) unique ;
+  tables dérivées référencent (data_type, data_id).
+- **RAM/HDD : abandonné comme mécanisme d'éviction** (pas de value lourde).
+  Un seul writer (token write_catalogue), lecteurs mode=ro, batch upsert.
+  `nb_data`/`last_access_max` éviction : plus nécessaires. SQLite indexé
+  suffit ; 100k entrées ≈ 30 Mo méta.
+- **Domaine par famille** (proposé) : DATA (tables {type}_data/*),
+  SECURITY (privileges, security_supervisor), ENV (path, namespace),
+  SUPPORT (data_type, data_type_limite, shared_default, meta),
+  TRACES (last_access/modify buffer). À ajouter dans domain_writers ?
+- Reste à décider : voir R3.
+
+##### R2. IDÉES REPORTÉES (on verra)
+- **large_text / large_blob** (data embarquée lourde, 4M+ chars) : NON
+  implémenté. Design esquissé : value_ref → fichier + value cache non chargée
+  + état unloaded/loaded/modified/dirty/modified_dirty + last_sync. Les états
+  modified (table modifiée, pas enregistrée) et dirty (fichier modifié à
+  l'extérieur) sont réversibles simplement ; modified_dirty = conflit réel à
+  arbitrer explicitement (jamais automatique). Reprendre si un cas réel
+  (agents encodés en table, gros contextes, embeds…).
+- **Catalogue distant multi-étages** (Idée 3, ligne 142) — précision design :
+  2 domaines distincts : `catalogue_buffer` (tables send/receive : tampon
+  d'émission/réception de données avec les catalogues distants) et
+  `catalogue_distant` (le catalogue externe réel : communautaire/entreprise/
+  github). Voir plus tard — les tables send/receive du buffer à définir.
+
+##### R3. DÉCISIONS RESTANTES (local_catalogue)
+1. Préfixe `global_local_` sur toutes les tables, oui/non ?
+2. data_id : format du hash (int64 type xxhash vs sha1 hex) ?
+3. Traces last_access/last_modify : tables séparées (actuel, flush batch)
+   ou colonnes sur {type}_data ?
+4. bench_scores : passe en data_type `bench` (en réserve) ou reste table fixe ?
+5. Privileges/security_supervisor : confirmation sortie de la famille DATA
+   vers famille SECURITY ?
+6. Migration de l'existant : renommage en place (skill_catalogue→skill_data…)
+   vs nouvelle DB ; et qui a seedé `skill` (3 entrées sans code trouvé) ?
+7. `{type}_limite par type` : contenu final sans éviction (nb_data informatif ?
+   quota dur ?) ; utile ou supprimée ?
+8. Routes write manquantes : delete_type, rename_type, delete_tag_type,
+   delete_namespace, add_colonne (row), import_rows, activate/deactivate type,
+   CRUD par data_id, purge type.
+9. data_type_limite value_embarque flag : sans large_*, non nécessaire — à
+   supprimer du design.
+10. value/load : garder la route (utile pour scalaires/row) ou la retirer
+    (file ne charge rien) ?
