@@ -737,8 +737,11 @@ unattributed → attributed → doing → done → supervised + too_hard → bum
 - sdk_access = api_type (openai/gemini/cohere) → format du corps.
 
 #### M3. Coûts & Budgets (par niveau tag + final)
-- 3 monnaies : dollar_cost, time, thinking_power (une clé free dépense du thinking
-  pas de l'argent).
+- 3 monnaies : dollar_cost, time, thinking_power.
+  * thinking_power = INDICE DE PUISSANCE DE PENSÉE (capacité cognitive du
+    modèle — différencie un modèle frontière d'un bas niveau). PAS les tokens
+    de raisonnement. Source : score_reasoning + score_etire (benchmark étiré
+    par domaine). Une clé free dépense du thinking_power pas de l'argent.
 - type_budget : table de tags (type_id, nom) → token_in, token_out, request, time,
   thinking_power, money (extensible).
 - Une REQUÊTE → PLUSIEURS coûts simultanés (cost_tok_in, cost_tok_out, cost_time,
