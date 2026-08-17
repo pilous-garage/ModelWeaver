@@ -2,6 +2,44 @@
 --  Workspace DB — projets, tâches, échanges
 -- ──────────────────────────────────────────
 
+-- ── Racines durables (Idée 18, section E) : une root_task = la requête
+-- utilisateur racine. root_id IMMUABLE (jamais réutilisé) — task_log
+-- référence TOUJOURS root_id, pas le task_id de tasks (qui peut être vidé).
+CREATE TABLE IF NOT EXISTS root_tasks (
+    root_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id    TEXT NOT NULL DEFAULT '',
+    prompt_hash     TEXT NOT NULL DEFAULT '',
+    title           TEXT DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rt_workspace ON root_tasks(workspace_id);
+
+-- ── Log des tâches (base du scoreur, section F) : UNE LIGNE PAR TÂCHE
+-- du pipeline, rattachée à sa racine. Le scoreur s'en sert à la fin d'une
+-- root_task pour mettre à jour les scores d'expérience puis dériver le
+-- thinking_power (scoreur.py).
+CREATE TABLE IF NOT EXISTS task_log (
+    log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         INTEGER,              -- tâche workflow (peut être purgée)
+    sub_task_id     INTEGER,              -- l'étape précise du pipeline
+    root_id         INTEGER NOT NULL REFERENCES root_tasks(root_id),
+    parent_task_id  INTEGER,              -- qui a produit cette tâche (cheminement)
+    ordre           INTEGER DEFAULT 0,    -- position dans le pipeline
+    llm_id          INTEGER,              -- catalogue_models.id du modèle qui a traité
+    adresse_runtime_id INTEGER,           -- adresse qui a servi
+    role            TEXT DEFAULT '',      -- planning/coder/reviewer/tester/merger/respond
+    domaine         TEXT DEFAULT '',      -- coding | text_generation | math | ...
+    task_type       TEXT DEFAULT '',      -- planning | coding | reviewing | testing | merging | respond | exploration
+    niveau          TEXT DEFAULT '',      -- debutant/junior/intermediaire/senior/expert (difficulté)
+    exit_signal     TEXT DEFAULT '',      -- done|too_hard|error|cancelled|bumped
+    gain            REAL DEFAULT 0,       -- +1 succès / -1 échec (posé par le scoreur)
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tl_root ON task_log(root_id);
+CREATE INDEX IF NOT EXISTS idx_tl_task ON task_log(task_id);
+CREATE INDEX IF NOT EXISTS idx_tl_llm ON task_log(llm_id);
+
+-- ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id    TEXT PRIMARY KEY,
     name            TEXT NOT NULL,

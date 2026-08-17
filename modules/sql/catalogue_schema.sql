@@ -1037,6 +1037,39 @@ CREATE TABLE IF NOT EXISTS llm_level_windows (
 CREATE INDEX IF NOT EXISTS idx_llw_type ON llm_level_windows(task_type_id);
 
 -- ============================================================
+-- 15. THINKING_POWER dérivé par le SCOREUR (Idée 18, section N6)
+-- thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
+--                              + Σ_types w×score(type,niveau)²
+-- Déplet par le scoreur (à chaque mise à jour des scores d'expérience) —
+-- PAS à l'appel. Deux granularités :
+--   - thinking_power_model : par modèle (l'indice cognitif intrinsèque).
+--   - thinking_power_adress : par adresse (le modèle SERVI par une adresse —
+--     même modèle, même puissance ; l'adresse segmente par provider/endpoint).
+-- INIT : scores = 1.0 partout → thinking_power = nb de combos (somme optmistique
+-- "max"). Les séquences fail/success font dériver les scores → le thinking_power
+-- baisse/réajuste à l'épreuve des faits (même MD/AI que les budgets).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS thinking_power_model (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id       INTEGER NOT NULL REFERENCES catalogue_models(id),
+    niveau         TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    thinking_power REAL DEFAULT 0,
+    updated_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id, niveau)
+);
+CREATE INDEX IF NOT EXISTS idx_tpm_model ON thinking_power_model(model_id);
+
+CREATE TABLE IF NOT EXISTS thinking_power_adress (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+    niveau         TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    thinking_power REAL DEFAULT 0,
+    updated_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(adresse_runtime_id, niveau)
+);
+CREATE INDEX IF NOT EXISTS idx_tpa_adresse ON thinking_power_adress(adresse_runtime_id);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);

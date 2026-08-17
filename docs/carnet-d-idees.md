@@ -917,3 +917,22 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
   silencieux). Vérifier les contraintes NOT NULL au premier test réel.
 - Exemple validé : modèle 259, planning/junior ≤> travail(0.405) × effort(1.0)
   = 0.405 tok ; après effort tok_out=2.5 → 1.0125. Recompute passif → 0 écrits.
+
+##### N9. SCOREUR + THINKING_POWER (FAIT — à commiter)
+- Tables catalogue : thinking_power_model (model_id × niveau → TP) et
+  thinking_power_adress (adresse_runtime_id × niveau → TP) — dérivées par le
+  SCOREUR, jamais à l'appel.
+- services/llm_usage/scoreur.py :
+  - update_experience_scores : met à jour llm_domaine_score/llm_task_type_score
+    depuis les événements de fin de pipeline (gain +1/-1, fraîcheur demi-vie 7j,
+    stabilité MIN_VARIATION, bornes MIN_SCORE=0.05/MAX_SCORE=2.0) puis dérive le TP.
+  - derive_thinking_power : TP(modèle, niveau) = Σ_domaines score² + Σ_types
+    score² (somme globale, w=1) ; adresse = même valeur (même modèle servi).
+    Passif : 2e passe = 0 écritures.
+  - thinking_power() : lecture côté modèle ou adresse.
+- Tables workspace (base du scoreur) : root_tasks (raccine immuable) + task_log
+  (UNE ligne par tâche du pipeline, référencée par root_id — PAS le task_id
+  purgé). Le scoreur balaye task_log à la fin d'une root_task.
+- Validé : modèle 259/junior initial 14.0 → échec coding → 13.638 (seul le
+  niveau concerné baisse) ; événements multi-niveaux → TP par niveau
+  différenciés (junior 13.789, senior 14.08, expert 13.638).

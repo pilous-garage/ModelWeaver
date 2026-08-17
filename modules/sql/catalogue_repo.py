@@ -2527,6 +2527,44 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration calculateur ignorée: {e}")
 
+        # ── Migration thinkering_power dérivé (Idée 18, N6) : deux tables,
+        # alimentées par le SCOREUR (jamais à l'appel) :
+        #   - thinking_power_model : par (model_id, niveau)
+        #   - thinking_power_adress : par (adresse_runtime_id, niveau)
+        # Formule : Σ_domaines w×score² + Σ_types w×score² (niveau requis).
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS thinking_power_model (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id       INTEGER NOT NULL REFERENCES catalogue_models(id),
+                    niveau         TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    thinking_power REAL DEFAULT 0,
+                    updated_at     INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, niveau)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tpm_model ON thinking_power_model(model_id)")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS thinking_power_adress (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+                    niveau         TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    thinking_power REAL DEFAULT 0,
+                    updated_at     INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(adresse_runtime_id, niveau)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tpa_adresse ON thinking_power_adress(adresse_runtime_id)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration thinking_power ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
