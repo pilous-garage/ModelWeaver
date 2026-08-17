@@ -984,6 +984,22 @@ class FSMInterpreter:
                             _meta["sub_task_id"] = int(_v_sid)
                         except (TypeError, ValueError):
                             pass
+                    # Idée 18 (O4) : contexte d'ALLOCATION pour le choix du LLM —
+                    # le type de sub_task + la difficulté pilotent le sorter et
+                    # le thinking_power requis. Best-effort.
+                    _task_alloc_ctx = None
+                    try:
+                        _sub_t = result.variables.get("sub_task_type") or ""
+                        _diff = str(result.variables.get("difficulty")
+                                    or result.variables.get("sub_task_difficulty") or "")
+                        if _sub_t:
+                            _task_alloc_ctx = {
+                                "task_type": _sub_t,
+                                "niveau": _diff or "medium",
+                                "sub_task_id": _v_sid,
+                            }
+                    except Exception:
+                        _task_alloc_ctx = None
                     if _need_translation:
                         # Mode TRADUCTION / GIVE_BOTH (modèle non-agentic) :
                         # le bloc ###tool_call:nom|JSON### est dans le prompt
@@ -996,6 +1012,7 @@ class FSMInterpreter:
                                 p_ref, m_ref, _msgs, timeout=int(_timeout),
                                 fallback=_fallback, max_tokens=max_tokens,
                                 temperature=temperature, agent_id=_agent_id or None,
+                                task_context=_task_alloc_ctx,
                             )
                         else:
                             response = self.bridge.chat(
@@ -1011,6 +1028,7 @@ class FSMInterpreter:
                                 p_ref, m_ref, msgs, timeout=int(_timeout),
                                 fallback=_fallback, max_tokens=max_tokens,
                                 temperature=temperature, agent_id=_agent_id or None,
+                                task_context=_task_alloc_ctx,
                                 **tool_kwargs,
                             )
                         else:

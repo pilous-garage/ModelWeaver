@@ -57,7 +57,8 @@ def resilient_chat(provider_ref: str, model_ref: str,
                    max_retries: int = 3, use_case: str = "coding",
                    agent_id: Optional[str] = None,
                    bridge=None,
-                   cat=None, km=None, **kwargs) -> Any:
+                   cat=None, km=None, task_context: Optional[Dict[str, Any]] = None,
+                   **kwargs) -> Any:
     """Appel LLM résilient avec repli sur un autre LLM.
 
     Retourne un ``ChatResponse`` augmenté des attributs :
@@ -110,7 +111,8 @@ def resilient_chat(provider_ref: str, model_ref: str,
             if len(tried) >= max_fallbacks:
                 break
         cand = LLMManager(cat, km=km).assign_llm(
-            exclude_provider=cur_p, exclude_model=cur_m, use_case=use_case)
+            exclude_provider=cur_p, exclude_model=cur_m, use_case=use_case,
+            task_context=task_context)
         if not cand:
             break
         cur_p, cur_m = cand["provider_ref"], cand["model_ref"]

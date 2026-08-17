@@ -438,6 +438,13 @@ def allocate_llm(params: dict) -> dict:
         }
     """
     strategy_name = params.get("strategy", "best-fallback")
+    task_context = params.get("task_context") or {}
+    # Idée 18 (O4) : le sorter du contexte (tâche) prime sur la stratégie par
+    # défaut — il trie les candidats selon le critère de la tâche.
+    sorter = None
+    if task_context.get("sorter"):
+        from services.llm_allocation.sorters import get_sorter
+        sorter = get_sorter(task_context.get("sorter"))
     request = AllocationRequest(
         strategy=strategy_name,
         task_type=params.get("task_type", "chat"),
@@ -449,6 +456,7 @@ def allocate_llm(params: dict) -> dict:
         features=params.get("features", []),
         latence_penalise=float(params.get("latence_penalise", 1.0)),
         latence_regule=float(params.get("latence_regule", 60.0)),
+        task_context=task_context,
     )
 
     strategy_fn = get_strategy(strategy_name)
@@ -483,14 +491,67 @@ def allocate_llm(params: dict) -> dict:
             "total_raw": len(raw_rows),
         }
 
-    # 3. Appliquer la stratégie
-    selected = strategy_fn(request, candidates)
-    if not selected:
-        return {
-            "status": "error",
-            "error": "la stratégie n'a retourné aucun modèle",
-            "candidates_count": len(candidates),
-        }
+    # 2bis. Idée 18 (O4) : le niveau de la tâche exige un thinking_power minimal.
+    # On exclut les modèles dont l'indice (par adresse) est sous le seuil du
+    # niveau requis — ils ne sont pas à la hauteur de la tâche.
+    if task_context.get("niveau"):
+        try:
+            from services.llm_usage.scoreur import thinking_power
+            cat_local = _get_catalogue()
+            _niveau = task_context.get("niveau")
+            kept = []
+            for c in candidates:
+                # résoudre l'adresse du candidat pour lire le thinking_power
+                _aid = c.provider_model_name or c.model_ref
+                tp = 0.0
+                try:
+                    row = cat_local.conn.execute(
+                        "SELECT ar.adresse_runtime_id, ar.model_id "
+                        "FROM provider_model_address a "
+                        "JOIN adresse_runtime ar ON ar.adresse_id = a.adresse_id "
+                        "WHERE a.provider_ref = ? AND a.provider_model_name = ? "
+                        "ORDER BY ar.adresse_runtime_id LIMIT 1",
+                        (c.provider_ref, _aid)).fetchone()
+                    if row:
+                        tp = thinking_power(cat_local, model_id=row["model_id"],
+                                            niveau=_niveau)
+                except Exception:
+                    tp = 0.0
+                # Seuil : le niveau "senior" exige un TP ≥ la moitié du max
+                # théorique (somme des carrés des scores). Fallback neutre si
+                # TP inconnu (0) → on garde (l'allocateur départagera).
+                seuil = 0.0
+                try:
+                    import math
+                    _base = float(task_context.get("thinking_threshold", 0))
+                    seuil = _base
+                except Exception:
+                    seuil = 0.0
+                if tp <= 0 or tp >= seuil:
+                    kept.append(c)
+            if kept:
+                candidates = kept
+        except Exception:
+            pass
+
+    # 3. Appliquer la stratégie (ou le sorter du contexte s'il est fourni)
+    if sorter is not None:
+        selected = sorter.pick(request, candidates)
+        if not selected:
+            return {
+                "status": "error",
+                "error": "le sorter n'a retourné aucun modèle",
+                "candidates_count": len(candidates),
+            }
+        strategy_name = f"sorter:{sorter.name}"
+    else:
+        selected = strategy_fn(request, candidates)
+        if not selected:
+            return {
+                "status": "error",
+                "error": "la stratégie n'a retourné aucun modèle",
+                "candidates_count": len(candidates),
+            }
 
     return {
         "status": "ok",

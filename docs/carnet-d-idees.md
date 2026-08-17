@@ -1129,3 +1129,22 @@ contenu + une notion de frontière de skill.
   le fallback à l'appel est LE chemin normal.
 - Validé : 5 étapes découpées → 5 suivis théoriques (coding 40%/2 = 0.7 req
   chacune) ; agent sans adresse résolvable → reason "allocation à l'appel".
+
+##### O10. ALLOCATEUR RÉEL BRANCHÉ (FAIT — commité)
+- Le chemin du choix LLM : FSM (llm_call round 0) → resilient_chat(task_context)
+  → LLMManager.assign_llm(task_context) → client llm/allocate(task_context) →
+  services.llm_allocation.allocate_llm → sorter OU stratégie par défaut.
+- FSM : construit _task_alloc_ctx depuis les variables du run
+  ({task_type: sub_task_type, niveau: difficulty, sub_task_id}) → passé à
+  resilient_chat.
+- assign_llm : + param task_context → choisit le sorter (via get_sorter) et le
+  passe au client. AllocationRequest : + task_context.
+- allocate_llm : si task_context.sorter → le sorter pick() ; sinon stratégie
+  par défaut (best-fallback, inchangé). + filtre thinking_power par niveau
+  (thinking_threshold optionnel, TP inconnu → conservé/neutre).
+- Validé : sorter cost → cohere/c4ai-aya-expanse-32b ; score → claude-opus-5 ;
+  thinking → qwen3.5-plus ; weighted → opencode-zen. Sans contexte = best-
+  fallback (comportement inchangé). Filtre niveau expert seuil 20 → google/
+  gemini uniquement.
+- Le use_case reste 'coding' par défaut (features) ; le vrai type est dans le
+  task_context (le use_case ne pilote pas le tri, seulement les features).

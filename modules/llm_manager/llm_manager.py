@@ -253,7 +253,8 @@ class LLMManager:
                    min_window: int = 0,
                    agent_id: Optional[str] = None,
                    latence_penalise: float = 1.0,
-                   latence_regule: float = 60.0) -> Optional[Dict[str, Any]]:
+                   latence_regule: float = 60.0,
+                   task_context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Trouve un LLM disponible via le service LLM Manager (ou fallback).
 
         Si le service LLM Manager (socket llm.sock) est disponible, on lui
@@ -276,14 +277,24 @@ class LLMManager:
                 excl_models = list(exclude_models or [])
                 if exclude_model:
                     excl_models.append(exclude_model)
+                # Idée 18 (O4) : le sorter est choisi selon la tâche. Par défaut
+                # best-fallback ; une tâche avec contexte peut choisir le tri
+                # (efficiency/cost/thinking...) via la stratégie de la team.
+                strategy = "best-fallback"
+                if task_context:
+                    from services.llm_allocation.sorters import get_sorter
+                    sorter = get_sorter(task_context.get("sorter", ""))
+                    if sorter:
+                        strategy = sorter.name
                 res = client.allocate({
-                    "strategy": "best-fallback",
+                    "strategy": strategy,
                     "task_type": use_case,
                     "min_window": int(min_window or 0),
                     "exclude_providers": list(exclude_providers or [])
                                           + ([exclude_provider] if exclude_provider else []),
                     "exclude_models": excl_models,
                     "agent_id": agent_id or "",
+                    "task_context": task_context or {},
                     "features": list(USE_CASE_REQUIREMENTS.get(use_case, {}).get("features", [])),
                     "latence_penalise": latence_penalise,
                     "latence_regule": latence_regule,

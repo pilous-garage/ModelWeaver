@@ -28,6 +28,10 @@ class AllocationRequest:
     # penalise/regule élevés pour garder les LLM lents compétitifs.
     latence_penalise: float = 1.0
     latence_regule: float = 60.0
+    # Idée 18 (O4) : contexte de la tâche pour l'allocation évolutive —
+    # {task_type, niveau, sorter, budget_opti, budget_max}. Le sorter trie les
+    # candidats, le niveau exige un thinking_power minimal, le budget borne.
+    task_context: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
