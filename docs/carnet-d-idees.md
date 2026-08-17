@@ -1228,3 +1228,102 @@ TEST RÉEL PASS :
 - Allocateur par tâche : efficiency(coding/senior)→qwen3.5-plus ;
   thinking(coding/expert)→qwen3.5-plus ; cost(respond/junior)→cohere aya ;
   best-fallback(sans contexte)→claude-opus-5 (inchangé).
+
+#### Q. ANALYSE DES TABLES, DOMAINES ET WRITERS (2026-08-17)
+
+##### Q1. ÉTAT DES LIEUX — ceilings d'écriture existants
+Le système `privileges` (catalogue_local.py, kind='cmd'|'path') est L'UNIQUE
+mécanisme d'autorisation d'écriture (une ligne = qui/sur quoi/comment/jusqu'à).
+Modes read/write/exec/privileged par niveau (humain_with_root, humain,
+agent_with_root, agent), conditions (deadline, nb_times, ref_id), check/use.
+MAIS : ne couvre que les chemins système + commandes shell. Les DOMAINES MÉTIER
+du catalogue (scorings, batchs, allocations, budgets) n'ont AUCUN writer dédié
+— n'importe quel agent utilisant catalogue.* peut les toucher en interne.
+
+##### Q2. DOMAINES D'ÉCRITURE MÉTIER CANDIDATS (à isoler avec writer dédié)
+Motif : chaque système qui ÉCRIT dans les tables catalogue devrait être un
+DOMAINE nommé, avec un writer identifié (le process/sous-système porteur du
+droit) — comme le "writer catalogue" pour les batchs.
+1. DOMAINE SCORING — écrivain : scoreur (services/llm_usage/scoreur.py) ;
+   tables : llm_domaine_score, llm_task_type_score, score_thinking_power
+   (model/adress), task_level_cost. Opérations : met à jour les scores
+   d'expérience + dérive le thinking_power. Writer unique = le scoreur.
+2. DOMAINE BATCH — écrivain : usage_batcher + usage_collector ; tables :
+   model_call_log (+ archive), usage_history_*, real_call_models, séquences
+   (model_success_runs). Écrit les agrégats temporels + les runs.
+3. DOMAINE ALLOCATION — écrivain : allocateur (allocate_llm/sorters) ;
+   tables : modèle choisi, agent_budget_allocation (spent), budget_final.
+   Lit les scores/budgets pour décider, écrit les claims/allocations.
+4. DOMAINE BUDGET — écrivain : consume_call + reallocateur ; tables :
+   budget_final.spent, budget_generique_key_tag.spent, agent_budget_allocation.
+5. DOMAINE ADRESSE/CATALOGUE — écrivain : ensure_addresses/migrate ;
+   tables : provider_model_address, adresse_runtime, provider_models.
+6. DOMAINE MANIFEST — écrivain : manifest_store (fichiers ouverts) ;
+   configuration teams/agents. Déjà une forme de writer.
+
+##### Q3. POURQUOI C'EST BON (intérêt)
+- Le batch n'écrit QUE ses agrégats ; le scoreur QUE les scores ; l'allocateur
+  QUE les allocations → moins de scalping accidentel inter-systèmes.
+- Traçabilité : chaque écriture porte le writer (via meta/agent_id) → l'audit
+  sait QUI a touché quoi (déjà largement via model_call_log.agent_id).
+- Réseau de confiance : un agent ne peut pas écrire dans scoring ou budget sauf
+  si le système le lui délègue (writer dédié) → évite qu'un agent gourmand se
+  dérègle son propre score ou son propre budget.
+- Extensibilité : ajouter un domaine (ex. ressources GPU) = un writer à poser.
+
+##### Q4. MODÉLISATION PROPOSÉE (à faire — phase suivante)
+- Étendre le kind des privileges avec 'ref' (ressource catalogue nommée) OU
+  une nouvelle table `domain_writers` : (domaine, writer_role, allowed_ops,
+  tables_couvertes). Le writer est vérifié AVANT toute écriture métier.
+- Colonne first_use/last_use + first_respond/last_respond sur adresse_runtime
+  (usage réel d'une adresse) — les indicateurs temporels manquants.
+- Le vérificateur (catalogue_verif) doit vérifier : une ligne par
+  (llm_contacté, task_type) dans score/cost/llm_task_cost, et par model_id
+  dans les tables dérivées ; + bornes d'usage des adresses.
+
+##### Q5. DÉCISIONS OUVERTES (à trancher)
+- Faut-il un vrai système de droits par domaine (privileges kind='ref') ou une
+  simple table domain_writers informative ?
+- Qui a le droit de définir un writer ? (root / humain / config)
+- Les domaines se recoupent : allocation écrit dans budget (spent) → un writer
+  ALLOCATION peut-il aussi écrire budget_final.spent ? (composé de domaines)
+- Colonnes first_use/first_respond : à poser sur adresse_runtime (+ sur
+  provider_model_address ?).
+
+##### Q6. RÉSULTATS DE L'ANALYSE RÉELLE
+TABLES DÉRIVÉES : COMPLÈTES (bonne nouvelle)
+- 2893 modèles (model_key≠'') → llm_domaine_score, llm_task_type_score,
+  llm_effort_ratio, thinking_power_model, llm_task_cost : TOUS à 2893 modèles
+  distincts. Le calculer est passé passif (rien à remplir).
+- En revanche llm_level_windows (fenêtres thinking_power→coût par niveau) est
+  VIDE : la synthèse ne la peuple pas → à implémenter (ou à abandonner si les
+  windows deviennent inutiles ?).
+
+ADRESSE_RUNTIME : manque les bornes d'usage
+- first_use / last_use et first_respond / last_respond ABSENTS → à ajouter
+  (indicateurs temporels d'utilisation réelle d'une adresse).
+
+PROVIDERS / ENDPOINTS
+- 196 providers, 72 endpoints, mais 170 providers SANS endpoint : beaucoup de
+  providers déclarés sans endpoint (peut-être légitime : cloud sans endpoint
+  propre, ou trou). à auditer.
+
+BUDGET_FINAL : 3149 lignes × 3 tags (req_per_day, tok_per_day, cost_per_day) —
+référentiel cohérent par adresse.
+
+WORKSPACE : task_log + root_tasks = 0 → le scoreur (fins de pipeline) ne tourne
+pas encore. À activer quand on score les pipelines.
+
+##### Q7. RECOMMANDATION DOMAINES/WRITERS
+OUI, créer des domaines d'écriture avec writer dédié, en RÉUTILISANT le modèle
+privileges (kind='ref'). Domaines proposés : SCORING, BATCH, ALLOCATION, BUDGET,
+ADRESSE, MANIFEST (détails Q2). Chaque domaine = un process porte-drapeau.
+
+Actions concrètes (phase suivante) :
+- Colonnes first_use / last_use / first_respond / last_respond sur
+  adresse_runtime (+ éventuellement provider_model_address).
+- Étendre privileges avec kind='ref' (ressource catalogue) OU table
+  domain_writers (domaine, writer, allowed_ops, tables).
+- Remplir ou décider de llm_level_windows.
+- Auditer les 170 providers sans endpoint.
+- Activer le scoreur → task_log/root_tasks (fin de pipeline).
