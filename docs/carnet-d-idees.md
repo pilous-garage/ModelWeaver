@@ -704,3 +704,106 @@ unattributed → attributed → doing → done → supervised + too_hard → bum
 - Portées : per-requête (borne le choix), per-zone (team/projet/workspace),
   per-état (service LLM manager).
 - Régulation : mode dégradé (modèles gratuits) ou blocage quand budget atteint.
+
+### M. RÉCAP CONCEPTION COMPLÈTE (session 2026-08-17)
+
+#### M1. Scoring LLM (expérience évolutive)
+- Niveaux : debutant / junior / intermediaire / senior / expert.
+- 2 tables de score PAR NIVEAU (pas de cube) :
+  - llm_domaine_score:   (llm_id, domaine_id, debutant, junior, intermediaire, senior, expert)
+  - llm_task_type_score: (llm_id, task_type_id, debutant, junior, intermediaire, senior, expert)
+- Init = 1.0 partout (neutre, pas pénalisant). Le scraping = léger biais max.
+- Granularité : provider/model/ENDPOINT (adresse) + model_key (modèle canonique).
+  Le model_key = grain canonique (22 variantes de deepseek-v4-flash = 1 modèle).
+- Mise à jour BATCH (pas à la volée) : fraîcheur (demi-vie adaptative =
+  min(âge_premier_scoring, âge_plus_vieux_scoring/10)) + stabilité
+  (amortissement par volume : 5 échecs sur 10000 ≠ 5 sur 10).
+- Événements : task_log (supervisor) + signaux externes (benchmark pass/fail).
+- Récompense GLOBALE par root_task (tous les contributeurs, ou tous les maillons fautifs).
+
+#### M2. Adresses
+- Clé en clair : RAM uniquement (jamais sur disque dans logs/budgets).
+- adresse_key_tag (DURE, sans clé, partageable) :
+    adresse_key_tag_id = UNIQUE(provider_id, endpoint_id, model_provider_id, api_key_tag)
+    + endpoint_url, provider_model_name, api_type, model_id, model_key, adresse_id
+- adresse_runtime (DURE aussi, construite de base, garde api_key_id) :
+    adresse_runtime_id = UNIQUE(provider_id, endpoint_id, model_provider_id, api_key_id)
+    + adresse_key_tag_id, model_id, model_key, endpoint_url, provider_model_name,
+      api_type  (dénormalisés)
+- URL finale + auth = reconstruite à RUNTIME en RAM (adresse_runtime_id + clé résolue).
+- Normalisation des données à la SOURCE : provider_model_name doit être NET (sans
+  préfixe provider redondant, sans doublon kilo/kilo/...). Pas de patch runtime
+  (_build_model_id actuel = pansement à retirer).
+- sdk_access = api_type (openai/gemini/cohere) → format du corps.
+
+#### M3. Coûts & Budgets (par niveau tag + final)
+- 3 monnaies : dollar_cost, time, thinking_power (une clé free dépense du thinking
+  pas de l'argent).
+- type_budget : table de tags (type_id, nom) → token_in, token_out, request, time,
+  thinking_power, money (extensible).
+- Une REQUÊTE → PLUSIEURS coûts simultanés (cost_tok_in, cost_tok_out, cost_time,
+  cost_req, cost_thinking_power).
+
+- budget_key_tag (partageable par tag de clé) :
+    budget_key_tag_id, type_id, quota, spent, souplesse, interval_reset,
+    next_reset, session_start_condition, error_rate_limite
+- cost_key_tag (partageable par tag) :
+    cost_key_tag_id, adress_key_tag_id, budget_key_tag_id, unit_in, unit_out, ratio
+
+- budget_final (par clé/adresse, dérivé du tag) :
+    budget_id, type_id, quota, spent, souplesse, interval_reset, next_reset,
+    session_start_condition, error_rate_limite
+- cost_final :
+    cost_id, adresse_runtime_id, budget_id, unit_in, unit_out, ratio
+
+- SOUPLESSE (politique de dépassement) : strict | souple | informatif.
+  * strict : vise 90% du quota (évite erreurs de calcul)
+  * souple : taux d'essai (souplesse_taux, ex. 5%) pour sonder si la limite a bougé
+    + backoff adaptatif (après échec de sondage, attendre X min)
+  * informatif : ne bloque jamais (log seulement)
+- error_rate_limite : budget en erreur (rate-limit atteint). Pour un provider avec
+  min/day/month, le plus petit intervalle (min) est le budget "erroré".
+- Budget raisonnable le plus petit = celui qui reset vite = à blâmer.
+
+#### M4. État d'erreur (2 tables distinctes)
+- adress_error_state (état PAR ADRESSE) :
+    adresse_id PK, error_since, last_error_at, backoff_until, n_fail
+- budget_error_state (état PAR BUDGET, RESTRICTION dérivée) :
+    budget_id PK, error_since, last_error_at, backoff_until
+  RÈGLE : le budget devient error UNIQUEMENT si TOUTES les adresses liées à ce
+  budget sont en erreur (une seule adresse ne suffit pas).
+  Lien budget↔adresses : via cost_final (cost_id, adresse_runtime_id, budget_id).
+
+#### M5. Logs & mesures
+- real_call_models (existant) : chaque appel avec adresse_id, sent_at/received_at,
+  status (ok/rate_limited/quota_exhausted/error), tokens, cost. → VÉRIFIER qu'on
+  log bien adresse_id.
+- session_success + session_fail (dérivés de real_call_models, par adresse_id) :
+  périodes où ça marche / rafales de fail (du 1er au dernier). Révèlent les quotas
+  réels.
+- really_used_budget (existant) : mesure des limites réelles observées.
+- budget_calculé : colonne dans les logs (real_call_models) → le tick seconde lit
+  le dernier budget_calculé SANS re-agréger (pas besoin du batcheur).
+- TICK budget en temps réel : met à jour budget_consumption / adress_error_state /
+  budget_error_state (par seconde).
+- task_log (cheminement des tâches, base) :
+    log_id, task_id, root_id, parent_task_id, ordre, llm_id, role, domaine,
+    task_type, exit_signal, created_at
+- root_tasks : root_id PK, workspace_id, prompt_hash, created_at (immuable).
+- Colonne exit_signal AUSSI dans la table tasks (reflet).
+
+#### M6. Granularités (récap)
+| Système | Grain |
+|---------|-------|
+| adresse | adresse_runtime_id (provider+endpoint+model_provider+api_key_id) |
+| log | api_key_id (+ adresse_id) |
+| cost | api_key_tag (le type de clé détermine la facturation) |
+| budget | api_key_tag (partageable) + budget_final par clé |
+| erreur | adress_error_state + budget_error_state (restriction) |
+
+#### M7. Périphériques à modifier (déjà discutés)
+- Renommage analysis → planning (découpeur).
+- Colonne domain dans tasks (déjà ajouté).
+- Découpe = même type uniquement (coding OU testing OU review, pas un mix).
+- Dédoublonnage provider_models (unique par (provider, provider_model_name)),
+  et catalogue_models (unique par model_key canonique).
