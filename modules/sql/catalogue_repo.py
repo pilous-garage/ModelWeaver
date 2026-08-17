@@ -2056,6 +2056,73 @@ class CatalogueDB:
             self.conn.rollback()
             print(f"⚠️  Migration model_capabilities ignorée: {e}")
 
+        # ── Migration adresse_runtime : ADRESSE COMPLÈTE par (adresse, clé) ──
+        # Construite de base depuis provider_model_address (l'adresse sans clé,
+        # déjà remplie) — fluide au reboot. api_key_tag dénormalisé (free/plus/
+        # premium). La clé en clair N'EST PAS ici (résolue en RAM au runtime).
+        try:
+            _add_column_if_missing(self.conn, "provider_model_address",
+                                   "api_key_tag", "TEXT DEFAULT ''")
+            # Table créée ICI pour les BDD pré-existantes (l'executescript du
+            # schéma ne se rejoue que si le catalogue est vierge).
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS adresse_runtime (
+                    adresse_runtime_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    adresse_id          INTEGER NOT NULL REFERENCES provider_model_address(adresse_id),
+                    api_key_id          INTEGER NOT NULL,
+                    api_key_tag         TEXT DEFAULT '',
+                    provider_id         INTEGER,
+                    provider_ref        TEXT DEFAULT '',
+                    endpoint_id         INTEGER,
+                    endpoint_url        TEXT DEFAULT '',
+                    model_id            INTEGER,
+                    model_key           TEXT DEFAULT '',
+                    provider_model_id   INTEGER,
+                    provider_model_name TEXT DEFAULT '',
+                    api_type            TEXT DEFAULT '',
+                    available           INTEGER DEFAULT 1,
+                    error_since         INTEGER,
+                    last_error_at       INTEGER,
+                    backoff_until       INTEGER,
+                    created_at          TEXT DEFAULT (datetime('now')),
+                    UNIQUE(adresse_id, api_key_id)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ar_adresse ON adresse_runtime(adresse_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ar_key ON adresse_runtime(api_key_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ar_tag ON adresse_runtime(api_key_tag)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ar_model ON adresse_runtime(model_key)")
+            # Remplir depuis l'adresse (idempotent). api_key_id=0 pour l'instant
+            # (la vraie clé est résolue au runtime depuis modelweaver.db — le
+            # catalogue ne référence pas api_keys).
+            self.conn.execute("""
+                INSERT OR IGNORE INTO adresse_runtime
+                    (adresse_id, api_key_id, api_key_tag,
+                     provider_id, provider_ref, endpoint_id, endpoint_url,
+                     model_id, model_key, provider_model_id,
+                     provider_model_name, api_type)
+                SELECT a.adresse_id, 0, a.api_key_tag,
+                       a.provider_id, a.provider_ref, a.endpoint_id,
+                       a.endpoint_url, a.model_id, a.model_key,
+                       a.provider_model_id, a.provider_model_name,
+                       COALESCE(pe.api_type, 'openai')
+                FROM provider_model_address a
+                LEFT JOIN provider_endpoints pe
+                       ON pe.endpoint_id = a.endpoint_id
+                WHERE a.available = 1
+            """)
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration adresse_runtime ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci

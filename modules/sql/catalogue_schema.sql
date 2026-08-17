@@ -615,16 +615,57 @@ CREATE TABLE IF NOT EXISTS provider_model_address (
     -- état
     available         INTEGER DEFAULT 1,
     deprecated        INTEGER DEFAULT 0,
+    -- TAG DE CLÉ : le type de clé compatible (free / plus / premium...) — une
+    -- adresse peut être servie par différentes clés d'un même provider. Le tag
+    -- détermine la facturation (cost_key_tag) et les budgets partageables.
+    api_key_tag       TEXT DEFAULT '',         -- free | plus | premium | '' (générique)
     created_at        TEXT DEFAULT (datetime('now')),
     -- UNE adresse par (provider, endpoint, provider_model_NAME) — pas par
     -- provider_model_id (un provider peut avoir N lignes provider_models
     -- pour le même nom de modèle).
-    UNIQUE(provider_id, endpoint_id, provider_model_name)
+    UNIQUE(provider_id, endpoint_id, provider_model_name, api_key_tag)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pma_provider ON provider_model_address(provider_id);
 CREATE INDEX IF NOT EXISTS idx_pma_model ON provider_model_address(model_key);
 CREATE INDEX IF NOT EXISTS idx_pma_name ON provider_model_address(provider_model_name);
+CREATE INDEX IF NOT EXISTS idx_pma_tag ON provider_model_address(api_key_tag);
+
+-- ============================================================
+-- ADRESSE_RUNTIME — Adresse COMPLÈTE (avec clé), résolue en RAM.
+--    Construite de base (fluide au reboot), garde `api_key_id` (PAS la clé
+--    en clair — jamais sur disque dans les logs/budgets). L'URL finale +
+--    l'auth sont reconstruites À RUNTIME depuis api_key_id.
+--    Une adresse par (adresse_key_tag, api_key_id) : la même adresse
+--    (provider+endpoint+modèle+tag) servie par N clés = N runtime_adresse.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS adresse_runtime (
+    adresse_runtime_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adresse_id          INTEGER NOT NULL REFERENCES provider_model_address(adresse_id),
+    api_key_id          INTEGER NOT NULL,       -- → api_keys.id (modelweaver.db) — référence, PAS la clé
+    api_key_tag         TEXT DEFAULT '',        -- dénormalisé (free/plus/premium)
+    -- dénormalisé (usage facile, pas de join) :
+    provider_id         INTEGER,
+    provider_ref        TEXT DEFAULT '',
+    endpoint_id         INTEGER,
+    endpoint_url        TEXT DEFAULT '',
+    model_id            INTEGER,
+    model_key           TEXT DEFAULT '',
+    provider_model_id   INTEGER,
+    provider_model_name TEXT DEFAULT '',
+    api_type            TEXT DEFAULT '',        -- openai / gemini / cohere (le SDK)
+    -- état runtime
+    available           INTEGER DEFAULT 1,
+    error_since         INTEGER,                -- 1er fail de la rafale (état)
+    last_error_at       INTEGER,
+    backoff_until       INTEGER,
+    created_at          TEXT DEFAULT (datetime('now')),
+    UNIQUE(adresse_id, api_key_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ar_adresse ON adresse_runtime(adresse_id);
+CREATE INDEX IF NOT EXISTS idx_ar_key ON adresse_runtime(api_key_id);
+CREATE INDEX IF NOT EXISTS idx_ar_tag ON adresse_runtime(api_key_tag);
+CREATE INDEX IF NOT EXISTS idx_ar_model ON adresse_runtime(model_key);
 
 -- ============================================================
 -- INDEXES
