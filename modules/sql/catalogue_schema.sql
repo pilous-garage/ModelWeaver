@@ -611,7 +611,12 @@ INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES
     ('tok_per_hour', 'Tokens / heure',           'tokens',   'tokens'),
     ('tok_per_day',  'Tokens / jour',            'tokens',   'tokens'),
     ('cost_per_day', 'Cout / jour (USD)',        'usd',      'cost'),
-    ('cost_per_month','Cout / mois (USD)',       'usd',      'cost');
+    ('cost_per_month','Cout / mois (USD)',       'usd',      'cost'),
+    -- Idée 18 (multi-monnaies : dollar / time / thinking_power)
+    ('request',      'Requete (coût unitaire)',  'request',  'request'),
+    ('money',        'Argent (USD)',             'usd',      'money'),
+    ('time',         'Temps (secondes)',         'seconds',  'time'),
+    ('thinking_power','Puissance de pensée (indice)', 'think', 'thinking_power');
 
 -- ============================================================
 -- 11b. CATALOGUE_ALIASES — Table commune de reconciliation des noms.
@@ -734,6 +739,43 @@ CREATE TABLE IF NOT EXISTS budget_final (
 );
 CREATE INDEX IF NOT EXISTS idx_bf_adresse ON budget_final(adresse_runtime_id);
 CREATE INDEX IF NOT EXISTS idx_bg_tag ON budget_generique_key_tag(api_key_tag);
+
+-- ============================================================
+-- 12ter. COÛTS — une requête peut déclencher PLUSIEURS coûts simultanés
+--    (cost_tok_in, cost_tok_out, cost_time, cost_req, cost_thinking_power).
+--    Chaque coût = (adresse, budget, unit_in, unit_out, ratio) :
+--      - unit_in : ce qui est CONSOMMÉ (tok_in, tok_out, request, secondes...)
+--      - unit_out : la monnaie / budget (money=USD, time, thinking_power)
+--      - ratio : conversion (ex. 1/1000000 : 1M tok_in = 1$)
+--    3 monnaies : dollar_cost (money), time, thinking_power (indice de
+--    puissance de pensée — PAS les tokens de raisonnement).
+-- ============================================================
+
+-- Coût PAR TAG de clé (partageable entre les clés du même tag).
+CREATE TABLE IF NOT EXISTS cost_key_tag (
+    cost_key_tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adresse_key_tag_id INTEGER NOT NULL REFERENCES provider_model_address(adresse_id),
+    budget_generique_key_tag_id INTEGER REFERENCES budget_generique_key_tag(budget_generique_key_tag_id),
+    unit_in   TEXT NOT NULL,   -- tok_in | tok_out | request | secondes | thinking_in | thinking_out
+    unit_out  TEXT NOT NULL,   -- money | time | thinking_power
+    ratio     REAL NOT NULL DEFAULT 1.0,   -- unit_in → unit_out (ex. 1/1e6)
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(adresse_key_tag_id, budget_generique_key_tag_id, unit_in, unit_out)
+);
+CREATE INDEX IF NOT EXISTS idx_ckt_adresse ON cost_key_tag(adresse_key_tag_id);
+
+-- Coût PAR ADRESSE RUNTIME (dérivé du tag, affiné par la clé réelle).
+CREATE TABLE IF NOT EXISTS cost_final (
+    cost_final_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+    budget_final_id INTEGER REFERENCES budget_final(budget_final_id),
+    unit_in   TEXT NOT NULL,
+    unit_out  TEXT NOT NULL,
+    ratio     REAL NOT NULL DEFAULT 1.0,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(adresse_runtime_id, budget_final_id, unit_in, unit_out)
+);
+CREATE INDEX IF NOT EXISTS idx_cf_adresse ON cost_final(adresse_runtime_id);
 
 -- ============================================================
 -- PROVIDER_MODEL_ADDRESS — Répertoire RÉSOLU des adresses LLM.

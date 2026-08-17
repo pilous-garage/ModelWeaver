@@ -2284,6 +2284,50 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration budgets par tag ignorée: {e}")
 
+        # ── Migration coûts (Idée 18) : cost_key_tag + cost_final + tags ──
+        try:
+            # Compléter budget_tags avec les types multi-monnaies.
+            self.conn.execute("INSERT OR IGNORE INTO budget_tags (code, label, unit, scope) VALUES "
+                              "('request','Requete','request','request'),"
+                              "('money','Argent (USD)','usd','money'),"
+                              "('time','Temps (secondes)','seconds','time'),"
+                              "('thinking_power','Puissance de pensée','think','thinking_power')")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS cost_key_tag (
+                    cost_key_tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    adresse_key_tag_id INTEGER NOT NULL REFERENCES provider_model_address(adresse_id),
+                    budget_generique_key_tag_id INTEGER REFERENCES budget_generique_key_tag(budget_generique_key_tag_id),
+                    unit_in   TEXT NOT NULL,
+                    unit_out  TEXT NOT NULL,
+                    ratio     REAL NOT NULL DEFAULT 1.0,
+                    created_at INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(adresse_key_tag_id, budget_generique_key_tag_id, unit_in, unit_out)
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS cost_final (
+                    cost_final_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+                    budget_final_id INTEGER REFERENCES budget_final(budget_final_id),
+                    unit_in   TEXT NOT NULL,
+                    unit_out  TEXT NOT NULL,
+                    ratio     REAL NOT NULL DEFAULT 1.0,
+                    created_at INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(adresse_runtime_id, budget_final_id, unit_in, unit_out)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ckt_adresse ON cost_key_tag(adresse_key_tag_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cf_adresse ON cost_final(adresse_runtime_id)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration coûts ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
