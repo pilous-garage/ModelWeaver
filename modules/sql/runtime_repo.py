@@ -135,6 +135,22 @@ class RuntimeDB:
                     UNIQUE(budget_tag_code, target_type, target_ref, window)
                 );
 
+                CREATE TABLE IF NOT EXISTS score_thinking_power (
+                    -- INDICE DE PUISSANCE DE PENSÉE du modèle (capacité cognitive,
+                    -- différencie un modèle frontière d'un bas niveau). PAS les
+                    -- tokens de raisonnement.
+                    -- INIT : score_reasoning (le benchmark de raisonnement). À
+                    -- terme : mis à jour par les scores d'expérience (Idée 18) —
+                    -- pas encore.
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id      INTEGER NOT NULL,     -- catalogue_models.id (canonique)
+                    score_thinking REAL DEFAULT 0,
+                    samples       INTEGER DEFAULT 0,
+                    updated_at    INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_stp_model ON score_thinking_power(model_id);
+
                 CREATE TABLE IF NOT EXISTS endpoint_model_usage (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     endpoint_id   INTEGER,
@@ -664,6 +680,41 @@ class RuntimeDB:
                                        "INTEGER DEFAULT 0")
         except Exception:
             self.conn.rollback()
+
+        # Seed score_thinking_power : INITIALISÉ depuis score_reasoning
+        # (le benchmark de raisonnement, dans catalogue.db) — indice de
+        # PUISSANCE DE PENSÉE du modèle. La mise à jour par les scores
+        # d'expérience viendra plus tard (Idée 18) — pas maintenant.
+        try:
+            _cat_path = None
+            try:
+                from services._common import _db_paths
+                # _db_paths → (modelweaver.db, catalogue.db) — le CATALOGUE
+                # est le 2e élément.
+                _, _cat_path = _db_paths()
+            except Exception:
+                _cat_path = None
+            if _cat_path:
+                # ATTACH catalogue pour lire model_provider_scoring
+                self.conn.execute("ATTACH DATABASE ? AS cat_scoring", (str(_cat_path),))
+                try:
+                    self.conn.execute("""
+                        INSERT OR IGNORE INTO score_thinking_power (model_id, score_thinking, samples)
+                        SELECT mps.model_id, mps.score_reasoning, 1
+                        FROM cat_scoring.model_provider_scoring mps
+                        WHERE mps.score_reasoning > 0
+                    """)
+                    self.conn.commit()
+                finally:
+                    try:
+                        self.conn.execute("DETACH DATABASE cat_scoring")
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
 
         self.conn.commit()
 
