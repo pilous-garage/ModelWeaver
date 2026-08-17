@@ -101,6 +101,8 @@ def consume_call(cat, adresse_id: int, success: bool,
         # first_use / last_use à CHAQUE appel (réussi ou non) ; first_respond /
         # last_respond à chaque SUCCÈS (l'adresse a répondu). Ces bornes
         # permettent de juger fraîcheur/réactivité sans join sur les logs.
+        from services.domain_access import guard
+        guard("adresse", "consume_call", "adresse_runtime")
         try:
             _now_ts = _now()
             if success:
@@ -147,6 +149,7 @@ def consume_call(cat, adresse_id: int, success: bool,
         if not success and error_code in ("rate_limited", "quota_exhausted",
                                           "timeout", "auth"):
             # Rafale de fail → adress_error_state.
+            guard("adresse", "consume_call", "adress_error_state")
             cur = cat.conn.execute("""
                 INSERT INTO adress_error_state
                     (adresse_runtime_id, error_since, last_error_at, n_fail)
@@ -172,6 +175,7 @@ def consume_call(cat, adresse_id: int, success: bool,
         consumed = {"tok_in": tokens_in, "tok_out": tokens_out,
                     "thinking": tokens_thinking, "request": nb_requetes}
         if success:
+            guard("budget", "consume_call", "budget_final")
             cf_rows = cat.conn.execute(
                 "SELECT * FROM cost_final WHERE adresse_runtime_id = ?",
                 (adr["adresse_runtime_id"],)).fetchall()

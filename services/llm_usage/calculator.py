@@ -249,6 +249,8 @@ def recompute(cat=None, conn=None) -> Dict[str, Any]:
     {seeded, work, effort, synthesized, ok}.
     """
     from modules.sql.catalogue_repo import CatalogueDB
+    from services.domain_access import guard
+    guard("scoring", "calculateur", "task_level_cost")
     cat = cat or CatalogueDB()
     c = conn or cat.conn
     _seed_task_level_stats(c)

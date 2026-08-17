@@ -91,6 +91,8 @@ def allocate(cat, agent_id: str, adresse_runtime_id: int,
     L'ancienne allocation active du même (agent, adresse, nature) est close.
     Retourne l'allocation_id créé, sinon None.
     """
+    from services.domain_access import guard
+    guard("allocation", "allocateur", "agent_budget_allocation")
     try:
         # Fermer l'ancienne allocation active du même agent sur cette adresse.
         try:

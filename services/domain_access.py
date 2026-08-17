@@ -129,5 +129,18 @@ def guard(domaine: str, writer_ref: str, table: str) -> None:
             f"'{table}' — tables autorisées: {sorted(_registry.tables_for(domaine))}")
 
 
+def guard_domain(domaine: str, writer_ref: str) -> None:
+    """Public : lève WriteDenied si le domaine n'existe pas / est désactivé
+    (cas des domaines sans tables BDD, ex. manifest = fichiers)."""
+    if BYPASS:
+        return
+    _registry.load()
+    tables = _registry.tables_for(domaine)
+    if domaine not in _registry._tokens and not tables:
+        raise WriteDenied(
+            f"domaine '{domaine}' inconnu ou inactif — writer '{writer_ref}' "
+            f"refusé (fail-safe)")
+
+
 def tables_for(domaine: str) -> Set[str]:
     return _registry.tables_for(domaine)

@@ -97,6 +97,8 @@ def _seq_open_or_extend(rt, prov: str, model: str, ts: int, success: bool,
     L'alternance success/fail trace donc AUSSI les rafales d'échec (rate-limit/
     quota) que la version précédente perdait.
     """
+    from services.domain_access import guard
+    guard("batch", "usage_batcher", "model_success_runs")
     _typ = 'success' if success else 'fail'
     cur = rt.conn.execute(
         "SELECT id, seq_start, seq_type, requests, tokens_in, tokens_out, "

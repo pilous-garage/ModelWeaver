@@ -93,6 +93,8 @@ def save_manifest(path: Path | str, new_content: bytes,
         REFUSE (règle 3) — sauf `force`.
     Retourne {ok, written, reason}.
     """
+    from services.domain_access import guard_domain
+    guard_domain("manifest", "manifest_store")
     om = open_manifest(path)
     if not om.needs_write() and not force:
         return {"ok": True, "written": False, "reason": "aucune modif via ModelWeaver"}
