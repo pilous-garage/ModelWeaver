@@ -2364,6 +2364,54 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration états d'erreur ignorée: {e}")
 
+        # ── Migration allocation agent→budget (Idée 18) : colonne alloue sur
+        # budget_final (partie du quota ENGAGÉE sur les allocations — pas une
+        # consommation) + table agent_budget_allocation (donnée à un agent).
+        # Deux natures, différenciées par reset_suivi :
+        #   - 'quota'  : fraction du quota_final, suit les resets du parent
+        #     (reset_suivi = timestamp du prochain reset, ré-évalué à l'échéance).
+        #   - 'budget' : enveloppe fixe SANS reset (reset_suivi = -1), s'épuise.
+        # La SOUPLESSE vit ici, par allocation (pas sur budget_final).
+        try:
+            _add_column_if_missing(self.conn, "budget_final", "alloue",
+                                   "REAL DEFAULT 0")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_budget_allocation (
+                    allocation_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id         TEXT NOT NULL,
+                    adresse_runtime_id INTEGER NOT NULL
+                                     REFERENCES adresse_runtime(adresse_runtime_id),
+                    budget_final_id  INTEGER NOT NULL REFERENCES budget_final(budget_final_id),
+                    nature           TEXT NOT NULL DEFAULT 'quota'
+                                     CHECK(nature IN ('quota', 'budget')),
+                    fraction         REAL DEFAULT 0,
+                    montant          REAL DEFAULT 0,
+                    reset_suivi      INTEGER DEFAULT -1,
+                    interval_reset   TEXT DEFAULT '',
+                    souplesse        TEXT DEFAULT 'strict'
+                                     CHECK(souplesse IN ('strict','souple','informatif')),
+                    souplesse_taux   REAL DEFAULT 0,
+                    spent            REAL DEFAULT 0,
+                    status           TEXT NOT NULL DEFAULT 'active'
+                                     CHECK(status IN ('active', 'closed')),
+                    created_at       INTEGER DEFAULT (strftime('%s','now')),
+                    updated_at       INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aba_agent ON agent_budget_allocation(agent_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aba_budget ON agent_budget_allocation(budget_final_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aba_adresse ON agent_budget_allocation(adresse_runtime_id)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration allocation ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci

@@ -59,6 +59,7 @@ def consume_call(cat, adresse_id: int, success: bool,
                  latency_ms: float = 0.0,
                  error_code: str = "",
                  thinking_score: float = 0.0,
+                 agent_id: Optional[str] = None,
                  nb_requetes: int = 1) -> Dict[str, Any]:
     """Consomme un appel réel : budgets + coûts + états + scoring.
 
@@ -67,6 +68,8 @@ def consume_call(cat, adresse_id: int, success: bool,
     `error_code` : 'rate_limited'/'quota_exhausted'/'' (ok).
     `thinking_score` : l'indice de puissance de pensée du modèle (0.0 si
     inconnu — on ne consomme pas de thinking_power sans cet indice).
+    `agent_id` : si l'agent a une allocation sur cette adresse (allocation
+    quota ou budget), son spent est consommé ici (la souplesse s'applique).
     Retourne {ok, consumed: {...}} — best-effort.
     """
     out: Dict[str, Any] = {"ok": False, "consumed": {}}
@@ -76,6 +79,25 @@ def consume_call(cat, adresse_id: int, success: bool,
         adr = _resolve_adresse_runtime(cat, adresse_id)
         if not adr:
             return out
+
+        # ── 1bis. ALLOCATION AGENT (avant coûts : la part de l'agent d'abord).
+        # La consommation sur l'allocation de l'agent s'applique en unités
+        # REQUEST (une requête = une unité quel que soit son poids token) et
+        # ne concerne que les succès. La souplesse (strict/souple/informatif)
+        # est gérée ici, au niveau de l'allocation.
+        if success and agent_id:
+            try:
+                from services.llm_usage.allocation import consume_allocation
+                allocated = consume_allocation(
+                    cat, agent_id, adr["adresse_runtime_id"], 1.0, nature="quota")
+                if not allocated:
+                    # allocation quota épuisée : tente la nature budget (fixe).
+                    allocated = consume_allocation(
+                        cat, agent_id, adr["adresse_runtime_id"], 1.0,
+                        nature="budget")
+                out["consumed"]["allocation"] = allocated
+            except Exception:
+                out["consumed"]["allocation"] = True  # best-effort
 
         # ── 2. ÉTATS D'ERREUR (avant coût : un fail ne consomme pas) ──
         if not success and error_code in ("rate_limited", "quota_exhausted",

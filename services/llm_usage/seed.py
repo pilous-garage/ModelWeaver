@@ -57,6 +57,42 @@ def _price_ratios(cat, adresse_id: int):
         return (0.0, 0.0)
 
 
+def _now() -> int:
+    return int(time.time())
+
+
+def _next_epoch(interval: str, now_ts: Optional[int] = None) -> int:
+    """Prochaine échéance d'une fenêtre de reset (minute|hour|day|week|month).
+
+    Le budget se ré-évalue à la FIN de sa période : pour 'day' ce soir minuit,
+    pour 'hour' la prochaine heure juste, etc. (jamais "maintenant" — sinon la
+    réévaluation réinitialise le spent à chaque appel)."""
+    import calendar
+    ts = now_ts if now_ts is not None else int(time.time())
+    import datetime as _dt
+    if interval == "minute":
+        return (ts // 60 + 1) * 60
+    if interval == "hour":
+        return (ts // 3600 + 1) * 3600
+    if interval == "day":
+        d = _dt.datetime.utcfromtimestamp(ts).date() + _dt.timedelta(days=1)
+        return int(calendar.timegm(d.timetuple()))
+    if interval == "week":
+        # Lundi prochain 00:00 UTC.
+        d = _dt.datetime.utcfromtimestamp(ts).date()
+        days_ahead = (0 - d.weekday()) % 7 or 7
+        d2 = d + _dt.timedelta(days=days_ahead)
+        return int(calendar.timegm(d2.timetuple()))
+    if interval == "month":
+        y, m = _dt.datetime.utcfromtimestamp(ts).year, _dt.datetime.utcfromtimestamp(ts).month
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+        return int(calendar.timegm(_dt.datetime(y, m, 1).timetuple()))
+    return -1
+
+
 def _budget_generique_for_tag(cat, api_key_tag: str) -> dict:
     """Assure le budget_generique_key_tag pour un tag. Retourne les
     budget_generique_key_tag_id par tag_code."""
@@ -71,7 +107,7 @@ def _budget_generique_for_tag(cat, api_key_tag: str) -> dict:
                  souplesse_taux, next_reset)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (api_key_tag, tid, interval, quota, souplesse, taux,
-              int(time.time())))
+              _next_epoch(interval)))
         row = cat.conn.execute("""
             SELECT budget_generique_key_tag_id FROM budget_generique_key_tag
             WHERE api_key_tag = ? AND tag_id = ? AND interval_reset = ?
@@ -130,7 +166,7 @@ def _budget_final_for_runtime(cat, adr_runtime_id: int, adresse_id: int,
                  souplesse_taux, interval_reset, next_reset)
             VALUES (?, ?, NULL, ?, ?, 0, ?, ?, ?, ?)
         """, (adr_runtime_id, gid, tid, quota, souplesse, taux, interval,
-              int(time.time())))
+              _next_epoch(interval)))
         row = cat.conn.execute("""
             SELECT budget_final_id FROM budget_final
             WHERE adresse_runtime_id = ? AND tag_id = ? AND interval_reset = ?

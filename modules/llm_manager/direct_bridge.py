@@ -891,6 +891,7 @@ class DirectBridge(BaseBridge):
                     tokens_thinking=toks["thinking"] or int(tokens_thinking or 0),
                     latency_ms=float(latency_ms or 0),
                     error_code=error_code or "",
+                    agent_id=agent_id,
                     nb_requetes=1)
             except Exception:
                 # La consommation est best-effort : un souci ici ne casse pas

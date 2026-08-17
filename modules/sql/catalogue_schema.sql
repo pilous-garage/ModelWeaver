@@ -729,6 +729,9 @@ CREATE TABLE IF NOT EXISTS budget_final (
     tag_id         INTEGER NOT NULL REFERENCES budget_tags(id),
     quota_effectif REAL NOT NULL,                -- min(quota_générique, quota_user)
     spent          REAL DEFAULT 0,
+    -- Partie du quota ENGAGÉE sur les allocations agent (réservée) — PAS une
+    -- consommation. remaining pour une allocation = alloue - allocation.spent.
+    alloue         REAL DEFAULT 0,
     souplesse      TEXT DEFAULT 'strict',
     souplesse_taux REAL DEFAULT 0,
     interval_reset TEXT NOT NULL DEFAULT 'day',
@@ -883,6 +886,44 @@ CREATE INDEX IF NOT EXISTS idx_ar_adresse ON adresse_runtime(adresse_id);
 CREATE INDEX IF NOT EXISTS idx_ar_key ON adresse_runtime(api_key_id);
 CREATE INDEX IF NOT EXISTS idx_ar_tag ON adresse_runtime(api_key_tag);
 CREATE INDEX IF NOT EXISTS idx_ar_model ON adresse_runtime(model_key);
+
+-- ============================================================
+-- 13. ALLOCATION AGENT → BUDGET (Idée 18 — donnée à un agent)
+-- Quand on donne un LLM à un agent, on lui donne un BUDGET ALLOUÉ sur le
+-- budget_final de son adresse. Deux natures, différenciées par le RESET :
+--   - ALLOCATION QUOTA : fraction (%) du quota_final ; l'agent respecte sa
+--     limite ET bénéficie des resets de quota (à l'échéance, spent se remet
+--     à 0 et l'allocation se recalcule : fraction × nouveau quota).
+--   - ALLOCATION BUDGET : enveloppe FIXE (montant) SANS reset (reset_suivi =
+--     -1) ; elle ne suit pas les resets du parent, elle s'épuise une fois.
+-- La SOUPLESSE (strict/souple/informatif) est gérée ICI (à l'allocation),
+-- pas au budget_final : le reste de souplesse s'applique au niveau de
+-- l'allocation de l'agent.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_budget_allocation (
+    allocation_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id         TEXT NOT NULL,          -- l'agent auquel on attribue le budget
+    adresse_runtime_id INTEGER NOT NULL REFERENCES adresse_runtime(adresse_runtime_id),
+    budget_final_id  INTEGER NOT NULL REFERENCES budget_final(budget_final_id),
+    nature           TEXT NOT NULL DEFAULT 'quota'
+                     CHECK(nature IN ('quota', 'budget')),
+    -- quota : fraction du quota_final (ex. 0.20 = 20%) ; budget : montant fixe.
+    fraction         REAL DEFAULT 0,
+    montant          REAL DEFAULT 0,          -- alloué effectif (fraction×quota ou montant fixe)
+    reset_suivi      INTEGER DEFAULT -1,      -- prochain reset de QUOTA ; -1 = budget fixe (sans reset)
+    interval_reset   TEXT DEFAULT '',         -- minute|hour|day|month (pour rechéruler)
+    -- souplesse PAR ALLOCATION (la souplesse vit ici, pas sur budget_final)
+    souplesse        TEXT DEFAULT 'strict' CHECK(souplesse IN ('strict','souple','informatif')),
+    souplesse_taux   REAL DEFAULT 0,
+    spent            REAL DEFAULT 0,          -- consommé sur CETTE allocation
+    status           TEXT NOT NULL DEFAULT 'active'
+                     CHECK(status IN ('active', 'closed')),
+    created_at       INTEGER DEFAULT (strftime('%s','now')),
+    updated_at       INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_aba_agent ON agent_budget_allocation(agent_id);
+CREATE INDEX IF NOT EXISTS idx_aba_budget ON agent_budget_allocation(budget_final_id);
+CREATE INDEX IF NOT EXISTS idx_aba_adresse ON agent_budget_allocation(adresse_runtime_id);
 
 -- ============================================================
 -- INDEXES
