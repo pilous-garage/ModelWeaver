@@ -2575,6 +2575,69 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration thinking_power ignorée: {e}")
 
+        # ── Migration writers par domaine (Idée 18, Q) : tableau des domaines
+        # d'écriture métier + le writer principal. Verrou STRICT (tables par
+        # domaine) vérifié à l'écriture (repos). Seed idempotent.
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS domain_writers (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domaine        TEXT NOT NULL UNIQUE,
+                    writer_ref     TEXT NOT NULL,
+                    tables_json    TEXT DEFAULT '',
+                    token_hash     TEXT DEFAULT '',
+                    actif          INTEGER DEFAULT 1,
+                    description    TEXT DEFAULT '',
+                    created_at     INTEGER DEFAULT (strftime('%s','now')),
+                    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            _domain_seed = [
+                ("scoring", "scoreur",
+                 ["llm_domaine_score", "llm_task_type_score",
+                  "score_thinking_power", "thinking_power_model",
+                  "thinking_power_adress", "task_level_cost"],
+                 "Scores d'expérience + thinking_power dérivé"),
+                ("batch", "usage_batcher",
+                 ["model_call_log", "model_call_log_archive", "usage_history_1m",
+                  "usage_history_15m", "usage_history_3h", "usage_history_1d",
+                  "usage_history_1w", "usage_history_1mo", "real_call_models"],
+                 "Agrégats temporels + séquences d'usage"),
+                ("allocation", "allocateur",
+                 ["agent_budget_allocation"],
+                 "Claims d'allocation agent→budget"),
+                ("budget", "consume_call",
+                 ["budget_final", "budget_generique_key_tag",
+                  "budget_user_key_id", "cost_final", "cost_key_tag"],
+                 "Consommation des budgets/costs à l'appel"),
+                ("adresse", "ensure_addresses",
+                 ["provider_model_address", "adresse_runtime", "provider_models",
+                  "provider_endpoints"],
+                 "Référentiel des adresses"),
+                ("manifest", "manifest_store",
+                 ["?", "config_json"],
+                 "Configuration teams/agents (fichiers ouverts)"),
+            ]
+            import json as _json
+            for dom, writer, tables, desc in _domain_seed:
+                self.conn.execute("""
+                    INSERT OR IGNORE INTO domain_writers
+                        (domaine, writer_ref, tables_json, description)
+                    VALUES (?, ?, ?, ?)
+                """, (dom, writer, _json.dumps(tables), desc))
+                # met à jour la liste des tables si elle a évolué
+                self.conn.execute("""
+                    UPDATE domain_writers SET tables_json = ?, writer_ref = ?
+                    WHERE domaine = ?
+                """, (_json.dumps(tables), writer, dom))
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration domain_writers ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci

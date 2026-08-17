@@ -87,6 +87,9 @@ def update_experience_scores(cat, events: Iterable[Dict[str, Any]]) -> int:
       age          : âge de l'événement en secondes (fraîcheur)
     Retourne le nombre de scores mis à jour.
     """
+    from services.domain_access import guard
+    guard("scoring", "scoreur", "llm_domaine_score")
+    guard("scoring", "scoreur", "llm_task_type_score")
     try:
         n = 0
         for ev in events:
@@ -153,6 +156,9 @@ def derive_thinking_power(cat) -> Dict[str, Any]:
     Adresse = modèle servi par une adresse → même valeur que le modèle.
     Passif : ne réécrit une ligne que si la valeur a changé.
     """
+    from services.domain_access import guard
+    guard("scoring", "scoreur", "thinking_power_model")
+    guard("scoring", "scoreur", "thinking_power_adress")
     try:
         # Indice par (model_id, niveau)
         model_power: Dict[Tuple[int, str], float] = {}

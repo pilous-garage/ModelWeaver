@@ -1077,6 +1077,27 @@ CREATE TABLE IF NOT EXISTS thinking_power_adress (
 CREATE INDEX IF NOT EXISTS idx_tpa_adresse ON thinking_power_adress(adresse_runtime_id);
 
 -- ============================================================
+-- 16. WRITERS PAR DOMAINE (Idée 18, section Q)
+-- Chaque système métier qui écrit dans le catalogue possède SON domaine de
+-- données + un writer identifié. Le verrou est STRICT (tables par domaine) :
+-- un domaine n'écrit QUE dans les tables qui lui sont attribuées, sinon
+-- WriteDenied. La vérification se fait à l'écriture (dans les repos).
+-- Écrivains (writer_ref) : scoring | batch | allocation | budget | adresse |
+-- manifest | catalogue_priv.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS domain_writers (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    domaine        TEXT NOT NULL UNIQUE,   -- nom court du domaine de données
+    writer_ref     TEXT NOT NULL,          -- le processus/sous-système porteur
+    tables_json    TEXT DEFAULT '',        -- JSON : list des tables qu'il peut écrire
+    token_hash     TEXT DEFAULT '',        -- hash du token (défense d'app)
+    actif          INTEGER DEFAULT 1,
+    description    TEXT DEFAULT '',
+    created_at     INTEGER DEFAULT (strftime('%s','now')),
+    updated_at     INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);

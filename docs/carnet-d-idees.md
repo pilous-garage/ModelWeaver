@@ -1335,3 +1335,21 @@ Actions concrètes (phase suivante) :
 - Alimentées dans consume_call (point unique de passage de tout appel LLM).
 - Validé : succès → les 4 posés ; échec → last_use avance, respond inchangé.
 - Usage : fraîcheur/réactivité d'une adresse sans join sur model_call_log.
+
+##### Q9. WRITERS PAR DOMAINE — SOCLE (FAIT — commité)
+- Table domain_writers (catalogue) : domaine UNIQUE, writer_ref, tables_json
+  (list des tables que le domaine peut écrire), token_hash, actif, description.
+  Seed 6 domaines : scoring(scoreur), batch(usage_batcher), allocation
+  (allocateur), budget(consume_call), adresse(ensure_addresses),
+  manifest(manifest_store).
+- services/domain_access.py : registre + verrou STRICT. check_write(domaine,
+  table) → True/False ; guard(domaine, writer, table) → lève WriteDenied si le
+  domaine n'est pas autorisé sur la table. Fail-safe : domaine inconnu ou sans
+  tables = refusé. BYPASS via env MODELWEAVER_BYPASS_WRITERS (migration/debug,
+  jamais en prod).
+- PILOTE intégré : scoreur.py → guard("scoring","scoreur", ...) avant toute
+  écriture (llm_domaine_score/llm_task_type_score/thinking_power_*).
+- Validé : scoring→llm_domaine_score OK ; scoring→budget_final REFUSÉ ;
+  domaine inconnu REFUSÉ ; derive_thinking_power passe (garde OK).
+- RESTE : généraliser la garde aux autres domaines (batch/budget/allocation/
+  adresse/manifest) + token réel par domaine (défense d'app par processus).
