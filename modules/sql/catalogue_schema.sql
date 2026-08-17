@@ -926,6 +926,117 @@ CREATE INDEX IF NOT EXISTS idx_aba_budget ON agent_budget_allocation(budget_fina
 CREATE INDEX IF NOT EXISTS idx_aba_adresse ON agent_budget_allocation(adresse_runtime_id);
 
 -- ============================================================
+-- 14. CALCULATEUR DE COÛTS (Idée 18 — section N du carnet d'idées)
+-- Le coût d'une ACTION = 2 composantes orthogonales :
+--   TOKENS (tok_in/out/thinking, req)  → dépend du MODÈLE (comportement)
+--   TEMPS  (delai, secondes/tok...)    → dépend de l'ADRESSE (provider)
+-- Ces tables fournissent au calculateur la matière pour estimer le coût
+-- d'une (tâche, niveau) pour un (modèle, adresse) donné :
+--   coût = tokens_modèle × temps_adresse × prix_adresse.
+-- ============================================================
+
+-- 14a. task_level_cost : poids intrinsèque de la tâche par (task_type, niveau).
+-- UNE TÂCHE coûte UN TRAVAIL (unités de travail normalisées, indépendant du
+-- LLM). Appris par l'expérience (séquences réussies), init heuristique.
+CREATE TABLE IF NOT EXISTS task_level_cost (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    travail      REAL DEFAULT 1.0,      -- unités de travail normalisées
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(task_type_id, niveau)
+);
+CREATE INDEX IF NOT EXISTS idx_tlc_type ON task_level_cost(task_type_id);
+
+-- 14b. llm_effort_ratio : facteurs de conversion par MODÈLE (tok_in/travail,
+-- tok_out/travail, tok_thinking/travail, req/travail, temps/travail).
+-- DÉPEND du LLM : pour le même travail, un modèle verbeux émet bien plus de
+-- tokens. Appris par les séquences réussies, init neutre (1.0).
+CREATE TABLE IF NOT EXISTS llm_effort_ratio (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+    tok_in_par_travail    REAL DEFAULT 1.0,
+    tok_out_par_travail   REAL DEFAULT 1.0,
+    tok_think_par_travail REAL DEFAULT 1.0,
+    req_par_travail       REAL DEFAULT 1.0,
+    temps_par_travail     REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ler_model ON llm_effort_ratio(model_id);
+
+-- 14c. llm_task_cost : le PRODUIT — coût estimable par (modèle, type, niveau).
+-- CACHE re-synthétisé périodiquement (tick) :
+--   cost = task_level_cost.travail × llm_effort_ratio × prix_adresse.
+-- Les valeurs POSSÈDENT une part variable selon que le modèle a des données
+-- propres ou non — le balancement (shrinkage bayésien) est fait par le calc.
+CREATE TABLE IF NOT EXISTS llm_task_cost (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    -- unités mesurables estimées pour UNE exécution de cette (tâche, niveau) :
+    tok_in       REAL DEFAULT 0,
+    tok_out      REAL DEFAULT 0,
+    tok_think    REAL DEFAULT 0,
+    req          REAL DEFAULT 0,
+    temps        REAL DEFAULT 0,        -- secondes (adresse moyenne)
+    -- dérivés (via cost_final/prix) :
+    thinking_power REAL DEFAULT 0,
+    money        REAL DEFAULT 0,
+    -- part de confiance (0..1) = w = n/(n+k) du shrinkage
+    confiance    REAL DEFAULT 0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(model_id, task_type_id, niveau)
+);
+CREATE INDEX IF NOT EXISTS idx_ltc_model ON llm_task_cost(model_id);
+CREATE INDEX IF NOT EXISTS idx_ltc_type ON llm_task_cost(task_type_id);
+
+-- 14d. task_level_stats : ratios par niveau du coût DE RÉFÉRENCE (type).
+-- Nommer "cost_ref" le coût d'un type au niveau de référence (senior). Chaque
+-- niveau vaut UNE PROPORTION du cost_ref (débutant = 20% tok_in, 10% tok_out).
+-- Sert à BALANCER les combos (modèle, type, niveau) peu remplis : on connaît
+-- le type du modèle mais pas tous les niveaux → stats × cost_ref.
+CREATE TABLE IF NOT EXISTS task_level_stats (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    ref_niveau   TEXT NOT NULL DEFAULT 'senior',  -- le niveau de référence (cost_ref)
+    tok_in_ratio REAL DEFAULT 1.0,      -- proportion du cost_ref.tok_in
+    tok_out_ratio REAL DEFAULT 1.0,
+    tok_think_ratio REAL DEFAULT 1.0,
+    req_ratio    REAL DEFAULT 1.0,
+    temps_ratio  REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(task_type_id, niveau)
+);
+CREATE INDEX IF NOT EXISTS idx_tls_type ON task_level_stats(task_type_id);
+
+-- 14e. llm_level_windows : évaluation du coût par niveau (fenêtres de
+-- thinking_power). Si un modèle a un thinking_power DANS [tp_min, tp_max],
+-- on peut ESPÉRER ce coût pour cette (tâche, niveau) — sans séquences du modèle.
+CREATE TABLE IF NOT EXISTS llm_level_windows (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+    tp_min       REAL,                  -- plancher thinking_power (NULL = min)
+    tp_max       REAL,                  -- plafond (NULL = max)
+    tok_in       REAL DEFAULT 0,
+    tok_out      REAL DEFAULT 0,
+    tok_think    REAL DEFAULT 0,
+    req          REAL DEFAULT 0,
+    temps        REAL DEFAULT 0,
+    thinking_power REAL DEFAULT 0,
+    money        REAL DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_llw_type ON llm_level_windows(task_type_id);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_cat_providers_ref ON catalogue_providers(ref);

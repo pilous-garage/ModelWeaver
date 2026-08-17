@@ -280,6 +280,60 @@ CREATE TABLE IF NOT EXISTS usage_files (
     PRIMARY KEY (workspace_id, path)
 );
 
+-- ──────────────────────────────────────────
+--  Suivi budgétaire PAR TÂCHE (Idée 18 / section N)
+--  Chaque tâche (ou sub_task) porte le budget qu'elle devait théoriquement
+--  consommer (estimé par le calculateur, section N) ET le budget réellement
+--  utilisé par les appels LLM qui lui sont rattachés.
+--  C'est la BOUCLE D'APPRENTISSAGE : théorique vs utilisé → on affine
+--  task_level_cost / llm_effort_ratio (le "travail" d'une tâche).
+--  Lien appels→tâche : meta_json de model_call_log contient task_id /
+--  sub_task_id / task_type / difficulty (injecté par le FSM) → l'agrégat
+--  "utilisé" se reconstruit par requête sur le catalogue.
+--  Budget théorique : calculé au moment où la sub_task est attribuée (le
+--  calculateur estime le coût de la (tâche, niveau) pour le modèle choisi).
+--  Budget utilisé : cumulé au fil des appels (consume_call l'alimente via
+--  l'adresse + le task_id du meta).
+-- ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS task_budget_tracking (
+    tracking_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id   TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    task_id        INTEGER,                 -- NULL si on suit une sub_task seule
+    sub_task_id    INTEGER NOT NULL,
+    -- identité de la tâche suivie
+    task_type      TEXT NOT NULL DEFAULT '',  -- analysis | coding | testing | review | merge | respond
+    difficulty     TEXT NOT NULL DEFAULT 'medium',  -- easy | medium | hard | expert
+    -- qui l'exécute (+ quel modèle/adresse) : fixé à l'attribution
+    assigned_to    TEXT DEFAULT '',
+    model_id       INTEGER,                 -- catalogue_models.id choisi
+    adresse_runtime_id INTEGER,             -- adresse (provider×endpoint×modèle)
+    -- BUDGET THÉORIQUE (estimé au moment où le calcul est possible)
+    theo_tok_in    REAL DEFAULT 0,
+    theo_tok_out   REAL DEFAULT 0,
+    theo_tok_think REAL DEFAULT 0,
+    theo_req       REAL DEFAULT 0,
+    theo_temps     REAL DEFAULT 0,          -- secondes estimées
+    theo_money     REAL DEFAULT 0,
+    theo_thinking  REAL DEFAULT 0,          -- thinking_power estimé
+    -- BUDGET UTILISÉ (cumulé par les appels LLM rattachés à cette tâche)
+    used_tok_in    REAL DEFAULT 0,
+    used_tok_out   REAL DEFAULT 0,
+    used_tok_think REAL DEFAULT 0,
+    used_req       REAL DEFAULT 0,
+    used_temps     REAL DEFAULT 0,          -- latence cumulée
+    used_money     REAL DEFAULT 0,
+    used_thinking  REAL DEFAULT 0,
+    -- état du suivi
+    status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+    opened_at      INTEGER DEFAULT (strftime('%s','now')),
+    closed_at      INTEGER,
+    updated_at     INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(sub_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tbt_task ON task_budget_tracking(task_id);
+CREATE INDEX IF NOT EXISTS idx_tbt_workspace ON task_budget_tracking(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_tbt_model ON task_budget_tracking(model_id);
+
 -- Index pour les requêtes workspace
 CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id, status, priority);
 CREATE INDEX IF NOT EXISTS idx_issues_workspace ON issues(workspace_id, status, priority);

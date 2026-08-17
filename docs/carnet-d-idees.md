@@ -886,3 +886,27 @@ thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
 3. BUDGET restant : budget_final.spent < quota (money, thinking_power, time) → éligibilité budget.
 4. STRATÉGIE : sur multi-éligibles, choix par les TAUX (thinking_power/time,
    money/time) + ε-greedy d'exploration des modèles peu testés.
+
+##### N8. TABLES DU CALCULATEUR + SUIVI PAR TÂCHE (FAIT — commitée)
+- 5 tables catalogue (section N3/N4) : task_level_cost (travail par type×niveau),
+  llm_effort_ratio (comportement du modèle par travail), task_level_stats (ratios
+  par niveau du cost_ref senior), llm_task_cost (CACHE du produit, par
+  modèle×type×niveau), llm_level_windows (fenêtres thinking_power → coût).
+- services/llm_usage/calculator.py : recompute() = tick (seed stats + seed
+  travail + seed effort + synthèse du produit). MISE À JOUR PASSIVE : on ne
+  réécrit une ligne que si une valeur a changé (critique au tick — évite de
+  toucher 100k lignes à chaque passe si rien n'a bougé).
+- LEÇON : INSERT OR IGNORE / ON CONFLICT DO NOTHING MASQUENT les erreurs (SQL
+  invalide, mauvaise connexion) → retour silencieux 0. Pour un cache
+  re-synthétisé, utiliser un UPSERT OU une comparaison avant écriture, et
+  NE JAMAIS avaler l'exception sans la logger.
+- LEÇON : passer UNIQUEMENT des sqlite3.Connection aux helpers du calculator —
+  passer l'objet CatalogueDB (qui a .conn) à une fonction qui attend une
+  connexion, c'est une AttributeError silencieuse (masquée par le except).
+- service/llm_usage/task_track.py : SUIVI BUDGÉTAIRE PAR TÂCHE. Table workspace
+  task_budget_tracking (par sub_task) : budget THÉORIQUE (calculé à l'ouverture
+  par le calculateur) + budget UTILISÉ (reconstruit à la fermeture depuis les
+  model_call_log dont le meta_json porte sub_task_id). C'est la BOUCLE :
+  théorique vs utilisé → on affine le travail/effort des tâches.
+- Exemple validé : modèle 259, planning/junior ≤> travail(0.405) × effort(1.0)
+  = 0.405 tok ; après effort tok_out=2.5 → 1.0125. Recompute passif → 0 écrits.

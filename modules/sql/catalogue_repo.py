@@ -2412,6 +2412,107 @@ class CatalogueDB:
                 pass
             print(f"⚠️  Migration allocation ignorée: {e}")
 
+        # ── Migration calculateur de coûts (Idée 18, section N) : task_level_cost,
+        # llm_effort_ratio, llm_task_cost, task_level_stats, llm_level_windows.
+        # Le coût d'une action = tokens(par modèle) × temps(par adresse) × prix.
+        try:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_level_cost (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+                    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    travail      REAL DEFAULT 1.0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(task_type_id, niveau)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tlc_type ON task_level_cost(task_type_id)")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_effort_ratio (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+                    tok_in_par_travail    REAL DEFAULT 1.0,
+                    tok_out_par_travail   REAL DEFAULT 1.0,
+                    tok_think_par_travail REAL DEFAULT 1.0,
+                    req_par_travail       REAL DEFAULT 1.0,
+                    temps_par_travail     REAL DEFAULT 1.0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ler_model ON llm_effort_ratio(model_id)")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_task_cost (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id     INTEGER NOT NULL REFERENCES catalogue_models(id),
+                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+                    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    tok_in       REAL DEFAULT 0,
+                    tok_out      REAL DEFAULT 0,
+                    tok_think    REAL DEFAULT 0,
+                    req          REAL DEFAULT 0,
+                    temps        REAL DEFAULT 0,
+                    thinking_power REAL DEFAULT 0,
+                    money        REAL DEFAULT 0,
+                    confiance    REAL DEFAULT 0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(model_id, task_type_id, niveau)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ltc_model ON llm_task_cost(model_id)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ltc_type ON llm_task_cost(task_type_id)")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_level_stats (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+                    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    ref_niveau   TEXT NOT NULL DEFAULT 'senior',
+                    tok_in_ratio REAL DEFAULT 1.0,
+                    tok_out_ratio REAL DEFAULT 1.0,
+                    tok_think_ratio REAL DEFAULT 1.0,
+                    req_ratio    REAL DEFAULT 1.0,
+                    temps_ratio  REAL DEFAULT 1.0,
+                    samples      INTEGER DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now')),
+                    UNIQUE(task_type_id, niveau)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tls_type ON task_level_stats(task_type_id)")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_level_windows (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type_id INTEGER NOT NULL REFERENCES scoring_task_types(id),
+                    niveau       TEXT NOT NULL CHECK(niveau IN ('debutant','junior','intermediaire','senior','expert')),
+                    tp_min       REAL,
+                    tp_max       REAL,
+                    tok_in       REAL DEFAULT 0,
+                    tok_out      REAL DEFAULT 0,
+                    tok_think    REAL DEFAULT 0,
+                    req          REAL DEFAULT 0,
+                    temps        REAL DEFAULT 0,
+                    thinking_power REAL DEFAULT 0,
+                    money        REAL DEFAULT 0,
+                    updated_at   INTEGER DEFAULT (strftime('%s','now'))
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llw_type ON llm_level_windows(task_type_id)")
+            self.conn.commit()
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠️  Migration calculateur ignorée: {e}")
+
         # ── Seed modèles + provider_models si vides ──
         # S'exécute pour TOUTE BDD (vierge OU pré-existante) : le script
         # SQL crée les tables mais ne seede PAS les modèles (ceux-ci
