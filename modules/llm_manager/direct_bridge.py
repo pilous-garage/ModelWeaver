@@ -846,6 +846,13 @@ class DirectBridge(BaseBridge):
             _short = str(model_ref or "")
             if provider_ref and _short.startswith(f"{provider_ref}/"):
                 _short = _short[len(provider_ref) + 1:]
+            # adresse_id résolu une fois (réutilisé par l'INSERT ET la
+            # consommation budget/scoring).
+            _adresse_id = self.cat.conn.execute(
+                "SELECT adresse_id FROM provider_model_address "
+                "WHERE provider_ref = ? AND provider_model_name = ?",
+                (provider_ref, _short)).fetchone()
+            _adresse_id = int(_adresse_id["adresse_id"]) if _adresse_id else 0
             self.cat.conn.execute("""
                 INSERT INTO model_call_log
                     (provider_id, model_id, provider_model_id, adresse_id, agent_id, success,
@@ -862,12 +869,11 @@ class DirectBridge(BaseBridge):
                     (SELECT pm.id FROM provider_models pm
                       JOIN catalogue_providers p ON p.id = pm.provider_id
                      WHERE p.ref = ? AND pm.provider_model_name = ?),
-                    COALESCE((SELECT adresse_id FROM provider_model_address
-                              WHERE provider_ref = ? AND provider_model_name = ?), 0),
+                    ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (provider_ref, provider_ref, _short, model_ref,
                   provider_ref, _short,
-                  provider_ref, _short,
+                  _adresse_id,
                   (str(agent_id)[:80] if agent_id else None),
                   int(success), toks["prompt"], toks["completion"],
                   toks["thinking"] or int(tokens_thinking or 0),
@@ -875,6 +881,24 @@ class DirectBridge(BaseBridge):
                   (error_msg or "")[:200], (call_type or "chat")[:30],
                   (str(caller_id)[:120] if caller_id else None), meta_json))
             self.cat.conn.commit()
+            # JONCTION Idée 18 : consommation budget/cost + états d'erreur +
+            # scoring de fiabilité — synchrone à l'appel (régulation temps réel).
+            try:
+                from services.llm_usage.consume import consume_call
+                consume_call(
+                    self.cat, _adresse_id, bool(success),
+                    tokens_in=toks["prompt"], tokens_out=toks["completion"],
+                    tokens_thinking=toks["thinking"] or int(tokens_thinking or 0),
+                    latency_ms=float(latency_ms or 0),
+                    error_code=error_code or "",
+                    nb_requetes=1)
+            except Exception:
+                # La consommation est best-effort : un souci ici ne casse pas
+                # l'appel (le log détaillé est déjà écrit).
+                try:
+                    self.cat.conn.rollback()
+                except Exception:
+                    pass
             # Les lignes détaillées sont agrégées par le TICKER DE BATCHAGE
             # (usage_batcher, service séparé) : il lit model_call_log par
             # fenêtres de temps, alimente les tables d'agrégats (1m/15m/3h/…)

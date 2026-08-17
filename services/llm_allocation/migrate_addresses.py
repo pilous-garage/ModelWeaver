@@ -70,6 +70,14 @@ def migrate(cat=None, dry_run: bool = False,
             db_path=None, tables=None) -> dict:
     cat = cat or CatalogueDB()
     ensure_addresses(cat)
+    # Idée 18 : seed des budgets/coûts (budget_generique_key_tag, cost_key_tag,
+    # budget_final, cost_final) — relie chaque adresse à ses budgets pour que
+    # la consommation (services/llm_usage/consume) soit effective.
+    try:
+        from services.llm_usage.seed import seed_budgets
+        seed_budgets(cat)
+    except Exception:
+        pass
     db_path = db_path or runtime_db_path()
     tables = tables or TABLES
     import sqlite3
