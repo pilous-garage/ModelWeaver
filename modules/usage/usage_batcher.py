@@ -83,6 +83,67 @@ def _data_frontier(cat) -> Optional[int]:
         return None
 
 
+def _seq_open_or_extend(rt, prov: str, model: str, ts: int, success: bool,
+                        error_code: str = "", tin: int = 0, tout: int = 0,
+                        lat: float = 0.0) -> None:
+    """Traite UN appel dans la suite de séquences (model_success_runs).
+
+    SPEC (V0.17, Idée 18) — une run s'ouvre au premier appel de SON type :
+      - type SAME que la run ouverte → on met à jour le cumul (requests, tokens,
+        latence), et seq_end = ts de CET appel (le dernier appel de la séquence) ;
+      - type OPPOSÉ à la run ouverte → on FERME la run en GARDANT seq_end tel quel
+        (= le dernier appel appartenant à la séquence, jamais l'appel suivant),
+        puis on OUVRE une run du nouveau type.
+    L'alternance success/fail trace donc AUSSI les rafales d'échec (rate-limit/
+    quota) que la version précédente perdait.
+    """
+    _typ = 'success' if success else 'fail'
+    cur = rt.conn.execute(
+        "SELECT id, seq_start, seq_type, requests, tokens_in, tokens_out, "
+        "avg_latency_ms FROM model_success_runs "
+        "WHERE provider_ref = ? AND model_ref = ? AND status = 'open' "
+        "ORDER BY id DESC LIMIT 1", (prov, model)).fetchone()
+    if cur is not None and cur["seq_type"] == _typ:
+        # Même type : cumuler et avancer seq_end au dernier appel de la séquence.
+        req = (cur["requests"] or 0) + 1
+        sin = (cur["tokens_in"] or 0) + (tin or 0)
+        sout = (cur["tokens_out"] or 0) + (tout or 0)
+        avg = lat if req == 1 else \
+            ((cur["avg_latency_ms"] or 0) * req + (lat or 0)) / req
+        rt.conn.execute("""
+            UPDATE model_success_runs SET
+                requests = ?, tokens_in = ?, tokens_out = ?,
+                avg_latency_ms = ?, seq_end = ?, duration_s = ? - seq_start,
+                updated_at = strftime('%s','now')
+            WHERE id = ?
+        """, (req, sin, sout, avg, ts, ts, cur["id"]))
+        return
+    # Type opposé (ou pas de run ouverte) :
+    if cur is not None:
+        # Fermer la run précédente SANS modifier seq_end (le dernier appel de
+        # la séquence est déjà enregistré — on ne le fait pas coïncider avec
+        # l'appel qui change de type).
+        try:
+            rt.conn.execute(
+                "UPDATE model_success_runs SET status = 'closed', "
+                "updated_at = strftime('%s','now') WHERE id = ?", (cur["id"],))
+        except Exception:
+            pass
+    # Ouvrir une run du nouveau type.
+    try:
+        rt.conn.execute("""
+            INSERT INTO model_success_runs
+                (provider_ref, model_ref, adresse_id, seq_start, seq_end,
+                 requests, tokens_in, tokens_out, avg_latency_ms, seq_type,
+                 error_code, status)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'open')
+        """, (prov, model, _resolve_adresse_batcher(prov, model),
+              ts, ts, tin or 0, tout or 0, lat or 0, _typ,
+              (error_code or "")[:100]))
+    except Exception:
+        pass
+
+
 def _batch_1m(cat, rt) -> int:
     """Agrège les appels détaillés (<= cutoff) en buckets 1 min vers usage_history_1m,
     puis supprime ces lignes détaillées de model_call_log.
@@ -206,77 +267,29 @@ def _batch_1m(cat, rt) -> int:
                     f"{c} = usage_history_1m.{c} + excluded.{c}" for c in extra_cols)
             rt.conn.execute(sql_insert + " " + sql_update, params + extra_params)
         rt.conn.commit()
-        # ── Séquences de réussite par (provider, model) ──
-        # Pour chaque modèle ayant des appels dans la fenêtre :
-        #   - succès → ouvre/continue la séquence open (cumule req/tok/latence)
-        #   - échec  → clôture la séquence open (seq_end, duration_s, closed)
+        # ── Séquences de réussite/échec par (provider, model) ──
+        # Chaque appel est traité dans l'ordre chronologique : la run ouverte de
+        # son type cumule (seq_end = dernier appel de la séquence), un appel de
+        # type opposé la ferme (seq_end CONSERVÉ) puis ouvre une run du nouveau
+        # type — l'alternance trace aussi les rafales d'échec (rate-limit/quota).
         try:
             seq_rows = cat.conn.execute("""
                 SELECT COALESCE(p.ref, '?') AS provider_ref,
                        COALESCE(m.ref, '?') AS model_ref,
-                       SUM(CASE WHEN l.success = 1 THEN 1 ELSE 0 END) AS ok,
-                       SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END) AS ko,
-                       SUM(CASE WHEN l.success = 1 THEN l.tokens_in ELSE 0 END) AS tok_in,
-                       SUM(CASE WHEN l.success = 1 THEN l.tokens_out ELSE 0 END) AS tok_out,
-                       MIN(CASE WHEN l.success = 1 THEN l.created_at END) AS first_ok,
-                       MAX(CASE WHEN l.success = 1 THEN l.created_at END) AS last_ok,
-                       MAX(CASE WHEN l.success = 0 THEN l.created_at END) AS last_ko,
-                       AVG(CASE WHEN l.success = 1 THEN l.latency_ms END) AS avg_lat
+                       l.success, l.created_at, l.latency_ms,
+                       l.tokens_in, l.tokens_out, l.error_code
                 FROM model_call_log l
                 LEFT JOIN catalogue_providers p ON p.id = l.provider_id
                 LEFT JOIN catalogue_models m ON m.id = l.model_id
                 WHERE l.created_at <= ?
-                GROUP BY p.ref, m.ref
+                ORDER BY l.created_at
             """, (cutoff,)).fetchall()
             for s in seq_rows:
-                prov, model = s["provider_ref"], s["model_ref"]
-                ok, ko = s["ok"] or 0, s["ko"] or 0
-                # Séquence open existante ?
-                run = rt.conn.execute(
-                    "SELECT id, seq_start, requests, tokens_in, tokens_out, "
-                    "avg_latency_ms FROM model_success_runs "
-                    "WHERE provider_ref = ? AND model_ref = ? AND status = 'open' "
-                    "ORDER BY id DESC LIMIT 1",
-                    (prov, model)).fetchone()
-                run_id = run["id"] if run else None
-                if ok > 0:
-                    # Cumuler les succès dans la séquence open (ou en ouvrir une).
-                    n = ok
-                    tin = s["tok_in"] or 0
-                    tout = s["tok_out"] or 0
-                    avg = s["avg_lat"]
-                    if run_id:
-                        rt.conn.execute("""
-                            UPDATE model_success_runs SET
-                                requests = requests + ?,
-                                tokens_in = tokens_in + ?,
-                                tokens_out = tokens_out + ?,
-                                avg_latency_ms = CASE WHEN requests + ? > 0 THEN
-                                    ((avg_latency_ms * requests) + ?) / (requests + ?) ELSE 0 END,
-                                updated_at = strftime('%s','now')
-                            WHERE id = ?
-                        """, (n, tin, tout, n, avg or 0, n, run_id))
-                    else:
-                        cur = rt.conn.execute("""
-                            INSERT INTO model_success_runs
-                                (provider_ref, model_ref, adresse_id, seq_start,
-                                 requests, tokens_in, tokens_out, avg_latency_ms,
-                                 status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
-                        """, (prov, model,
-                              _resolve_adresse_batcher(prov, model),
-                              s["first_ok"] or int(time.time()),
-                              n, tin, tout, avg or 0))
-                        run_id = cur.lastrowid if hasattr(cur, "lastrowid") else None
-                if ko > 0 and run_id:
-                    # Clôturer la séquence open (l'échec met fin au run de succès),
-                    # même si elle vient d'être ouverte dans ce batch.
-                    rt.conn.execute("""
-                        UPDATE model_success_runs SET
-                            seq_end = ?, duration_s = ? - seq_start,
-                            status = 'closed', updated_at = strftime('%s','now')
-                        WHERE id = ?
-                    """, (s["last_ko"], s["last_ko"], run_id))
+                _seq_open_or_extend(
+                    rt, s["provider_ref"], s["model_ref"], s["created_at"],
+                    bool(s["success"]), error_code=s.get("error_code") or "",
+                    tin=s["tokens_in"] or 0, tout=s["tokens_out"] or 0,
+                    lat=s["latency_ms"] or 0)
             rt.conn.commit()
         except Exception:
             try:
@@ -498,13 +511,19 @@ def _reconcile_archive(cat, rt, start_ts: int, end_ts: int) -> Dict[str, Any]:
 def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
     """Reconstruit les séquences (model_success_runs) depuis l'archive + détail.
 
-    Purge les séquences du timeframe puis recrée les runs de succès par
-    (provider, model) dans l'ordre chronologique : succès ouvre/cumule, échec
-    clôture. On traite le détail archive (source longue) PUIS le détail courant
-    (model_call_log) pour ne rien perdre.
+    Purge les séquences du timeframe puis recrée les runs (success/fail) par
+    (provider, model) dans l'ordre chronologique via _seq_open_or_extend :
+    une run s'ouvre au 1er appel de son type, cumule tant que le type est le
+    même, se ferme au dernier appel de la séquence (seq_end conservé à l'appel
+    suivant de type opposé). Rejoue l'archive (source longue) PUIS le détail
+    courant (model_call_log) pour ne rien perdre.
     """
     try:
-        rt.conn.execute("DELETE FROM model_success_runs WHERE status = 'closed'")
+        # Purge : toute run (open ou closed) dont la fenêtre intersecte le
+        # timeframe — on ne laisse pas d'open résiduel (le replay les re-crée).
+        rt.conn.execute(
+            "DELETE FROM model_success_runs WHERE seq_start >= ? AND "
+            "(seq_end IS NULL OR seq_end < ?)", (start_ts, end_ts))
         rt.conn.commit()
     except Exception:
         pass
@@ -513,7 +532,8 @@ def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
     try:
         rows += cat.conn.execute("""
             SELECT COALESCE(p.ref, '?') provider_ref, COALESCE(m.ref, '?') model_ref,
-                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms
+                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms,
+                   l.error_code
             FROM model_call_log_archive l
             LEFT JOIN catalogue_providers p ON p.id = l.provider_id
             LEFT JOIN catalogue_models m ON m.id = l.model_id
@@ -524,7 +544,8 @@ def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
     try:
         rows += cat.conn.execute("""
             SELECT COALESCE(p.ref, '?') provider_ref, COALESCE(m.ref, '?') model_ref,
-                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms
+                   l.success, l.created_at, l.tokens_in, l.tokens_out, l.latency_ms,
+                   l.error_code
             FROM model_call_log l
             LEFT JOIN catalogue_providers p ON p.id = l.provider_id
             LEFT JOIN catalogue_models m ON m.id = l.model_id
@@ -544,56 +565,24 @@ def _rebuild_sequences(cat, rt, start_ts: int, end_ts: int) -> int:
     for key, calls in by_model.items():
         prov, model = key.split("/", 1)
         calls.sort(key=lambda c: c["created_at"])
-        run = None  # (id, seq_start, requests, tin, tout, lat_sum)
         for c in calls:
-            if c["success"]:
-                if run is None:
-                    try:
-                        cur = rt.conn.execute("""
-                            INSERT INTO model_success_runs
-                                (provider_ref, model_ref, adresse_id, seq_start,
-                                 requests, tokens_in, tokens_out, avg_latency_ms,
-                                 status)
-                            VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'open')
-                        """, (prov, model,
-                              _resolve_adresse_batcher(prov, model),
-                              c["created_at"], c["tokens_in"] or 0,
-                              c["tokens_out"] or 0, c["latency_ms"] or 0))
-                        run = {"id": cur.lastrowid if hasattr(cur, "lastrowid") else None,
-                               "requests": 1, "tin": c["tokens_in"] or 0,
-                               "tout": c["tokens_out"] or 0, "lat": c["latency_ms"] or 0}
-                        n += 1
-                    except Exception:
-                        run = None
-                else:
-                    run["requests"] += 1
-                    run["tin"] += c["tokens_in"] or 0
-                    run["tout"] += c["tokens_out"] or 0
-                    run["lat"] += c["latency_ms"] or 0
-                    if run["id"]:
-                        try:
-                            rt.conn.execute("""
-                                UPDATE model_success_runs SET
-                                    requests = ?, tokens_in = ?, tokens_out = ?,
-                                    avg_latency_ms = ?, updated_at = strftime('%s','now')
-                                WHERE id = ?
-                            """, (run["requests"], run["tin"], run["tout"],
-                                  run["lat"] / run["requests"], run["id"]))
-                        except Exception:
-                            pass
-            else:
-                # Échec : clôturer la séquence open.
-                if run is not None and run["id"]:
-                    try:
-                        rt.conn.execute("""
-                            UPDATE model_success_runs SET
-                                seq_end = ?, duration_s = ? - seq_start,
-                                status = 'closed', updated_at = strftime('%s','now')
-                            WHERE id = ?
-                        """, (c["created_at"], c["created_at"], run["id"]))
-                    except Exception:
-                        pass
-                run = None
+            before = rt.conn.execute(
+                "SELECT COUNT(*) c FROM model_success_runs "
+                "WHERE provider_ref = ? AND model_ref = ? AND status = 'open'",
+                (prov, model)).fetchone()
+            before = before["c"] if before else 0
+            _seq_open_or_extend(
+                rt, prov, model, c["created_at"], bool(c["success"]),
+                error_code=c.get("error_code") or "",
+                tin=c["tokens_in"] or 0, tout=c["tokens_out"] or 0,
+                lat=c["latency_ms"] or 0)
+            after = rt.conn.execute(
+                "SELECT COUNT(*) c FROM model_success_runs "
+                "WHERE provider_ref = ? AND model_ref = ? AND status = 'open'",
+                (prov, model)).fetchone()
+            after = after["c"] if after else 0
+            if after > before:
+                n += 1
     try:
         rt.conn.commit()
     except Exception:

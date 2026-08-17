@@ -612,6 +612,16 @@ class RuntimeDB:
                                    "req_total", "INTEGER DEFAULT 0")
             _add_column_if_missing(self.conn, "model_success_runs",
                                    "tok_total", "INTEGER DEFAULT 0")
+            # V0.17 (Idée 18) : les séquences sont TYPÉES success/fail. Une run
+            # s'ouvre au premier appel du type, se ferme au DERNIER appel de la
+            # séquence (seq_end = nb de la séquence, JAMAIS le timestamp de
+            # l'appel suivant qui change de type), puis une run du type OPPOSÉ
+            # s'ouvre — l'alternance trace les rafales d'échec (rate-limit/
+            # quota) que la version précédente perdait.
+            _add_column_if_missing(self.conn, "model_success_runs",
+                                   "seq_type", "TEXT DEFAULT 'success'")
+            _add_column_if_missing(self.conn, "model_success_runs",
+                                   "error_code", "TEXT DEFAULT ''")
         except Exception:
             self.conn.rollback()
 

@@ -810,3 +810,79 @@ unattributed → attributed → doing → done → supervised + too_hard → bum
 - Découpe = même type uniquement (coding OU testing OU review, pas un mix).
 - Dédoublonnage provider_models (unique par (provider, provider_model_name)),
   et catalogue_models (unique par model_key canonique).
+
+#### N. COÛTS PAR TÂCHE/NIVEAU + THINKING_POWER DYNAMIQUE (suite 2026-08-17)
+
+Problème : choisir le modèle le plus approprié pour une action spécifique
+(type de tâche + niveau) selon son COÛT et son BUDGET restant.
+
+##### N1. SEQ vs PIPELINE (distinction ACQUISE)
+- SEQUENCE = la liste des appels successifs d'une sous-tâche (une ligne de
+  model_success_runs). Une séquence s'ouvre au premier succès et se ferme ON
+  CHANGE DE TYPE (à l'ouverture de la séquence suivante) — PAS à l'échec.
+- PIPELINE = l'ensemble des sous-tâches d'une même root_task. Il se CLÔTURE
+  quand la root_task est finie → à ce moment on met à jour le scoring de tout
+  et on enregistre le type/niveau de chaque sous-tâche du pipeline.
+- Chaque appel LLM est rattaché à sa sous-tâche via meta_json du model_call_log
+  (task_type + difficulty + sub_task_id) — le FSM passe déjà meta au bridge.
+
+##### N2. La table model_success_runs (FAIT — commitée)
+- Colonnes ajoutées : seq_type ('success'/'fail') + error_code.
+- SPEC DE FERMETURE (implémentée via _seq_open_or_extend) : une run s'ouvre au
+  PREMIER appel de son type ; un appel du MÊME type cumule (requests, tokens,
+  latence) et avance seq_end = dernier appel DE LA SÉQUENCE ; un appel du TYPE
+  OPPOSÉ ferme la run en GARDANT seq_end tel quel (= dernier appel appartenant
+  à la séquence, JAMAIS l'appel qui change de type) puis ouvre une run du
+  nouveau type. L'alternance trace AUSSI les rafales d'échec (rate-limit/quota).
+- Batch (_batch_1m) et rebuild (_rebuild_sequences) utilisent le MÊME helper
+  (une seule run ouverte par (provider, model)).
+- Échec Error_code conservé sur la run fail.
+
+##### N3. Le coût d'une action = 2 composantes ORTHOGONALES
+- TOKENS (tok_in/out/thinking, req) : dépend du MODÈLE (comportement langagier)
+  — table par model_id (comme les scores). Peut varier FORTEMENT selon le modèle
+  (tok_out+tok_thinking notamment).
+- TEMPS (delai_moyen, secondes/tok_in, /tok_out, /tok_thinking) : dépend de
+  l'ADRESSE (socket/provider) — table par adresse_runtime_id.
+- Coût total (modèle, adresse) = tokens_modèle × temps_adresse × prix_adresse.
+
+##### N4. Tables llm_task_cost (PLUSIEURS tables, grain (modèle,type,niveau))
+- table_complete : la table complète par (model_id, task_type_id, niveau) —
+  35 combos par modèle — les coûts mesurés/dérivés, remplie au fil des séquences.
+- table_modele_type : par (model_id, task_type_id) avec cost_ref (cost reference
+  du type) — 7 combos — remplie par type (type≠niveau partagent le profil).
+- table_stats_niveau : par (task_type_id, niveau) — les stats par niveau comme
+  FACTEUR du cost_ref (niveau débutant = x% tok_in, y% tok_out, z% req du
+  cost_ref) → pour BALANCER les combos (modèle,type,niveau) peu remplis quand on
+  ne connaît que (modèle,type).
+- table_level_windows : par (niveau, task_type) — thinking_power windows → cost
+  estimable : si le modèle est DANS la fenêtre (thinking_power entre bornes), on
+  peut espérer ce coût. Permet d'estimer le coût d'un modèle SANS séquences.
+
+##### N5. Balancement des données clairsemées (shrinkage bayésien)
+estimation_effective = w × data_spécifique + (1−w) × baseline_globale
+avec w = n / (n + k), n = nb de séquences du (modèle, tâche), k = a priori (ex. 8).
+Un modèle peu testé commence à la baseline (non pénalisé), ses données prennent
+du poids au fil des usages. EXPLORATION : ε-greedy — fraction dédiée des
+allocations vers les modèles éligibles à faible échantillon.
+
+##### N6. THINKING_POWER dynamique (remplace l'init score_reasoning)
+thinking_power(modèle, niveau) = Σ_domaines w×score(domaine,niveau)²
+                                + Σ_types w×score(type,niveau)²
+- CARRÉ : accentue l'écart (2.0² = 4× vs 1.0² = 1) — frontières vs bas.
+- Pondérations w : toutes = 1 pour l'instant, réglables colonne par colonne.
+- Somme GLOBALE (domaines + types mélangés) → un seul indice par (modèle, niveau).
+- NIVEAU requis : garde seulement le score AU niveau requis de la tâche.
+- INIT : scores = 1.0 partout → thinking_power = nb de combos (ex. 14) = "thinking
+  haut" optimiste. Les séquences fail/success font dériver les scores → le
+  thinking_power baisse/réajuste à l'épreuve des faits (même MD/AI que budgets).
+- CONSÉQUENCE VOLONTAIRE : à l'init tout le monde a thinking_power = max → le
+  coût dérivé est le MÊME que les frontières → on ne teste les modèles hauts QUE
+  s'ils sont moins chers (normal pour tok_in/out/think : moins cher = plus haut).
+
+##### N7. Allocation en 4 temps
+1. SCORE de niveau : llm_task_type_score / llm_domaine_score au niveau requis → éligibilité qualité.
+2. COÛT : llm_task_cost (coût de la tâche pour ce llm) → besoin en money/thinking/time.
+3. BUDGET restant : budget_final.spent < quota (money, thinking_power, time) → éligibilité budget.
+4. STRATÉGIE : sur multi-éligibles, choix par les TAUX (thinking_power/time,
+   money/time) + ε-greedy d'exploration des modèles peu testés.
