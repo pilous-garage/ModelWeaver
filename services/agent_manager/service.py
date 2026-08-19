@@ -1227,6 +1227,10 @@ class AgentManager:
         # (C'EST le canal de réveil : le supervisor pose des signaux wakeup
         # quand une sub_task devient dispo — pas de waker de scan).
         woken = self._wake_sleeping_agents()
+        # Amorce : spawn des agents greedy INIT/IDLE qui ne tournent pas encore
+        # en thread. Sans ça, aucun agent ne s'enregistre en wait_for → le waker
+        # n'a personne à réveiller → sub_tasks stagnent à tout jamais.
+        self._amorce_greedy()
         # Waker de tâches : réveille les agents greedy en attente quand une
         # condition est remplie (sub_task unattributed dispo, task todo…).
         # C'est le point de bascule du swarm : sans lui, les greedy ne sont
@@ -1599,6 +1603,42 @@ class AgentManager:
             if self._agent_paused(row["name"]):
                 continue
             threading.Thread(target=self._run_sleeping_agent, args=(agent_id,), daemon=True).start()
+            count += 1
+        return count
+
+    def _amorce_greedy(self) -> int:
+        """Spawn les agents greedy (role_type connu) en status INIT/IDLE qui ne
+        tournent pas encore en thread. Ils s'enregistreront en wait_for → le
+        waker les réveillera dès qu'une sub_task de leur rôle sera dispo.
+
+        C'est l'amorce du swarm : sans ça, les agents créés par team/start
+        (status INIT) restent à jamais non-exécutés → aucune tâche traitée.
+        """
+        try:
+            rows = self.db.conn.execute("""
+                SELECT agent_id, name, role_type, status
+                FROM agents
+                WHERE role_type IN (
+                    'architecte','planificateur','explorateur','explore','codeur',
+                    'test_runner','relecteur','orchestrateur','prepare_response',
+                    'consensus','avis')
+                  AND status IN ('INIT','IDLE')
+                  AND agent_id NOT IN (SELECT agent_id FROM agent_runtime)
+            """).fetchall()
+        except Exception:
+            return 0
+        active = len(self.list_active())
+        count = 0
+        for row in rows:
+            if active + count >= MAX_THREAD_AGENTS:
+                break
+            aid = row["agent_id"]
+            if _agent_thread_alive(aid):
+                continue
+            if self._agent_paused(row["name"]):
+                continue
+            threading.Thread(target=self._run_sleeping_agent, args=(aid,),
+                             daemon=True).start()
             count += 1
         return count
 

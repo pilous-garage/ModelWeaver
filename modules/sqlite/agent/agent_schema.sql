@@ -1,7 +1,6 @@
 -- agent_schema.sql — domaine agents.db (identité + runtime des agents).
 -- Domaine OUVERT (multi-écrivains). DROP des tables obsolètes (migration v1->v2).
 
-DROP TABLE IF EXISTS wait_for;
 DROP TABLE IF EXISTS team_tasks;
 DROP TABLE IF EXISTS conversations;
 DROP TABLE IF EXISTS conversation_messages;
@@ -62,6 +61,17 @@ CREATE TABLE IF NOT EXISTS agent_signals (
   completed_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_signals_agent_status
   ON agent_signals(agent_id, status);
+
+CREATE TABLE IF NOT EXISTS wait_for (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    INTEGER NOT NULL,
+  condition   TEXT NOT NULL,   -- JSON {type, workspace_id, role}
+  status      TEXT DEFAULT 'waiting',  -- waiting / ready / done
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  ready_at    TEXT,
+  expires_at  TEXT);
+CREATE INDEX IF NOT EXISTS idx_wait_for_status
+  ON wait_for(status, agent_id);
 
 CREATE TABLE IF NOT EXISTS agent_entrypoints (
   entrypoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
