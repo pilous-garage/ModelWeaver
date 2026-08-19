@@ -220,50 +220,27 @@ def op_bench_submit(params: Dict[str, Any]) -> Dict[str, Any]:
     """Soumet un résultat de benchmark (feedback du swarm).
 
     params : {suite, task, score, passed, total, meta?, token}.
-    Écrit dans bench_scores (writer catalogue). Retourne {ok, id}."""
+    Écrit dans le JSONL {MW_HOME}/logs/benchmark_results.jsonl (la table BDD
+    bench_scores a été supprimée en V2). Retourne {ok, stored}."""
     try:
-        db = _bench_db()
-        db._check_write(params.get("token", ""))
-        db.conn.execute(
-            "INSERT INTO bench_scores (suite, task, score, passed, total, meta_json) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (params.get("suite", ""), params.get("task", ""),
-             float(params.get("score", 0)),
-             int(params.get("passed", 0)), int(params.get("total", 0)),
-             json.dumps(params.get("meta") or {}, ensure_ascii=False)))
-        bid = db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.conn.commit()
-        return {"ok": True, "id": bid}
+        _bench_db()._check_write(params.get("token", ""))
+        from services.benchmark_results import log_result
+        log_result(params.get("suite", ""), params.get("task", ""),
+                   float(params.get("score", 0)),
+                   int(params.get("passed", 0)), int(params.get("total", 0)),
+                   params.get("meta") or {})
+        return {"ok": True, "stored": "jsonl"}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 
 
 def op_bench_stats(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Stats des scores d'une suite (ou toutes).
+    """Stats des scores d'une suite (ou toutes), depuis le JSONL.
 
     params : {suite?} → {suite, count, avg_score, passed, total}."""
     try:
-        from modules.sql.schema import _default_local_catalogue_db
-        import sqlite3
-        conn = sqlite3.connect(f"file:{_default_local_catalogue_db()}?mode=ro",
-                               uri=True)
-        conn.row_factory = sqlite3.Row
-        suite = params.get("suite", "")
-        if suite:
-            rows = conn.execute(
-                "SELECT COUNT(*) n, AVG(score) avg, SUM(passed) p, SUM(total) t "
-                "FROM bench_scores WHERE suite = ?", (suite,)).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT suite, COUNT(*) n, AVG(score) avg, SUM(passed) p, "
-                "SUM(total) t FROM bench_scores GROUP BY suite").fetchall()
-        conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["avg_score"] = round(d["avg"] or 0, 4)
-            out.append(d)
-        return {"ok": True, "stats": out}
+        from services.benchmark_results import stats_results
+        return {"ok": True, "stats": stats_results(params.get("suite", ""))}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 

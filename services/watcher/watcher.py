@@ -30,12 +30,13 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from modules.sqlite.base import Db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from modules.sql.workspace import WorkspaceDB
-from modules.sql.db import AgentsDB
+from modules.sqlite.workspace.workspace import WorkspaceDB
+from modules.sqlite.agent import db as _agents_db
 
 DEFAULT_INTERVAL_S = 30.0
 
@@ -46,20 +47,16 @@ def _collect_state() -> Dict[str, Any]:
     """Capture un snapshot de l'état swarm (agents, runtime, tasks, issues)."""
     st = {"agents": [], "runtime": [], "tasks": [], "issues": [], "wait_for": []}
     try:
-        db = AgentsDB()
-        st["agents"] = _rows(db.conn.execute(
+        db = _agents_db()
+        st["agents"] = db.sql(
             "SELECT agent_id, name, role_type, status FROM agents "
-            "WHERE name LIKE 'team:%/%'").fetchall())
+            "WHERE name LIKE 'team:%/%'")
         team_ids = [r["agent_id"] for r in st["agents"]]
         if team_ids:
             ph = ",".join("?" for _ in team_ids)
-            st["runtime"] = _rows(db.conn.execute(
+            st["runtime"] = db.sql(
                 f"SELECT * FROM agent_runtime WHERE agent_id IN ({ph})",
-                tuple(team_ids)).fetchall())
-            st["wait_for"] = _rows(db.conn.execute(
-                f"SELECT agent_id, condition, status, id FROM wait_for "
-                f"WHERE status IN ('waiting','ready') AND agent_id IN ({ph})",
-                tuple(team_ids)).fetchall())
+                tuple(team_ids))
         db.close()
     except Exception:
         pass
@@ -254,24 +251,27 @@ def detect_unlinked_issue_workspace(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def detect_unblocked_issues(st: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """P10 — issue 'blocked' dont un human_choice est 'answered' → la décision
-    humaine est arrivée, l'issue doit être débloquée (open + réponse injectée).
-    """
+    """P10 — human_choice 'answered' non consommé (applied=0) lié à une
+    sub_task → la décision humaine est arrivée : la sub_task bloquée doit
+    être relancée (thaw → unattributed). Le marqueur applied évite la
+    re-détection au cycle suivant."""
     out = []
     try:
-        from modules.sql.workspace import WorkspaceDB
-        wdb = WorkspaceDB()
-        rows = wdb.conn.execute(
-            "SELECT h.choice_id, h.issue_id, h.response, i.title "
-            "FROM human_choice h JOIN issues i ON i.issue_id = h.issue_id "
-            "WHERE h.status = 'answered' AND i.status = 'blocked'").fetchall()
-        wdb.close()
+        from modules.sqlite.dialogue_agent import db as _dial
+        d = _dial()
+        rows = d._conn.execute(
+            "SELECT choice_id, sub_task_id, task_id, project_id, response "
+            "FROM human_choice WHERE status = 'answered' AND applied = 0 "
+            "AND sub_task_id IS NOT NULL").fetchall()
+        d.close()
         for r in rows:
-            out.append({"type": "P10_unblock_issue",
-                        "details": f"issue {r['issue_id']} débloquée (choix {r['choice_id']})",
-                        "refs": {"issue_id": r["issue_id"],
-                                 "response": r["response"] or "",
-                                 "choice_id": r["choice_id"]}})
+            out.append({"type": "P10_human_answered",
+                        "details": f"choix {r['choice_id']} répondu → sub_task {r['sub_task_id']} à relancer",
+                        "refs": {"choice_id": r["choice_id"],
+                                 "sub_task_id": r["sub_task_id"],
+                                 "task_id": r["task_id"],
+                                 "project_id": r["project_id"],
+                                 "response": r["response"] or ""}})
     except Exception:
         pass
     return out
@@ -426,15 +426,13 @@ def detect_multi_role_tasks(st: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ── Résolveurs (purs, idempotents) ───────────────────────────────────
 
 def _apply(st: Dict[str, Any], problem: Dict[str, Any],
-           wdb: WorkspaceDB, db: AgentsDB) -> str:
+           wdb: WorkspaceDB, db: Db) -> str:
     ptype = problem["type"]
     try:
         if ptype == "P3_stale_runtime":
             aid = problem.get("agent_id")
-            db.conn.execute("DELETE FROM agent_runtime WHERE agent_id = ?", (aid,))
-            db.conn.execute(
-                "UPDATE agents SET status='IDLE' WHERE agent_id = ?", (aid,))
-            db.conn.commit()
+            db.sql("DELETE FROM agent_runtime WHERE agent_id = ?", (aid,))
+            db.sql("UPDATE agents SET status='IDLE' WHERE agent_id = ?", (aid,))
             return f"runtime de l'agent {aid} purgé"
 
         if ptype == "P1_orphan_running_task":
@@ -509,22 +507,44 @@ def _apply(st: Dict[str, Any], problem: Dict[str, Any],
             wdb.conn.commit()
             return f"issue {iid} liée au workspace {ws}"
 
-        if ptype == "P10_unblock_issue":
-            iid = problem["refs"]["issue_id"]
-            resp = problem["refs"]["response"]
+        if ptype == "P10_human_answered":
+            # décision humaine arrivée → relancer la sub_task bloquée
+            stid = problem["refs"]["sub_task_id"]
             choice_id = problem["refs"]["choice_id"]
-            # injecter la réponse humaine dans l'issue + la débloquer
-            r = wdb.conn.execute(
-                "SELECT description FROM issues WHERE issue_id = ?", (iid,)).fetchone()
-            desc = (r["description"] or "") if r else ""
-            note = (chr(10) + chr(10)
-                    + f"[DÉCISION HUMAINE ({choice_id})] {resp}")
-            wdb.conn.execute(
-                "UPDATE issues SET status='open', assigned_to='', "
-                "description=?, updated_at=datetime('now') WHERE issue_id = ?",
-                (desc + note, iid))
-            wdb.conn.commit()
-            return f"issue {iid} débloquée, réponse humaine injectée"
+            resp = problem["refs"]["response"]
+            from modules.sqlite.workspace.workspace import WorkspaceDB
+            wdb = WorkspaceDB()
+            try:
+                r = wdb.conn.execute(
+                    "SELECT workspace_id, status FROM sub_tasks "
+                    "WHERE sub_task_id = ?", (stid,)).fetchone()
+                if not r:
+                    thawed = None
+                elif r["status"] in ("done", "cancelled", "supervised"):
+                    thawed = False
+                else:
+                    cur = wdb.conn.execute(
+                        "UPDATE sub_tasks SET status='unattributed', freedby='', "
+                        "updated_at=datetime('now') WHERE sub_task_id = ? "
+                        "AND workspace_id = ? "
+                        "AND status NOT IN ('done','cancelled','supervised')",
+                        (stid, r["workspace_id"]))
+                    thawed = bool(cur.rowcount)
+            finally:
+                wdb.close()
+            from modules.sqlite.dialogue_agent import db as _dial
+            d = _dial()
+            d._conn.execute(
+                "UPDATE human_choice SET applied = 1 WHERE choice_id = ?",
+                (choice_id,))
+            d._conn.commit()
+            d.close()
+            if thawed:
+                return (f"sub_task {stid} relancée (unattributed) — "
+                        f"réponse humaine: {resp}")
+            if thawed is None:
+                return f"sub_task {stid} introuvable (décision {choice_id} consommée)"
+            return f"sub_task {stid} déjà en cours/terminée (décision {choice_id} consommée)"
 
         return "aucune action (type inconnu)"
     except Exception as e:
@@ -634,7 +654,7 @@ def watcher_cycle() -> List[Dict[str, Any]]:
     if problems:
         try:
             wdb = WorkspaceDB()
-            db = AgentsDB()
+            db = _agents_db()
             for p in problems:
                 action = _apply(st, p, wdb, db)
                 actions.append({"type": p["type"], "action": action,

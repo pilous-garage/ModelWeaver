@@ -1,6 +1,6 @@
 """Task management — create, list, claim, complete, lifecycle (clear/cancel)."""
 
-from modules.sql.workspace import WorkspaceDB
+from modules.sqlite.workspace.workspace import WorkspaceDB
 
 
 def _scope(workspace_id: str):
@@ -82,7 +82,7 @@ def create_sous_tache(inputs: dict, home: str) -> dict:
     rejette les types mixtes). L'analyste émet un appel PAR type s'il construit
     un pipeline. Chaque sous-tâche : {title, description, difficulty,
     task_to_do_before} (dépendances : task_id du workspace OU index 0-based du
-    batch). Un `rapport_analysis` est attaché à la tâche parente (task_reports).
+    batch). Un `rapport_analysis` est attaché à la tâche parente (task_attachments).
     """
     workspace_id = inputs.get("workspace_id", "")
     stype = _normalize_task_type(inputs.get("type", ""))
@@ -135,7 +135,7 @@ def create_sous_tache(inputs: dict, home: str) -> dict:
         rapport = (inputs.get("rapport_analysis") or "").strip()
         if rapport:
             try:
-                scope.tasks.add_report(int(parent_id), "analysis", rapport)
+                scope.tasks.add_attachment(int(parent_id), "analysis", rapport)
             except Exception:
                 pass
         db.close()
@@ -178,7 +178,7 @@ def assign_difficulte(inputs: dict, home: str) -> dict:
             scope.tasks.update(int(task_id), **updates)
         if rapport:
             try:
-                scope.tasks.add_report(int(task_id), "analysis", rapport)
+                scope.tasks.add_attachment(int(task_id), "analysis", rapport)
             except Exception:
                 pass
         db.close()
@@ -208,7 +208,7 @@ def report_read_only(inputs: dict, home: str) -> dict:
         if task_id is not None:
             db, scope = _scope(workspace_id or "mw-llm-code")
             try:
-                scope.tasks.add_report(int(task_id), "readonly_request", content)
+                scope.tasks.add_attachment(int(task_id), "readonly_request", content)
             finally:
                 db.close()
         return {"ok": True, "note": content[:200],
@@ -578,7 +578,8 @@ def clear_task(inputs: dict, home: str) -> dict:
         for tid in group:
             db.conn.execute("DELETE FROM task_dependencies WHERE task_id = ? "
                             "OR parent_id = ?", (tid, tid))
-            db.conn.execute("DELETE FROM task_files WHERE task_id = ?", (tid,))
+            db.conn.execute("DELETE FROM task_attachments WHERE task_id = ? "
+                            "AND kind = 'file'", (tid,))
         db.conn.execute(f"DELETE FROM tasks WHERE task_id IN ({ph})", group)
         db.conn.commit()
         db.close()
@@ -704,7 +705,7 @@ def get(inputs: dict, home: str) -> dict:
         db, scope = _scope(workspace_id)
         task = scope.tasks.get(int(task_id))
         if task:
-            files = scope.tasks.get_files(int(task_id))
+            files = scope.tasks.get_attachments(int(task_id), kind="file")
             task["files"] = files
         db.close()
         if not task:
@@ -1063,7 +1064,7 @@ def add_file(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id, task_id et path requis"}
     try:
         db, scope = _scope(workspace_id)
-        scope.tasks.add_file(int(task_id), path, role)
+        scope.tasks.add_attachment(int(task_id), role, kind="file", path=path)
         db.close()
         return {"ok": True}
     except Exception as e:
@@ -1077,7 +1078,7 @@ def get_files(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id et task_id requis"}
     try:
         db, scope = _scope(workspace_id)
-        files = scope.tasks.get_files(int(task_id))
+        files = scope.tasks.get_attachments(int(task_id), kind="file")
         db.close()
         return {"ok": True, "files": files}
     except Exception as e:

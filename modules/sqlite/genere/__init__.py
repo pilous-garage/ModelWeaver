@@ -6,7 +6,7 @@ from typing import Optional
 from modules.sqlite.base import Db
 from modules.sqlite.paths import db_path
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 3
 _SCHEMA_FILE = "genere_schema.sql"
 
 
@@ -18,7 +18,7 @@ def get_domain() -> Db:
     temporairement défalqué : disque WAL = source de vérité, recalcul idempotent
     en cas de course d'écriture.
     """
-    d = Db(db_path("catalogue_genere.db"), mode="w")
+    d = Db(db_path("catalogue_genere"), mode="w")
     if not os.path.exists(os.path.join(os.path.dirname(__file__), _SCHEMA_FILE)):
         return d
     with open(os.path.join(os.path.dirname(__file__), _SCHEMA_FILE)) as f:

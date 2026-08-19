@@ -105,6 +105,7 @@ class Db:
             return []
 
     def close(self) -> None:
+        self._closed = True
         with self._lock:
             self._conn.close()
 
@@ -262,7 +263,10 @@ class Table:
 
         Deux usages : garder la stabilité d'une clé unique (mtime, hash) ou
         recharger sans dupliquer. update_cols vide → DO NOTHING (tout est
-        colonne de conflit : on ne fait qu'empêcher le doublon)."""
+        colonne de conflit : on ne fait qu'empêcher le doublon).
+
+        NB : boucle ligne par ligne (1 round-trip SQL par ligne). Pour des
+        volumes (régénérations), préférer `upsert_many`."""
         self._db.check_write(token)
         rows = data if isinstance(data, list) else [data]
         if not rows:
@@ -283,6 +287,41 @@ class Table:
         with self._db._lock:
             for r in rows:
                 self._db._conn.execute(q, [r.get(c) for c in cols])
+
+    def upsert_many(self, data: Union[Dict[str, Any], List[Dict[str, Any]]],
+                    conflict_cols: List[str], token: str = "") -> None:
+        """upsert BATCHÉ : executemany + ON CONFLICT en UNE transaction.
+
+        Pour les régénérations volumineuses (compacteur info_llm…) — 1
+        round-trip SQL pour N lignes, transaction unique (WAL petit).
+        Idem `upsert` : les ids existants des lignes en conflit sont
+        conservés (stabilité des clés), les autres colonnes mises à jour."""
+        self._db.check_write(token)
+        rows = data if isinstance(data, list) else [data]
+        if not rows:
+            return
+        for col in conflict_cols:
+            if col not in self._db.column_names(self.name):
+                raise ValidationError(f"colonne de conflit inconnue: {col}")
+        cols = _common_cols(self._db, self.name, rows)
+        update_cols = [c for c in cols if c not in conflict_cols]
+        sets = ", ".join(f"{_quote(c)}=excluded.{_quote(c)}"
+                         for c in update_cols) or "DO NOTHING"
+        do = (f"DO UPDATE SET {sets}" if sets != "DO NOTHING"
+              else "DO NOTHING")
+        q = (f"INSERT INTO {_quote(self.name)} "
+             f"({', '.join(_quote(c) for c in cols)}) "
+             f"VALUES ({', '.join('?' * len(cols))}) "
+             f"ON CONFLICT({', '.join(_quote(c) for c in conflict_cols)}) {do}")
+        with self._db._lock:
+            self._db._conn.execute("BEGIN")
+            try:
+                self._db._conn.executemany(
+                    q, [[r.get(c) for c in cols] for r in rows])
+                self._db._conn.execute("COMMIT")
+            except Exception:
+                self._db._conn.execute("ROLLBACK")
+                raise
 
     def update(self, where: Dict[str, Any], changes: Dict[str, Any],
                token: str = "") -> int:
@@ -407,6 +446,12 @@ def _where_sql(where: Dict[str, Any]) -> tuple:
 def _check_cols(db: Db, table: str, cols: List[str]) -> None:
     known = db.column_names(table)
     unknown = [c for c in cols if c not in known]
+    if unknown:
+        # Schema modifié par ALTER TABLE (DDL dynamique) : ré-introspection
+        # une fois avant de conclure à une colonne inconnue.
+        db._cols_cache.pop(table, None)
+        known = db.column_names(table)
+        unknown = [c for c in cols if c not in known]
     if unknown:
         raise ValidationError(
             f"colonnes inconnues sur {table}: {unknown} (connues: {known})")

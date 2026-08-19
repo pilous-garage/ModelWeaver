@@ -57,14 +57,15 @@ DEFAULT_TEAM_LEADER = {
 def _apply(chemin_ref: str, kind: str, level: int, read: str, write: str,
            exec_: str, privileged: str, agent_id: int = -1,
            team: int = -1) -> Dict[str, Any]:
-    """Écrit une règle via le handler catalogue_local (writer)."""
+    """Écrit une règle via le handler catalogue_local (writer privé)."""
     try:
         from services.api.handlers.catalogue_local import op_priv_create
+        from services.api.handlers.catalogue_local import PRIV_WRITE_TOKEN
         return op_priv_create({
             "chemin_ref": chemin_ref, "kind": kind, "level": level,
             "read": read, "write": write, "exec": exec_,
             "privileged": privileged, "agent_id": agent_id, "team": team,
-            "token": "write_catalogue",
+            "priv_token": PRIV_WRITE_TOKEN,
         })
     except Exception:
         return {"status": "error"}

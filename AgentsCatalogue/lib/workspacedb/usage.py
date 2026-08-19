@@ -1,6 +1,6 @@
 """File usage tracking — touch, hot files for context."""
 
-from modules.sql.workspace import WorkspaceDB
+from modules.sqlite.workspace.workspace import WorkspaceDB
 
 
 def touch_read(inputs: dict, home: str) -> dict:

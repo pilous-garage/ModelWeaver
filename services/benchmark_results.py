@@ -2,11 +2,10 @@
 
 Chaque run de benchmark (bench_swarm_live, run_inspect_swarm, benchmark_runner)
 loggue son résultat :
-  - en BDD : table `bench_scores` (suite, task, score, passed, total, meta_json,
-    created_at) — le catalogue local (writer).
   - en fichier : {MW_HOME}/logs/benchmark_results.jsonl (lisible, JSON par ligne).
+  - la table BDD `bench_scores` a été SUPPRIMÉE en V2 (le fichier est la vérité).
 
-`meta_json` contient les détails : statut, durée, picked/done, modèles utilisés,
+`meta` contient les détails : statut, durée, picked/done, modèles utilisés,
 erreurs. Le timestamp `created_at` (UTC) permet de suivre l'historique des runs.
 """
 
@@ -31,14 +30,14 @@ def _jsonl_path() -> Path:
 def log_result(suite: str, task: str = "", score: float = 0.0,
                passed: int = 0, total: int = 0,
                meta: dict | None = None) -> int:
-    """Loggue un résultat de benchmark (timestampé) dans bench_scores + JSONL.
+    """Loggue un résultat de benchmark (timestampé) dans le JSONL uniquement.
 
-    Retourne l'id BDD (0 si échec d'écriture BDD — le JSONL reste écrit)."""
+    Retourne 0 (id BDD retirée en V2 — le JSONL reste écrit)."""
     created = _now_iso()
     meta = meta or {}
     meta.setdefault("created_at", created)
 
-    # 1) Fichier JSONL (toujours).
+    # Fichier JSONL (source de vérité).
     try:
         rec = {
             "suite": suite, "task": task, "score": score,
@@ -49,23 +48,7 @@ def log_result(suite: str, task: str = "", score: float = 0.0,
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
-
-    # 2) BDD bench_scores (writer catalogue local).
-    bid = 0
-    try:
-        from modules.sql.catalogue_local import LocalCatalogue
-        db = LocalCatalogue(mode="w", write_token="write_catalogue")
-        cur = db.conn.execute(
-            "INSERT INTO bench_scores (suite, task, score, passed, total, "
-            "meta_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (suite, task, float(score), int(passed), int(total),
-             json.dumps(meta, ensure_ascii=False), created))
-        bid = cur.lastrowid
-        db.conn.commit()
-        db.close()
-    except Exception:
-        pass
-    return bid
+    return 0
 
 
 def log_report(suite: str, report: dict, meta: dict | None = None) -> int:
@@ -111,3 +94,38 @@ def read_results(suite: str = "", limit: int = 20) -> list:
                 continue
             out.append(rec)
     return out[-limit:]
+
+
+def stats_results(suite: str = "") -> list:
+    """Stats agrégées depuis le JSONL (source de vérité).
+
+    Retourne [{suite, count, avg_score, passed, total}] (une ligne par suite,
+    filtrées par `suite` si fournie)."""
+    grouped: dict = {}
+    path = _jsonl_path()
+    if path.exists():
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                s = rec.get("suite", "")
+                if suite and s != suite:
+                    continue
+                g = grouped.setdefault(s, {"n": 0, "score": 0.0,
+                                           "passed": 0, "total": 0})
+                g["n"] += 1
+                g["score"] += float(rec.get("score", 0))
+                g["passed"] += int(rec.get("passed", 0))
+                g["total"] += int(rec.get("total", 0))
+    out = []
+    for s, g in grouped.items():
+        out.append({"suite": s, "n": g["n"], "count": g["n"],
+                    "avg_score": round(g["score"] / g["n"], 4),
+                    "passed": g["passed"], "total": g["total"]})
+    out.sort(key=lambda r: r["suite"])
+    return out

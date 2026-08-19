@@ -1631,36 +1631,70 @@ class DirectBridge(BaseBridge):
 
     # ── Capacités ──────────────────────────────────────────
 
-    def get_capabilities(self, provider_ref: str,
-                         model_ref: str) -> ModelCapabilities:
-        """Retourne les capacités depuis la base ou valeurs par défaut.
+def get_capabilities(self, provider_ref: str,
+                     model_ref: str) -> ModelCapabilities:
+        """Retourne les capacités depuis la base de données model_capability
+        (nouvelle schema) ou valeurs par défaut.
 
-        Lit les capacités OFFICIELLES du modèle (model_capabilities, clé
-        model_id). `official=1` (source certaine) fait foi ; sinon on retombe
-        sur les valeurs par défaut (la plupart des modèles récents supportent
-        le chat + le function calling).
+        Agrège toutes les lignes model_capability pour le modèle, priorité
+        source : official > user > enterprise > models.dev > distant/friend/git.
         """
-        if self.cat:
-            try:
-                row = self.cat.conn.execute("""
-                    SELECT mc.* FROM model_capabilities mc
-                    JOIN catalogue_models cm ON cm.id = mc.model_id
-                    WHERE cm.ref = ? OR cm.model_key = ?
-                    LIMIT 1
-                """, (model_ref, model_ref)).fetchone()
-                if row:
-                    return ModelCapabilities(
-                        context_window=row.get("max_context_tokens", 4096),
-                        max_output=row.get("max_output_tokens", 4096),
-                        supports_function_calling=bool(row.get("supports_function_calling", 1)),
-                        supports_vision=bool(row.get("supports_vision", 0)),
-                        official=bool(row.get("official", 0)),
-                    )
-            except Exception:
-                pass
-        return ModelCapabilities(context_window=4096, max_output=4096,
-                                 supports_function_calling=True,  # la plupart des modèles récents supportent
-                                 supports_vision=False)
+        if not self.cat:
+            return ModelCapabilities(
+                supports_function_calling=True,
+                supports_vision=False,
+                context_window=4096, max_output=4092,
+            )
+
+        try:
+            rows = self.cat.conn.execute("""
+                SELECT mc.capability, mc.value, mc.confidence, mc.source_ref
+                FROM model_capability mc
+                JOIN catalogue_models cm ON cm.id = mc.model_id
+                WHERE cm.ref = ? OR cm.model_key = ?
+                ORDER BY
+                    CASE mc.source_ref
+                        WHEN 'official' THEN 1
+                        WHEN 'user' THEN 2
+                        WHEN 'enterprise' THEN 3
+                        WHEN 'models.dev' THEN 4
+                        ELSE 5
+                    END,
+                    mc.confidence DESC
+            """, (model_ref, model_ref)).fetchall()
+
+            if not rows:
+                return ModelCapabilities(
+                    supports_function_calling=True,
+                    supports_vision=False,
+                    context_window=4096, max_output=4092,
+                )
+
+            # Agrégation : prendre la source la plus prioritaire avec value='true' et conf>0.5
+            sfc = False  # supports_function_calling
+            sv = False   # supports_vision
+
+            for cap, value, confidence, source_ref in rows:
+                if value == "true" and confidence > 0.5:
+                    if cap == "supports_function_calling":
+                        sfc = True
+                    elif cap == "supports_vision":
+                        sv = True
+
+            return ModelCapabilities(
+                supports_function_calling=sfc,
+                supports_vision=sv,
+                context_window=4096, max_output=4092,
+            )
+        except Exception:
+            pass
+
+        # Fallback : defaults pour modèles récents
+        return ModelCapabilities(
+            supports_function_calling=True,
+            supports_vision=False,
+            context_window=4096, max_output=4092,
+        )
 
     # ── Découverte ─────────────────────────────────────────
 

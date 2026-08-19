@@ -133,7 +133,7 @@ def _set_workspace_director(workspace_id: str, team_name: str):
     """Lie le workspace à l'équipe (team_name), pas à un agent particulier.
     Le leader actuel est résolu dynamiquement par project.py."""
     try:
-        from modules.sql.workspace import WorkspaceDB
+        from modules.sqlite.workspace.workspace import WorkspaceDB
         wdb = WorkspaceDB()
         ws_row = wdb.workspaces.get(workspace_id)
         if not ws_row:

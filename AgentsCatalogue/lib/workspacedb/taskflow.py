@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from modules.sql.workspace import WorkspaceDB
+from modules.sqlite.workspace.workspace import WorkspaceDB
 
 # Types de sub_task connus (noyau) + tags par type (posés par l'agent).
 TASK_TAGS: Dict[str, List[str]] = {
@@ -341,7 +341,7 @@ def ask_intel(inputs: dict, home: str) -> dict:
         norm = sorted(set(i.strip().lower() for i in intels if i.strip()))
         redundant = 0
         if norm:
-            prev = sc.tasks.get_reports(int(task_id), roles=["exploration_request"])
+            prev = sc.tasks.get_attachments(int(task_id), roles=["exploration_request"])
             for r in prev or []:
                 body = str(r.get("content") or "").lower()
                 if all(i in body for i in norm):
@@ -360,7 +360,7 @@ def ask_intel(inputs: dict, home: str) -> dict:
             sc.sub_tasks.add_dependency(cur["sub_task_id"],
                                         exp["sub_task_id"], "done", "ok")
         # rapport d'exploration attendu : on stocke la demande dans le rapport
-        sc.tasks.add_report(int(task_id), "exploration_request", desc)
+        sc.tasks.add_attachment(int(task_id), "exploration_request", desc)
         _save_analyse(sc, task_id, inputs)
         db.close()
         return {"ok": True, "exploration_sub_task_id": exp["sub_task_id"],
@@ -375,7 +375,7 @@ def _save_analyse(sc, task_id: int, inputs: dict) -> None:
     rapport = (inputs.get("analyse") or inputs.get("rapport_analysis") or "").strip()
     if rapport:
         try:
-            sc.tasks.add_report(int(task_id), "analysis", rapport)
+            sc.tasks.add_attachment(int(task_id), "analysis", rapport)
         except Exception:
             pass
 
@@ -427,7 +427,7 @@ def ask_new_task(inputs: dict, home: str) -> dict:
         # doing/attributed assignée à l'agent dans TOUT le workspace (la BDD
         # sub_tasks est globale) et on résout son workspace_id.
         if not workspace_id:
-            from modules.sql.workspace import WorkspaceDB as _WDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB as _WDB
             _wdb = _WDB()
             row = _wdb.conn.execute(
                 "SELECT workspace_id FROM sub_tasks "
@@ -535,7 +535,7 @@ def _attach_task_ctx(sc, task_id, payload: dict) -> dict:
             # Contexte original : rapports/produits des autres agents.
             try:
                 parts = []
-                for r in (sc.tasks.get_reports(int(task_id)) or []):
+                for r in (sc.tasks.get_attachments(int(task_id)) or []):
                     role = r.get("role", "work")
                     body = str(r.get("content") or "").strip()
                     if body:
@@ -614,12 +614,12 @@ def sub_task_done(inputs: dict, home: str) -> dict:
                                 commit_hash=commit_hash)
         if branch:
             sc.sub_tasks.update(int(sub_task_id), branch=branch)
-        # Rapport produit (ex. rapport d'exploration) → task_reports.
+        # Rapport produit (ex. rapport d'exploration) → task_attachments.
         if rapport:
             role = {"exploration": "exploration", "respond": "respond"}.get(
                 st["sub_task_type"], "work")
             try:
-                sc.tasks.add_report(st["task_id"], role, rapport)
+                sc.tasks.add_attachment(st["task_id"], role, rapport)
             except Exception:
                 pass
         st = sc.sub_tasks.get(int(sub_task_id))
@@ -718,7 +718,7 @@ def analysis_report(inputs: dict, home: str) -> dict:
     """analysis_report — l'analyste attache son rapport à la tâche analysée.
 
     Le rapport est TOUJOURS produit (plus ou moins gros) ; son nom reprend la
-    tâche analysée. On le stocke dans task_reports (role='analysis') et on le
+    tâche analysée. On le stocke dans task_attachments (role='analysis') et on le
     dépose dans le dossier commun du workspace si fourni."""
     workspace_id = inputs.get("workspace_id", "")
     task_id = inputs.get("task_id")
@@ -727,7 +727,7 @@ def analysis_report(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id + task_id + content requis"}
     try:
         db, sc = _scope(workspace_id)
-        sc.tasks.add_report(int(task_id), "analysis", content)
+        sc.tasks.add_attachment(int(task_id), "analysis", content)
         db.close()
         return {"ok": True, "task_id": int(task_id), "role": "analysis"}
     except Exception as e:
@@ -848,7 +848,7 @@ def entry_result(inputs: dict, home: str) -> dict:
         response_text = ""
         if response:
             try:
-                for r in (sc.tasks.get_reports(int(task_id)) or []):
+                for r in (sc.tasks.get_attachments(int(task_id)) or []):
                     # role=respond (nouveau) ou role=work (respond legacy)
                     if r.get("role") in ("respond", "work") and r.get("content"):
                         response_text = str(r["content"]).strip()
@@ -877,15 +877,18 @@ def consensus_reponse(inputs: dict, home: str) -> dict:
         m = re.search(r"agent_home/(\d+)", home or "")
         id_agent = m.group(1) if m else ""
     try:
-        db, sc = _scope(workspace_id)
-        q = sc.consensus.get_question(int(id_question))
+        from modules.sqlite.dialogue_agent import db as _dial
+        from modules.sqlite.dialogue_agent.adapters import Consensus
+        _dq = _dial()
+        cq = Consensus(_dq)
+        q = cq.get_question(int(id_question))
         if not q:
-            db.close()
+            _dq.close()
             return {"ok": False, "error": f"question {id_question} introuvable"}
-        r = sc.consensus.add_reponse(
+        r = cq.add_reponse(
             int(id_question), int(id_agent) if id_agent else 0,
             contenu, model_ref=inputs.get("model_ref", ""))
-        db.close()
+        _dq.close()
         return {"ok": True, "id_reponse": r["id_reponse"], "contenu": contenu}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -910,8 +913,11 @@ def consensus_ask(inputs: dict, home: str) -> dict:
     if not workspace_id or not question:
         return {"ok": False, "error": "workspace_id + question requis"}
     try:
-        db, sc = _scope(workspace_id)
-        q = sc.consensus.create_question(question, id_creator=0,
+        from modules.sqlite.dialogue_agent import db as _dial
+        from modules.sqlite.dialogue_agent.adapters import Consensus
+        _dq = _dial()
+        cq = Consensus(_dq)
+        q = cq.create_question(question, id_creator=0,
                                          options=options, max_tours=max_tours)
         qid = q["id_question"]
         # 1. Allouer n modèles différents (not_same_modele)
@@ -928,7 +934,7 @@ def consensus_ask(inputs: dict, home: str) -> dict:
                            "model_ref": r["model_ref"]})
             used = r.get("used_models", used)
         if not models:
-            db.close()
+            _dq.close()
             return {"ok": False, "id_question": qid,
                     "error": "aucun modèle alloué pour les answering_machine"}
         n_alloc = len(models)
@@ -974,8 +980,8 @@ def consensus_ask(inputs: dict, home: str) -> dict:
         #    (ici : join avec grace globale — les threads ont chacun un timeout).
         for t in threads:
             t.join()
-        reponses = sc.consensus.get_reponses(qid)
-        db.close()
+        reponses = cq.get_reponses(qid)
+        _dq.close()
         n_ok = sum(1 for r in reponses)
         return {"ok": True, "id_question": qid,
                 "n_alloue": n_alloc, "n_reponses": n_ok,
@@ -1008,18 +1014,21 @@ def consensus_vote(inputs: dict, home: str) -> dict:
         m = re.search(r"agent_home/(\d+)", home or "")
         id_votant = m.group(1) if m else ""
     try:
-        db, sc = _scope(workspace_id)
-        q = sc.consensus.get_question(int(id_question))
+        from modules.sqlite.dialogue_agent import db as _dial
+        from modules.sqlite.dialogue_agent.adapters import Consensus
+        _dq = _dial()
+        cq = Consensus(_dq)
+        q = cq.get_question(int(id_question))
         if not q:
-            db.close()
+            _dq.close()
             return {"ok": False, "error": f"question {id_question} introuvable"}
         # jugement : A/B/C → "A…" ; NEW → "NEW" ; sinon le choix tel quel.
         jugement = choix
         if id_reponse := inputs.get("id_reponse"):
             # cibler la réponse id_reponse : on vérifie qu'elle existe.
-            reps = sc.consensus.get_reponses(int(id_question))
+            reps = cq.get_reponses(int(id_question))
             if not any(str(r["id_reponse"]) == str(id_reponse) for r in reps):
-                db.close()
+                _dq.close()
                 return {"ok": False, "error": f"réponse {id_reponse} introuvable"}
             # le jugement "A/B/C…" référence l'INDEX de la réponse.
             for i, r in enumerate(reps):
@@ -1032,21 +1041,21 @@ def consensus_vote(inputs: dict, home: str) -> dict:
         # Le votant vote : on stocke son jugement (une ligne = un votant).
         # (la reponse du votant lui-même porte son jugement s'il a répondu ;
         # sinon on crée une ligne vote-only.)
-        reps = sc.consensus.get_reponses(int(id_question))
+        reps = cq.get_reponses(int(id_question))
         ligne = None
         for r in reps:
             if str(r["id_agent"]) == str(id_votant):
                 ligne = r
                 break
         if ligne:
-            sc.consensus.set_jugement(ligne["id_reponse"], jugement)
+            cq.set_jugement(ligne["id_reponse"], jugement)
         else:
             # votant sans réponse (cancel) : ligne vote-only, contenu vide.
-            ligne = sc.consensus.add_reponse(
+            ligne = cq.add_reponse(
                 int(id_question), int(id_votant) if id_votant else 0,
                 "", model_ref=inputs.get("model_ref", ""))
-            sc.consensus.set_jugement(ligne["id_reponse"], jugement)
-        db.close()
+            cq.set_jugement(ligne["id_reponse"], jugement)
+        _dq.close()
         return {"ok": True, "id_question": int(id_question),
                 "id_votant": id_votant, "vote": jugement}
     except Exception as e:
@@ -1074,15 +1083,18 @@ def consensus_judge(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id + id_question requis"}
     try:
         import random
-        db, sc = _scope(workspace_id)
-        q = sc.consensus.get_question(int(id_question))
+        from modules.sqlite.dialogue_agent import db as _dial
+        from modules.sqlite.dialogue_agent.adapters import Consensus
+        _dq = _dial()
+        cq = Consensus(_dq)
+        q = cq.get_question(int(id_question))
         if not q:
-            db.close()
+            _dq.close()
             return {"ok": False, "error": f"question {id_question} introuvable"}
-        reponses = sc.consensus.get_reponses(int(id_question))
+        reponses = cq.get_reponses(int(id_question))
         n = len(reponses)
         if n == 0:
-            db.close()
+            _dq.close()
             return {"ok": False, "id_question": id_question,
                     "error": "aucune réponse à juger"}
         tour = q.get("tour_courant", 1)
@@ -1137,8 +1149,8 @@ def consensus_judge(inputs: dict, home: str) -> dict:
                     "grade (0-1) — équilibre, escalade humain"
         if consensus and consensus in choix:
             qid = int(id_question)
-            sc.consensus.set_status(qid, "answered")
-            db.close()
+            cq.set_status(qid, "answered")
+            _dq.close()
             return {"ok": True, "id_question": qid, "consensus": consensus,
                     "votes": comptes, "n_reponses": n,
                     "escalade": "majorité absolue" if not escalade else escalade,
@@ -1150,28 +1162,18 @@ def consensus_judge(inputs: dict, home: str) -> dict:
         humain = ""
         if inputs.get("ask_human"):
             try:
-                import uuid as _uuid
-                _cid = f"hc_{_uuid.uuid4().hex[:12]}"
-                _iid = inputs.get("issue_id") or q.get("issue_id")
-                db.conn.execute(
-                    "INSERT INTO human_choice (choice_id, issue_id, question, "
-                    "options_json, status) VALUES (?, ?, ?, ?, 'pending')",
-                    (_cid, _iid,
-                     f"[consensus {qid}] {q.get('question','')} — pas de "
-                     f"majorité (votes {comptes}). Tranche pour les agents.",
-                     json.dumps([r_["contenu"] for r_ in reponses])))
-                db.conn.commit()
+                from modules.sqlite.dialogue_agent import write as _dw
+                _cid = _dw.ask_human(
+                    _dq, f"[consensus {qid}] {q.get('question','')} — pas de "
+                         f"majorité (votes {comptes}). Tranche pour les agents.",
+                    agent_id=0,
+                    options_json=json.dumps([r_["contenu"] for r_ in reponses])
+                    if reponses else None)
                 humain = f"escalade humain (choice_id={_cid})"
-                if _iid:
-                    db.conn.execute(
-                        "UPDATE issues SET status='blocked', updated_at=datetime('now') "
-                        "WHERE issue_id = ? AND workspace_id = ?",
-                        (_iid, workspace_id))
-                    db.conn.commit()
             except Exception:
                 humain = "escalade humain (échec human_choice)"
-        sc.consensus.set_status(qid, "awaiting")
-        db.close()
+        cq.set_status(qid, "awaiting")
+        _dq.close()
         return {"ok": False, "id_question": qid, "consensus": "",
                 "votes": comptes, "escalade": (escalade or "relancer")
                 + (f" | {humain}" if humain else ""),

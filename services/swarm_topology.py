@@ -45,7 +45,7 @@ def _load_role_config(role: str, agent_name: str = "") -> Dict[str, Any]:
 def _compatible_roles(role_required: str) -> List[str]:
     """Rôles compatibles (hiérarchie senior/mid/junior)."""
     try:
-        from modules.sql.workspace import _compatible_roles as _cr
+        from modules.sqlite.workspace.workspace import _compatible_roles as _cr
         return _cr(role_required)
     except Exception:
         return [role_required] if role_required else []

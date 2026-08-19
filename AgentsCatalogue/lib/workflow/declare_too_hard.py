@@ -2,7 +2,7 @@
 
 Si sub_task_id est fourni : passe la sub_task doing → too_hard (le supervisor
 décidera : bump + re-attribution, ou re-découpe). Sinon : écrit un signal dans
-task_reports (la boucle FSM / supervisor pourra le lire). Mécanique, pas de LLM.
+task_attachments (la boucle FSM / supervisor pourra le lire). Mécanique, pas de LLM.
 """
 
 
@@ -24,14 +24,14 @@ def exec(inputs: dict, home: str) -> dict:
             }, home)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
-    # Sans sub_task : signal dans task_reports (trace).
+    # Sans sub_task : signal dans task_attachments (trace).
     if task_id is None:
         return {"ok": False, "error": "task_id ou sub_task_id requis"}
     try:
-        from modules.sql.workspace import WorkspaceDB
+        from modules.sqlite.workspace.workspace import WorkspaceDB
         db = WorkspaceDB()
         sc = db.for_workspace(workspace_id)
-        sc.tasks.add_report(int(task_id), "too_hard", reason)
+        sc.tasks.add_attachment(int(task_id), "too_hard", reason)
         db.close()
         return {"ok": True, "too_hard": True, "reason": reason}
     except Exception as e:  # noqa: BLE001

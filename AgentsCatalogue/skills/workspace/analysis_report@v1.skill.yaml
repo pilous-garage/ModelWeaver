@@ -1,7 +1,7 @@
 name: workspace/analysis_report@v1
 category: workspace
 description: >
-  ATTACHE le rapport d'analyse à la tâche analysée (task_reports, role
+  ATTACHE le rapport d'analyse à la tâche analysée (task_attachments, kind=text, role
   analysis). L'analyste produit TOUJOURS un analysis-report (plus ou moins
   gros) dont le nom reprend la tâche analysée — simplifie l'analyse post-merge.
 inputs:

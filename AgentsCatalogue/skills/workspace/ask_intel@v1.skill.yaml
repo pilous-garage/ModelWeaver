@@ -27,7 +27,7 @@ inputs:
     type: string
     required: false
     default: ""
-    description: "Rapport d'analyse partiel (enregistré dans task_reports)"
+    description: "Rapport d'analyse partiel (enregistré dans task_attachments (kind=text))"
 outputs:
   ok:
     type: boolean

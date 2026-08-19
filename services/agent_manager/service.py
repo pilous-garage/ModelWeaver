@@ -22,7 +22,7 @@ from pathlib import Path
 
 from services._common import mw_home, acquire_instance_lock
 from modules.sql.db import AgentsDB
-from modules.sql.workspace import _compatible_roles
+from modules.sqlite.workspace.workspace import _compatible_roles
 from modules.llm_manager.llm_manager import LLMManager
 from modules.llm_manager.base_bridge import BridgeError
 from AgentFrameWork.fsm_interpreter import FSMInterpreter, FSMResult, AgentAbort
@@ -224,7 +224,7 @@ def _subtype_available(agent_id: int, sub_work: set) -> bool:
             return True
         # sub_task doing assignée à l'agent → reprise (workspace.db)
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             mine = wdb.conn.execute(
                 "SELECT 1 FROM sub_tasks WHERE assigned_to = ? "
@@ -1327,7 +1327,7 @@ class AgentManager:
         self._supervise_last = now
         try:
             from services.task_supervisor.service import TaskSupervisor
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             rows = wdb.conn.execute(
                 "SELECT DISTINCT workspace_id, team_id FROM sub_tasks "
@@ -1388,7 +1388,7 @@ class AgentManager:
         sont 'done', l'issue est considérée terminée.
         """
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             # workspaces 100% done
             done_ws = {
@@ -1554,7 +1554,7 @@ class AgentManager:
                            n_running)
             if n_active > 0:
                 return 0
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             # Ne re-claimer que les tâches doing 'STALES' (assignées depuis
             # plus de RECLAIM_MIN_AGE_MIN) : une tâche fraîchement assignée
@@ -1696,7 +1696,7 @@ class AgentManager:
                     else:
                         # fallback : workspace lié à la team (director)
                         try:
-                            from modules.sql.workspace import WorkspaceDB
+                            from modules.sqlite.workspace.workspace import WorkspaceDB
                             _wdb = WorkspaceDB()
                             _tname = name.split("/")[0] if name.startswith("team:") else ""
                             _ws = _wdb.conn.execute(
@@ -1853,7 +1853,7 @@ class AgentManager:
         Respecte MAX_THREAD_AGENTS. Ne réveille que les agents non hydratés.
         """
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             import json as _json
         except Exception:
             return 0
@@ -1989,7 +1989,7 @@ class AgentManager:
                 if not stypes:
                     return False
                 try:
-                    from modules.sql.workspace import WorkspaceDB
+                    from modules.sqlite.workspace.workspace import WorkspaceDB
                     wdb = WorkspaceDB()
                     ph = ",".join("?" for _ in stypes)
                     if agent_id:

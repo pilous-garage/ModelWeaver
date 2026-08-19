@@ -136,7 +136,7 @@ def ask_analyst(session: Dict[str, Any]) -> Dict[str, Any]:
 
 def pending_tasks_count(workspace: str = WORKSPACE) -> int:
     """Tâches non terminées (todo/doing) dans le workspace."""
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     wdb = WorkspaceDB()
     try:
         n = wdb.conn.execute(
@@ -339,10 +339,10 @@ def _taskflow_reply(task_id: int, response: Any = None,
     if not resp_text:
         # chercher dans les rapports de la task (role=respond ou work legacy)
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             db = WorkspaceDB()
             sc = db.for_workspace(WORKSPACE)
-            for r in (sc.tasks.get_reports(int(task_id)) or []):
+            for r in (sc.tasks.get_attachments(int(task_id)) or []):
                 if r.get("role") in ("respond", "work") and r.get("content"):
                     resp_text = str(r["content"]).strip()
                     break
@@ -378,11 +378,11 @@ def _taskflow_reply(task_id: int, response: Any = None,
     else:
         # repli : rapports (ancien comportement)
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             db = WorkspaceDB()
             sc = db.for_workspace(WORKSPACE)
             task = sc.tasks.get(int(task_id))
-            reports = sc.tasks.get_reports(int(task_id)) or []
+            reports = sc.tasks.get_attachments(int(task_id)) or []
             db.close()
         except Exception:
             task, reports = None, []

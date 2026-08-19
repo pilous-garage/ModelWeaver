@@ -31,7 +31,7 @@ DEFAULT_WS = "mw-llm-code"
 
 
 def _wdb():
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     return WorkspaceDB()
 
 

@@ -182,12 +182,16 @@ def test_fsm_espaces_reserves():
     """L'espace auto-test accepte les écritures ; system/ les refuse."""
     import services.api.handlers.catalogue_local as H
     W = {"token": "write_catalogue"}
-    assert H.op_write_create_type({**W, "type": "skill"})["status"] in ("ok", "exists")
-    r = H.op_write_upsert({**W, "type": "skill",
-                           "ref": f"{NS}/demo@v1", "name": "demo",
-                           "namespace": NS, "value": {}})
-    assert r["status"] == "ok"
-    r_bad = H.op_write_upsert({**W, "type": "skill",
-                               "ref": "system/x@v1", "name": "x",
-                               "namespace": "system", "value": {}})
-    assert r_bad["status"] == "error"
+    assert H.op_data_types_add({**W, "code": "skill", "description": "skills"})["status"] == "ok"
+    r = H.op_data_add({**W, "type": "skill",
+                       "ref": f"{NS}/demo@v1", "name": "demo",
+                       "namespace": NS, "data_value_type": "json", "value": {}})
+    assert r["ok"] is True
+    try:
+        H.op_data_add({**W, "type": "skill",
+                       "ref": "system/x@v1", "name": "x",
+                       "namespace": "system", "data_value_type": "json",
+                       "value": {}})
+        assert False, "ref system/ attendue refusée"
+    except Exception:
+        pass

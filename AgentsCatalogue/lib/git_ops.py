@@ -418,7 +418,7 @@ def git_snapshot_start(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
     if commit and task_id is not None and workspace_id:
         try:
-            from modules.sql.workspace import WorkspaceDB
+            from modules.sqlite.workspace.workspace import WorkspaceDB
             wdb = WorkspaceDB()
             row = wdb.conn.execute(
                 "SELECT commit_start, branch_start FROM tasks "

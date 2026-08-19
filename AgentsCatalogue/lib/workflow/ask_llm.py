@@ -303,7 +303,7 @@ def classify_entry(inputs: dict, home: str) -> dict:
             if r.get("ok") and r.get("n_reponses", 0) >= 1:
                 # Comptabiliser les types répondus (votes simples) ET les
                 # réponses directes.
-                from modules.sql.workspace import WorkspaceDB
+                from modules.sqlite.workspace.workspace import WorkspaceDB
                 wdb = WorkspaceDB()
                 sc = wdb.for_workspace(workspace_id)
                 reps = sc.consensus.get_reponses(r["id_question"])

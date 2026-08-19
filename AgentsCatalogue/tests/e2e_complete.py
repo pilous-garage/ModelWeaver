@@ -36,7 +36,7 @@ assert gl({"action": "init"}, str(home))["exit_code"] == 0
 log("Création des tâches...")
 
 ws_id = f"ws_{uuid.uuid4().hex[:6]}"
-from modules.sql.workspace import WorkspaceDB, TaskRepository
+from modules.sqlite.workspace.workspace import WorkspaceDB, TaskRepository
 
 ws_db_path = Path(str(home)) / "workspaces" / ws_id / "workspace.db"
 ws_db_path.parent.mkdir(parents=True, exist_ok=True)

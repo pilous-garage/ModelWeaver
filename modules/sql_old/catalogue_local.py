@@ -1,201 +1,32 @@
-#!/usr/bin/env python3
-"""catalogue_local — Domaine du catalogue local (skills/agents/teams/…).
+"""LocalCatalogue — Référentiel méta des données (V2, spec local_catalogue_spec.md).
 
-Architecture :
-  - LECTURES directes pour tout le monde (connexion mode=ro, aucun write).
-  - ÉCRITURES centralisées par le service write_catalogue (token exigé),
-    le SEUL writer autorisé.
-  - Types de données dynamiques : pour chaque type x (agent, skill, …) on
-    crée à chaud x_catalogue, x_tags, x_tag_types, x_limites,
-    x_source_and_sharing.
-  - Namespaces imbriqués (table namespaces) pour la résolution runtime
-    "catalogue.namespace....fn".
-  - last_access bufferisé en MÉMOIRE (jamais d'écriture par read, mode=ro) ;
-    flush par lots par le writer. last_modify écrit par le writer seul.
-
-Champs obligatoires d'une entrée (socle commun, tous types) :
-  id, ref ("namespace/name@version"), name, namespace, version, value,
-  description, data_type, status.
+Référentiel des données LÉGÈRES et typées :
+  - data_value_type : text[n]ch, string, int, uint, float, bool, date,
+    timestamp, json, file, row(header=type, …).
+  - data_id = hash stable(ref) par type (int64) — identique entre
+    load/reload ; PAS d'AUTOINCREMENT. Couple (data_type_id, data_id).
+  - Tables PAR TYPE créées à chaud (create_type) : {type}_data/_tag/
+    _tag_type/_source_and_sharing ; tables fixes global_local_*.
+  - Non-bloquant : lectures mode=ro directes ; UN SEUL writer (token
+    write_catalogue) en mini-batchs ; dernière trace = last_modify.
+  - Écritures externes via global_local_buffer_op : un importeur dépose
+    ses ops 'pending' en une écriture ; process_buffer applique en
+    mini-batchs (lecteur jamais bloqué).
+  - Famille SECURITY : global_local_privilege(+conditions) +
+    global_local_security_supervisor, writer distinct (token privé).
 """
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SPEC — SYSTÈME D'AUTORISATION (cible à implémenter)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Le système d'autorisation converge vers UN SEUL mécanisme : la table
-# `privileges` (+ `privilege_conditions`) est l'unique source de vérité pour
-# autoriser des PATHS, des COMMANDES et des ACTIONS — fini les whitelists
-# statiques, fini les mécanismes parallèles.
-#
-# ---------------------------------------------------------------------------
-# 1. CE QU'UNE AUTORISATION REPRÉSENTE
-# ---------------------------------------------------------------------------
-# Une ligne `privileges` = "qui, sur quoi, comment, combien de temps".
-#   - chemin_ref  : la cible. Interprétée selon `kind` :
-#       kind='ref'  → ref canonique du catalogue (utils/bubble_sort@v1), un
-#                     namespace (utils) couvre ses descendants.
-#       kind='path' → chemin système / symbolique (VFS). Variables $1…,
-#                     wildcard * (lecture seule), précision gauche→droite.
-#       kind='cmd'  → COMMANDE. La LIGNE COMPLÈTE compte (python3 fichier1.py
-#                     ≠ python3 x.py). Une déclaration à 1 token (python3)
-#                     couvre toute commande commençant par lui ; une
-#                     déclaration complète ne matche que cette ligne exacte
-#                     (+ $1/* dans les tokens).
-#   - agent_id : -1 = TOUS les agents (défaut global), sinon l'agent ciblé.
-#   - team     : -1 = TOUTES les teams (défaut), sinon la team ciblée.
-#   - level    : IMPORTANCE, 0..MAX_UINT32 (4294967295). MAX_UINT32 = TOUJOURS
-#                (priorité absolue, aucun autre niveau ne le surcharge).
-#   - read/write/exec/privileged : MODE UNIX 4 GROUPES, 1 char par niveau :
-#        position 0 = humain_with_root, 1 = humain, 2 = agent_with_root,
-#        3 = agent. 'r'/'w'/'x'/'p' présent, '-' absent (ex read='-rr-').
-#        `privileged` = action nécessitant un privilège root (ask sudo).
-#   - deadline  : expiration TEMPORELLE (date ISO) ; NULL/'' = jamais.
-#   - conditions: 0..N lignes privilege_conditions (INTERSECTION : toutes
-#                 doivent être satisfaites) :
-#        nb_times      → valeur = nb max d'usages ; compteur décrémenté à
-#                        CHAQUE usage réel (priv/use).
-#        until_restart → valide jusqu'au prochain redémarrage (état de session).
-#        until_date    → valide jusqu'à une date (valeur = ISO).
-#        ref_id        → hérite de la validité de l'autorisation id_auth=valeur
-#                        (si elle expire, celle-ci expire aussi).
-#
-# ---------------------------------------------------------------------------
-# 2. RÉSOLUTION D'UN ACCÈS
-# ---------------------------------------------------------------------------
-# Pour une demande (chemin, agent_id, team, level, op) :
-#   1. COLLECTE des lignes qui matchent (kind + identité agent/team).
-#   2. FILTRE des lignes invalides : deadline passée, condition non satisfaite.
-#   3. PRIORITÉ par level : les lignes de MAX_UINT32 (=TOUJOURS) priment sur
-#      tout ; sinon on garde les lignes du PLUS HAUT level.
-#   4. EXCLUSION PAR PRÉCISION : si un raffinement plus précis existe dans la
-#      même famille et ne matche pas la cible, la règle base est EXCLUE (refus
-#      implicite du non-couvert). Ex : 'python3' exclu pour 'python3 x.py' si
-#      'python3 fichier1.py' existe.
-#   5. INTERSECTION des modes (le plus restrictif gagne : un '-' quelque part
-#      → '-' pour ce niveau).
-#   6. L'op est accordé si le mode final a le flag au niveau demandé.
-#
-# ---------------------------------------------------------------------------
-# 3. CHECK vs USE (consommation)
-# ---------------------------------------------------------------------------
-#   - priv/check  : LECTURE (mode=ro), ne consomme RIEN. Vérifie si l'accès
-#                   serait accordé. Utilisé pour tester / afficher.
-#   - priv/use    : ÉCRITURE (writer), vérifie PUIS consomme (nb_times
-#                   décrémente à chaque usage effectif). C'est la route
-#                   d'EXÉCUTION réelle (une commande lancée, un fichier écrit).
-#
-# ---------------------------------------------------------------------------
-# 4. DÉCIDEUR BORNÉ PAR SES PROPRES PRIVILÈGES
-# ---------------------------------------------------------------------------
-# Le décideur (team_leader OU humain) ne peut JAMAIS accorder plus qu'il ne
-# possède lui-même :
-#   - À l'approbation, on INTERSECTE la demande avec les privilèges du
-#     décideur (level max + intersection des modes) : impossible de dépasser.
-#   - Le décideur peut RÉDUIRE la portée (réécrire la cible) : à une demande
-#     `read /*`, il répond « non pour /*, mais oui pour /e ».
-#   - La réponse = l'ENSEMBLE COMPLET des autorisations finales accordées.
-#
-# 4bis. DÉLÉGATION HIÉRARCHIQUE (qui peut autoriser qui)
-# ---------------------------------------------------------------------------
-# Matrice (décideur → bénéficiaires autorisés) :
-#   humain_with_root → {humain_with_root, humain, agent_with_root, agent}
-#   humain           → {humain, agent}
-#   agent_with_root  → {agent_with_root, agent}
-#   agent            → {agent}
-# Règles :
-#   - Un humain_with_root peut autoriser un agent_with_root OU un humain sans
-#     root (ex. un admin accorde à un pilote).
-#   - Un agent_with_root (ex. team_leader pilote_chat avec root) peut autoriser
-#     UN AUTRE agent à utiliser SES autorisations — en y mettant des
-#     CONDITIONS (deadline, nb_times, lastcall…).
-#   - Le bénéficiaire reçoit l'INTERSECTION (decideur ∩ demande), jamais plus
-#     que le décideur.
-#   - Route : priv/approve (writer PRIVÉ).
-#
-# ---------------------------------------------------------------------------
-# 5. DEMANDES PAR PATH/REF + REGROUPEMENT
-# ---------------------------------------------------------------------------
-# Les demandes d'autorisation se font par PATH/REF (jamais fichier par
-# fichier) et sont SAUVÉES dans la table (auth_requests).
-#   - REGROUPEMENT : si on demande read /a/b/c/d puis read /a/b/c/e, la
-#     requête regroupe et propose read /a/b/c/* (élargissement intelligent).
-#   - La demande est COMPLÈTE : elle liste ce qu'on a déjà, ce qu'on veut, et
-#     la proposition de regroupement. Le décideur voit tout et répond en
-#     réécrivant la cible + deadline/conditions.
-#
-# ---------------------------------------------------------------------------
-# 6. DEADLINE + RENOUVELLEMENT
-# ---------------------------------------------------------------------------
-#   - Chaque autorisation a une deadline (date) ou des conditions (nb_times,
-#     until_restart, ref_id).
-#   - Les autorisations EXPIRÉES sont écartées de la résolution.
-#   - À expiration, une DEMANDE DE RENOUVELLEMENT est générée automatiquement
-#     (même cible, nouvelle deadline/conditions, même décideur).
-#
-# ---------------------------------------------------------------------------
-# 7. NIVEAUX D'AUTORISATION PAR DÉFAUT
-# ---------------------------------------------------------------------------
-# Injectés à la création d'un agent/team et à la mise à jour du team_leader :
-#   - member      → level 1000 : home + workspace (read/write), pas de root.
-#   - team_leader → level 2000 : + exec/privileged sur les paths de SA team.
-#   - À la révocation (démission/changement de leader), on RETIRE les règles.
-#
-# ---------------------------------------------------------------------------
-# 8. BRANCHEMENT mini_shell / CLI
-# ---------------------------------------------------------------------------
-#   - ShellAuth.check_path : un chemin hors VFS est autorisé si un privilège
-#     accorde read. member → niveau 'agent' ; leader/owner → 'agent_with_root'.
-#   - is_allowed (commandes) : migré sur privileges kind='cmd' (fini la
-#     whitelist permissions.yaml).
-#   - Wrapper CLI (carnet d'idées #4) : option --sudo activable/désactivable,
-#     escalade tracée, connectée à catalogue_path + privileges.
-#
-# ---------------------------------------------------------------------------
-# 9. RÈGLES D'ÉCRITURE
-# ---------------------------------------------------------------------------
-#   - Seul write_catalogue (token) écrit. Les lecteurs sont en mode=ro.
-#   - `*` interdit dans les DÉCLARATIONS de path (écriture) ; autorisé en
-#     LECTURE (glob).
-#   - path_name ne commence jamais par /$ ou $.
-#   - La résolution ne fait JAMAIS d'écriture (last_access bufferisé, check
-#     sans consommation).
-#
-# ---------------------------------------------------------------------------
-# 10. BATCHS D'ÉCRITURE
-# ---------------------------------------------------------------------------
-# Le lock/unlock de chaque écriture bloque les reads (SQLite WAL : 1 writer à
-# la fois). Les batchs regroupent N opérations SQL dans UN SEUL lock + UNE
-# SEULE transaction.
-#   - Soumission : catalogue_local/write/batch {token, ops, max_duration_s}.
-#   - Garde-fou nb de lignes : MAX_BATCH_OPS = 100 lignes SQL par batch.
-#   - Garde-fou durée : max_duration_s (5s par défaut) — au-delà, le batch est
-#     annulé (rollback). Si la durée est estimée courte, le blocage temporaire
-#     des lecteurs est acceptable (WAL).
-#   - File FIFO : les batchs sont mis en file et traités par un thread dédié
-#     (un batch à la fois). Statut via catalogue_local/batch/status.
-#   - Le writer PRIVÉ (autorisations) a SES PROPRES écritures (priv/create,
-#     priv/use) — les batchs du writer catalogue ne touchent PAS privileges.
-#
-# ÉTAT D'IMPLÉMENTATION : table + modes 4-groupes + agent_id/team + level
-# (MAX_UINT32=TOUJOURS) + deadline + conditions (nb_times, lastcall,
-# until_restart, until_date, ref_id) + exclusion par précision + check/use
-# séparés + défauts member/team_leader + branchement ShellAuth (chemins) +
-# writer PRIVÉ dédié + batchs (2 files, garde-fous) + espace réservé
-# auto-test + approve (matrice de délégation + intersection) SONT implémentés.
-# RESTE À FAIRE : regroupement des demandes, renouvellement automatique à
-# l'expiration, migration is_allowed (commandes) sur privileges, demande par
-# path/ref complète, skills d'auth (auth_allow_all / deny_all / transmit_all),
-# test FSM_llm (questions-réponses bridge).
-# ═══════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
 
 import json
+import re as _re
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import xxhash
 
 from modules.sql.schema import (
     _default_local_catalogue_db, _row_to_dict, _rows_to_list,
@@ -204,47 +35,111 @@ from modules.sql.schema import (
 
 SCHEMA = Path(__file__).resolve().parent / "local_catalogue_schema.sql"
 
+_TEXT_N = _re.compile(r"^text\[\d+ch\]$")
+
 # Niveau d'importance maximal (priorité absolue = "toujours").
 MAX_PRIV_LEVEL = (1 << 32) - 1   # MAX_UINT32 = 4294967295
 
 # Niveaux de DEMANDE (ask) — du moins au plus restrictif.
 ASK_LEVELS = ("none", "security_supervisor", "human", "human_root")
 
-# Espace de nommage RÉSERVÉ aux tests de check officiels. Toute entrée/
-# namespace/type commençant par ce préfixe vit DANS cet espace : la création
-# hors tests y est interdite (les checks y sont rangés), et le nettoyage est
-# trivial (suppression par préfixe). Les skills/agents de test intégrés
-# portent ce préfixe dans leur namespace/ref.
-RESERVED_TEST_PREFIX = "auto-test-check-official"
-
-# Espaces de nommage réservés (outre auto-test-*) — utilisés par les
-# fonctionnalités, non supprimables par un cleanup utilisateur.
-RESERVED_SYSTEM_PREFIXES = ("auto-", "system/", "catalogue/")
-
-# Colonnes obligatoires du socle commun (toutes les tables {type}_catalogue).
-# ref (canonique "namespace/name@version") ≠ ref_file (adresse système du
-# fichier quand value est vide) ≠ path (chemin symbolique/configurable).
-BASE_COLUMNS = {
-    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-    "ref": "TEXT UNIQUE NOT NULL",
-    "name": "TEXT NOT NULL",
-    "namespace": "TEXT NOT NULL DEFAULT ''",
-    "version": "TEXT NOT NULL DEFAULT 'latest'",
-    "value": "TEXT NOT NULL DEFAULT '{}'",
-    "ref_file": "TEXT DEFAULT ''",      # adresse système absolue du fichier
-    "path": "TEXT DEFAULT ''",          # chemin symbolique (résolu via catalogue_path)
-    "description": "TEXT DEFAULT ''",
-    "data_type": "TEXT NOT NULL",
-    "status": "TEXT NOT NULL DEFAULT 'active'",
-    "created_at": "TEXT DEFAULT (datetime('now'))",
-    "updated_at": "TEXT DEFAULT (datetime('now'))",
-}
-
 # Valeurs de partage autorisées (source_and_sharing.can_be_shared).
 SHARING_LEVELS = ("non", "everyone", "enterprise", "friends", "official")
 
 # Sources possibles d'une donnée.
 SOURCE_VALUES = ("perso", "distant", "enterprise", "github/depot", "official")
+
+# Types de valeur d'un TAG (registre {type}_tag_type).
+TAG_VALUE_TYPES = ("bool", "text", "number", "date", "list", "range")
+
+# Types de VALEUR d'une DATA (data_value_type) — scalaires + file + row.
+SCALAR_VALUE_TYPES = ("string", "int", "uint", "float", "bool", "date",
+                      "timestamp", "json")
+EXTERNAL_VALUE_TYPES = ("file",)
+
+# Statuts d'une data.
+DATA_STATUSES = ("active", "missing", "archived")
+
+# Espace de nommage RÉSERVÉ aux tests de check officiels (inchangé V1).
+RESERVED_TEST_PREFIX = "auto-test-check-official"
+RESERVED_SYSTEM_PREFIXES = ("auto-", "system/", "catalogue/")
+
+# Colonnes socle d'une table {type}_data (V2). data_id = PK (hash stable),
+# PAS d'AUTOINCREMENT. Pas de colonne data_type (implicite par table).
+BASE_COLUMNS = {
+    "data_id": "INTEGER PRIMARY KEY",          # hash stable(ref), int64 positif
+    "ref": "TEXT UNIQUE NOT NULL",
+    "name": "TEXT DEFAULT ''",
+    "namespace": "TEXT DEFAULT ''",
+    "version": "TEXT DEFAULT 'latest'",
+    "data_value_type": "TEXT NOT NULL",        # text[200ch]|string|…|file|row(…)
+    "value": "TEXT DEFAULT '{}'",              # scalaire/json (row = plat) ; jamais lourd
+    "ref_file": "TEXT DEFAULT ''",             # adresse absolue du fichier (file)
+    "path": "TEXT DEFAULT ''",                 # chemin symbolique (global_local_path)
+    "description": "TEXT DEFAULT ''",
+    "status": "TEXT NOT NULL DEFAULT 'active'",
+    "last_modify": "TEXT DEFAULT NULL",        # seule trace, posée par le writer
+    "created_at": "TEXT DEFAULT (datetime('now'))",
+    "updated_at": "TEXT DEFAULT (datetime('now'))",
+}
+
+# Types SQLite cibles par data_value_type scalaire (colonnes data_value_*).
+_TYPE_TO_SQL = {
+    "text": "TEXT", "string": "TEXT", "date": "TEXT", "json": "TEXT",
+    "file": "TEXT", "row": "TEXT",
+    "int": "INTEGER", "uint": "INTEGER", "bool": "INTEGER", "timestamp": "INTEGER",
+    "float": "REAL",
+}
+
+# Types SQLite par tag_value_type.
+_TAG_TYPE_TO_SQL = {
+    "bool": "INTEGER", "text": "TEXT", "number": "REAL",
+    "date": "TEXT", "list": "TEXT", "range": "TEXT",
+}
+
+_SEED = 0x5EEDC0DE
+
+
+def data_id_of(ref: str) -> int:
+    """Hash stable (int64 positif) de la ref — identique entre load/reload
+    et entre RAM/HDD. Pas de collision prévue (xxhash64)."""
+    return xxhash.xxh64(str(ref), seed=_SEED).intdigest() & 0x7FFFFFFFFFFFFFFF
+
+
+def _parse_row_type(dvt: str) -> Optional[List[Tuple[str, str]]]:
+    """Parse 'row(header=type, h2=type2, …)' → [(header, type), …].
+    Récursif : un type peut être 'row(...)' (imbrication)."""
+    s = dvt.strip()
+    if not (s.startswith("row(") and s.endswith(")")):
+        return None
+    inner = s[4:-1].strip()
+    if not inner:
+        return None
+    out: List[Tuple[str, str]] = []
+    for part in inner.split(","):
+        part = part.strip()
+        if "=" not in part:
+            raise ValueError(f"row invalide: {part!r} dans {dvt!r}")
+        header, typ = part.split("=", 1)
+        header = header.strip()
+        typ = typ.strip()
+        if not header or not typ:
+            raise ValueError(f"row invalide: {dvt!r}")
+        out.append((header, typ))
+    return out
+
+
+def _col_type_for(dvt_part: str) -> str:
+    """Type SQLite de la colonne data_value_* pour un type de valeur."""
+    p = dvt_part.strip()
+    if p == "row":
+        return "TEXT"
+    if p in _TYPE_TO_SQL:
+        return _TYPE_TO_SQL[p]
+    m = _TEXT_N.match(p)
+    if m:
+        return "TEXT"
+    raise ValueError(f"type de valeur inconnu: {dvt_part!r}")
 
 
 class CatalogueTypeNotFound(KeyError):
@@ -256,7 +151,7 @@ class WriteDenied(PermissionError):
 
 
 class LocalCatalogue:
-    """Connexion + repo du domaine local_catalogue.
+    """Connexion + repo du domaine local_catalogue (V2).
 
     Deux modes :
       - read_only (défaut) : connexion `mode=ro` — toute écriture lève une
@@ -271,195 +166,47 @@ class LocalCatalogue:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._mode = mode
         self._write_token = write_token
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         uri = f"file:{self.db_path}?mode={'ro' if mode == 'ro' else 'rwc'}"
-        self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False,
-                                    isolation_level=None)
+        self.conn = sqlite3.connect(uri, uri=True, timeout=30,
+                                    check_same_thread=(mode == "rwc"))
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode = WAL")
-        self.conn.execute("PRAGMA busy_timeout = 5000")
-        # Buffer last_access en mémoire (les lecteurs en mode=ro ne peuvent
-        # pas écrire ; le writer flushe par lots).
-        self._access_buffer: Dict[Tuple[str, str], float] = {}
-        # File d'attente des batchs d'écriture : "immediate" (create/destruct
-        # auth, prioritaire) + "normal" (modify_use, par batchs). Thread dédié.
-        self._batch_immediate: List[Dict[str, Any]] = []
-        self._batch_normal: List[Dict[str, Any]] = []
-        self._batch_done: List[Dict[str, Any]] = []
-        self._batch_worker: Optional[threading.Thread] = None
         if mode != "ro":
-            self._ensure_schema()
-
-    # ── Batchs d'écriture ──────────────────────────────────
-    # Le lock/unlock de chaque écriture bloque les reads (SQLite WAL :
-    # 1 writer à la fois). Les batchs regroupent N opérations dans UN SEUL
-    # lock + UNE SEULE transaction, avec une durée limite et une file FIFO
-    # traitée par un thread dédié. Les lecteurs (mode=ro) ne sont pas
-    # bloqués entre les opérations du batch.
-    #
-    # DEUX FILES :
-    #   - "immediate" : create/destruct d'autorisations (urgent, l'agent
-    #     attend pour agir) — traité EN PRIORITÉ.
-    #   - "normal"    : modify_use (consommation de compteurs nb_times /
-    #     cadence lastcall, etc.) — traité PAR BATCHS, avec un petit sleep
-    #     (BATCH_YIELD_S) après un gros batch pour laisser passer les writes
-    #     immédiats.
-    #
-    # BATCH_YIELD_S : après un batch "normal" long (ex. 100 lignes / 200 ms),
-    # on laisse respirer les writes urgents (create/destruct) avant le suivant.
-
-    BATCH_YIELD_S = 0.05          # répit accordé après un batch normal
-    BATCH_YIELD_THRESHOLD_OPS = 20  # à partir de ce nb d'ops, on cède la main
-
-    def submit_batch(self, ops: List[Dict[str, Any]],
-                     max_duration_s: float = 5.0,
-                     token: str = "",
-                     auto_commit: bool = True,
-                     queue: str = "normal") -> Dict[str, Any]:
-        """Soumet un batch d'écritures (writer uniquement).
-
-        ``ops`` : liste d'opérations atomiques, chacune = dict SQL exécutable :
-            {"sql": "...", "params": [...]}   — exécution directe (1 op).
-            {"sqls": ["...", ...], "params_list": [[...], ...]} — exécution
-            séquentielle dans la même transaction.
-        ``queue`` : "immediate" (create/destruct auth, prioritaire) ou
-        "normal" (modify_use, par batchs).
-        Retourne {status, batch_id}. L'exécution se fait en file (thread
-        dédié) ; ``max_duration_s`` = limite de temps totale du batch."""
-        self._check_write(token)
-        batch_id = f"b{int(time.time() * 1000)}-{len(self._batch_done) + len(self._batch_immediate) + len(self._batch_normal) + 1}"
-        item = {"batch_id": batch_id, "ops": ops, "max_duration_s": max_duration_s,
-                "auto_commit": auto_commit, "status": "queued", "error": None,
-                "queue": queue if queue in ("immediate", "normal") else "normal"}
-        (self._batch_immediate if item["queue"] == "immediate"
-         else self._batch_normal).append(item)
-        if self._batch_worker is None or not self._batch_worker.is_alive():
-            self._start_batch_worker()
-        return {"status": "ok", "batch_id": batch_id}
-
-    def batch_status(self, batch_id: str) -> Optional[Dict[str, Any]]:
-        for item in list(self._batch_immediate) + list(self._batch_normal) \
-                + list(self._batch_done):
-            if item["batch_id"] == batch_id:
-                return {"batch_id": batch_id, "status": item["status"],
-                        "error": item.get("error"), "queue": item.get("queue")}
-        return None
-
-    def _start_batch_worker(self) -> None:
-        self._batch_worker = threading.Thread(target=self._batch_loop,
-                                              daemon=True)
-        self._batch_worker.start()
-
-    def _batch_loop(self) -> None:
-        """Traite les batchs : file IMMÉDIATE en priorité, puis normale."""
-        while True:
-            item = self._pop_next_batch()
-            if item is None:
-                return   # files vides → le worker s'arrête (relancé au besoin)
-            item["status"] = "running"
-            try:
-                self._run_batch(item)
-            except Exception as e:  # noqa: BLE001
-                item["status"] = "error"
-                item["error"] = str(e)
-            else:
-                item["status"] = "done"
-                # Répit après un gros batch NORMAL : laisse passer les writes
-                # immédiats (create/destruct auth) avant le prochain batch.
-                if item["queue"] == "normal" and \
-                        self._batch_size(item) >= self.BATCH_YIELD_THRESHOLD_OPS:
-                    time.sleep(self.BATCH_YIELD_S)
-            self._batch_done.append(item)
-
-    @staticmethod
-    def _batch_size(item: Dict[str, Any]) -> int:
-        n = 0
-        for op in item.get("ops", []):
-            if op.get("sql"):
-                n += 1
-            n += len(op.get("sqls", []) or [])
-        return n
-
-    def _pop_next_batch(self) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            if self._batch_immediate:
-                return self._batch_immediate.pop(0)
-            if self._batch_normal:
-                return self._batch_normal.pop(0)
-            return None
-
-    def _run_batch(self, item: Dict[str, Any]) -> None:
-        """Exécute un batch dans UNE transaction (un seul lock pris ici)."""
-        max_d = float(item["max_duration_s"] or 5.0)
-        t0 = time.monotonic()
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN")
-                for op in item["ops"]:
-                    if time.monotonic() - t0 > max_d:
-                        raise TimeoutError(
-                            f"batch dépassé la durée limite ({max_d}s)")
-                    if op.get("sql"):
-                        self.conn.execute(op["sql"], op.get("params") or ())
-                    for sql, params in zip(op.get("sqls", []),
-                                           op.get("params_list", [])):
-                        self.conn.execute(sql, params or ())
-                if item.get("auto_commit", True):
-                    self.conn.commit()
-                else:
-                    self.conn.rollback()   # dry-run / annulation volontaire
-            except Exception:
-                try:
-                    self.conn.rollback()
-                except Exception:
-                    pass
-                raise
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA foreign_keys=ON")
+        self._ensure_schema()
 
     # ── Schéma ──────────────────────────────────────────────
 
     def _ensure_schema(self) -> None:
-        self.conn.executescript(SCHEMA.read_text())
-        # Migrations idempotentes pour les bases existantes.
-        # V0.1 : id_auth (renomme privilege_id) + deadline + table conditions.
-        cols = {r[1] for r in self.conn.execute(
-            "PRAGMA table_info(privileges)").fetchall()}
-        if "privilege_id" in cols and "id_auth" not in cols:
-            try:
-                self.conn.executescript("""
-                ALTER TABLE privileges RENAME TO privileges_old;
-                """)
-                self.conn.executescript(SCHEMA.read_text())
-                self.conn.execute("""
-                INSERT OR IGNORE INTO privileges
-                    (id_auth, chemin_ref, kind, agent_id, team, level,
-                     read, write, exec, privileged, deadline, description,
-                     created_at)
-                SELECT privilege_id, chemin_ref, kind, agent_id, team, level,
-                       read, write, exec, privileged, NULL, description,
-                       created_at
-                FROM privileges_old
-                """)
-                self.conn.execute("DROP TABLE privileges_old")
-                self.conn.commit()
-            except Exception:
-                pass
-        _add_column_if_missing(self.conn, "privileges", "agent_id",
-                               "INTEGER NOT NULL DEFAULT -1")
-        _add_column_if_missing(self.conn, "privileges", "team",
-                               "INTEGER NOT NULL DEFAULT -1")
-        _add_column_if_missing(self.conn, "privileges", "deadline", "TEXT")
-        _add_column_if_missing(self.conn, "privileges", "ask",
-                               "TEXT NOT NULL DEFAULT 'none'")
-        _add_column_if_missing(self.conn, "privilege_conditions", "last_use_at",
-                               "TEXT")
-        # kind 'cmd' accepté : le CHECK originel le refuse → recréer si besoin.
+        """Writer : reset une seule fois (schema_version < 2) puis vérifs
+        idempotentes. Lecteur ro : aucune écriture, simple contrôle."""
+        if self._mode == "ro":
+            t = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='global_local_meta'").fetchone()
+            if not t:
+                raise RuntimeError(
+                    "catalogue local non initialisé (faire tourner le writer "
+                    "une fois d'abord)")
+            return
+        ver = 0
         try:
-            self.conn.execute("SELECT kind FROM privileges LIMIT 1")
+            row = self.conn.execute(
+                "SELECT value FROM global_local_meta "
+                "WHERE key='schema_version'").fetchone()
+            ver = int(row["value"]) if row else 0
         except Exception:
-            pass
+            ver = 0
+        if ver < 2:
+            # MIGRATION : reset complet volontaire (spec §10) — drop+create+seed.
+            self.conn.executescript(SCHEMA.read_text())
+        # Vérifs idempotentes (colonnes manquantes sur BDD déjà V2).
+        _add_column_if_missing(self.conn, "global_local_data_type", "active",
+                               "INTEGER NOT NULL DEFAULT 1")
+        self.conn.commit()
 
     def close(self) -> None:
-        self.flush_access()
         try:
             self.conn.close()
         except Exception:
@@ -468,978 +215,1010 @@ class LocalCatalogue:
     # ── Autorité writer ─────────────────────────────────────
 
     def _check_write(self, token: str) -> None:
-        """Refuse toute écriture sans le token du writer (défense app)."""
         if self._mode == "ro":
             raise WriteDenied("catalogue_local en lecture seule (mode=ro)")
         if not self._write_token or token != self._write_token:
-            raise WriteDenied("écriture refusée : token writer invalide ou absent")
+            raise WriteDenied("token writer invalide")
 
     @staticmethod
     def _is_reserved(ref: str) -> bool:
-        """Vrai si la ref/namespace tombe dans un espace réservé (auto-…)."""
-        r = ref.strip().lstrip("/")
-        return r.startswith(RESERVED_TEST_PREFIX) or \
-            any(r.startswith(p) for p in RESERVED_SYSTEM_PREFIXES)
+        return (ref.startswith(RESERVED_TEST_PREFIX)
+                or any(ref.startswith(p) for p in RESERVED_SYSTEM_PREFIXES)
+                or ref in ("",))
 
     def _check_reserved(self, ref: str, allow_tests: bool = True) -> None:
-        """Autorise l'écriture dans l'espace réservé auto-test uniquement si
-        l'appelant se déclare test (allow_tests). Les autres espaces réservés
-        (system/, catalogue/) restent fermés."""
         if self._is_reserved(ref):
-            if not (allow_tests and ref.startswith(RESERVED_TEST_PREFIX)):
-                raise WriteDenied(
-                    f"espace réservé interdit en écriture : {ref!r}")
+            if allow_tests and ref.startswith(RESERVED_TEST_PREFIX):
+                return
+            raise ValueError(f"ref réservée: {ref!r}")
 
-    def _ensure_base_columns(self, table: str) -> None:
-        """Migre idempotente : ajoute les colonnes socle manquantes (à chaud)."""
-        cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        for col, decl in BASE_COLUMNS.items():
-            if col not in cols:
-                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-
-    # ── Types de données (hot-add) ──────────────────────────
-
-    @staticmethod
-    def _tables_for(type_: str) -> Tuple[str, str, str, str, str]:
-        return (f"{type_}_catalogue", f"{type_}_tags",
-                f"{type_}_tag_types", f"{type_}_limites",
+    def _tables_for(self, type_: str) -> Tuple[str, str, str, str]:
+        return (f"{type_}_data", f"{type_}_tag", f"{type_}_tag_type",
                 f"{type_}_source_and_sharing")
 
-    def list_catalogues(self) -> List[Dict[str, Any]]:
-        """Registre des types de données existants."""
-        try:
-            cur = self.conn.execute(
-                "SELECT * FROM catalogues ORDER BY type")
-            return _rows_to_list(cur.fetchall())
-        except sqlite3.OperationalError:
-            return []
+    def _exists_table(self, table: str) -> bool:
+        r = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,)).fetchone()
+        return r is not None
 
-    def catalogue_exists(self, type_: str) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM catalogues WHERE type = ?", (type_,)).fetchone()
-        return row is not None
+    def _check_type(self, type_: str) -> None:
+        if not self._exists_table(f"{type_}_data"):
+            raise CatalogueTypeNotFound(f"type inconnu: {type_}")
+
+    def _touch(self, table: str, data_id: int) -> None:
+        self.conn.execute(
+            f"UPDATE {table} SET updated_at = datetime('now'), "
+            f"last_modify = datetime('now') WHERE data_id = ?", (data_id,))
+
+    # ── Registre des types ──────────────────────────────────
 
     def create_type(self, type_: str, description: str = "",
                     token: str = "") -> Dict[str, Any]:
-        """Crée un nouveau type de données à chaud (writer uniquement).
-
-        Crée les 5 tables {type}_* + enregistre le type dans `catalogues`.
-        """
+        """Crée un type à chaud : 4 tables {type}_* + registre data_type."""
         self._check_write(token)
         self._check_reserved(type_)
-        if self.catalogue_exists(type_):
-            # Table déjà créée : migre les colonnes socle manquantes.
-            cat, *_ = self._tables_for(type_)
-            try:
-                with self._lock:
-                    self._ensure_base_columns(cat)
-            except Exception:
-                pass
-            return {"status": "exists", "type": type_}
         if not type_ or not type_.replace("_", "").isalnum():
             raise ValueError(f"type de données invalide: {type_!r}")
-        cat, tags, tag_types, limites, sharing = self._tables_for(type_)
+        data, tag, tag_type, sharing = self._tables_for(type_)
         base = ",\n    ".join(f"{c} {d}" for c, d in BASE_COLUMNS.items())
         with self._lock:
             self.conn.executescript(f"""
-CREATE TABLE IF NOT EXISTS {cat} (
+CREATE TABLE IF NOT EXISTS {data} (
     {base}
 );
-CREATE INDEX IF NOT EXISTS idx_{cat}_ns ON {cat}(namespace);
-CREATE INDEX IF NOT EXISTS idx_{cat}_name ON {cat}(name);
+CREATE INDEX IF NOT EXISTS idx_{data}_ns ON {data}(namespace);
+CREATE INDEX IF NOT EXISTS idx_{data}_name ON {data}(name);
 
-CREATE TABLE IF NOT EXISTS {tags} (
+CREATE TABLE IF NOT EXISTS {tag} (
     tag_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    entry_id    INTEGER NOT NULL REFERENCES {cat}(id) ON DELETE CASCADE,
+    data_id     INTEGER NOT NULL REFERENCES {data}(data_id) ON DELETE CASCADE,
     tag_type    TEXT NOT NULL,
-    tag_value   TEXT NOT NULL,
+    tag_value   TEXT,
     created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(entry_id, tag_type, tag_value)
+    UNIQUE(data_id, tag_type, tag_value)
 );
-CREATE INDEX IF NOT EXISTS idx_{tags}_type ON {tags}(tag_type, tag_value);
+CREATE INDEX IF NOT EXISTS idx_{tag}_type ON {tag}(tag_type, tag_value);
 
-CREATE TABLE IF NOT EXISTS {tag_types} (
-    tag_type    TEXT PRIMARY KEY,
-    description TEXT,
-    created_at  TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS {limites} (
-    limite_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    entry_id    INTEGER NOT NULL REFERENCES {cat}(id) ON DELETE CASCADE,
-    limite      TEXT NOT NULL,
-    valeur_json TEXT,
-    created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(entry_id, limite)
+CREATE TABLE IF NOT EXISTS {tag_type} (
+    tag_type       TEXT PRIMARY KEY,
+    tag_value_type TEXT NOT NULL DEFAULT 'text'
+                   CHECK(tag_value_type IN ('bool','text','number','date','list','range')),
+    description    TEXT DEFAULT '',
+    created_at     TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS {sharing} (
-    entry_id        INTEGER PRIMARY KEY REFERENCES {cat}(id) ON DELETE CASCADE,
-    source          TEXT NOT NULL DEFAULT 'perso',
-    source_url      TEXT,
-    is_from_share   INTEGER NOT NULL DEFAULT 0,
-    is_it_shared    INTEGER NOT NULL DEFAULT 0,
-    can_be_shared   TEXT NOT NULL DEFAULT 'non',
-    shared_at       TEXT,
-    created_at      TEXT DEFAULT (datetime('now'))
+    data_id       INTEGER PRIMARY KEY REFERENCES {data}(data_id) ON DELETE CASCADE,
+    source        TEXT NOT NULL DEFAULT 'perso',
+    source_url    TEXT DEFAULT '',
+    is_from_share INTEGER NOT NULL DEFAULT 0,
+    is_it_shared  INTEGER NOT NULL DEFAULT 0,
+    can_be_shared TEXT NOT NULL DEFAULT 'non',
+    shared_at     TEXT DEFAULT NULL,
+    created_at    TEXT DEFAULT (datetime('now'))
 );
 """)
-            self.conn.execute(
-                "INSERT INTO catalogues(type, description) VALUES (?, ?)",
-                (type_, description))
+            self.conn.execute("""
+                INSERT OR IGNORE INTO global_local_data_type(code, description)
+                VALUES (?, ?)""", (type_, description or type_))
             self.conn.commit()
         return {"status": "ok", "type": type_}
+
+    def list_data_types(self) -> List[Dict[str, Any]]:
+        return _rows_to_list(self.conn.execute(
+            "SELECT data_type_id, code, description, active, created_at "
+            "FROM global_local_data_type ORDER BY code"))
+
+    def catalogue_exists(self, type_: str) -> bool:
+        return self._exists_table(f"{type_}_data")
+
+    def delete_type(self, type_: str, token: str = "") -> Dict[str, Any]:
+        """Supprime un type complet (tables + registre). RESET voulu."""
+        self._check_write(token)
+        self._check_reserved(type_)
+        data, tag, tag_type, sharing = self._tables_for(type_)
+        with self._lock:
+            for t in (data, tag, tag_type, sharing):
+                if self._exists_table(t):
+                    self.conn.execute(f"DROP TABLE IF EXISTS {t}")
+            self.conn.execute(
+                "DELETE FROM global_local_data_type WHERE code = ?", (type_,))
+            self.conn.commit()
+        return {"status": "ok", "type": type_}
+
+    def activate_type(self, type_: str, active: bool, token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        with self._lock:
+            self.conn.execute(
+                "UPDATE global_local_data_type SET active = ?, "
+                "updated_at = datetime('now') WHERE code = ?",
+                (1 if active else 0, type_))
+            self.conn.commit()
+        return {"status": "ok", "type": type_, "active": active}
+
+    # ── Data (CRUD par ref ou data_id) ──────────────────────
+
+    def _row_columns_for(self, type_: str, dvt: str) -> List[str]:
+        """Colonnes data_value_* existantes pour un row de {type}_data."""
+        cols = {r[1] for r in self.conn.execute(
+            f"PRAGMA table_info({type_}_data)").fetchall()}
+        return sorted(c for c in cols if c.startswith("data_value_"))
+
+    def _ensure_row_columns(self, type_: str, dvt: str, token: str) -> None:
+        """Crée les colonnes data_value_* manquantes (row composé)."""
+        parsed = _parse_row_type(dvt)
+        if not parsed:
+            return
+        cols = {r[1] for r in self.conn.execute(
+            f"PRAGMA table_info({type_}_data)").fetchall()}
+        for header, typ in parsed:
+            col = f"data_value_{header}"
+            if col in cols:
+                continue
+            self.conn.execute(
+                f"ALTER TABLE {type_}_data ADD COLUMN {col} {_col_type_for(typ)}")
+
+    def add_row_column(self, type_: str, header: str, value_type: str,
+                       token: str = "") -> Dict[str, Any]:
+        """add_colonne : étend un type row avec un nouveau header."""
+        self._check_write(token)
+        self._check_type(type_)
+        if not header or not header.replace("_", "").isalnum():
+            raise ValueError(f"header invalide: {header!r}")
+        col = f"data_value_{header}"
+        with self._lock:
+            if col in {r[1] for r in self.conn.execute(
+                    f"PRAGMA table_info({type_}_data)").fetchall()}:
+                return {"status": "exists", "column": col}
+            self.conn.execute(
+                f"ALTER TABLE {type_}_data ADD COLUMN {col} {_col_type_for(value_type)}")
+            self.conn.commit()
+        return {"status": "ok", "column": col}
+
+    @staticmethod
+    def _coerce_value(dvt: str, value: Any):
+        """Normalise une valeur selon son data_value_type (best-effort)."""
+        d = dvt.strip()
+        if d in ("json", "row", "file"):
+            return value
+        if d == "int":
+            return int(value)
+        if d == "uint":
+            v = int(value)
+            return v if v >= 0 else 0
+        if d == "float":
+            return float(value)
+        if d == "bool":
+            if isinstance(value, str):
+                return 1 if value.lower() in ("1", "true", "yes", "on") else 0
+            return 1 if value else 0
+        if d == "timestamp":
+            return int(value)
+        if d == "date":
+            return str(value)
+        return str(value)  # string, text[n]ch
+
+    def upsert(self, type_: str, ref: str, name: str = "", namespace: str = "",
+               version: str = "latest", data_value_type: str = "json",
+               value: Any = "{}", ref_file: str = "", path: str = "",
+               description: str = "", status: str = "active",
+               row: Optional[Dict[str, Any]] = None,
+               last_modify: Optional[str] = None,
+               token: str = "") -> Dict[str, Any]:
+        """add/modify d'une data (upsert). row : values des headers (row type)."""
+        self._check_write(token)
+        self._check_type(type_)
+        if not ref:
+            raise ValueError("ref requis")
+        self._check_reserved(ref)
+        dvt = data_value_type.strip()
+        if dvt not in SCALAR_VALUE_TYPES and dvt not in EXTERNAL_VALUE_TYPES \
+                and not dvt.startswith("row(") and not dvt.startswith("text["):
+            raise ValueError(f"data_value_type inconnu: {dvt!r}")
+        if dvt == "file" and not ref_file:
+            raise ValueError("data_value_type=file exige ref_file")
+        did = data_id_of(ref)
+        parsed = _parse_row_type(dvt)
+        with self._lock:
+            self._ensure_row_columns(type_, dvt, token)
+            if parsed:
+                value = json.dumps(row or {})
+                vals_rows = {}
+                for header, _typ in parsed:
+                    rkey = header
+                    if rkey in (row or {}):
+                        vals_rows[f"data_value_{header}"] = self._coerce_value(_typ, row[rkey])
+                    elif f"data_value_{header}" in (row or {}):
+                        vals_rows[f"data_value_{header}"] = self._coerce_value(
+                            _typ, row[f"data_value_{header}"])
+            else:
+                vals_rows = {}
+                if not isinstance(value, str):
+                    value = json.dumps(value) if dvt in ("json", "row") else str(value)
+                if dvt != "json" and dvt not in ("string",) and not dvt.startswith("text["):
+                    value = self._coerce_value(dvt, value)
+                else:
+                    value = str(value) if dvt != "json" else value
+            if last_modify:
+                now = last_modify
+            else:
+                now = time.strftime("%Y-%m-%d %H:%M:%S")
+            cols = ["data_id", "ref", "name", "namespace", "version",
+                    "data_value_type", "value", "ref_file", "path",
+                    "description", "status", "last_modify"]
+            params = [did, ref, name or ref, namespace, version, dvt,
+                      value, ref_file, path, description, status, now]
+            old = self.conn.execute(
+                f"SELECT data_id FROM {type_}_data WHERE ref = ?", (ref,)).fetchone()
+            if old:
+                sets = ", ".join(f"{c}=?" for c in cols[2:])
+                sets += ", updated_at=?"
+                self.conn.execute(
+                    f"UPDATE {type_}_data SET {sets} WHERE ref = ?",
+                    params[2:] + [ref])
+            else:
+                ph = ",".join("?" * len(params))
+                self.conn.execute(
+                    f"INSERT INTO {type_}_data ({','.join(cols)}) VALUES ({ph})",
+                    params)
+            if vals_rows:
+                for col, v in vals_rows.items():
+                    self.conn.execute(
+                        f"UPDATE {type_}_data SET {col} = ? WHERE data_id = ?",
+                        (v, did))
+            self.conn.commit()
+        return {"ok": True, "type": type_, "data_id": did, "ref": ref}
+
+    def delete(self, type_: str, ref: str = "", data_id: Optional[int] = None,
+               token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        self._check_type(type_)
+        did = data_id if data_id is not None else data_id_of(ref)
+        with self._lock:
+            cur = self.conn.execute(
+                f"DELETE FROM {type_}_data WHERE data_id = ?", (did,))
+            self.conn.commit()
+        return {"ok": True, "deleted": cur.rowcount, "data_id": did}
+
+    def _entry(self, type_: str, ref: str, data_id: Optional[int] = None
+               ) -> Optional[Dict[str, Any]]:
+        if data_id is not None:
+            r = self.conn.execute(
+                f"SELECT * FROM {type_}_data WHERE data_id = ?", (data_id,)).fetchone()
+        else:
+            r = self.conn.execute(
+                f"SELECT * FROM {type_}_data WHERE ref = ?", (ref,)).fetchone()
+        return _row_to_dict(r) if r else None
+
+    def add_last_modify_col(self, type_: str) -> None:
+        _add_column_if_missing(self.conn, f"{type_}_data", "last_modify", "TEXT")
+
+    def get(self, type_: str, ref: str = "", data_id: Optional[int] = None,
+            resolve_value: bool = True) -> Dict[str, Any]:
+        """get par ref ou data_id. row → format plat {row: {header: value, …}}."""
+        self._check_type(type_)
+        e = self._entry(type_, ref, data_id)
+        if not e:
+            raise CatalogueTypeNotFound(f"data introuvable: {type_}/{ref or data_id}")
+        dvt = e.get("data_value_type") or "json"
+        parsed = _parse_row_type(dvt)
+        if parsed:
+            row = {}
+            for header, _typ in parsed:
+                v = e.get(f"data_value_{header}")
+                if v is not None:
+                    row[header] = v
+            e["row"] = row
+        rows = self._rows_list(type_, e["data_id"])
+        if rows:
+            e["tags"] = rows
+        sh = self.get_sharing(type_, ref or "", data_id=e["data_id"])
+        if sh:
+            e["sharing"] = sh
+        return e
+
+    def _rows_list(self, type_: str, data_id: int,
+                   tag_types: bool = False) -> List[Dict[str, Any]]:
+        return _rows_to_list(self.conn.execute(
+            f"SELECT tag_id, tag_type, tag_value FROM {type_}_tag "
+            f"WHERE data_id = ? ORDER BY tag_type, tag_value", (data_id,)))
+
+    def list(self, type_: str, namespace: str = "", page: int = 1,
+             page_size: int = 50, sort: str = "name", order: str = "asc",
+             status: str = "") -> Dict[str, Any]:
+        self._check_type(type_)
+        where = []
+        args: List[Any] = []
+        if namespace:
+            where.append("namespace = ?")
+            args.append(namespace)
+        if status:
+            where.append("status = ?")
+            args.append(status)
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        sort = sort if sort in ("ref", "name", "namespace", "version",
+                                "updated_at", "last_modify") else "name"
+        order = "DESC" if order.lower() == "desc" else "ASC"
+        total = self.conn.execute(
+            f"SELECT COUNT(*) c FROM {type_}_data {w}", args).fetchone()["c"]
+        off = max(0, (page - 1) * page_size)
+        rows = _rows_to_list(self.conn.execute(
+            f"SELECT data_id, ref, name, namespace, version, data_value_type, "
+            f"status, last_modify FROM {type_}_data {w} "
+            f"ORDER BY {sort} {order} LIMIT ? OFFSET ?", args + [page_size, off]))
+        return {"total": total, "page": page, "page_size": page_size,
+                "items": rows}
+
+    def list_recursive(self, type_: str, namespace: str = "") -> List[Dict[str, Any]]:
+        self._check_type(type_)
+        if not namespace:
+            return _rows_to_list(self.conn.execute(
+                f"SELECT data_id, ref, name, namespace, version, status "
+                f"FROM {type_}_data ORDER BY namespace, name"))
+        return _rows_to_list(self.conn.execute(
+            f"SELECT data_id, ref, name, namespace, version, status "
+            f"FROM {type_}_data WHERE namespace = ? OR namespace LIKE ? "
+            f"ORDER BY namespace, name", (namespace, namespace + "/%")))
+
+    def search(self, type_: str, q: str = "", tag_type: str = "",
+               tag_value: str = "") -> List[Dict[str, Any]]:
+        self._check_type(type_)
+        if tag_type:
+            w = "JOIN {t}_tag tg ON tg.data_id = d.data_id WHERE tg.tag_type = ?"
+            args = [tag_type]
+            if tag_value is not None:
+                w += " AND tg.tag_value = ?"
+                args.append(str(tag_value))
+            rows = _rows_to_list(self.conn.execute(
+                f"SELECT DISTINCT d.data_id, d.ref, d.name, d.namespace, "
+                f"d.version, d.status FROM {type_}_data d " + w,
+                args))
+        else:
+            w = ""
+            args: List[Any] = []
+            if q:
+                w = "WHERE d.name LIKE ? OR d.ref LIKE ? OR d.description LIKE ?"
+                args = [f"%{q}%"] * 3
+            rows = _rows_to_list(self.conn.execute(
+                f"SELECT d.data_id, d.ref, d.name, d.namespace, d.version, "
+                f"d.status FROM {type_}_data d " + w +
+                (" ORDER BY d.name" if q else ""), args))
+        return rows
+
+    def refresh(self, type_: str, data_id: int,
+                last_access: str = "") -> Dict[str, Any]:
+        """Refresh conditionnel : data si last_modify > last_access, sinon
+        {"modified": False} (sémantique 304). Aucune écriture."""
+
+        self._check_type(type_)
+        e = self.conn.execute(
+            f"SELECT data_id, ref, last_modify FROM {type_}_data "
+            f"WHERE data_id = ?", (data_id,)).fetchone()
+        if not e:
+            raise CatalogueTypeNotFound(f"data introuvable: {type_}/{data_id}")
+        if last_access and e["last_modify"] and str(e["last_modify"]) <= str(last_access):
+            return {"modified": False, "data_id": data_id, "ref": e["ref"]}
+        return {"modified": True, "data_id": data_id, "ref": e["ref"],
+                "last_modify": e["last_modify"]}
+
+    # ── Tags ────────────────────────────────────────────────
+
+    def tag_type_add(self, type_: str, tag_type: str, tag_value_type: str = "text",
+                     description: str = "", token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        self._check_type(type_)
+        if tag_value_type not in TAG_VALUE_TYPES:
+            raise ValueError(f"tag_value_type inconnu: {tag_value_type!r}")
+        with self._lock:
+            self.conn.execute(
+                f"INSERT OR IGNORE INTO {type_}_tag_type "
+                f"(tag_type, tag_value_type, description) VALUES (?, ?, ?)",
+                (tag_type, tag_value_type, description))
+            self.conn.execute(
+                f"UPDATE {type_}_tag_type SET tag_value_type = ?, description = ? "
+                f"WHERE tag_type = ?", (tag_value_type, description, tag_type))
+            self.conn.commit()
+        return {"ok": True, "type": type_, "tag_type": tag_type,
+                "tag_value_type": tag_value_type}
+
+    def tag_type_delete(self, type_: str, tag_type: str, token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        with self._lock:
+            self.conn.execute(f"DELETE FROM {type_}_tag_type WHERE tag_type = ?",
+                              (tag_type,))
+            self.conn.execute(f"DELETE FROM {type_}_tag WHERE tag_type = ?",
+                              (tag_type,))
+            self.conn.commit()
+        return {"ok": True, "tag_type": tag_type}
+
+    def list_tag_types(self, type_: str) -> List[Dict[str, Any]]:
+        self._check_type(type_)
+        return _rows_to_list(self.conn.execute(
+            f"SELECT tag_type, tag_value_type, description FROM {type_}_tag_type "
+            f"ORDER BY tag_type"))
+
+    def tag_attach(self, type_: str, ref: str = "", data_id: Optional[int] = None,
+                   tag_type: str = "", tag_value: Any = None,
+                   token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        self._check_type(type_)
+        if not tag_type or tag_value is None:
+            raise ValueError("tag_type + tag_value requis")
+        tt = self.conn.execute(
+            f"SELECT tag_value_type FROM {type_}_tag_type WHERE tag_type = ?",
+            (tag_type,)).fetchone()
+        if not tt:
+            raise ValueError(f"tag_type non déclaré: {tag_type!r} "
+                             f"(tag_type_add d'abord)")
+        tv = str(tag_value)
+        if isinstance(tag_value, (list, dict)):
+            tv = json.dumps(tag_value)
+        did = data_id if data_id is not None else data_id_of(ref)
+        with self._lock:
+            self.conn.execute(
+                f"INSERT OR IGNORE INTO {type_}_tag "
+                f"(data_id, tag_type, tag_value) VALUES (?, ?, ?)",
+                (did, tag_type, tv))
+            self.conn.commit()
+        return {"ok": True, "type": type_, "data_id": did, "tag_type": tag_type,
+                "tag_value": tv}
+
+    def tag_detach(self, type_: str, ref: str = "", data_id: Optional[int] = None,
+                   tag_type: str = "", tag_value: Any = None,
+                   token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        did = data_id if data_id is not None else data_id_of(ref)
+        with self._lock:
+            if tag_value is None:
+                self.conn.execute(
+                    f"DELETE FROM {type_}_tag WHERE data_id = ? AND tag_type = ?",
+                    (did, tag_type))
+            else:
+                self.conn.execute(
+                    f"DELETE FROM {type_}_tag WHERE data_id = ? AND tag_type = ? "
+                    f"AND tag_value = ?", (did, tag_type, str(tag_value)))
+            self.conn.commit()
+        return {"ok": True, "data_id": did}
+
+    def tags_by_value(self, type_: str, tag_type: str,
+                      tag_value: Any = None) -> List[Dict[str, Any]]:
+        self._check_type(type_)
+        if tag_value is None:
+            return _rows_to_list(self.conn.execute(
+                f"SELECT tg.data_id, d.ref, d.name, tg.tag_type, tg.tag_value "
+                f"FROM {type_}_tag tg JOIN {type_}_data d "
+                f"ON d.data_id = tg.data_id WHERE tg.tag_type = ? "
+                f"ORDER BY tg.tag_value", (tag_type,)))
+        return _rows_to_list(self.conn.execute(
+            f"SELECT tg.data_id, d.ref, d.name, tg.tag_type, tg.tag_value "
+            f"FROM {type_}_tag tg JOIN {type_}_data d "
+            f"ON d.data_id = tg.data_id WHERE tg.tag_type = ? AND tg.tag_value = ? "
+            f"ORDER BY d.name", (tag_type, str(tag_value))))
+
+    # ── Partage ─────────────────────────────────────────────
+
+    def set_sharing(self, type_: str, ref: str = "",
+                    data_id: Optional[int] = None,
+                    source: str = "perso", source_url: str = "",
+                    is_from_share: bool = False, is_it_shared: bool = False,
+                    can_be_shared: str = "non", token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        self._check_type(type_)
+        if can_be_shared not in SHARING_LEVELS:
+            raise ValueError(f"can_be_shared invalide: {can_be_shared!r}")
+        did = data_id if data_id is not None else data_id_of(ref)
+        with self._lock:
+            self.conn.execute(
+                f"INSERT INTO {type_}_source_and_sharing "
+                f"(data_id, source, source_url, is_from_share, is_it_shared, "
+                f"can_be_shared, shared_at) VALUES (?, ?, ?, ?, ?, ?, "
+                f"datetime('now')) "
+                f"ON CONFLICT(data_id) DO UPDATE SET source=excluded.source, "
+                f"source_url=excluded.source_url, "
+                f"is_from_share=excluded.is_from_share, "
+                f"is_it_shared=excluded.is_it_shared, "
+                f"can_be_shared=excluded.can_be_shared, "
+                f"shared_at=datetime('now')",
+                (did, source, source_url, 1 if is_from_share else 0,
+                 1 if is_it_shared else 0, can_be_shared))
+            self.conn.commit()
+        return {"ok": True, "data_id": did}
+
+    def get_sharing(self, type_: str, ref: str = "",
+                    data_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        self._check_type(type_)
+        did = data_id if data_id is not None else data_id_of(ref)
+        return _row_to_dict(self.conn.execute(
+            f"SELECT * FROM {type_}_source_and_sharing WHERE data_id = ?",
+            (did,)).fetchone())
+
+    def set_shared_default(self, type_: str, tag_type: str = "*",
+                           tag_value: str = "*", can_be_shared: str = "non",
+                           token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        if can_be_shared not in SHARING_LEVELS:
+            raise ValueError(f"can_be_shared invalide: {can_be_shared!r}")
+        dtr = self.conn.execute(
+            "SELECT data_type_id FROM global_local_data_type WHERE code = ?",
+            (type_,)).fetchone()
+        if not dtr:
+            raise CatalogueTypeNotFound(f"type inconnu: {type_}")
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO global_local_shared_default "
+                "(data_type_id, tag_type, tag_value, can_be_shared) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(data_type_id, tag_type, tag_value) DO UPDATE SET "
+                "can_be_shared = excluded.can_be_shared, "
+                "updated_at = datetime('now')",
+                (dtr["data_type_id"], tag_type, tag_value, can_be_shared))
+            self.conn.commit()
+        return {"ok": True, "type": type_}
+
+    def resolve_can_be_shared(self, type_: str, ref: str = "",
+                              data_id: Optional[int] = None,
+                              tag_type: str = "", tag_value: str = "") -> str:
+        """Résolution cascade : (type, tag_type, tag_value) → (type,'*','*')
+        → défaut 'non'."""
+        self._check_type(type_)
+        dtr = self.conn.execute(
+            "SELECT data_type_id FROM global_local_data_type WHERE code = ?",
+            (type_,)).fetchone()
+        if not dtr:
+            return "non"
+        dtid = dtr["data_type_id"]
+        for tt, tv in ((tag_type, tag_value), ("*", "*")):
+            r = self.conn.execute(
+                "SELECT can_be_shared FROM global_local_shared_default "
+                "WHERE data_type_id = ? AND tag_type = ? AND tag_value = ?",
+                (dtid, tt or "*", tv or "*")).fetchone()
+            if r:
+                return r["can_be_shared"]
+        sh = self.get_sharing(type_, ref, data_id)
+        return (sh["can_be_shared"] if sh and sh["can_be_shared"] != "non"
+                else "non")
+
+    def list_shared_default(self) -> List[Dict[str, Any]]:
+        return _rows_to_list(self.conn.execute(
+            "SELECT sd.*, dt.code AS data_type "
+            "FROM global_local_shared_default sd "
+            "JOIN global_local_data_type dt ON dt.data_type_id = sd.data_type_id "
+            "ORDER BY dt.code, sd.tag_type, sd.tag_value"))
 
     # ── Namespaces ──────────────────────────────────────────
 
     def create_namespace(self, ns: str, parent: Optional[str] = None,
                          description: str = "", token: str = "") -> Dict[str, Any]:
-        """Crée un namespace (imbriqué via parent ou chemin complet)."""
         self._check_write(token)
         self._check_reserved(ns)
-        # "utils/sort" → parent "utils" si non précisé
-        if parent is None and "/" in ns:
+        if "/" in ns and not parent:
             parent = ns.rsplit("/", 1)[0]
         with self._lock:
             self.conn.execute(
-                "INSERT OR IGNORE INTO namespaces(ns, parent, description) "
-                "VALUES (?, ?, ?)", (ns, parent, description))
+                "INSERT OR IGNORE INTO global_local_namespace "
+                "(ns, parent, description) VALUES (?, ?, ?)",
+                (ns, parent, description))
             self.conn.commit()
         return {"status": "ok", "ns": ns, "parent": parent}
 
     def get_namespace(self, ns: str) -> Optional[Dict[str, Any]]:
         return _row_to_dict(self.conn.execute(
-            "SELECT * FROM namespaces WHERE ns = ?", (ns,)).fetchone())
+            "SELECT * FROM global_local_namespace WHERE ns = ?", (ns,)).fetchone())
 
     def list_namespaces(self, parent: Optional[str] = None) -> List[Dict[str, Any]]:
         if parent is None:
-            cur = self.conn.execute(
-                "SELECT * FROM namespaces ORDER BY ns")
-        else:
-            cur = self.conn.execute(
-                "SELECT * FROM namespaces WHERE parent = ? ORDER BY ns",
-                (parent,))
-        return _rows_to_list(cur.fetchall())
+            return _rows_to_list(self.conn.execute(
+                "SELECT * FROM global_local_namespace ORDER BY ns"))
+        return _rows_to_list(self.conn.execute(
+            "SELECT * FROM global_local_namespace WHERE parent = ? ORDER BY ns",
+            (parent,)))
 
     def list_namespaces_recursive(self, prefix: str = "") -> List[Dict[str, Any]]:
-        """Tous les namespaces dont le chemin commence par `prefix`."""
-        if prefix:
-            cur = self.conn.execute(
-                "SELECT * FROM namespaces WHERE ns = ? OR ns LIKE ? ORDER BY ns",
-                (prefix, prefix + "/%"))
-        else:
-            cur = self.conn.execute("SELECT * FROM namespaces ORDER BY ns")
-        return _rows_to_list(cur.fetchall())
+        if not prefix:
+            return _rows_to_list(self.conn.execute(
+                "SELECT * FROM global_local_namespace ORDER BY ns"))
+        return _rows_to_list(self.conn.execute(
+            "SELECT * FROM global_local_namespace WHERE ns = ? OR ns LIKE ? "
+            "ORDER BY ns", (prefix, prefix + "/%")))
 
-    # ── catalogue_path : environnement de paths local ──────
+    def delete_namespace(self, ns: str, token: str = "") -> Dict[str, Any]:
+        self._check_write(token)
+        self._check_reserved(ns)
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM global_local_namespace WHERE ns = ? OR ns LIKE ?",
+                (ns, ns + "/%"))
+            self.conn.commit()
+        return {"ok": True, "ns": ns}
+
+    # ── Paths ───────────────────────────────────────────────
 
     def create_path(self, path_name: str, address: str,
                     scheme: str = "file", description: str = "",
                     token: str = "") -> Dict[str, Any]:
-        """Déclare un path symbolique → adresse système (writer seul)."""
-        from modules.sql.catalogue_path import (
-            validate_path_name, validate_address,
-        )
         self._check_write(token)
-        validate_path_name(path_name)
-        validate_address(address)
+        if path_name.startswith("/$") or path_name.startswith("$"):
+            raise ValueError("path ne commence jamais par /$ ou $")
+        if "*" in path_name:
+            raise ValueError("les écritures de chemin interdisent *")
         with self._lock:
             self.conn.execute(
-                "INSERT OR REPLACE INTO catalogue_path "
+                "INSERT OR IGNORE INTO global_local_path "
                 "(path_name, address, scheme, description) VALUES (?, ?, ?, ?)",
                 (path_name, address, scheme, description))
             self.conn.commit()
-        return {"status": "ok", "path_name": path_name, "address": address}
+        return {"ok": True, "path_name": path_name}
 
     def list_paths(self, scheme: str = "") -> List[Dict[str, Any]]:
         if scheme:
-            cur = self.conn.execute(
-                "SELECT * FROM catalogue_path WHERE scheme = ? ORDER BY path_name",
-                (scheme,))
-        else:
-            cur = self.conn.execute(
-                "SELECT * FROM catalogue_path ORDER BY path_name")
-        return _rows_to_list(cur.fetchall())
+            return _rows_to_list(self.conn.execute(
+                "SELECT * FROM global_local_path WHERE scheme = ? "
+                "ORDER BY path_name", (scheme,)))
+        return _rows_to_list(self.conn.execute(
+            "SELECT * FROM global_local_path ORDER BY path_name"))
 
     def resolve_path(self, target: str) -> Dict[str, Any]:
-        """Résout un path symbolique/variable vers son adresse système.
+        """Résolution par précision de gauche à droite (/lib/a/$1 prime)."""
+        parts = target.split("/")
+        best = None
+        best_len = -1
+        for row in self.conn.execute(
+                "SELECT path_name, address, scheme FROM global_local_path "
+                "ORDER BY LENGTH(path_name) DESC").fetchall():
+            pn = row["path_name"].split("/")
+            if len(pn) > len(parts):
+                continue
+            score = 0
+            ok = True
+            for i, seg in enumerate(pn):
+                if seg[0] == "$":
+                    continue
+                if seg != parts[i]:
+                    ok = False
+                    break
+                score += 1
+            if ok and score > best_len:
+                best = row
+                best_len = score
+        if not best:
+            return {"resolved": False, "target": target, "address": target,
+                    "scheme": "file"}
+        addr = best["address"].replace("/$", "")  # substitution $N
+        for i, seg in enumerate(parts[len(best["path_name"].split("/")):]):
+            addr += "/" + seg
+        return {"resolved": True, "target": target, "address": addr,
+                "scheme": best["scheme"]}
 
-        Précision gauche→droite (catalogue_path.resolve_path). Retourne
-        {address, scheme} ou une erreur si non résoluble."""
-        from modules.sql.catalogue_path import resolve_path as _resolve
-        paths = self.list_paths()
-        try:
-            address, scheme = _resolve(paths, target)
-            return {"status": "ok", "address": address, "scheme": scheme,
-                    "input": target}
-        except Exception as e:  # noqa: BLE001
-            return {"status": "error", "error": str(e)}
+    # ── Buffer (écritures externes) ─────────────────────────
 
-    # ── privileges : autorisations par chemin ───────────────
+    def buffer_push(self, ops: List[Dict[str, Any]],
+                    external_tag: str = "", token: str = "") -> Dict[str, Any]:
+        """Dépose N ops 'pending' (importeur externe). UNE écriture batch."""
+        self._check_write(token)
+        if not ops:
+            return {"ok": True, "pushed": 0}
+        with self._lock:
+            self.conn.executemany(
+                "INSERT INTO global_local_buffer_op "
+                "(direction, domain, op, payload_json, status, external_tag, "
+                "ref_external) VALUES ('in', ?, ?, ?, 'pending', ?, ?)",
+                [(o.get("domain", ""), o.get("op", "add"),
+                  json.dumps(o.get("payload", {})), external_tag,
+                  o.get("ref_external", "")) for o in ops])
+            self.conn.commit()
+        return {"ok": True, "pushed": len(ops)}
+
+    def buffer_process(self, token: str = "",
+                       limit: int = 500) -> Dict[str, Any]:
+        """Consumer du writer : applique les ops pending en mini-batchs."""
+        self._check_write(token)
+        applied = errors = 0
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM global_local_buffer_op WHERE status = 'pending' "
+                "ORDER BY op_id LIMIT ?", (limit,)).fetchall()
+            for row in rows:
+                op_id = row["op_id"]
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                    if row["direction"] == "in":
+                        self._apply_op(row["domain"], row["op"], payload)
+                    self.conn.execute(
+                        "UPDATE global_local_buffer_op SET status='applied', "
+                        "applied_at=datetime('now') WHERE op_id = ?", (op_id,))
+                    applied += 1
+                except Exception as e:  # jamais bloquant
+                    self.conn.execute(
+                        "UPDATE global_local_buffer_op SET status='error', "
+                        "error=? WHERE op_id = ?", (str(e)[:500], op_id))
+                    errors += 1
+            self.conn.commit()
+        return {"ok": True, "applied": applied, "errors": errors,
+                "pending_left": self._buffer_count("pending")}
+
+    def _apply_op(self, domain: str, op: str, payload: Dict[str, Any]) -> None:
+        if op == "delete":
+            self.conn.execute(
+                f"DELETE FROM {domain}_data WHERE data_id = ?",
+                (payload.get("data_id") or data_id_of(payload.get("ref", "")),))
+            return
+        self._upsert_direct(domain, payload)
+
+    def _upsert_direct(self, type_: str, p: Dict[str, Any]) -> None:
+        if not self._exists_table(f"{type_}_data"):
+            raise CatalogueTypeNotFound(f"type inconnu: {type_}")
+        ref = p.get("ref", "")
+        if not ref:
+            raise ValueError("ref requis")
+        dvt = p.get("data_value_type", "json")
+        did = data_id_of(ref)
+        if dvt.startswith("row("):
+            val = json.dumps(p.get("row") or {})
+        else:
+            v = p.get("value", "{}")
+            val = json.dumps(v) if not isinstance(v, str) else v
+        cols = ["data_id", "ref", "name", "namespace", "version",
+                "data_value_type", "value", "ref_file", "path", "description",
+                "status", "last_modify"]
+        params = [did, ref, p.get("name") or ref, p.get("namespace", ""),
+                  p.get("version", "latest"), dvt, val,
+                  p.get("ref_file", ""), p.get("path", ""),
+                  p.get("description", ""), p.get("status", "active"),
+                  "datetime('now')"]
+        old = self.conn.execute(
+            f"SELECT data_id FROM {type_}_data WHERE ref = ?", (ref,)).fetchone()
+        if old:
+            sets = ", ".join(f"{c}=?" for c in cols[2:])
+            self.conn.execute(
+                f"UPDATE {type_}_data SET {sets} WHERE ref = ?",
+                params[2:] + [ref])
+        else:
+            ph = ",".join("?" * len(params))
+            self.conn.execute(
+                f"INSERT INTO {type_}_data ({','.join(cols)}) VALUES ({ph})",
+                params)
+
+    def _buffer_count(self, status: str) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM global_local_buffer_op WHERE status = ?",
+            (status,)).fetchone()["c"]
+
+    def buffer_status(self, external_tag: str = "",
+                      status: str = "") -> List[Dict[str, Any]]:
+        w, args = [], []
+        if external_tag:
+            w.append("external_tag = ?")
+            args.append(external_tag)
+        if status:
+            w.append("status = ?")
+            args.append(status)
+        where = ("WHERE " + " AND ".join(w)) if w else ""
+        return _rows_to_list(self.conn.execute(
+            f"SELECT op_id, direction, domain, op, status, error, external_tag, "
+            f"ref_external, created_at, applied_at "
+            f"FROM global_local_buffer_op {where} ORDER BY op_id DESC LIMIT 500",
+            args))
+
+    def buffer_retry(self, token: str = "", limit: int = 500) -> Dict[str, Any]:
+        """Rejoue les ops en erreur (après correction) — jamais bloquant."""
+        self._check_write(token)
+        with self._lock:
+            self.conn.execute(
+                "UPDATE global_local_buffer_op SET status='pending', "
+                "error='' WHERE status='error' LIMIT ?", (limit,))
+            self.conn.commit()
+        return self.buffer_process(token=token, limit=limit)
+
+    # ── Cleanup ─────────────────────────────────────────────
+
+    def cleanup_prefix(self, prefix: str, token: str = "") -> Dict[str, Any]:
+        """Supprime les data/réfs d'un préfixe (réservé : auto-test-*)."""
+        self._check_write(token)
+        if not prefix.startswith(RESERVED_TEST_PREFIX):
+            raise ValueError(
+                f"cleanup réservé aux espaces de test: {RESERVED_TEST_PREFIX}*")
+        removed = 0
+        with self._lock:
+            for dt in self.list_data_types():
+                t = f"{dt['code']}_data"
+                if not self._exists_table(t):
+                    continue
+                cur = self.conn.execute(
+                    f"DELETE FROM {t} WHERE ref LIKE ?", (prefix + "%",))
+                removed += cur.rowcount
+            self.conn.execute(
+                "DELETE FROM global_local_namespace WHERE ns LIKE ?",
+                (prefix + "%",))
+            self.conn.commit()
+        return {"ok": True, "removed": removed}
+
+    # ── Privileges (famille SECURITY) ───────────────────────
 
     def create_privilege(self, chemin_ref: str, kind: str = "path",
-                         level: int = 1, read: str = "----",
-                         write: str = "----", exec_: str = "----",
-                         privileged: str = "----", description: str = "",
                          agent_id: int = -1, team: int = -1,
-                         deadline: str = "", conditions: Optional[list] = None,
-                         ask: str = "none",
+                         level: int = 1, read: str = "----",
+                         write: str = "----", exec: str = "----",
+                         privileged: str = "----", ask: str = "none",
+                         deadline: Optional[str] = None,
+                         description: str = "",
                          token: str = "") -> Dict[str, Any]:
-        """Déclare une règle d'autorisation (writer seul).
-
-        agent_id = -1 → tous les agents ; team = -1 → toutes les teams.
-        kind ∈ ref | path | cmd (cmd = autorise l'exécution d'une commande).
-        deadline : date ISO d'expiration ('' = jamais).
-        conditions : [{type: nb_times|until_restart|until_date|ref_id, valeur}]
-                     — une ligne par condition, INTERSECTION.
-        ask : niveau de DEMANDE requis pour cette action/commande, SÉPARÉ du
-              droit de la faire : none | security_supervisor | human |
-              human_root. Ex. une commande peut être autorisée (exec) MAIS
-              exiger une confirmation humaine (ask=human) ou humain+root
-              (ask=human_root, popup sudo)."""
-        from modules.sql.catalogue_privilege import validate_mode
+        """Crée une autorisation (writer privé)."""
         self._check_write(token)
-        if kind not in ("ref", "path", "cmd"):
-            raise ValueError(f"kind invalide: {kind!r} (ref|path|cmd)")
-        if ask not in ("none", "security_supervisor", "human", "human_root"):
+        if ask not in ASK_LEVELS:
             raise ValueError(f"ask invalide: {ask!r}")
-        read = validate_mode(read, "read")
-        write = validate_mode(write, "write")
-        exec_ = validate_mode(exec_, "exec")
-        privileged = validate_mode(privileged, "privileged")
-        if not (0 <= int(level) <= MAX_PRIV_LEVEL):
-            raise ValueError(f"level hors bornes (0..{MAX_PRIV_LEVEL}): {level!r}")
+        mode = lambda s: (s or "----").ljust(4, "-")[:4]
         with self._lock:
             cur = self.conn.execute(
-                "INSERT INTO privileges "
+                "INSERT INTO global_local_privilege "
                 "(chemin_ref, kind, agent_id, team, level, read, write, exec, "
-                "privileged, ask, deadline, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (chemin_ref, kind, int(agent_id), int(team), int(level),
-                 read, write, exec_, privileged, ask, deadline or None, description))
-            id_auth = cur.lastrowid
-            for c in (conditions or []):
-                self.conn.execute(
-                    "INSERT INTO privilege_conditions(id_auth, condition_type, valeur, compteur) "
-                    "VALUES (?, ?, ?, ?)",
-                    (id_auth, c.get("type", ""),
-                     json.dumps(c.get("valeur")) if not isinstance(c.get("valeur"), str)
-                     else c.get("valeur"),
-                     c.get("compteur", c.get("valeur") if c.get("type") == "nb_times" else None)))
+                "privileged, ask, deadline, description) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (chemin_ref, kind, agent_id, team, level, mode(read),
+                 mode(write), mode(exec), mode(privileged), ask, deadline,
+                 description))
             self.conn.commit()
-        return {"status": "ok", "id_auth": id_auth,
-                "chemin_ref": chemin_ref, "kind": kind, "ask": ask}
+        return {"status": "ok", "id_auth": cur.lastrowid, "chemin_ref": chemin_ref}
 
     def list_privileges(self, kind: str = "") -> List[Dict[str, Any]]:
         if kind:
-            cur = self.conn.execute(
-                "SELECT * FROM privileges WHERE kind = ? "
-                "ORDER BY level DESC, chemin_ref", (kind,))
-        else:
-            cur = self.conn.execute(
-                "SELECT * FROM privileges ORDER BY level DESC, chemin_ref")
-        return _rows_to_list(cur.fetchall())
-
-    def _match_privilege_rows(self, chemin: str, kind: str = "",
-                              agent_id: int = -1, team: int = -1) -> List[Dict[str, Any]]:
-        """Lignes privileges dont le chemin intersecte `chemin` demandé.
-
-        - Filtre identité : agent_id == agent_id demandé OU -1 (tous) ;
-          team == team demandée OU -1 (toutes).
-        - kind='ref' : chemin_ref == chemin (ou préfixe de namespace, ex.
-          'utils' couvre 'utils/bubble_sort@v1').
-        - kind='path' : le chemin demandé est DANS le path déclaré (les deux
-          sens) — on matche les déclarations dont les segments littéraux
-          correspondent, avec substitution des variables $1…
-        - kind='cmd' : chemin_ref == base de la commande (ex. 'git')."""
-        sql = "SELECT * FROM privileges"
-        params: List[Any] = []
-        conds: List[str] = []
-        if kind:
-            conds.append("kind = ?"); params.append(kind)
-        if agent_id != -1:
-            conds.append("(agent_id = ? OR agent_id = -1)")
-            params.append(int(agent_id))
-        if team != -1:
-            conds.append("(team = ? OR team = -1)")
-            params.append(int(team))
-        if conds:
-            sql += " WHERE " + " AND ".join(conds)
-        rows = _rows_to_list(self.conn.execute(sql, params).fetchall())
-        # toutes les règles de la famille (même kind + identité), pour
-        # l'exclusion par précision.
-        family = _rows_to_list(self.conn.execute(sql, params).fetchall())
-        out = []
-        for r in rows:
-            rk = r.get("kind")
-            ref = r.get("chemin_ref", "")
-            if rk == "ref":
-                if chemin == ref or ref and (chemin + "/").startswith(ref + "/"):
-                    out.append(r)
-            elif rk == "cmd":
-                if self._cmd_contains(ref, chemin):
-                    out.append(r)
-            else:  # path
-                if self._path_contains(ref, chemin):
-                    out.append(r)
-        # EXCLUSION PAR PRÉCISION : si un raffinement PLUS PRÉCIS existe dans
-        # la même famille et ne matche pas le chemin demandé, la règle base
-        # (moins précise) est EXCLUE → refus par défaut pour le non-couvert.
-        # Ex : 'python3' exclu pour 'python3 x.py' si 'python3 fichier1.py'
-        # existe (refus implicite), alors que 'python3 fichier1.py' est accordé.
-        return self._apply_precision_exclusion(out, chemin, family)
-
-    def _apply_precision_exclusion(self, rows: List[Dict[str, Any]],
-                                   chemin: str,
-                                   family: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Exclut les règles BASE quand un raffinement plus précis couvre déjà
-        la famille (refus implicite du non-couvert).
-
-        Une règle R1 est « plus précise » que R0 si R0 est un PREFIXE de R1
-        (pour cmd : tokens ; pour path : segments). Si R0 matche `chemin`
-        mais qu'il existe un raffinement R1 de R0 (même famille) qui ne
-        matche PAS `chemin`, alors R0 est exclue."""
-        kept = []
-        for r in rows:
-            ref = r.get("chemin_ref", "")
-            rk = r.get("kind", "")
-            excluded = False
-            for r2 in family:
-                if r2.get("id_auth") == r.get("id_auth"):
-                    continue
-                r2_ref = r2.get("chemin_ref", "")
-                if self._is_prefix(ref, r2_ref, rk) and \
-                        not self._matches(r2, chemin):
-                    excluded = True
-                    break
-            if not excluded:
-                kept.append(r)
-        return kept
-
-    @staticmethod
-    def _is_prefix(a: str, b: str, kind: str) -> bool:
-        """Vrai si a est un préfixe strict de b (même famille)."""
-        if kind == "cmd":
-            as_, bs = a.strip().split(), b.strip().split()
-        else:
-            as_, bs = a.strip("/").split("/"), b.strip("/").split("/")
-        if len(as_) >= len(bs):
-            return False
-        return as_ == bs[: len(as_)]
-
-    def _matches(self, row: Dict[str, Any], chemin: str) -> bool:
-        """Vrai si la règle matche le chemin demandé."""
-        ref = row.get("chemin_ref", "")
-        rk = row.get("kind", "")
-        if rk == "ref":
-            return chemin == ref or ref and (chemin + "/").startswith(ref + "/")
-        if rk == "cmd":
-            return self._cmd_contains(ref, chemin)
-        return self._path_contains(ref, chemin)
-
-    def _path_contains(self, declared: str, target: str) -> bool:
-        """Vrai si le path déclaré contient le chemin demandé.
-
-        Matche segment par segment : littéral == littéral, variable $1 absorbe
-        un segment, `*` (déclaré) absorbe tout suffixe. Les deux sens :
-        target est sous declared."""
-        if not declared or not target:
-            return False
-        dsegs = declared.strip("/").split("/")
-        tsegs = target.strip("/").split("/")
-        if len(dsegs) > len(tsegs):
-            return False
-        for i, d in enumerate(dsegs):
-            if d == "*":
-                return True   # wildcard absorbe le reste
-            if d.startswith("$"):
-                continue      # variable absorbe le segment
-            if d != tsegs[i]:
-                return False
-        return True
-
-    def _cmd_contains(self, declared: str, target: str) -> bool:
-        """Vrai si la déclaration de commande couvre la commande demandée.
-
-        La commande est tokenisée (python3 fichier1.py). Une déclaration à un
-        seul token (`python3`) matche toute commande qui commence par lui ;
-        une déclaration complète (`python3 fichier1.py`) ne matche que la
-        ligne exacte (ou ses variantes `$1`/`*`).
-
-        Exemples :
-          declared="python3"          target="python3 x.py"     → True
-          declared="python3 fichier1.py" target="python3 x.py"  → False
-          declared="python3 fichier1.py" target="python3 fichier1.py" → True
-          declared="python3 $1"       target="python3 x.py"     → True
-          declared="python3 *"        target="python3 x.py y"   → True"""
-        if not declared or not target:
-            return False
-        dsegs = str(declared).strip().split()
-        tsegs = str(target).strip().split()
-        if not dsegs or not tsegs:
-            return False
-        # déclaration à un seul token → couvre toute commande qui commence par lui
-        if len(dsegs) == 1 and dsegs[0] not in ("*",) and not dsegs[0].startswith("$"):
-            return tsegs[0] == dsegs[0]
-        if len(dsegs) > len(tsegs):
-            return False
-        for i, d in enumerate(dsegs):
-            if d == "*":
-                return True   # wildcard absorbe le reste
-            if d.startswith("$"):
-                continue      # variable absorbe le token
-            if d != tsegs[i]:
-                return False
-        return True
+            return _rows_to_list(self.conn.execute(
+                "SELECT * FROM global_local_privilege WHERE kind = ? "
+                "ORDER BY chemin_ref", (kind,)))
+        return _rows_to_list(self.conn.execute(
+            "SELECT * FROM global_local_privilege ORDER BY chemin_ref"))
 
     def _conditions_for(self, id_auth: int) -> List[Dict[str, Any]]:
         return _rows_to_list(self.conn.execute(
-            "SELECT * FROM privilege_conditions WHERE id_auth = ? "
-            "ORDER BY condition_id", (int(id_auth),)).fetchall())
+            "SELECT * FROM global_local_privilege_condition WHERE id_auth = ?",
+            (id_auth,)))
 
-    def _ref_lookup(self, id_auth: int) -> Optional[Dict[str, Any]]:
-        """Cherche une autorisation par id_auth (pour ref_id)."""
-        row = self.conn.execute(
-            "SELECT * FROM privileges WHERE id_auth = ?", (int(id_auth),)).fetchone()
-        if row is None:
-            return None
-        r = dict(row)
-        r["_conditions"] = self._conditions_for(r["id_auth"])
-        return r
-
-    def resolve_privilege(self, chemin: str, kind: str = "",
+    def resolve_privilege(self, chemin: str, kind: str = "path",
                           agent_id: int = -1, team: int = -1,
-                          consume: bool = False) -> Dict[str, Any]:
-        """Résout les privilèges d'un chemin/ref/commande.
-
-        Ne garde que les lignes du PLUS HAUT level qui matchent (agent_id/team
-        ciblés ou -1), puis INTERSECTE leurs modes (le plus restrictif gagne).
-        Une ligne à level == MAX_UINT32 = TOUJOURS. Les lignes EXPIRÉES
-        (deadline) ou à conditions non satisfaites sont écartées. La
-        CONSOMMATION (nb_times) ne se fait qu'à l'usage réel via use_privilege
-        (writer) — jamais dans un simple check (mode=ro)."""
-        from modules.sql.catalogue_privilege import (
-            select_by_level, intersect_modes, parse_privileges,
-            is_deadline_passed, conditions_satisfied, consume_conditions,
-        )
-        rows = self._match_privilege_rows(chemin, kind=kind,
-                                          agent_id=agent_id, team=team)
-        # écarte les lignes expirées (deadline) ; charge leurs conditions
-        valid = []
+                          level: int = 1, op: str = "read") -> List[Dict[str, Any]]:
+        """Match par précision (V1) : ref/path/cmd, exclusion de préfixes,
+        filtres d'identité (agent_id/team : ciblés ou -1)."""
+        sql = "SELECT * FROM global_local_privilege WHERE kind = ? "
+        params: List[Any] = [kind]
+        if int(agent_id) != -1:
+            sql += "AND (agent_id = ? OR agent_id = -1) "
+            params.append(int(agent_id))
+        if int(team) != -1:
+            sql += "AND (team = ? OR team = -1) "
+            params.append(int(team))
+        sql += "ORDER BY LENGTH(chemin_ref) DESC"
+        rows = self.conn.execute(sql, params).fetchall()
+        out = []
         for r in rows:
-            if is_deadline_passed(r):
-                continue
-            r["_conditions"] = self._conditions_for(r["id_auth"])
-            if conditions_satisfied(r["_conditions"], self._ref_lookup):
-                valid.append(r)
-        if not valid:
-            return {"status": "ok", "read": "----", "write": "----",
-                    "exec": "----", "privileged": "----", "matched": 0}
-        # "TOUJOURS" (MAX_UINT32) prime : on ne garde que ces lignes-là.
-        always = [r for r in valid if (r.get("level", 1) or 1) >= MAX_PRIV_LEVEL]
-        rows = always if always else select_by_level(valid)
-        modes = {col: [] for col in ("read", "write", "exec", "privileged")}
-        consumed = False
-        ask_idx = 0   # le plus restrictif des ask des lignes retenues
-        for r in rows:
-            for col, mode in parse_privileges(r).items():
-                modes[col].append(mode)
-            try:
-                a = ASK_LEVELS.index(r.get("ask") or "none")
-                if a > ask_idx:
-                    ask_idx = a
-            except (ValueError, TypeError):
-                pass
-            if consume and any(c.get("condition_type") == "nb_times"
-                               for c in r.get("_conditions", [])):
-                self._consume_nb_times(r["id_auth"])
-                consumed = True
-        return {"status": "ok",
-                "read": intersect_modes(modes["read"], "read"),
-                "write": intersect_modes(modes["write"], "write"),
-                "exec": intersect_modes(modes["exec"], "exec"),
-                "privileged": intersect_modes(modes["privileged"], "privileged"),
-                "matched": len(rows),
-                "level": rows[0].get("level", 1),
-                "ask": ASK_LEVELS[ask_idx],
-                "always": bool(always),
-                "consumed": consumed}
+            if self._matches(r, chemin):
+                out.append(dict(r))
+        return out
 
-    def _consume_conditions(self, id_auth: int) -> None:
-        """modify_use : applique l'effet des conditions d'usage d'une auth.
+    def _matches(self, row: sqlite3.Row, chemin: str) -> bool:
+        if row["kind"] == "cmd":
+            target = (chemin or "").strip()
+            declared = (row["chemin_ref"] or "").strip()
+            return target == declared or (declared and
+                                          target.startswith(declared + " "))
+        if row["kind"] == "path":
+            target = (chemin or "").strip("/")
+            declared = (row["chemin_ref"] or "").strip("/")
+            return target == declared or target.startswith(declared + "/")
+        # ref
+        return chemin == row["chemin_ref"]
 
-        - nb_times : décrémente le compteur.
-        - lastcall : met à jour last_use_at (cadence).
-        C'est la seule fonction qui écrit les compteurs — passée par le
-        writer (modify_use), jamais par un check (mode=ro)."""
-        try:
-            self.conn.execute(
-                "UPDATE privilege_conditions SET compteur = compteur - 1 "
-                "WHERE id_auth = ? AND condition_type = 'nb_times' "
-                "AND compteur IS NOT NULL AND compteur > 0",
-                (int(id_auth),))
-            self.conn.execute(
-                "UPDATE privilege_conditions SET last_use_at = datetime('now') "
-                "WHERE id_auth = ? AND condition_type = 'lastcall'",
-                (int(id_auth),))
-            self.conn.commit()
-        except Exception:
-            pass
+    def _resolve_allowed(self, chemin: str, level: str = "agent",
+                         op: str = "read", agent_id: int = -1,
+                         team: int = -1, kind: str = "path") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """(allowed, ask, row du meilleur match accordant) — SANS consommation.
 
-    def use_privilege(self, chemin: str, level: str = "agent",
-                      op: str = "read", kind: str = "",
-                      agent_id: int = -1, team: int = -1,
-                      token: str = "") -> Dict[str, Any]:
-        """(writer PRIVÉ) Vérifie ET consomme une autorisation à l'usage réel.
+        ask séparé du droit : un row qui accorde le mode mais porte
+        ask != none → droit accordé + demande requise (ask_pending)."""
+        chars = {"agent": 3, "agent_with_root": 2, "humain": 1,
+                 "humain_with_root": 0}
+        idx = chars.get(level, 3)
+        pending = None
+        for r in self.resolve_privilege(chemin, kind=kind,
+                                        agent_id=agent_id, team=team):
+            if op in ("read", "write", "exec", "privileged"):
+                if (r[op] or "----")[idx: idx + 1] == "-":
+                    continue
+            a = r["ask"] or "none"
+            if a == "none":
+                return True, "none", dict(r)
+            if pending is None:
+                pending = dict(r)
+        if pending is not None:
+            return True, pending.get("ask") or "none", pending
+        return False, "none", None
 
-        Flux (modify_use) :
-          1. CHECK : résolution (sans consommation) du mode pour (chemin, level,
-             op, agent_id, team).
-          2. Si l'op est accordé ET l'autorisation porte une CONDITION D'USAGE
-             (nb_times OU lastcall) → demander au writer de l'appliquer
-             (_consume_conditions : décrément + last_use_at).
-          3. Si une limite d'usage est épuisée (nb_times à 0, ou lastcall non
-             satisfait) → signaler `renewal_request` (même cible, décideur).
-
-        Retourne {allowed, consumed, remaining, renewal_request}.
-        """
-        self._check_write(token)
-        from modules.sql.catalogue_privilege import LEVEL_INDEX
-        if level not in LEVEL_INDEX:
-            raise ValueError(f"level invalide: {level!r}")
-        if op not in ("read", "write", "exec", "privileged"):
-            raise ValueError(f"op invalide: {op!r}")
-        res = self.resolve_privilege(chemin, kind=kind, agent_id=agent_id,
-                                     team=team, consume=False)
-        mode = res.get(op, "----")
-        idx = LEVEL_INDEX[level]
-        flag = {"read": "r", "write": "w", "exec": "x",
-                "privileged": "p"}[op]
-        allowed = len(mode) == 4 and mode[idx] == flag
-
-        consumed = 0
-        remaining = None
-        renewal_request = None
-        # autorisations à CONDITION D'USAGE (nb_times / lastcall) couvrant la cible
-        limited = []
-        for r in self._match_privilege_rows(chemin, kind=kind,
-                                            agent_id=agent_id, team=team):
-            conds = self._conditions_for(r["id_auth"])
-            if any(c.get("condition_type") in ("nb_times", "lastcall")
-                   for c in conds):
-                limited.append((r, conds))
-
-        if allowed and limited:
-            for r, conds in limited:
-                before = None
-                for c in conds:
-                    if c.get("condition_type") == "nb_times":
-                        before = c.get("compteur")
-                if before is None or int(before) > 0:
-                    self._consume_conditions(r["id_auth"])
-                    consumed += 1
-                    # after : relire l'état post-consommation
-                    after = None
-                    for c in self._conditions_for(r["id_auth"]):
-                        if c.get("condition_type") == "nb_times":
-                            after = c.get("compteur")
-                    remaining = int(after) if after is not None else None
-                    if after is not None and int(after) <= 0:
-                        renewal_request = {
-                            "reason": "limite d'usage épuisée",
-                            "chemin_ref": r.get("chemin_ref"),
-                            "kind": r.get("kind"),
-                            "op": op, "level": level,
-                            "agent_id": r.get("agent_id"),
-                            "team": r.get("team"),
-                            "expired_id_auth": r["id_auth"],
-                        }
-        elif not allowed and limited:
-            # limite d'usage déjà épuisée (nb_times=0 / lastcall cadence) →
-            # refus + renouvellement
-            r, conds = limited[0]
-            renewal_request = {
-                "reason": "limite d'usage épuisée (check)",
-                "chemin_ref": r.get("chemin_ref"),
-                "kind": r.get("kind"), "op": op, "level": level,
-                "agent_id": r.get("agent_id"), "team": r.get("team"),
-                "expired_id_auth": r["id_auth"],
-            }
-        return {"status": "ok", "allowed": allowed,
-                "op": op, "level": level, "consumed": consumed,
-                "remaining": remaining, "renewal_request": renewal_request,
-                "ask": res.get("ask", "none"),
-                "ask_pending": bool(allowed) and res.get("ask", "none") not in (
-                    "none",)}
-
-    def approve_privilege(self, decider_agent_id: int, decider_level: str,
-                          beneficiary_agent_id: int, beneficiary_level: str,
-                          chemin_ref: str, kind: str = "path",
-                          read: str = "", write: str = "", exec_: str = "",
-                          privileged: str = "", deadline: str = "",
-                          conditions: Optional[list] = None,
-                          team: int = -1, token: str = "") -> Dict[str, Any]:
-        """(writer PRIVÉ) Un DÉCIDEUR approuve une autorisation pour un tiers.
-
-        Règles (délégation hiérarchique stricte) :
-          1. MATRICE : le décideur ne peut déléguer qu'à des niveaux
-             autorisés (humain_with_root→{tous}, humain→{humain,agent},
-             agent_with_root→{agent_with_root,agent}, agent→{agent}).
-          2. BORNAGE : le bénéficiaire reçoit l'INTERSECTION (level max +
-             modes) des privilèges du DÉCIDEUR et des modes demandés — jamais
-             plus que ce que le décideur possède lui-même.
-          3. CONDITIONS : le décideur peut restreindre (deadline, nb_times,
-             lastcall…) — ex. un team_leader root (pilote_chat) autorise un
-             agent à utiliser SES autorisations pour 1h / 50 usages.
-
-        Retourne {status, id_auth} de la nouvelle autorisation (scoped
-        agent_id=bénéficiaire) ou une erreur (délégation refusée / bornage)."""
-        self._check_write(token)
-        from modules.sql.catalogue_privilege import (
-            can_delegate, intersect_modes, validate_mode, COLUMN_FLAG,
-        )
-        if not can_delegate(decider_level, beneficiary_level):
-            return {"status": "error",
-                    "error": f"délégation refusée : {decider_level} ne peut pas "
-                             f"autoriser {beneficiary_level}"}
-
-        # 1. Privilèges ACTUELS du décideur sur la cible (level max + intersection)
-        dec = self.resolve_privilege(chemin_ref, kind=kind,
-                                     agent_id=decider_agent_id, team=team)
-        # 2. Intersection : décideur ∩ demande (modes demandés, sinon ceux du
-        #    décideur) — le bénéficiaire ne peut jamais recevoir plus.
-        caps = {}
-        for col, flag in COLUMN_FLAG.items():
-            demand = {"read": read, "write": write, "exec": exec_,
-                      "privileged": privileged}.get(col, "")
-            owned = dec.get(col, "----")
-            caps[col] = intersect_modes([validate_mode(demand or owned, col),
-                                         owned], col)
-        # borne supérieure : on ne garde que le level du décideur (pas plus haut)
-        level = dec.get("level", 1)
-
-        with self._lock:
-            cur = self.conn.execute(
-                "INSERT INTO privileges "
-                "(chemin_ref, kind, agent_id, team, level, read, write, exec, "
-                "privileged, deadline, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (chemin_ref, kind, int(beneficiary_agent_id), int(team),
-                 int(level), caps["read"], caps["write"], caps["exec"],
-                 caps["privileged"], deadline or None,
-                 f"délégué par agent {decider_agent_id} ({decider_level})"))
-            id_auth = cur.lastrowid
-            for c in (conditions or []):
-                self.conn.execute(
-                    "INSERT INTO privilege_conditions(id_auth, condition_type, valeur, compteur) "
-                    "VALUES (?, ?, ?, ?)",
-                    (id_auth, c.get("type", ""),
-                     json.dumps(c.get("valeur")) if not isinstance(c.get("valeur"), str)
-                     else c.get("valeur"),
-                     c.get("compteur", c.get("valeur") if c.get("type") == "nb_times" else None)))
-            self.conn.commit()
-        return {"status": "ok", "id_auth": id_auth, "level": level,
-                "read": caps["read"], "write": caps["write"],
-                "exec": caps["exec"], "privileged": caps["privileged"]}
+    def check_privilege_dict(self, chemin: str, level: str = "agent",
+                             op: str = "read", agent_id: int = -1,
+                             team: int = -1, kind: str = "path") -> Dict[str, Any]:
+        """Vérifie SANS consommer (route priv/check) — contrat {allowed, ask,
+        ask_pending}."""
+        allowed, ask, row = self._resolve_allowed(
+            chemin, level=level, op=op, agent_id=agent_id, team=team, kind=kind)
+        out = {"status": "ok", "allowed": bool(allowed), "ask": ask,
+               "ask_pending": bool(allowed) and ask not in ("none",)}
+        if row:
+            out["id_auth"] = row["id_auth"]
+            out["chemin_ref"] = row["chemin_ref"]
+        return out
 
     def check_privilege(self, chemin: str, level: str = "agent",
-                        op: str = "read", kind: str = "",
-                        agent_id: int = -1, team: int = -1) -> bool:
-        """Vrai si `level` a le privilège `op` sur `chemin`.
+                        op: str = "read", agent_id: int = -1,
+                        team: int = -1, kind: str = "path") -> bool:
+        """Vrai si `level` a le privilège `op` sur `chemin` (ask none)."""
+        allowed, _ask, _row = self._resolve_allowed(
+            chemin, level=level, op=op, agent_id=agent_id, team=team, kind=kind)
+        return bool(allowed)
 
-        level ∈ humain_with_root | humain | agent_with_root | agent.
-        op ∈ read | write | exec | privileged."""
-        from modules.sql.catalogue_privilege import LEVEL_INDEX
-        if level not in LEVEL_INDEX:
-            raise ValueError(f"level invalide: {level!r}")
-        if op not in ("read", "write", "exec", "privileged"):
-            raise ValueError(f"op invalide: {op!r}")
-        res = self.resolve_privilege(chemin, kind=kind,
-                                     agent_id=agent_id, team=team)
-        mode = res.get(op, "----")
-        idx = LEVEL_INDEX[level]
-        flag = {"read": "r", "write": "w", "exec": "x",
-                "privileged": "p"}[op]
-        return len(mode) == 4 and mode[idx] == flag
+    def use_privilege(self, chemin: str, level: str = "agent", op: str = "read",
+                      agent_id: int = -1, team: int = -1, kind: str = "path",
+                      token: str = "") -> Dict[str, Any]:
+        """Vérifie + CONSOMME (nb_times/lastcall) — writer privé.
 
-    # ── Entrées (lecture directe) ───────────────────────────
-
-    def _cat_table(self, type_: str) -> str:
-        if not self.catalogue_exists(type_):
-            raise CatalogueTypeNotFound(f"type '{type_}' introuvable")
-        return f"{type_}_catalogue"
-
-    def _entry(self, type_: str, ref: str) -> Optional[Dict[str, Any]]:
-        """Lecture d'une entrée par ref canonique (namespace/name@version).
-
-        Résolution : ref exacte → ref sans version (latest) → recherche par
-        name dans le namespace. Trace last_access (buffer mémoire)."""
-        table = self._cat_table(type_)
-        row = self.conn.execute(
-            f"SELECT * FROM {table} WHERE ref = ?", (ref,)).fetchone()
-        if row is None and "@" not in ref:
-            row = self.conn.execute(
-                f"SELECT * FROM {table} WHERE name = ? ORDER BY version DESC "
-                "LIMIT 1", (ref,)).fetchone()
-        if row is not None:
-            self._touch_access(type_, row["ref"])
-        return _row_to_dict(row)
-
-    def get(self, type_: str, ref: str, resolve_value: bool = True) -> Dict[str, Any]:
-        """Lecture d'une entrée. Si `value` est vide et `ref` (adresse système)
-        ou `path` (symbolique) présent, charge le contenu du fichier
-        (résolution au get)."""
-        entry = self._entry(type_, ref)
-        if entry is None:
-            raise CatalogueTypeNotFound(
-                f"{type_}/{ref} introuvable dans le catalogue local")
-        if resolve_value:
-            self._resolve_value(entry)
-        return entry
-
-    def _resolve_value(self, entry: Dict[str, Any]) -> None:
-        """Remplit `value` depuis le fichier pointé par ref/path (si vide).
-
-        - ref_file : ADRESSE SYSTÈME absolue (utilisée telle quelle).
-        - path     : chemin SYMBOLIQUE → résolu via catalogue_path (précision
-          gauche→droite, variables $1…)."""
-        if (entry.get("value") or "").strip():
-            return
-        try:
-            from modules.sql.catalogue_path import resolve_path as _rp
-            if entry.get("ref_file"):
-                address = entry["ref_file"]
-            elif entry.get("path"):
-                paths = self.list_paths()
-                address, _scheme = _rp(paths, entry["path"])
-            else:
-                return
-            entry["value"] = self._read_file_value(address)
-            entry["_value_source"] = address
-        except Exception:  # noqa: BLE001 — best-effort, value reste vide
-            pass
-
-    @staticmethod
-    def _read_file_value(address: str) -> str:
-        """Lit le contenu d'un fichier local (adresse système)."""
-        p = Path(address)
-        if not p.is_file():
-            return ""
-        try:
-            return p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            try:
-                return p.read_bytes().decode("latin-1")
-            except Exception:
-                return ""
-
-    def _touch_access(self, type_: str, ref: str) -> None:
-        """Bufferise le last_access en mémoire (flushé par le writer)."""
-        self._access_buffer[(type_, ref)] = time.time()
-
-    def _bump_modify(self, type_: str, ref: str) -> None:
-        """(writer) Met à jour last_modify_data (cœur de l'invalidation des
-        flux d'infos : si modify_date d'une data < last_modify → périmée)."""
-        if self._mode == "ro":
-            return
-        try:
-            self.conn.execute(
-                "INSERT INTO last_modify_data(data_type, ref, last_modify_at, modify_count) "
-                "VALUES (?, ?, datetime('now'), 1) "
-                "ON CONFLICT(data_type, ref) DO UPDATE SET "
-                "last_modify_at = datetime('now'), modify_count = modify_count + 1",
-                (type_, ref))
-        except Exception:
-            pass
-
-    def flush_access(self) -> int:
-        """(writer) Écrit le buffer last_access en BDD par lots.
-
-        JAMAIS appelé par un lecteur (mode=ro l'empêcherait). Appelé par
-        write_catalogue périodiquement."""
-        if not self._access_buffer or self._mode == "ro":
-            self._access_buffer.clear()
-            return 0
-        rows = list(self._access_buffer.items())
-        self._access_buffer.clear()
-        now = "datetime('now')"
-        for (type_, ref), _ts in rows:
-            try:
-                self.conn.execute(
-                    f"INSERT INTO last_access_data(data_type, ref, last_access_at, access_count) "
-                    f"VALUES (?, ?, {now}, 1) "
-                    f"ON CONFLICT(data_type, ref) DO UPDATE SET "
-                    f"last_access_at = {now}, access_count = access_count + 1",
-                    (type_, ref))
-            except Exception:
-                pass
-        try:
-            self.conn.commit()
-        except Exception:
-            pass
-        return len(rows)
-
-    def list(self, type_: str, namespace: str = "",
-             page: int = 1, page_size: int = 100,
-             sort: str = "name", order: str = "asc",
-             status: str = "") -> Dict[str, Any]:
-        table = self._cat_table(type_)
-        where, params = [], []
-        if namespace:
-            where.append("namespace = ?"); params.append(namespace)
-        if status:
-            where.append("status = ?"); params.append(status)
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
-        col = sort if sort in BASE_COLUMNS else "name"
-        direction = "ASC" if order.lower() == "asc" else "DESC"
-        total = self.conn.execute(
-            f"SELECT COUNT(*) AS n FROM {table}{clause}", params).fetchone()["n"]
-        offset = max(0, (int(page) - 1) * int(page_size))
-        cur = self.conn.execute(
-            f"SELECT * FROM {table}{clause} ORDER BY {col} {direction} "
-            f"LIMIT ? OFFSET ?", params + [int(page_size), offset])
-        return {"items": _rows_to_list(cur.fetchall()),
-                "total": total, "page": int(page), "page_size": int(page_size)}
-
-    def list_recursive(self, type_: str, namespace: str = "",
-                       status: str = "") -> List[Dict[str, Any]]:
-        """Toutes les entrées d'un type, namespace racine ou un sous-arbre."""
-        table = self._cat_table(type_)
-        if namespace:
-            prefix = namespace.rstrip("/")
-            cur = self.conn.execute(
-                f"SELECT * FROM {table} WHERE namespace = ? OR namespace LIKE ? "
-                f"{'AND status = ?' if status else ''} ORDER BY namespace, name",
-                ([prefix, prefix + "/%"] + ([status] if status else [])))
-        else:
-            cur = self.conn.execute(
-                f"SELECT * FROM {table} "
-                f"{'WHERE status = ?' if status else ''} ORDER BY namespace, name",
-                ([status] if status else []))
-        return _rows_to_list(cur.fetchall())
-
-    def search(self, type_: str, q: str = "",
-               tag_type: str = "", tag_value: str = "",
-               limit: int = 50) -> List[Dict[str, Any]]:
-        table = self._cat_table(type_)
-        sql = f"SELECT * FROM {table}"
-        params: List[Any] = []
-        conds: List[str] = []
-        if q:
-            like = f"%{q}%"
-            conds.append("(name LIKE ? OR description LIKE ? OR ref LIKE ?)")
-            params += [like, like, like]
-        if conds:
-            sql += " WHERE " + " AND ".join(conds)
-        sql += f" ORDER BY name LIMIT {int(limit)}"
-        items = _rows_to_list(self.conn.execute(sql, params).fetchall())
-        if tag_type:
-            # filtre par tag : inner join sur {type}_tags
-            tags = f"{type_}_tags"
-            out = []
-            for it in items:
-                row = self.conn.execute(
-                    f"SELECT 1 FROM {tags} WHERE entry_id = ? AND tag_type = ? "
-                    f"AND tag_value LIKE ?",
-                    (it["id"], tag_type, f"%{tag_value or ''}%")).fetchone()
-                if row:
-                    out.append(it)
-            items = out
-        return items
-
-    # ── Tags (lecture) ──────────────────────────────────────
-
-    def list_tag_types(self, type_: str) -> List[Dict[str, Any]]:
-        return _rows_to_list(self.conn.execute(
-            f"SELECT * FROM {type_}_tag_types ORDER BY tag_type").fetchall())
-
-    def list_tags(self, type_: str, ref: str) -> List[Dict[str, Any]]:
-        entry = self._entry(type_, ref)
-        if entry is None:
-            return []
-        return _rows_to_list(self.conn.execute(
-            f"SELECT tag_type, tag_value, created_at FROM {type_}_tags "
-            "WHERE entry_id = ? ORDER BY tag_type, tag_value",
-            (entry["id"],)).fetchall())
-
-    def tags_by_value(self, type_: str, tag_type: str,
-                      tag_value: str) -> List[Dict[str, Any]]:
-        """Entrées portant un tag (recherche par tag)."""
-        table = f"{type_}_tags"
-        cur = self.conn.execute(
-            f"SELECT e.* FROM {table} t JOIN {type_}_catalogue e ON e.id = t.entry_id "
-            "WHERE t.tag_type = ? AND t.tag_value = ? ORDER BY e.name",
-            (tag_type, tag_value))
-        return _rows_to_list(cur.fetchall())
-
-    # ── Limites (lecture) ───────────────────────────────────
-
-    def list_limites(self, type_: str, ref: str) -> List[Dict[str, Any]]:
-        entry = self._entry(type_, ref)
-        if entry is None:
-            return []
-        return _rows_to_list(self.conn.execute(
-            f"SELECT limite, valeur_json FROM {type_}_limites "
-            "WHERE entry_id = ? ORDER BY limite", (entry["id"],)).fetchall())
-
-    # ── Source & sharing (lecture) ──────────────────────────
-
-    def get_sharing(self, type_: str, ref: str) -> Optional[Dict[str, Any]]:
-        entry = self._entry(type_, ref)
-        if entry is None:
-            return None
-        return _row_to_dict(self.conn.execute(
-            f"SELECT * FROM {type_}_source_and_sharing WHERE entry_id = ?",
-            (entry["id"],)).fetchone())
-
-    def resolve_can_be_shared(self, type_: str, ref: str) -> str:
-        """Résout can_be_shared en cascade : entrée → shared_default.
-
-        Priorité : source_and_sharing.can_be_shared explicite, sinon
-        shared_default(data_type, '*', '*')."""
-        entry = self._entry(type_, ref)
-        if entry is None:
-            return "non"
-        s = self.conn.execute(
-            f"SELECT can_be_shared FROM {type_}_source_and_sharing "
-            "WHERE entry_id = ? AND can_be_shared != 'non'",
-            (entry["id"],)).fetchone()
-        if s:
-            return s["can_be_shared"]
-        d = self.conn.execute(
-            "SELECT can_be_shared FROM shared_default "
-            "WHERE data_type = ? AND tag_type = '*' AND tag_value = '*'",
-            (type_,)).fetchone()
-        return (d["can_be_shared"] if d else "non")
-
-    def list_shared_default(self) -> List[Dict[str, Any]]:
-        return _rows_to_list(self.conn.execute(
-            "SELECT * FROM shared_default ORDER BY data_type").fetchall())
-
-    # ── Cleanup par préfixe (espace réservé) ────────────────
-
-    def cleanup_prefix(self, prefix: str, token: str = "") -> Dict[str, Any]:
-        """Supprime toutes les entrées/namespaces commençant par `prefix`.
-
-        SÉCURITÉ : ne fonctionne que sur l'espace réservé auto-test
-        (cleanup trivial des checks officiels). Refuse toute autre cible."""
+        Retourne {status, allowed, ask, ask_pending, id_auth, chemin_ref,
+        consumed, renewal_request} (contrat V1)."""
         self._check_write(token)
-        if not prefix.startswith(RESERVED_TEST_PREFIX):
-            raise WriteDenied(
-                f"cleanup interdit : hors espace réservé auto-test ({prefix!r})")
-        like = prefix.rstrip("/") + "/%"
-        removed = {"types": 0, "entries": 0, "namespaces": 0}
-        try:
-            # entrées de chaque type existant
-            for c in self.list_catalogues():
-                type_ = c["type"]
-                table = f"{type_}_catalogue"
-                cur = self.conn.execute(
-                    f"DELETE FROM {table} WHERE ref LIKE ? OR namespace LIKE ?",
-                    (like, like))
-                removed["entries"] += cur.rowcount
-            removed["namespaces"] = self.conn.execute(
-                "DELETE FROM namespaces WHERE ns = ? OR ns LIKE ?",
-                (prefix, like)).rowcount
+        allowed, ask, row = self._resolve_allowed(chemin, level=level, op=op,
+                                                  agent_id=agent_id, team=team,
+                                                  kind=kind)
+        if not allowed:
+            return {"status": "ok", "allowed": False, "ask": ask,
+                    "ask_pending": False, "consumed": 0,
+                    "renewal_request": None}
+        consumed = 0
+        renewal_request = None
+        with self._lock:
+            conds = self.conn.execute(
+                "SELECT * FROM global_local_privilege_condition "
+                "WHERE id_auth = ?", (row["id_auth"],)).fetchall()
+            for c in conds:
+                if c["condition_type"] == "nb_times" and c["compteur"] is not None:
+                    if c["compteur"] <= 0:
+                        return {"status": "ok", "allowed": False, "ask": ask,
+                                "ask_pending": False, "consumed": 0,
+                                "renewal_request": {
+                                    "reason": "limite d'usage épuisée",
+                                    "chemin_ref": row["chemin_ref"],
+                                    "expired_id_auth": row["id_auth"]}}
+                    self.conn.execute(
+                        "UPDATE global_local_privilege_condition SET compteur = ? "
+                        "WHERE condition_id = ?", (c["compteur"] - 1, c["condition_id"]))
+                    consumed += 1
+                elif c["condition_type"] == "lastcall" and c["valeur"]:
+                    self.conn.execute(
+                        "UPDATE global_local_privilege_condition SET "
+                        "last_use_at = datetime('now') WHERE condition_id = ?",
+                        (c["condition_id"],))
             self.conn.commit()
-        except Exception as e:  # noqa: BLE001
-            return {"status": "error", "error": str(e)}
-        return {"status": "ok", "prefix": prefix, "removed": removed}
+        return {"status": "ok", "allowed": True, "ask": ask,
+                "ask_pending": ask not in ("none",),
+                "id_auth": row["id_auth"], "chemin_ref": row["chemin_ref"],
+                "consumed": consumed, "renewal_request": renewal_request}
+
+    def approve_privilege(self, decider_agent_id: int, decider_level: str,
+                          chemin: str = "", kind: str = "path",
+                          token: str = "") -> Dict[str, Any]:
+        """Approbation d'une demande ask=security_supervisor."""
+        self._check_write(token)
+        sup = self.conn.execute(
+            "SELECT * FROM global_local_security_supervisor WHERE active = 1",
+            ()).fetchone()
+        if not sup:
+            return {"ok": False, "error": "aucun superviseur désigné"}
+        return {"ok": True, "supervisor": sup["supervisor_agent_id"]}
+
+    # Batching (submit_batch) — conservé de la V1 pour la compat des
+    # importeurs : soumet une liste d'ops déjà traités.
+    def submit_batch(self, ops: List[Dict[str, Any]],
+                     batch_ref: str = "") -> Dict[str, Any]:
+        if self._mode == "ro":
+            raise WriteDenied("catalogue_local en lecture seule (mode=ro)")
+        return self.buffer_push(ops, external_tag="batch",
+                                token=self._write_token)
+
+    def batch_status(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        return {"batch_id": batch_id}

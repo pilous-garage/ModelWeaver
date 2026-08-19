@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from datetime import timedelta
@@ -10,16 +9,18 @@ import xxhash
 
 from modules.sqlite.base import Db
 
-# ── Constantes du domaine (V2 figées) ─────────────────────────
+# ── Constantes du domaine (V4 figées) ─────────────────────────
 MAX_PRIV_LEVEL = (1 << 32) - 1
 ASK_LEVELS = ("none", "security_supervisor", "human", "human_root")
 SHARING_LEVELS = ("non", "everyone", "enterprise", "friends", "official")
-SOURCE_VALUES = ("perso", "distant", "enterprise", "github/depot", "official")
+SOURCE_TYPES = ("user", "official", "enterprise", "distant", "friend", "git_depot")
+DEFAULT_SOURCE_CHAIN = ("user", "enterprise", "official")
 TAG_VALUE_TYPES = ("bool", "text", "number", "date", "list", "range")
 SCALAR_VALUE_TYPES = ("string", "int", "uint", "float", "bool", "date",
                       "timestamp", "json")
 EXTERNAL_VALUE_TYPES = ("file",)
 DATA_STATUSES = ("active", "missing", "archived")
+VERSION_SELECTORS = ("newest", "oldest")
 RESERVED_TEST_PREFIX = "auto-test-check-official"
 RESERVED_SYSTEM_PREFIXES = ("auto/", "system/", "catalogue/")
 
@@ -28,10 +29,10 @@ _TEXT_N = re.compile(r"^text\[\d+ch\]$")
 
 BASE_COLUMNS = {
     "data_id": "INTEGER PRIMARY KEY",
-    "ref": "TEXT UNIQUE NOT NULL",
-    "name": "TEXT DEFAULT ''",
-    "namespace": "TEXT DEFAULT ''",
-    "version": "TEXT DEFAULT 'latest'",
+    "name": "TEXT NOT NULL",
+    "namespace": "TEXT NOT NULL DEFAULT ''",
+    "source_id": "INTEGER NOT NULL",
+    "version": "TEXT NOT NULL DEFAULT 'latest'",
     "data_value_type": "TEXT NOT NULL",
     "value": "TEXT DEFAULT '{}'",
     "ref_file": "TEXT DEFAULT ''",
@@ -42,6 +43,12 @@ BASE_COLUMNS = {
     "created_at": "TEXT DEFAULT (datetime('now'))",
     "updated_at": "TEXT DEFAULT (datetime('now'))",
 }
+BASE_UNIQUE = "UNIQUE(namespace, name, source_id, version)"
+
+# Colonnes extra autorisées à l'écriture par upsert/modify (déclarées par
+# create_new_data_type(extra_cols=...) et présentes dans les tables). Toute
+# autre clé de payload est ignorée pour l'écriture des colonnes.
+EXTRA_COLS_ALLOWED = ("model_official_id",)
 
 _TYPE_TO_SQL = {
     "text": "TEXT", "string": "TEXT", "date": "TEXT", "json": "TEXT",
@@ -56,9 +63,165 @@ _TAG_TYPE_TO_SQL = {
 
 
 # ── Helpers identitaires / typage ─────────────────────────────
-def data_id_of(ref: str) -> int:
-    """Hash stable (int64 positif) de la ref — identique load/reload."""
-    return xxhash.xxh64(str(ref), seed=_SEED).intdigest() & 0x7FFFFFFFFFFFFFFF
+def data_id_of(namespace: str, name: str, source_id: int, version: str) -> int:
+    """Hash stable (int64 positif) du QUADRUPLE (namespace, name, source_id,
+    version) — un data_id par entrée (version/source), identique load/reload."""
+    return xxhash.xxh64(f"{namespace}\0{name}\0{source_id}\0{version}",
+                        seed=_SEED).intdigest() & 0x7FFFFFFFFFFFFFFF
+
+
+def source_id_for(db: Db, source) -> int:
+    """Résout une source (int sources_id ou type_source/ref) en sources_id."""
+    if isinstance(source, int):
+        return source
+    s = str(source or "user").strip()
+    row = db.table("global_local_source").get({"type_source": s})
+    if row:
+        return row["sources_id"]
+    row = db.table("global_local_source").get({"ref": s})
+    if row:
+        return row["sources_id"]
+    raise ValueError(f"source inconnue: {s!r} (types: {', '.join(SOURCE_TYPES)})")
+
+
+def source_type_of(db: Db, source_id: int) -> str:
+    row = db.table("global_local_source").get({"sources_id": source_id},
+                                              cols=["type_source"])
+    return row["type_source"] if row else ""
+
+
+def version_key(v: str) -> tuple:
+    """Clé de comparaison de version (numérique-aware : 1.10 > 1.9)."""
+    parts = re.split(r"[._\-+]", str(v or "").strip().lower())
+    out = []
+    for p in parts:
+        if p.isdigit():
+            out.append((0, int(p)))
+        elif p:
+            out.append((1, p))
+    return tuple(out)
+
+
+def parse_accessor(type_: str, accessor: str) -> Dict[str, Any]:
+    """Parse une adresse d'accès catalogue en (namespace, name) + sélecteurs.
+
+    Syntaxes acceptées (V1) :
+      catalogue.<type>.<ns1>.<ns2>.<name>  |  <ns1>/<ns2>/<name>
+    sélecteurs optionnels APRÈS le nom, séparés par ':' (le premier ':' coupe
+    le nom du reste — les versions peuvent contenir des points) :
+      <source>@<version>    source ∈ all|user|official|enterprise|distant|
+                            friend|git_depot| chaîne de préférence
+                            'user>enterprise>official' ; version ∈ newest|
+                            oldest|<version littérale> — hérité : @<version>
+                            seul = version littérale, source = chaîne défaut.
+      tag(<tag_type>)       filtre PRIORITAIRE (avant source puis version).
+    Défauts : source = DEFAULT_SOURCE_CHAIN, version = newest.
+    """
+    s = (accessor or "").strip()
+    if ":" in s:
+        base, sel_str = s.split(":", 1)
+    else:
+        base, sel_str = s, ""
+    selectors: Dict[str, Any] = {"source": "", "version": "newest", "tag": ""}
+    has_ver_selector = False
+    for seg in sel_str.split(":") if sel_str else []:
+        if seg.startswith("tag(") and seg.endswith(")"):
+            selectors["tag"] = seg[4:-1].strip()
+        elif "@" in seg:
+            src, ver = seg.split("@", 1)
+            selectors["source"] = src.strip()
+            selectors["version"] = ver.strip() or "newest"
+            has_ver_selector = True
+        else:
+            raise ValueError(f"sélecteur invalide: {seg!r} dans {accessor!r}")
+    if base.startswith("catalogue."):
+        base = base[len("catalogue."):]
+        if base.startswith(type_ + "."):
+            base = base[len(type_) + 1:]
+    parts = base.split(".") if "." in base else base.split("/")
+    tail = parts[-1] if parts else ""
+    if "@" in tail:
+        tail, ver = tail.split("@", 1)
+        if not has_ver_selector:
+            selectors["version"] = ver.strip() or "newest"
+    if not tail:
+        raise ValueError(f"adresse invalide: {accessor!r}")
+    name = tail
+    namespace = "/".join(parts[:-1]) if len(parts) > 1 else ""
+    return {"namespace": namespace, "name": name, **selectors}
+
+
+def source_chain(db: Db, spec: str = "") -> List[int]:
+    """Séquence de sources (sources_id) pour un sélecteur de source.
+
+    'all' → toutes les sources actives ; 'a>b>c' → ordre de préférence ;
+    une source seule sinon. Défaut : DEFAULT_SOURCE_CHAIN. Lève si une
+    source du spec est inconnue."""
+    spec = (spec or "").strip() or ">".join(DEFAULT_SOURCE_CHAIN)
+    if spec == "all":
+        rows = db.table("global_local_source").select(
+            where={"active": 1}, order_by="type_source")
+        return [r["sources_id"] for r in rows]
+    out: List[int] = []
+    for part in spec.split(">"):
+        part = part.strip()
+        if not part:
+            continue
+        sid = source_id_for(db, part)
+        if sid not in out:
+            out.append(sid)
+    return out
+
+
+def select_row(db: Db, type_: str, namespace: str, name: str,
+               selectors: Dict[str, Any],
+               cols: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """Sélection V1 sur la FAMILLE (namespace, name) : 1) filtre TAG
+    (prioritaire), 2) PRÉFÉRENCE de source (première source de la chaîne
+    qui a des lignes), 3) TRI de version (newest = max, oldest = min,
+    littérale = égalité). Retourne la ligne (ou None)."""
+    tbl = db.table(f"{type_}_data")
+    need = ["source_id", "version"]
+    if cols:
+        cols = list(dict.fromkeys(list(cols) + [c for c in need if c not in cols]))
+    rows = tbl.select(where={"namespace": namespace, "name": name},
+                      cols=cols, order_by="data_id")
+    if not rows:
+        return None
+    tag = str(selectors.get("tag") or "").strip()
+    if tag:
+        tagged = {r["data_id"] for r in db.table(f"{type_}_tag").select(
+            where={"tag_type": tag}, cols=["data_id"])}
+        rows = [r for r in rows if r["data_id"] in tagged]
+        if not rows:
+            return None
+    chain = source_chain(db, str(selectors.get("source") or ""))
+    by_src: Dict[int, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_src.setdefault(int(r["source_id"]), []).append(r)
+    for sid in chain:
+        if by_src.get(sid):
+            rows = by_src[sid]
+            break
+    else:
+        return None
+    ver = str(selectors.get("version") or "newest").strip()
+    if ver == "newest":
+        return max(rows, key=lambda r: version_key(r["version"]))
+    if ver == "oldest":
+        return min(rows, key=lambda r: version_key(r["version"]))
+    for r in sorted(rows, key=lambda r: version_key(r["version"]), reverse=True):
+        if str(r["version"]) == ver:
+            return r
+    return None
+
+
+def bump_version(v: str) -> str:
+    """Version suivante : incrémente le dernier nombre (1.9 → 1.10)."""
+    m = re.search(r"(\d+)([^0-9]*)$", str(v or ""))
+    if not m:
+        return f"{v}.1" if v else "1"
+    return v[:m.start(1)] + str(int(m.group(1)) + 1) + m.group(2)
 
 
 def parse_row_type(dvt: str) -> Optional[List[tuple]]:
@@ -166,40 +329,6 @@ def resolve_path(db: Db, target: str) -> Dict[str, Any]:
         addr += "/" + seg
     return {"resolved": True, "target": target, "address": addr,
             "scheme": best["scheme"]}
-
-
-def apply_op(db: Db, domain: str, op: str, payload: Dict[str, Any]) -> None:
-    """Applique un op du buffer via la DataTable concernée."""
-    if op == "delete":
-        did = payload.get("data_id") or data_id_of(payload.get("ref", ""))
-        db.table(f"{domain}_data").remove({"data_id": did})
-        return
-    from modules.sqlite.local.data_table import get_table
-    dt = get_table(db, domain)
-    dt.upsert(payload, token=db._write_token)
-
-
-def buffer_process(db: Db, token: str = "", limit: int = 500) -> Dict[str, Any]:
-    """Consumer du writer : applique les ops pending en mini-batchs
-    (jamais bloquant — chaque op en try/except)."""
-    db.check_write(token)
-    tbl = db.table("global_local_buffer_op")
-    pending = tbl.select(where={"status": "pending"}, order_by="op_id",
-                         limit=limit)
-    applied = errors = 0
-    for row in pending:
-        try:
-            payload = json.loads(row["payload_json"] or "{}")
-            apply_op(db, row["domain"], row["op"], payload)
-            tbl.update({"op_id": row["op_id"]},
-                       {"status": "applied", "applied_at": now_iso()}, token=token)
-            applied += 1
-        except Exception as e:
-            tbl.update({"op_id": row["op_id"]},
-                       {"status": "error", "error": str(e)[:500]}, token=token)
-            errors += 1
-    return {"ok": True, "applied": applied, "errors": errors,
-            "pending_left": tbl.count({"status": "pending"})}
 
 
 def _priv_matches(row: Dict[str, Any], chemin: str) -> bool:

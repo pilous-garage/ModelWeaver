@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from modules.sql.workspace import WorkspaceDB, WorkspaceScope
+from modules.sqlite.workspace.workspace import WorkspaceDB, WorkspaceScope
 
 
 class TaskSupervisor:
@@ -168,7 +168,7 @@ class TaskSupervisor:
         #     passe supervised — la découpe repart du sujet).
         MAX_TOO_HARD = 3
         try:
-            from modules.sql.workspace import _DIFFICULTY_RANK as _DR
+            from modules.sqlite.workspace.workspace import _DIFFICULTY_RANK as _DR
         except Exception:
             _DR = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}
         for st in sc.sub_tasks.list_by_team_status(

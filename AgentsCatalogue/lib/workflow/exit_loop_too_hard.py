@@ -14,7 +14,7 @@ def exec(inputs: dict, home: str) -> dict:
         return {"ok": False, "error": "workspace_id + task_id requis"}
     try:
         from AgentsCatalogue.lib.workspacedb.task import _scope
-        from modules.sql.workspace import _DIFFICULTY_RANK
+        from modules.sqlite.workspace.workspace import _DIFFICULTY_RANK
         db, scope = _scope(workspace_id)
         task = scope.tasks.get(int(task_id))
         if not task:

@@ -1,6 +1,6 @@
 """Workspace project management — create, list, configure."""
 
-from modules.sql.workspace import WorkspaceDB
+from modules.sqlite.workspace.workspace import WorkspaceDB
 
 
 def _director_to_agent_id(director) -> int | None:

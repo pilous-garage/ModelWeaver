@@ -40,7 +40,7 @@ central = home / "shared" / "repo.git"
 
 # Workspace
 ws_id = f"ws_{uuid.uuid4().hex[:6]}"
-from modules.sql.workspace import WorkspaceDB, TaskRepository
+from modules.sqlite.workspace.workspace import WorkspaceDB, TaskRepository
 ws_db = home / "workspaces" / ws_id / "workspace.db"
 ws_db.parent.mkdir(parents=True, exist_ok=True)
 wdb = WorkspaceDB(str(ws_db))

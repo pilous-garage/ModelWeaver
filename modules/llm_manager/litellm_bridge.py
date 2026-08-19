@@ -618,20 +618,31 @@ class LiteLLMBridgeDefunct(BaseBridge):
                 result.append(entry)
         return result
 
-    def list_available_models(self,
-                              provider_ref: str) -> List[Dict[str, Any]]:
+def list_available_models(self,
+                          provider_ref: str) -> List[Dict[str, Any]]:
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT DISTINCT m.ref, m.name, m.developer,
                        kem.provider_model_name,
-                       mc.supports_chat, mc.supports_function_calling,
-                       mc.supports_vision, mc.supports_embedding,
-                       mc.supports_streaming, mc.source as cap_source
+                       MAX(CASE WHEN mc.capability = 'supports_function_calling' THEN
+                                 CASE WHEN mc.value = 'true' AND mc.confidence > 0.5 THEN 1 ELSE 0 END
+                       END) AS supports_function_calling,
+                       MAX(CASE WHEN mc.capability = 'supports_vision' THEN
+                                 CASE WHEN mc.value = 'true' AND mc.confidence > 0.5 THEN 1 ELSE 0 END
+                       END) AS supports_vision,
+                       MAX(CASE WHEN mc.capability = 'streaming' THEN
+                                 CASE WHEN mc.value = 'true' AND mc.confidence > 0.5 THEN 1 ELSE 0 END
+                       END) AS supports_streaming,
+                       MAX(CASE WHEN mc.capability = 'chat' THEN
+                                 CASE WHEN mc.value = 'true' AND mc.confidence > 0.5 THEN 1 ELSE 0 END
+                       END) AS supports_chat,
+                       mc.source as cap_source
                 FROM provider_models_mapping kem
                 JOIN catalogue_models m ON m.id = kem.model_id
                 JOIN catalogue_providers p ON p.id = kem.provider_id
-                LEFT JOIN model_capabilities mc ON mc.model_ref = m.ref
+                LEFT JOIN model_capability mc ON mc.model_id = m.id
                 WHERE p.ref = ?
+                GROUP BY m.id
                 ORDER BY kem.available DESC, m.name
             """, (provider_ref,))
             cols = [d[0] for d in cur.description]

@@ -335,7 +335,7 @@ def op_auth_supervisor_list(params: Dict[str, Any]) -> Dict[str, Any]:
             f"file:{_default_local_catalogue_db()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM security_supervisor ORDER BY scope, team_id").fetchall()
+            "SELECT * FROM global_local_security_supervisor ORDER BY scope, team_id").fetchall()
         conn.close()
         return {"ok": True, "supervisors": [dict(r) for r in rows]}
     except Exception as e:  # noqa: BLE001
@@ -356,7 +356,7 @@ def op_auth_supervisor_set(params: Dict[str, Any]) -> Dict[str, Any]:
         if scope not in ("team", "global"):
             return {"ok": False, "error": "scope invalide (team|global)"}
         db.conn.execute(
-            "INSERT INTO security_supervisor "
+            "INSERT INTO global_local_security_supervisor "
             "(supervisor_agent_id, scope, team_id, active) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(id) DO NOTHING",
             (int(params.get("supervisor_agent_id", 0)), scope,
@@ -380,12 +380,12 @@ def _supervisor_for(team_id: str) -> Optional[int]:
         try:
             if team_id:
                 row = conn.execute(
-                    "SELECT supervisor_agent_id FROM security_supervisor "
+                    "SELECT supervisor_agent_id FROM global_local_security_supervisor "
                     "WHERE active = 1 AND scope = 'team' AND team_id = ? "
                     "LIMIT 1", (int(team_id),)).fetchone()
             if not row:
                 row = conn.execute(
-                    "SELECT supervisor_agent_id FROM security_supervisor "
+                    "SELECT supervisor_agent_id FROM global_local_security_supervisor "
                     "WHERE active = 1 AND scope = 'global' LIMIT 1").fetchone()
         finally:
             conn.close()

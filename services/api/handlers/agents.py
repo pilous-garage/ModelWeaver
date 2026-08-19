@@ -673,7 +673,7 @@ def op_agent_list_by_team(_params):
             # « #<task_id> Titre » — sans cet enrichissement il restait vide.
             a["current_task"] = None
             try:
-                from modules.sql.workspace import WorkspaceDB
+                from modules.sqlite.workspace.workspace import WorkspaceDB
                 _wdb = WorkspaceDB()
                 _t = _wdb.conn.execute(
                     "SELECT task_id, title FROM tasks "

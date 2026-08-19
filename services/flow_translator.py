@@ -82,8 +82,8 @@ REPO_OPS: Dict[str, str] = {
     "list": "read",
     "get_parents": "read",
     "get_children": "read",
-    "get_reports": "read",
-    "add_report": "write",
+    "get_attachments": "read",
+    "add_attachment": "write",
     "update": "update",
     "dependencies_satisfied": "check",
 }
@@ -384,8 +384,8 @@ def supervisor_symbol(rules: Optional[List[Dict[str, Any]]] = None,
         contract["creates"].append("sub_tasks.create (respond)")
     deps = [
         {"dep_ref": "services/task_supervisor/service.py", "role": "implementation"},
-        {"dep_ref": "modules/sql/workspace.py", "role": "schema"},
-        {"dep_ref": "modules/sql/workspace_schema.sql", "role": "schema"},
+        {"dep_ref": "modules/sqlite/workspace/workspace.py", "role": "schema"},
+        {"dep_ref": "modules/sqlite/workspace/workspace_schema.sql", "role": "schema"},
     ]
     return Symbol(ref=f"supervisor:{team_name}",
                   path=f"supervisor:{team_name}", lang="python",

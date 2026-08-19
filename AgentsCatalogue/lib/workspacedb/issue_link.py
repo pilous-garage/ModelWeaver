@@ -15,7 +15,7 @@ def link(inputs: dict, home: str) -> dict:
         return {"ok": False,
                 "error": "workspace_id, issue_id et analysis_workspace requis"}
     try:
-        from modules.sql.workspace import WorkspaceDB
+        from modules.sqlite.workspace.workspace import WorkspaceDB
         db = WorkspaceDB()
         cur = db.conn.execute(
             "UPDATE issues SET analysis_workspace_id = ? "

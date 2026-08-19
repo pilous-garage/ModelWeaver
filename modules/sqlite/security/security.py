@@ -15,14 +15,15 @@ from modules.sqlite.paths import db_path
 
 SCHEMA_VERSION = 1
 
-SCHEMA: List[str] = [
-    "CREATE TABLE IF NOT EXISTS agent_fs_auth ("
-    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  agent_id INTEGER NOT NULL,"
-    "  root_path TEXT NOT NULL,"
-    "  mode TEXT NOT NULL DEFAULT 'r',"
-    "  UNIQUE(agent_id, root_path))",
-]
+
+def _load_schema() -> List[str]:
+    import os
+    here = os.path.dirname(__file__)
+    with open(os.path.join(here, "security_schema.sql")) as f:
+        return [f.read()]
+
+
+SCHEMA = _load_schema()
 
 
 class SecurityDomain:

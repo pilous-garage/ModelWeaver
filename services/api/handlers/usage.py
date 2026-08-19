@@ -319,11 +319,9 @@ def op_usage_batch_run(params=None):
         on réconcilie l'heure précédente + la veille (auto).
     """
     try:
-        from modules.usage.usage_batcher import run_once, _reconcile_archive, _cat_conn, _rt_conn
+        from modules.sqlite.batch.writer_dedie import run_once, reconcile
         r = run_once()
         if params and params.get("reconcile"):
-            cat = _cat_conn()
-            rt = _rt_conn()
             import time as _t
             now = int(_t.time())
             start = int(params.get("start") or 0)
@@ -333,7 +331,7 @@ def op_usage_batch_run(params=None):
                 cur_hour = (now // 3600) * 3600
                 start = cur_hour - 3600
                 end = cur_hour
-            rec = _reconcile_archive(cat, rt, start, end)
+            rec = reconcile(start, end)
             r["reconcile"] = rec
         return {"status": "ok", **r}
     except Exception as e:

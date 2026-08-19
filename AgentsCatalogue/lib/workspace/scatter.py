@@ -81,7 +81,7 @@ def exec(inputs: dict, home: str) -> dict:
 
     # Créer les tâches dans le workspace
     from pathlib import Path
-    from modules.sql.workspace import WorkspaceDB, TaskRepository
+    from modules.sqlite.workspace.workspace import WorkspaceDB, TaskRepository
 
     ws_db_path = Path(home) / "workspaces" / ws_id / "workspace.db"
     if not ws_db_path.exists():
@@ -101,7 +101,7 @@ def exec(inputs: dict, home: str) -> dict:
 
     # Notifier les workers via chat
     try:
-        from modules.sql.workspace import ChatroomRepository
+        from modules.sqlite.workspace.workspace import ChatroomRepository
         chat = ChatroomRepository(wdb.conn, ws_id)
         chat.post(sender_agent_id=0, content=f"📋 {len(task_ids)} nouvelles tâches créées", msg_type="scatter")
     except Exception:

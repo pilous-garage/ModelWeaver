@@ -3,31 +3,48 @@
 Spec : `docs/local_catalogue_spec.md` · Idées : carnet section R.
 
 ## 1. local_catalogue (schéma + repo + routes)
-- [ ] Schéma SQL : tables fixes `global_local_*` (data_type, shared_default,
-      namespace, path, meta) + `{type}_data/_tag/_tag_type/_source_and_sharing`
-      (data_id = hash stable, data_value_type, last_modify colonne) +
-      `global_local_buffer_op` — reset (pas de migration par renommage)
-- [ ] Repo `catalogue_local.py` : create_type, data_id hash, upsert/delete/
-      query par (data_type_id, data_id), row → colonnes dynamiques, tags
-      typés (tag_value_type), partage, refresh (last_modify), writer mini-batch
-- [ ] Handler `catalogue_local.py` : routes data_type/data/tag/tag_type/
-      sharing (add/delete/modify/get/list/search + data_refresh) + buffer
-      push/process/status — PAS de SQL par le daemon
-- [ ] `file_watcher.py` adapté (data_type fichier → `fichier_data`)
-- [ ] `catalogue_runtime.py` (résolveur catalogue.a.b.fn) → `{type}_data`
-- [ ] `auth.py` / `openai_compat.py` : requêtes mode=ro adaptées (renommage)
+- [x] Schéma SQL v4 : tables fixes `global_local_*` (data_type, source +
+      mirroir_sources, shared_default, namespace, path, meta) +
+      `{type}_data/_tag/_tag_type/_source_and_sharing` — reset v4
+- [x] Modèle versionné multi-sources : UNIQUE(namespace, name, source_id,
+      version), data_id = hash du quadruplé (une entrée par version/source)
+- [x] Accès par sélection : tag (prioritaire) → préférence source
+      (user>enterprise>official) → version (newest/oldest/littérale) ;
+      syntaxe catalogue.<type>.<ns>...<name>[:<source>@<version>][:tag(nom)]
+- [x] Gardes de source : add/modify/delete ne touchent que les lignes de la
+      source de l'écriture ; modify d'une data étrangère = NOUVELLE entrée
+      (source + version propre) ; jamais d'écrasement
+- [ ] Repo `catalogue_local.py` (repo daemon) : porte sur la refonte sqlite —
+      handler catalogue_local.py encore sur modules.sql (V2)
+- [ ] file_watcher.py adapté (data_type fichier → `fichier_data`)
+- [ ] catalogue_runtime.py (résolveur catalogue.a.b.fn) → sélection
+      source@version : le résolveur doit utiliser les sélecteurs V4
+- [ ] auth.py / openai_compat.py : requêtes mode=ro adaptées (renommage)
+- [ ] prune (nettoyage vieilles versions par source, keep=N) : TODO
 
 ## 2. security
 - [ ] privileges + conditions + security_supervisor → `global_local_*`
       (famille local_security, writer privé `write_catalogue_priv`)
 - [ ] Re-seed des privilèges par défaut après reset (catalogue_privileges_defaults)
 
-## 3. buffer_catalogue
-- [ ] `global_local_buffer_op` (in/out, payload, status applied/error,
-      external_tag) + consumer du writer en mini-batch (non bloquant)
-- [ ] Registre `domain_writers` : familles local_data, local_security,
-      local_env, local_support, local_buffer déclarées dans catalogue.db
+## 3. buffer (domaine SÉPARÉ — buffer.db, writer dédié `write_buffer`)
+- [x] `buffer_op` (in/out, payload, status applied/error, external_tag) — dépôt
+      pending par les importeurs (token write_buffer UNIQUEMENT, jamais le
+      catalogue)
+- [x] Consumer IN dans le domaine LOCAL (`local/write.consume_buffer`) : le
+      writer local applique dans x_data en mini-batch non bloquant, marque +
+      purge via les fonctions dédiées du buffer (autorisation spéciale) ;
+      retry (status → pending)
+- [ ] Consumer OUT (send) séparé : modifs locales → ops direction='out'
+      (export distant futur) — TODO
+- [ ] (Mise à plat ultérieure) registre `domain_writers` : familles local_data,
+      local_security, local_env, local_support + buffer déclarées dans catalogue.db
 - [ ] `catalogue_verif.py` adapté aux nouveaux noms de tables
+
+## 3b. genere (alignement modèle multi-sources — À VALIDER par l'utilisateur)
+- [ ] gen_data : UNIQUE(namespace, name_data, source_id, version) + table
+      gen_source (même modèle que local v4) — requiert la validation du
+      schéma genere par l'utilisateur (domaine pas encore validé)
 
 ## 4. Scripts de remplissage
 - [ ] Script models.dev → buffer (providers/modèles/endpoints en `row`,

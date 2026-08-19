@@ -21,7 +21,7 @@ def op_workspace_issues_add(params):
         return {"status": "error", "error": "issues requis (liste non vide)"}
 
     try:
-        from modules.sql.workspace import WorkspaceDB
+        from modules.sqlite.workspace.workspace import WorkspaceDB
         wdb = WorkspaceDB()
         added = []
         for it in issues:
@@ -47,7 +47,7 @@ def op_workspace_issues_list(params):
     if not workspace_id:
         return {"status": "error", "error": "workspace_id requis"}
     try:
-        from modules.sql.workspace import WorkspaceDB
+        from modules.sqlite.workspace.workspace import WorkspaceDB
         wdb = WorkspaceDB()
         if status:
             rows = wdb.conn.execute(
@@ -69,7 +69,7 @@ def op_workspace_issues_list(params):
 # ── Tasks (greedy) : pont HTTP vers workspacedb (le panel moniteur les lit) ──
 
 def _tasks_scope(workspace_id: str):
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     db = WorkspaceDB()
     return db, db.for_workspace(workspace_id)
 
@@ -98,7 +98,7 @@ def op_workspace_tasks_get(params):
     try:
         db, scope = _tasks_scope(workspace_id)
         task = scope.tasks.get(int(task_id))
-        files = scope.tasks.get_files(int(task_id))
+        files = scope.tasks.get_attachments(int(task_id), kind="file")
         db.close()
         if not task:
             return {"status": "error", "error": f"tâche {task_id} introuvable"}
@@ -135,48 +135,44 @@ register("workspace/issues/add",  op_workspace_issues_add)
 register("workspace/issues/list", op_workspace_issues_list)
 
 
-# ── human_choice : choix humain requis (issues bloquées) ─────────────
+# ── human_choice : choix humain requis (escalade, dialogue_agent) ─────────
 
 def op_human_choice_list(params):
-    """Liste les choix humains en attente (issues bloquées).
+    """Liste les choix humains en attente.
 
     params :
       - status : filtre (default 'pending')
-      - workspace_id : filtre optionnel
-    Retourne {status, choices: [{choice_id, issue_id, question, options, ...}]}
+      - workspace_id : filtre optionnel (compat, = project_id)
+    Retourne {status, choices: [{choice_id, project_id, task_id, sub_task_id,
+    question, options, ...}]}
     """
     status = params.get("status", "pending")
     workspace_id = params.get("workspace_id", "")
     try:
-        from modules.sql.workspace import WorkspaceDB
-        wdb = WorkspaceDB()
-        if workspace_id:
-            rows = wdb.conn.execute(
-                "SELECT h.* FROM human_choice h "
-                "JOIN issues i ON i.issue_id = h.issue_id "
-                "WHERE h.status = ? AND i.workspace_id = ? "
-                "ORDER BY h.asked_at", (status, workspace_id)).fetchall()
-        else:
-            rows = wdb.conn.execute(
-                "SELECT * FROM human_choice WHERE status = ? "
-                "ORDER BY asked_at", (status,)).fetchall()
-        wdb.close()
+        from modules.sqlite.dialogue_agent import db
+        from modules.sqlite.dialogue_agent import read as R
+        d = db()
+        choices = [c for c in R.human_choices(d, status)
+                   if not workspace_id or c.get("project_id") == workspace_id]
+        d.close()
         out = []
-        for r in rows:
-            d = dict(r)
+        for c in choices:
+            c = dict(c)
             try:
                 import json
-                d["options"] = json.loads(d.get("options_json")) if d.get("options_json") else []
+                c["options"] = (json.loads(c.get("options_json"))
+                                if c.get("options_json") else [])
             except Exception:
-                d["options"] = []
-            out.append(d)
+                c["options"] = []
+            out.append(c)
         return {"status": "ok", "choices": out, "count": len(out)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
 def op_human_choice_answer(params):
-    """Répond à un choix humain → débloque l'issue (le watcher la remet open).
+    """Répond à un choix humain → le watcher (P10) réveille la sub_task
+    bloquée (thaw → unattributed).
 
     params :
       - choice_id : l'id du choix (human_choice/ask)
@@ -187,25 +183,19 @@ def op_human_choice_answer(params):
     if not choice_id or not response:
         return {"status": "error", "error": "choice_id et response requis"}
     try:
-        from modules.sql.workspace import WorkspaceDB
-        wdb = WorkspaceDB()
-        row = wdb.conn.execute(
-            "SELECT * FROM human_choice WHERE choice_id = ?",
-            (choice_id,)).fetchone()
+        from modules.sqlite.dialogue_agent import db
+        from modules.sqlite.dialogue_agent import read as R
+        from modules.sqlite.dialogue_agent import write as W
+        d = db()
+        row = R.human_choice_get(d, choice_id)
         if not row:
-            wdb.close()
+            d.close()
             return {"status": "error", "error": "choice_id introuvable"}
         if row["status"] == "answered":
-            wdb.close()
+            d.close()
             return {"status": "ok", "note": "déjà répondu", "choice_id": choice_id}
-        wdb.conn.execute(
-            "UPDATE human_choice SET status='answered', response=?, "
-            "answered_at=strftime('%s','now') WHERE choice_id = ?",
-            (response, choice_id))
-        # L'issue reste 'blocked' ; le watcher la débloquera au prochain cycle
-        # (injecte la réponse + remet open).
-        wdb.conn.commit()
-        wdb.close()
+        W.answer_human(d, choice_id, response)
+        d.close()
         return {"status": "ok", "choice_id": choice_id, "answered": True}
     except Exception as e:
         return {"status": "error", "error": str(e)}

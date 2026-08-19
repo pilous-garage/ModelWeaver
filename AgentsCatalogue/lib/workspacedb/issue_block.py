@@ -1,44 +1,40 @@
-"""issue_block — signale un choix humain bloquant sur une issue.
+"""issue_block — signale un choix humain bloquant (domaine dialogue_agent).
 
 L'agent rencontre une décision qui nécessite l'humain (architecture, design,
-priorité). Il bloque l'issue (status='blocked' — le swarm ne la repioche pas)
-et enregistre la question dans human_choice (status='pending').
+priorité). Il enregistre la question dans human_choice (status='pending'),
+liée à la task/sub_task bloquée quand il le sait.
 
-L'humain répond via l'API human_choice/answer ; le watcher débloque ensuite
-l'issue (blocked + answered → open + réponse injectée).
+L'humain répond via l'API human_choice/answer ; le watcher (P10) réveille
+ensuite la sub_task (thaw → unattributed) — plus d'issues.
 """
 
+import json
 import uuid
 
 
 def block(inputs: dict, home: str) -> dict:
     workspace_id = inputs.get("workspace_id", "")
-    issue_id = inputs.get("issue_id")
+    project_id = inputs.get("project_id", "") or workspace_id
     question = inputs.get("question", "")
     options = inputs.get("options", [])
-    if not workspace_id or issue_id is None or not question:
+    task_id = inputs.get("task_id")
+    sub_task_id = inputs.get("sub_task_id")
+    if not project_id or not question:
         return {"ok": False,
-                "error": "workspace_id, issue_id et question requis"}
+                "error": "workspace_id/project_id et question requis"}
     try:
-        from modules.sql.workspace import WorkspaceDB
-        db = WorkspaceDB()
-        import json
-        choice_id = f"hc_{uuid.uuid4().hex[:12]}"
-        db.conn.execute(
-            "INSERT INTO human_choice (choice_id, issue_id, question, "
-            "options_json, status) VALUES (?, ?, ?, ?, 'pending')",
-            (choice_id, int(issue_id), question,
-             json.dumps(options) if options else None))
-        # bloquer l'issue : le swarm ne la repioche pas tant qu'elle est
-        # en attente d'une décision humaine.
-        db.conn.execute(
-            "UPDATE issues SET status = 'blocked', updated_at = datetime('now') "
-            "WHERE issue_id = ? AND workspace_id = ?",
-            (int(issue_id), workspace_id))
-        db.conn.commit()
-        db.close()
-        return {"ok": True, "choice_id": choice_id, "blocked": True,
-                "issue_id": int(issue_id)}
+        from modules.sqlite.dialogue_agent import db
+        from modules.sqlite.dialogue_agent import write as W
+        d = db()
+        choice_id = W.ask_human(
+            d, question, agent_id=0, project_id=project_id,
+            task_id=int(task_id) if task_id else None,
+            sub_task_id=int(sub_task_id) if sub_task_id else None,
+            options_json=json.dumps(options) if options else None,
+            choice_id=f"hc_{uuid.uuid4().hex[:12]}")
+        d.close()
+        return {"ok": True, "choice_id": choice_id, "pending": True,
+                "task_id": task_id, "sub_task_id": sub_task_id}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

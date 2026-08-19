@@ -47,7 +47,7 @@ log(f"Central repo: {central}")
 log("Création workspace DB...")
 ws_db_path = home / "workspaces" / "ws_todo" / "workspace.db"
 ws_db_path.parent.mkdir(parents=True, exist_ok=True)
-from modules.sql.workspace import WorkspaceDB, TaskRepository
+from modules.sqlite.workspace.workspace import WorkspaceDB, TaskRepository
 wdb = WorkspaceDB(str(ws_db_path))
 wdb.workspaces.create("ws_todo", name="Todo CLI Project", description="CLI Todo list en Python")
 tr = TaskRepository(wdb.conn, "ws_todo")

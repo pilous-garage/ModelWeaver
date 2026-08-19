@@ -57,7 +57,7 @@ def _agents_db() -> Any:
 
 
 def _workspace_db() -> Any:
-    from modules.sql.workspace import _default_workspace_db
+    from modules.sqlite.workspace.workspace import _default_workspace_db
     import sqlite3
     conn = sqlite3.connect(f"file:{_default_workspace_db()}?mode=ro", uri=True,
                            check_same_thread=False)

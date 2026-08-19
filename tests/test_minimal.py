@@ -59,26 +59,31 @@ def test_fsm_tourne_sans_llm():
 def test_catalogue_local_read_write():
     import services.api.handlers.catalogue_local as H
     W = {"token": "write_catalogue"}
-    assert H.op_write_create_type({**W, "type": "skill"})["status"] in ("ok", "exists")
-    r = H.op_write_upsert({**W, "type": "skill", "ref": "test/minimal@v1",
-                           "name": "minimal", "namespace": "test", "value": {"x": 1}})
-    assert r["status"] == "ok"
-    e = H.op_get({"type": "skill", "ref": "test/minimal@v1"})["entry"]
+    assert H.op_data_types_add({**W, "code": "skill", "description": "skills"})["status"] == "ok"
+    r = H.op_data_add({**W, "type": "skill", "ref": "test/minimal@v1",
+                       "name": "minimal", "namespace": "test",
+                       "data_value_type": "json", "value": {"x": 1}})
+    assert r["ok"] is True
+    e = H.op_data_get({"type": "skill", "ref": "test/minimal@v1"})["data"]
     assert e["value"] == '{"x": 1}'
 
 
 def test_catalogue_reserved_space():
     import services.api.handlers.catalogue_local as H
     W = {"token": "write_catalogue"}
-    r = H.op_write_upsert({**W, "type": "skill",
-                           "ref": "auto-test-check-official/smoke@v1",
-                           "name": "smoke", "namespace": "auto-test-check-official",
-                           "value": {}})
-    assert r["status"] == "ok"
-    r_bad = H.op_write_upsert({**W, "type": "skill",
-                               "ref": "system/x@v1", "name": "x",
-                               "namespace": "system", "value": {}})
-    assert r_bad["status"] == "error"
+    r = H.op_data_add({**W, "type": "skill",
+                       "ref": "auto-test-check-official/smoke@v1",
+                       "name": "smoke", "namespace": "auto-test-check-official",
+                       "data_value_type": "json", "value": {}})
+    assert r["ok"] is True
+    try:
+        H.op_data_add({**W, "type": "skill",
+                       "ref": "system/x@v1", "name": "x",
+                       "namespace": "system", "data_value_type": "json",
+                       "value": {}})
+        assert False, "ref system/ attendue refusée"
+    except Exception:
+        pass
 
 
 def test_catalogue_runtime_foncteur():
@@ -94,9 +99,13 @@ def test_catalogue_runtime_foncteur():
 def test_routes_registerees():
     import services.api.handlers  # noqa: F401
     from services.api.router import dispatch
-    assert dispatch("catalogue_local/list_catalogues", {}).get("status") in ("ok", "error")
+    assert dispatch("catalogue_local/data_types/list", {}).get("status") in ("ok", "error")
     assert dispatch("catalogue_local/priv/check", {"chemin": "/x"}).get("status") in ("ok", "error")
-    assert dispatch("catalogue_local/write/batch", {}).get("status") == "error"  # sans token
+    try:
+        dispatch("catalogue_local/data/add", {})
+        assert False, "data/add sans token attendue refusée"
+    except Exception:
+        pass
 
 
 def test_resolution_path_typed():
@@ -122,7 +131,7 @@ def test_resolution_path_typed():
 
 def test_resolution_team_chatroom_send():
     """team.chatroom.send(msg) : méthode directe, écrit réellement en BDD."""
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     from modules.agent_graph_utils.resolution import (
         PathEvaluator, make_root, SINGLETON,
     )
@@ -262,7 +271,7 @@ def test_obj_call_team_chatroom_send():
     import json
     from AgentFrameWork.fsm_interpreter import FSMInterpreter
     from modules.sql.agents_repo import AgentsDB
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
 
     adb = AgentsDB()
     cur = adb.conn.execute(
@@ -307,8 +316,8 @@ def test_privilege_ask_level():
 
     res = H.op_priv_resolve({"chemin": "add_money", "kind": "cmd",
                              "agent_id": 7})
-    assert res.get("exec") == "---x"          # droit accordé
-    assert res.get("ask") == "human_root"     # demande exigée
+    assert res["privileges"][0].get("exec") == "---x"  # droit accordé
+    assert res["privileges"][0].get("ask") == "human_root"  # demande exigée
 
     u = H.op_priv_use({**P, "chemin": "add_money", "kind": "cmd",
                        "level": "agent", "op": "exec", "agent_id": 7})

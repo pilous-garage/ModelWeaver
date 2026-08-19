@@ -41,7 +41,7 @@ def _scope(inputs: dict, home: str):
 
 def _supervise(workspace_id: str, team_id: int) -> dict:
     from services.task_supervisor.service import TaskSupervisor
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     if not workspace_id or team_id == -1:
         return {"ok": False, "error": "workspace_id + team_id requis",
                 "released": 0, "supervised": 0, "created": 0}

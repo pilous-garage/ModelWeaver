@@ -5,7 +5,7 @@ from typing import Optional
 from modules.sqlite.base import Db
 from modules.sqlite.paths import db_path
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 _SCHEMA_FILE = "local_schema.sql"
 WRITE_CATALOGUE_TOKEN = "write_catalogue"
 
@@ -14,18 +14,18 @@ def db() -> Db:
     """Domaine `local` (local_catalogue.db).
 
     Ouvert en mode `w` avec le token du dedicated_writer : c'est le SEUL writer
-    du domaine (buffer consumer, create_type, upsert, écriture de privileges).
-    Les lecteurs ouvrent leur propre Db(mode='ro').
+    du domaine (create_type, upsert, écriture de privileges, consumer IN du
+    buffer). Les lecteurs ouvrent leur propre Db(mode='ro').
     """
-    d = Db(db_path("local_catalogue.db"), mode="w", write_token=WRITE_CATALOGUE_TOKEN)
+    d = Db(db_path("local_catalogue"), mode="w", write_token=WRITE_CATALOGUE_TOKEN)
     d.create(_SCHEMA_VERSION, _load_ddl(), meta_table="global_local_meta",
-             reset_below=2)
+             reset_below=4)
     return d
 
 
 def db_ro() -> Db:
     """Lecteur : local_catalogue.db en mode lecture seule (pas de token)."""
-    return Db(db_path("local_catalogue.db"), mode="ro")
+    return Db(db_path("local_catalogue"), mode="ro")
 
 
 def _load_ddl() -> list[str]:
@@ -48,9 +48,9 @@ def get_domain() -> Db:
 
 def get_writer(token: str = "") -> Db:
     """Writer configuré : exige le token du dedicated_writer (écritures)."""
-    d = Db(db_path("local_catalogue.db"), mode="w", write_token=WRITE_CATALOGUE_TOKEN)
+    d = Db(db_path("local_catalogue"), mode="w", write_token=WRITE_CATALOGUE_TOKEN)
     d.create(_SCHEMA_VERSION, _load_ddl(), meta_table="global_local_meta",
-             reset_below=2)
+             reset_below=4)
     if token != WRITE_CATALOGUE_TOKEN:
         raise PermissionError("token writer local invalide")
     return d

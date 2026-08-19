@@ -172,7 +172,7 @@ def op_team_init_workspace(params):
     ws_desc = params.get("workspace_description", f"Espace de travail de l'équipe {name}")
 
     try:
-        from modules.sql.workspace import WorkspaceDB, TaskRepository
+        from modules.sqlite.workspace.workspace import WorkspaceDB, TaskRepository
         from services.team_manager import _set_workspace_director
         from services._common import mw_home
         import uuid

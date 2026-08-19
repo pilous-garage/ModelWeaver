@@ -114,11 +114,11 @@ class FileWatcher:
         """Enregistre des fichiers sources (data_type fichier). Stocke le
         mtime (ns) + hash INITIAL. Idempotent (upsert).
 
-        mtime stocké dans last_modify_data.last_modify_at en TEXTE =
+        mtime stocké dans fichier_data.last_modify en TEXTE =
         str(st_mtime_ns) : résolution nanoseconde, comparaison exacte."""
         import sqlite3
         n = 0
-        table = f"{DATA_FILE_TYPE}_catalogue"
+        table = f"{DATA_FILE_TYPE}_data"
         # hash + collecte en mémoire, puis INSERT groupés via une connexion
         # DIRECTE (le wrapper LocalCatalogue a un lock par opération, trop
         # lent pour des milliers de fichiers).
@@ -127,8 +127,8 @@ class FileWatcher:
             try:
                 h = file_hash(p)
                 m = _mtime_ns(p)
-                rows_cat.append((str(p), p.name, str(p), DATA_FILE_TYPE, h))
-                rows_mod.append((DATA_FILE_TYPE, str(p), str(m), str(m)))
+                rows_cat.append((str(p), p.name, str(p), h))
+                rows_mod.append((str(m), str(p)))
                 n += 1
             except Exception:
                 pass
@@ -141,15 +141,13 @@ class FileWatcher:
         conn = sqlite3.connect(self.cat.db_path)
         try:
             conn.executemany(
-                f"INSERT INTO {table} (ref, name, ref_file, data_type, "
-                f"value, status) VALUES (?, ?, ?, ?, ?, 'active') "
+                f"INSERT INTO {table} (ref, name, ref_file, data_value_type, "
+                f"value, status) VALUES (?, ?, ?, 'file', ?, 'active') "
                 f"ON CONFLICT(ref) DO UPDATE SET ref_file = excluded.ref_file, "
-                f"value = excluded.value, data_type = excluded.data_type",
+                f"value = excluded.value",
                 rows_cat)
             conn.executemany(
-                "INSERT INTO last_modify_data(data_type, ref, last_modify_at, "
-                "modify_count) VALUES (?, ?, ?, 1) "
-                "ON CONFLICT(data_type, ref) DO UPDATE SET last_modify_at = ?",
+                f"UPDATE {table} SET last_modify = ? WHERE ref = ?",
                 rows_mod)
             conn.commit()
         except Exception:
@@ -159,10 +157,10 @@ class FileWatcher:
         return n
 
     def list_files(self) -> List[dict]:
-        table = f"{DATA_FILE_TYPE}_catalogue"
+        table = f"{DATA_FILE_TYPE}_data"
         rows = self.cat.conn.execute(
             f"SELECT ref, ref_file, value FROM {table} "
-            f"WHERE data_type = ? ORDER BY ref", (DATA_FILE_TYPE,)).fetchall()
+            f"ORDER BY ref").fetchall()
         return [dict(r) for r in rows]
 
     # ── Règles de scan par projet ───────────────────────────
@@ -440,12 +438,11 @@ class FileWatcher:
             p = Path(f.get("ref_file") or f.get("ref") or "")
             m = _mtime_ns(p)
             checked += 1
-            # mtime disque (ns) vs last_modify_at stocké (texte ns)
+            # mtime disque (ns) vs last_modify stocké (texte ns)
             row = self.cat.conn.execute(
-                "SELECT last_modify_at FROM last_modify_data "
-                "WHERE data_type = ? AND ref = ?",
-                (DATA_FILE_TYPE, f["ref"])).fetchone()
-            last_m = int(row["last_modify_at"]) if row else 0
+                "SELECT last_modify FROM fichier_data WHERE ref = ?",
+                (f["ref"],)).fetchone()
+            last_m = int(row["last_modify"]) if row else 0
             if m < 0:
                 # fichier supprimé → stale (plus de contenu valide)
                 modified += 1
@@ -454,7 +451,7 @@ class FileWatcher:
                     self._propagate(f["ref"])
                 try:
                     self.cat.conn.execute(
-                        f"UPDATE {DATA_FILE_TYPE}_catalogue SET status = 'missing' "
+                        f"UPDATE {DATA_FILE_TYPE}_data SET status = 'missing' "
                         f"WHERE ref = ?", (f["ref"],))
                 except Exception:
                     pass
@@ -470,16 +467,14 @@ class FileWatcher:
                     self._propagate(f["ref"])
             # met à jour le mtime stocké (qu'on ait re-propagé ou non)
             self.cat.conn.execute(
-                "INSERT INTO last_modify_data(data_type, ref, last_modify_at, "
-                "modify_count) VALUES (?, ?, ?, 1) "
-                "ON CONFLICT(data_type, ref) DO UPDATE SET last_modify_at = ?",
-                (DATA_FILE_TYPE, f["ref"], str(m), str(m)))
+                "UPDATE fichier_data SET last_modify = ? WHERE ref = ?",
+                (str(m), f["ref"]))
             try:
                 self.cat.conn.execute(
-                    f"UPDATE {DATA_FILE_TYPE}_catalogue SET value = ? "
+                    f"UPDATE {DATA_FILE_TYPE}_data SET value = ? "
                     f"WHERE ref = ? AND status = 'missing'", (h, f["ref"]))
                 self.cat.conn.execute(
-                    f"UPDATE {DATA_FILE_TYPE}_catalogue SET status = 'active', "
+                    f"UPDATE {DATA_FILE_TYPE}_data SET status = 'active', "
                     f"value = ? WHERE ref = ?", (h, f["ref"]))
             except Exception:
                 pass

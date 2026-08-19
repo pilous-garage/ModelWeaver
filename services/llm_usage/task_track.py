@@ -112,7 +112,7 @@ def _workspace_for(sub_task_id: int, task_id: Optional[int]):
     il faut retrouver LE bon fichier .db et le workspace_id de la sub_task.
     """
     try:
-        from modules.sql.workspace import WorkspaceDB, _default_workspace_db
+        from modules.sqlite.workspace.workspace import WorkspaceDB, _default_workspace_db
         db = WorkspaceDB(db_path=_default_workspace_db())
         if sub_task_id:
             row = db.conn.execute(

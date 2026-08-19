@@ -1,5 +1,5 @@
 -- ============================================================
--- LOCAL_CATALOGUE.DB — Référentiel méta des données (V2).
+-- LOCAL_CATALOGUE.DB — Référentiel méta des données (V4).
 -- Spec : docs/local_catalogue_spec.md (2026-08-17).
 --
 -- SCHÉMA D'INFRA — tables fixes du domaine `local`.
@@ -7,25 +7,70 @@
 -- sont créées dynamiquement par create_new_data_type() (local.py) après
 -- validation du data_value_type — voir BASE_COLUMNS / create_type.
 --
--- PRINCIPE :
---   - Données LÉGÈRES et typées (data_value_type). Le disque est la seule
---     vérité pour `file` ; value = référence seulement.
---   - Non-bloquant : lectures mode=ro ; UN SEUL writer (token write_catalogue)
---     en mini-batchs. Une donnée un peu périmée est acceptable.
---   - data_id = hash stable(ref) par type (int64) — identique load/reload.
---   - Écritures externes via global_local_buffer_op (payload pending) puis
---     appliquées par process_buffer (mini-batch, jamais bloquant).
+-- PRINCIPE (V4 — modèle versionné multi-sources) :
+--   - Une data = un quadruplé (namespace, name, source_id, version) UNIQUE.
+--     Chaque entrée a son propre data_id = hash stable du quadruplé.
+--   - Les sources sont déclarées (global_local_source + mirroir_sources) :
+--     user, official, enterprise, distant, friend, git_depot…
+--   - Accès par sélection : tag d'abord, puis préférence de source
+--     (ex. user>enterprise>official), puis tri de version (newest/oldest/
+--     version littérale) — syntaxe catalogue.<type>.<ns>...<name>
+--     [:source@version][:tag(nom)].
+--   - Un writer ne modifie que les lignes de SA source : modifier une data
+--     d'une source étrangère crée une NOUVELLE entrée (sa source, sa
+--     version), jamais d'écrasement. Nettoyage : prune par source (keep=N).
+--   - NON-bloquant : lectures mode=ro ; UN SEUL writer (token
+--     write_catalogue) en mini-batchs ; une donnée un peu périmée est
+--     acceptable.
+--   - Écritures externes via le domaine `buffer` (buffer.db) : l'importeur
+--     dépose des ops pending (token write_buffer) ; le consumer du domaine
+--     local (local/write.consume_buffer) les applique ici en mini-batchs
+--     (jamais bloquant).
+--   - v3 : buffer déplacé dans son domaine séparé (buffer.db). v4 : modèle
+--     versionné multi-sources (reset).
 -- ============================================================
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
+
+-- Tables v2/v3 déplacées ou remplacées (reset, pas de migration).
+DROP TABLE IF EXISTS global_local_buffer_op;
 
 -- 0. META
 CREATE TABLE IF NOT EXISTS global_local_meta (
     key   TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
-INSERT OR IGNORE INTO global_local_meta(key, value) VALUES ('schema_version', 2);
+INSERT OR IGNORE INTO global_local_meta(key, value) VALUES ('schema_version', 4);
+
+-- 0b. SOURCES (d'où vient une data : user, official, distant…)
+CREATE TABLE IF NOT EXISTS global_local_source (
+    sources_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    type_source TEXT NOT NULL
+                CHECK(type_source IN ('user','official','enterprise',
+                                      'distant','friend','git_depot')),
+    ref         TEXT NOT NULL UNIQUE,
+    label       TEXT DEFAULT '',
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO global_local_source(type_source, ref, label) VALUES
+    ('user',       'user',        'données locales (écritures du writer local)'),
+    ('official',   'official',    'source officielle (éditeur/projet)'),
+    ('enterprise', 'enterprise',  'catalogue de l''entreprise'),
+    ('distant',    'distant',     'catalogue distant non officiel'),
+    ('friend',     'friend',      'catalogue d''un ami'),
+    ('git_depot',  'git_depot',   'dépôt git importé');
+
+CREATE TABLE IF NOT EXISTS global_local_mirror_sources (
+    mirror_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    sources_id  INTEGER NOT NULL REFERENCES global_local_source(sources_id)
+                        ON DELETE CASCADE,
+    address     TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(sources_id, address)
+);
+CREATE INDEX IF NOT EXISTS idx_gl_mirror_src ON global_local_mirror_sources(sources_id);
 
 -- 1. DATA_TYPE (registre des types connus)
 CREATE TABLE IF NOT EXISTS global_local_data_type (
@@ -76,27 +121,7 @@ CREATE TABLE IF NOT EXISTS global_local_path (
 );
 CREATE INDEX IF NOT EXISTS idx_gl_path_scheme ON global_local_path(scheme);
 
--- 5. BUFFER (tampon des opérations externes, jamais bloquant)
-CREATE TABLE IF NOT EXISTS global_local_buffer_op (
-    op_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    direction     TEXT NOT NULL DEFAULT 'in'
-                  CHECK(direction IN ('in','out')),
-    domain        TEXT NOT NULL,
-    op            TEXT NOT NULL
-                  CHECK(op IN ('add','modify','delete','refresh')),
-    payload_json  TEXT NOT NULL DEFAULT '{}',
-    status        TEXT NOT NULL DEFAULT 'pending'
-                  CHECK(status IN ('pending','applied','error','cancelled')),
-    error         TEXT DEFAULT '',
-    external_tag  TEXT DEFAULT '',
-    ref_external  TEXT DEFAULT '',
-    created_at    TEXT DEFAULT (datetime('now')),
-    applied_at    TEXT DEFAULT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_gl_buf_status ON global_local_buffer_op(status, domain);
-CREATE INDEX IF NOT EXISTS idx_gl_buf_ext ON global_local_buffer_op(external_tag, status);
-
--- 6. PRIVILEGES (famille SECURITY — refus par chemin/kind/agent/team/niveau)
+-- 5. PRIVILEGES (famille SECURITY — refus par chemin/kind/agent/team/niveau)
 CREATE TABLE IF NOT EXISTS global_local_privilege (
     id_auth      INTEGER PRIMARY KEY AUTOINCREMENT,
     chemin_ref   TEXT NOT NULL,
@@ -133,7 +158,7 @@ CREATE TABLE IF NOT EXISTS global_local_privilege_condition (
 CREATE INDEX IF NOT EXISTS idx_gl_pcond_auth
     ON global_local_privilege_condition(id_auth);
 
--- 7. SECURITY_SUPERVISOR (agents superviseurs pour ask=security_supervisor)
+-- 6. SECURITY_SUPERVISOR (agents superviseurs pour ask=security_supervisor)
 CREATE TABLE IF NOT EXISTS global_local_security_supervisor (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     supervisor_agent_id INTEGER NOT NULL,

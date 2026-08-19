@@ -19,7 +19,7 @@ from pathlib import Path
 def _active_tasks_by_repo(workspace: str, repo_prefix: str = "") -> list:
     """Liste des tâches actives (todo/doing) d'un workspace, filtrées par
     préfixe de repo (ex. 'sessions/'). Retourne [{task_id, repo, assigned_to}]."""
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     wdb = WorkspaceDB()
     try:
         rows = wdb.conn.execute(
@@ -107,7 +107,7 @@ def cancel_workspace(workspace: str, repo_prefix: str = "sessions/",
 def _cleanup_session_repos(workspace: str) -> int:
     """Supprime les repos de session orphelins (sessions annulées, plus aucune
     tâche active). Retourne le nombre de repos nettoyés."""
-    from modules.sql.workspace import WorkspaceDB
+    from modules.sqlite.workspace.workspace import WorkspaceDB
     import shutil
     wdb = WorkspaceDB()
     n = 0

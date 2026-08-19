@@ -1,7 +1,8 @@
 """read — lectures thin sur les tables infra du domaine local.
 
-CRUD pur sur les tables fixes ; la logique (resolve_path, privileges matching,
-buffer consumer) vit dans local.py — voir la règle dans base.py."""
+CRUD pur sur les tables fixes ; la logique (resolve_path, privileges matching)
+vit dans local.py — voir la règle dans base.py. Le buffer vit dans son propre
+domaine (modules/sqlite/buffer)."""
 
 from __future__ import annotations
 
@@ -74,19 +75,21 @@ def list_privilege_conditions(db: Db, id_auth: int) -> List[Dict[str, Any]]:
         where={"id_auth": id_auth}, order_by="condition_id")
 
 
+def list_sources(db: Db, type_source: str = "") -> List[Dict[str, Any]]:
+    tbl = db.table("global_local_source")
+    if type_source:
+        return tbl.select(where={"type_source": type_source}, order_by="ref")
+    return tbl.select(order_by="type_source, ref")
+
+
+def list_mirrors(db: Db, source: Any = None) -> List[Dict[str, Any]]:
+    tbl = db.table("global_local_mirror_sources")
+    if source is None:
+        return tbl.select(order_by="sources_id")
+    return tbl.select(where={"sources_id": source}, order_by="address")
+
+
 def list_supervisors(db: Db) -> List[Dict[str, Any]]:
     return db.table("global_local_security_supervisor").select(
         cols=["id", "supervisor_agent_id", "scope", "team_id", "active"],
         order_by="id")
-
-
-def buffer_status(db: Db, external_tag: str = "", status: str = "") -> List[Dict[str, Any]]:
-    w: Dict[str, Any] = {}
-    if external_tag:
-        w["external_tag"] = external_tag
-    if status:
-        w["status"] = status
-    # ordre DESC impossible via Table.order_by LIMIT dans select (order_by str OK)
-    where = w or None
-    return db.table("global_local_buffer_op").select(
-        where=where, order_by="op_id DESC", limit=500)

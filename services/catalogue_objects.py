@@ -113,7 +113,7 @@ def _chatroom_send(item, msg, ctx=None, **kw):
     workspace_id = team.get("workspace_id") if isinstance(team, dict) else ""
     agent_id = (ctx or {}).get("agent_id")
     try:
-        from modules.sql.workspace import chatroom_send_message
+        from modules.sqlite.dialogue_agent.adapters import chatroom_send_message
         return chatroom_send_message(agent_id=str(agent_id), msg=str(msg),
                                      workspace_id=workspace_id or "")
     except Exception as e:  # noqa: BLE001
