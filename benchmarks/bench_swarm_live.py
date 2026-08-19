@@ -42,31 +42,30 @@ def create_task(workspace: str, title: str, description: str, task_type="coding"
     réveille l'analyste → découpe → coding/testing/review/merge → respond.
 
     Crée le workspace si absent (la team peut ne pas être bootée)."""
+    from AgentsCatalogue.lib.workspacedb import taskflow
+    # team_id résolu depuis le director du workspace (team:llm-code → 1)
     try:
-        from AgentsCatalogue.lib.workspacedb import taskflow
-        # team_id résolu depuis le director du workspace (team:llm-code → 1)
-        try:
-            wdb = _wdb()
-            _row = wdb.conn.execute(
-                "SELECT director FROM workspaces WHERE workspace_id=?",
-                (workspace,)).fetchone()
-            _team_id = 1 if _row else -1
-            wdb.close()
-        except Exception:
-            _team_id = -1
-        r = taskflow.create_entry({
-            "workspace_id": workspace,
-            "title": title,
-            "description": description,
-            "entry_type": "feature",   # skip classification consensus (LLM)
-            "team_id": _team_id,
-            "priority": 100,
-        }, home=str(_wdb_home()))
-        if r.get("ok"):
-            return r["task_id"]
-        # fallback : log
-        sys.stderr.write(f"create_entry échec: {r.get('error')}\n")
-        return -1
+        wdb = _wdb()
+        _row = wdb.conn.execute(
+            "SELECT director FROM workspaces WHERE workspace_id=?",
+            (workspace,)).fetchone()
+        _team_id = 1 if _row else -1
+        wdb.close()
+    except Exception:
+        _team_id = -1
+    r = taskflow.create_entry({
+        "workspace_id": workspace,
+        "title": title,
+        "description": description,
+        "entry_type": "feature",   # skip classification consensus (LLM)
+        "team_id": _team_id,
+        "priority": 100,
+    }, home=str(_wdb_home()))
+    if r.get("ok"):
+        return r["task_id"]
+    # fallback : log
+    sys.stderr.write(f"create_entry échec: {r.get('error')}\n")
+    return -1
 
 
 def _wdb_home():
