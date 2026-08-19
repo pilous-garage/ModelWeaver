@@ -61,6 +61,21 @@ def add_guess_quota(d: Db, bundle_id: int, target_kind: str, target_ref: str,
     return {"ok": True, "guess_id": cur.lastrowid}
 
 
+def update_guess_quota_precision(d: Db, guess_id: int, precision: float) -> None:
+    d._conn.execute("UPDATE guess_quota SET precision = ? WHERE guess_id = ?",
+                    (precision, guess_id))
+    d._conn.commit()
+
+
+def update_guess_bundle_quota_scores(d: Db, bundle_id: int, precision: float,
+                                     coherence: float) -> None:
+    d._conn.execute(
+        "UPDATE guess_bundle_quota SET score_precision_global = ?, "
+        "score_coherence_global = ? WHERE bundle_id = ?",
+        (precision, coherence, bundle_id))
+    d._conn.commit()
+
+
 def add_guess_bundle_cost(d: Db, target_kind: str, target_ref: str,
                           score_precision_global: float = 0,
                           score_coherence_global: float = 0) -> Dict[str, Any]:
@@ -89,3 +104,18 @@ def add_guess_cost(d: Db, bundle_id: int, target_kind: str, target_ref: str,
          depends_on_time, coherence, precision))
     d._conn.commit()
     return {"ok": True, "guess_id": cur.lastrowid}
+
+
+def update_guess_cost_precision(d: Db, guess_id: int, precision: float) -> None:
+    d._conn.execute("UPDATE guess_cost SET precision = ? WHERE guess_id = ?",
+                    (precision, guess_id))
+    d._conn.commit()
+
+
+def update_guess_bundle_cost_scores(d: Db, bundle_id: int, precision: float,
+                                    coherence: float) -> None:
+    d._conn.execute(
+        "UPDATE guess_bundle_cost SET score_precision_global = ?, "
+        "score_coherence_global = ? WHERE bundle_id = ?",
+        (precision, coherence, bundle_id))
+    d._conn.commit()

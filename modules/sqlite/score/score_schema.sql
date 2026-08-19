@@ -183,3 +183,35 @@ CREATE TABLE IF NOT EXISTS score_benchmark_meta (
     nb_models INTEGER DEFAULT 0,
     updated_at INTEGER DEFAULT (strftime('%s','now'))
 );
+
+-- Scores par ADRESSE (init 1.0 neutre, ajusté par expérience)
+CREATE TABLE IF NOT EXISTS score_adress (
+    adress_id    INTEGER PRIMARY KEY,
+    score_init   REAL DEFAULT 1.0,
+    score_current REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- Scores par MODELE (init 1.0 neutre, ou benchmark etire si dispo)
+CREATE TABLE IF NOT EXISTS score_model (
+    model_ref    TEXT PRIMARY KEY,
+    score_init   REAL DEFAULT 1.0,
+    score_current REAL DEFAULT 1.0,
+    samples      INTEGER DEFAULT 0,
+    updated_at   INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- Ajustements d'expérience (gestionnaire d'expérience) : bonus/malus par
+-- (target, domaine, niveau) suite à des tâches complétées.
+CREATE TABLE IF NOT EXISTS score_adjust (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_kind  TEXT NOT NULL,   -- adress | model
+    target_ref   TEXT NOT NULL,
+    domaine      TEXT DEFAULT 'general',   -- coding | text | math | reasoning...
+    niveau       TEXT DEFAULT 'all',       -- debutant | junior | ... | expert | all
+    bonus        REAL DEFAULT 0,           -- cumul des bonus/malus
+    reason       TEXT DEFAULT '',
+    at_epoch     INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sadj_target ON score_adjust(target_kind, target_ref);

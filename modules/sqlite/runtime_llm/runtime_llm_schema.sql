@@ -209,3 +209,33 @@ CREATE INDEX IF NOT EXISTS idx_archive_caller ON model_call_log_archive(caller_i
 CREATE INDEX IF NOT EXISTS idx_budget_consumption_budget ON budget_consumption(budget_ref);
 CREATE INDEX IF NOT EXISTS idx_model_efficacy_model ON model_efficacy(model_ref);
 CREATE INDEX IF NOT EXISTS idx_endpoint_usage_model ON endpoint_model_usage(model_ref);
+
+-- Séquences erreur/succès des GUESS (observées au runtime, analysées par
+-- l'analyste guess). Une ligne par événement de quota/cout observé.
+CREATE TABLE IF NOT EXISTS quota_error_seq (
+    seq_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id   INTEGER NOT NULL,   -- → budget_cost.guess_bundle_quota
+    guess_id    INTEGER NOT NULL,   -- → budget_cost.guess_quota
+    target_ref  TEXT NOT NULL,      -- provider/endpoint/adress visé
+    type_limite TEXT NOT NULL,      -- budget_tag
+    outcome     TEXT NOT NULL CHECK(outcome IN ('success','error')),
+    error_code  TEXT DEFAULT '',
+    window_key  TEXT DEFAULT '',     -- fenêtre de reset concernée
+    at_epoch    INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_qes_bundle ON quota_error_seq(bundle_id, guess_id);
+CREATE INDEX IF NOT EXISTS idx_qes_at ON quota_error_seq(at_epoch);
+
+CREATE TABLE IF NOT EXISTS cost_error_seq (
+    seq_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id   INTEGER NOT NULL,   -- → budget_cost.guess_bundle_cost
+    guess_id    INTEGER NOT NULL,   -- → budget_cost.guess_cost
+    target_ref  TEXT NOT NULL,
+    type_limite TEXT NOT NULL,
+    outcome     TEXT NOT NULL CHECK(outcome IN ('success','error')),
+    error_code  TEXT DEFAULT '',
+    window_key  TEXT DEFAULT '',
+    at_epoch    INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ces_bundle ON cost_error_seq(bundle_id, guess_id);
+CREATE INDEX IF NOT EXISTS idx_ces_at ON cost_error_seq(at_epoch);

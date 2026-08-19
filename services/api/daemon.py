@@ -1102,6 +1102,33 @@ def _start_service_ticker(log=None) -> None:
         if log:
             log.warning("budget_cost_interrogator non enregistré", error=str(e))
 
+    # budget_guess_analyst : ajuste les guess de QUOTA (5 min).
+    try:
+        from services.budget_guess_analyst import analyze as bga_tick
+        st.register("budget_guess_analyst", interval_s=300, fn=bga_tick,
+                    cmd="services.budget_guess_analyst:analyze")
+    except Exception as e:
+        if log:
+            log.warning("budget_guess_analyst non enregistré", error=str(e))
+
+    # cost_guess_analyst : ajuste les guess de COUT (5 min).
+    try:
+        from services.cost_guess_analyst import analyze as cga_tick
+        st.register("cost_guess_analyst", interval_s=300, fn=cga_tick,
+                    cmd="services.cost_guess_analyst:analyze")
+    except Exception as e:
+        if log:
+            log.warning("cost_guess_analyst non enregistré", error=str(e))
+
+    # score_experience_manager : ajuste les scores par expérience (60s).
+    try:
+        from services.score_experience_manager import analyze as sem_tick
+        st.register("score_experience_manager", interval_s=60, fn=sem_tick,
+                    cmd="services.score_experience_manager:analyze")
+    except Exception as e:
+        if log:
+            log.warning("score_experience_manager non enregistré", error=str(e))
+
     st.start()
     if log:
         log.info("ServiceTicker démarré")
