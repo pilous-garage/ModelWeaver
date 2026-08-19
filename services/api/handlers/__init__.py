@@ -24,3 +24,4 @@ from services.api.handlers import graphe_utile
 from services.api.handlers import utils
 from services.api.handlers import catalogue_local
 from services.api.handlers import openai_compat
+from services.api.handlers import infra  # routes /infra/* sur domaines sqlite

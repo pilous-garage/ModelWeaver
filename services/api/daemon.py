@@ -1009,6 +1009,17 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     # en singleton (threads éphémères vérifiés ou permanents 1s).
     _start_service_ticker(log)
 
+    # Registre des services système + état runtime global (services.db /
+    # runtime.db) : daemon, supervisor_general, ticker_general, watcher,
+    # sqlite… avec pid/port du process courant.
+    try:
+        from services.system_registry import register_system_services
+        register_system_services(pid=os.getpid(), port=port,
+                                 mw_version=MW_VERSION, log=log)
+    except Exception as e:
+        if log:
+            log.warning("system_registry non initialisé", error=str(e))
+
     # Activer le StreamBus cross-process (partagé avec l'AFD si démarré)
     try:
         from AgentFrameWork.stream_bus import activate_cross_process, resolve_stream_path

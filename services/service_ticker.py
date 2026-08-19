@@ -36,7 +36,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from modules.sql.schema import mw_home
+from modules.sqlite.paths import mw_home
+from modules.sqlite.services import db as _services_db
+from modules.sqlite.services import read as _S_R
+from modules.sqlite.services import write as _S_W
+from modules.sqlite.runtime import db as _runtime_db
+from modules.sqlite.runtime import write as _R_W
 
 DEFAULT_TICK = 1.0        # cadence du ticker maître (s)
 DEFAULT_MAX_RUN = 300.0   # durée max d'un service éphémère (s)
@@ -57,12 +62,11 @@ class ServiceTicker:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path else _default_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        import sqlite3
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False,
-                                    isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA busy_timeout = 5000")
-        self._ensure_schema()
+        # Stockage : domaines sqlite services.db + runtime.db (le schéma des
+        # tables tick est déclaré dans modules/sqlite/services, plus de DDL
+        # en dur ici).
+        self._db = _services_db()
+        self._rdb = _runtime_db()
         # CACHE LOCAL (source de vérité runtime) + duplicate BDD.
         self._svcs: Dict[str, dict] = {}   # name → {mode, interval, next_tick,
                                            #         starts, thread, run_id, fn}
@@ -70,59 +74,23 @@ class ServiceTicker:
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
-    def _ensure_schema(self) -> None:
-        try:
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_ticks ("
-                "  tick_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  svc_name TEXT UNIQUE NOT NULL,"
-                "  tick_interval_s REAL NOT NULL DEFAULT 60,"
-                "  cmd TEXT DEFAULT '', last_launch REAL,"
-                "  last_duration_s REAL, running INTEGER DEFAULT 0,"
-                "  enabled INTEGER DEFAULT 1,"
-                "  created_at TEXT DEFAULT (datetime('now')))")
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_ticks_secondes ("
-                "  tick_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  svc_name TEXT UNIQUE NOT NULL, cmd TEXT DEFAULT '',"
-                "  last_launch REAL, last_duration_s REAL,"
-                "  running INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1,"
-                "  created_at TEXT DEFAULT (datetime('now')))")
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_tick_runs ("
-                "  run_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  svc_name TEXT NOT NULL, thread_id INTEGER,"
-                "  started_at REAL, finished_at REAL, duration_s REAL,"
-                "  status TEXT DEFAULT 'running',"
-                "  created_at TEXT DEFAULT (datetime('now')))")
-        except Exception:
-            pass
-
-    # ── Table BDD selon le mode ─────────────────────────────
-
-    def _table_for(self, mode: str) -> str:
-        return "service_ticks_secondes" if mode == "permanent" \
-            else "service_ticks"
-
     def _flush(self, name: str, **fields) -> None:
-        """Persiste l'état d'un service en BDD (le cache local est la source
-        chaude ; on ne fait que dupliquer les champs de supervision)."""
+        """Persiste l'état d'un service (le cache local est la source chaude ;
+        on ne fait que dupliquer les champs de supervision). services.db pour
+        l'état tick, runtime.db pour last_tick/next_tick."""
         svc = self._svcs.get(name)
         if svc is None:
             return
-        table = self._table_for(svc["mode"])
-        cols, vals = [], []
-        for k, v in fields.items():
-            cols.append(f"{k} = ?")
-            vals.append(v)
-        if not cols:
-            return
-        vals.append(name)
         try:
-            self.conn.execute(
-                f"UPDATE {table} SET {', '.join(cols)} WHERE svc_name = ?",
-                vals)
-            self.conn.commit()
+            _S_W.touch_tick(self._db, name, interval_s=svc["interval"],
+                            last_launch=fields.get("last_launch", 0),
+                            last_duration_s=fields.get("last_duration_s", 0),
+                            running=fields.get("running", 0),
+                            enabled=fields.get("enabled", 1))
+            _R_W.touch(self._rdb, name, status="running",
+                       last_tick=fields.get("last_launch") or svc["next_tick"],
+                       next_tick=svc["next_tick"],
+                       last_duration_s=fields.get("last_duration_s", 0))
         except Exception:
             pass
 
@@ -142,25 +110,9 @@ class ServiceTicker:
                 "run_id": None, "fn": fn,
             }
             heapq.heappush(self._heap, (0.0, svc_name))
-        table = self._table_for(mode)
         try:
-            if mode == "permanent":
-                # table secondes : pas de colonne tick_interval_s (toujours 1s)
-                self.conn.execute(
-                    f"INSERT INTO {table} (svc_name, cmd, enabled) "
-                    f"VALUES (?, ?, 1) "
-                    f"ON CONFLICT(svc_name) DO UPDATE SET "
-                    f"cmd = excluded.cmd, enabled = 1",
-                    (svc_name, cmd))
-            else:
-                self.conn.execute(
-                    f"INSERT INTO {table} (svc_name, tick_interval_s, cmd, enabled) "
-                    f"VALUES (?, ?, ?, 1) "
-                    f"ON CONFLICT(svc_name) DO UPDATE SET "
-                    f"tick_interval_s = excluded.tick_interval_s, "
-                    f"cmd = excluded.cmd, enabled = 1",
-                    (svc_name, float(interval_s), cmd))
-            self.conn.commit()
+            _S_W.register_tick(self._db, svc_name, float(interval_s), cmd)
+            _R_W.touch(self._rdb, svc_name, status="registered")
         except Exception as e:
             print(f"[service_ticker] register {svc_name} BDD error: {e}")
         # permanent : démarre immédiatement le thread singleton
@@ -180,11 +132,9 @@ class ServiceTicker:
         if svc and svc["thread"] and svc["thread"].is_alive():
             pass  # daemon : il mourra seul
         _handlers.pop(svc_name, None)
-        table = self._table_for(svc["mode"]) if svc else "service_ticks"
         try:
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE svc_name = ?", (svc_name,))
-            self.conn.commit()
+            _S_W.unregister_tick(self._db, svc_name)
+            _R_W.stop(self._rdb, svc_name)
         except Exception:
             pass
 
@@ -193,25 +143,23 @@ class ServiceTicker:
         À appeler au démarrage pour reprendre les services persistés (les
         callables sont résolus par cmd au premier tick)."""
         n = 0
-        for table, mode in (("service_ticks", "ephémere"),
-                            ("service_ticks_secondes", "permanent")):
-            try:
-                rows = self.conn.execute(
-                    f"SELECT svc_name, cmd, enabled FROM {table} "
-                    f"WHERE enabled = 1").fetchall()
-            except Exception:
-                continue
-            for r in rows:
-                name = r["svc_name"]
-                interval = 1.0 if mode == "permanent" else 60.0
-                with self._lock:
-                    self._svcs.setdefault(name, {
-                        "mode": mode, "interval": interval,
-                        "next_tick": 0.0, "starts": 0, "thread": None,
-                        "run_id": None, "fn": None,
-                    })
-                    heapq.heappush(self._heap, (0.0, name))
-                n += 1
+        try:
+            ticks = _S_R.list_ticks(self._db, enabled_only=True)
+        except Exception:
+            return 0
+        for t in ticks:
+            name = t["svc_name"]
+            mode = t["mode"]
+            interval = 1.0 if mode == "permanent" else (t.get("tick_interval_s")
+                                                        or 60.0)
+            with self._lock:
+                self._svcs.setdefault(name, {
+                    "mode": mode, "interval": interval,
+                    "next_tick": 0.0, "starts": 0, "thread": None,
+                    "run_id": None, "fn": None,
+                })
+                heapq.heappush(self._heap, (0.0, name))
+            n += 1
         return n
 
     def list(self) -> List[dict]:
@@ -231,17 +179,14 @@ class ServiceTicker:
     def _resolve(self, name: str) -> Optional[Callable[[], Any]]:
         if name in _handlers:
             return _handlers[name]
-        # pas de fn locale : essayer via cmd en BDD
-        table = self._table_for(self._svcs[name]["mode"]) \
-            if name in self._svcs else "service_ticks"
+        # pas de fn locale : essayer via cmd en BDD (services.db)
         try:
-            row = self.conn.execute(
-                f"SELECT cmd FROM {table} WHERE svc_name = ?", (name,)).fetchone()
+            tick = _S_R.get_tick(self._db, name)
         except Exception:
             return None
-        if not row or not row["cmd"]:
+        if not tick or not tick.get("cmd"):
             return None
-        cmd = row["cmd"]
+        cmd = tick["cmd"]
         if ":" in cmd:
             mod, fname = cmd.split(":", 1)
             try:
@@ -262,11 +207,9 @@ class ServiceTicker:
         with self._lock:
             run_id = None
             try:
-                cur = self.conn.execute(
-                    "INSERT INTO service_tick_runs (svc_name, started_at, status) "
-                    "VALUES (?, ?, 'running')", (name, time.time()))
-                self.conn.commit()
-                run_id = cur.lastrowid
+                run_id = _S_W.log_run(self._db, name, thread_id=0,
+                                      started_at=time.time(),
+                                      status="running")["run_id"]
             except Exception:
                 pass
             svc["run_id"] = run_id
@@ -286,11 +229,9 @@ class ServiceTicker:
                     svc["next_tick"] = time.time() + svc["interval"]
                     if run_id:
                         try:
-                            self.conn.execute(
-                                "UPDATE service_tick_runs SET status = 'done', "
-                                "finished_at = ?, duration_s = ? WHERE run_id = ?",
-                                (time.time(), dur, run_id))
-                            self.conn.commit()
+                            _S_W.log_run(self._db, name, run_id=run_id,
+                                         finished_at=time.time(),
+                                         duration_s=dur, status="done")
                         except Exception:
                             pass
                     self._flush(name, last_launch=t0, last_duration_s=dur,
@@ -303,10 +244,7 @@ class ServiceTicker:
         # enregistre le thread_id (ident) une fois le thread démarré
         if run_id:
             try:
-                self.conn.execute(
-                    "UPDATE service_tick_runs SET thread_id = ? WHERE run_id = ?",
-                    (t.ident, run_id))
-                self.conn.commit()
+                _S_W.set_run_thread(self._db, run_id, t.ident)
             except Exception:
                 pass
 
@@ -386,10 +324,8 @@ class ServiceTicker:
                         if age > TIMEOUT_TICKS * svc["interval"]:
                             timedout.append(name)
                             try:
-                                self.conn.execute(
-                                    "UPDATE service_tick_runs SET status = 'timedout' "
-                                    "WHERE run_id = ?", (run_id,))
-                                self.conn.commit()
+                                _S_W.set_run_status(self._db, run_id,
+                                                    "timedout")
                             except Exception:
                                 pass
                             # détaché → relancé au prochain tick (échéance passée)
