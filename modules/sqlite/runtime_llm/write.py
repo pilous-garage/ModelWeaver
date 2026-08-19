@@ -151,6 +151,25 @@ def update_budget_final(
                 {"budget_ref": budget_ref}, changes)
 
 
+def upsert_budget_final(
+    budget_ref: str,
+    limit_cost: float = 0,
+    limit_tokens: int = 0,
+    reset_at: Optional[int] = None,
+    db: Optional[Db] = None,
+) -> None:
+    """Crée/met à jour le budget effectif (généré depuis budget_cost)."""
+    owner = db if db is not None else db()
+    if hasattr(owner, "in_write"):
+        with owner.in_write():
+            owner.table("budget_final").upsert(
+                {"budget_ref": budget_ref, "limit_cost": limit_cost,
+                 "limit_tokens": limit_tokens, "reset_at": reset_at or 0},
+                conflict_cols=["budget_ref"], token=owner._write_token)
+    else:
+        owner.close()
+
+
 def upsert_model_efficacy(
     model_ref: str,
     provider_ref: Optional[str],

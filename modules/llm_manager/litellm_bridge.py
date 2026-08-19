@@ -343,6 +343,41 @@ class LiteLLMBridgeDefunct(BaseBridge):
         except Exception:
             return {}
 
+    def _record_error_seq(self, provider_ref: str, model_ref: str,
+                          outcome: str, error_code: str = "",
+                          is_cost: bool = False) -> None:
+        """Trace une séquence erreur/succès dans runtime_llm (quota_error_seq
+        ou cost_error_seq) pour les analystes guess budget/cost."""
+        try:
+            from modules.sqlite.runtime_llm import db as rl_db
+            d = rl_db()
+            table = "cost_error_seq" if is_cost else "quota_error_seq"
+            # Résolution du guess le plus proche (target provider)
+            bundle_id = 0
+            guess_id = 0
+            try:
+                from modules.sqlite.budget_cost import db as bc_db, read as bc_read
+                bcd = bc_db()
+                bundles = bc_read.list_guess_bundles(bcd,
+                    target_kind="provider", target_ref=provider_ref)
+                if bundles:
+                    bundle_id = bundles[0]["bundle_id"]
+                    guesses = (bc_read.list_guesses(bcd, bundle_id)
+                               if not is_cost else bc_read.list_guesses_cost(bcd, bundle_id))
+                    if guesses:
+                        guess_id = guesses[0]["guess_id"]
+                bcd.close()
+            except Exception:
+                pass
+            d._conn.execute(
+                f"INSERT INTO {table} (bundle_id, guess_id, target_ref, "
+                f"type_limite, outcome, error_code) VALUES (?,?,?,?,?,?)",
+                (bundle_id, guess_id, provider_ref, model_ref, outcome, error_code))
+            d._conn.commit()
+            d.close()
+        except Exception:
+            pass
+
     def chat(self, provider_ref: str, model_ref: str,
               messages: List[Dict[str, str]],
               temperature: float = 0.7,
@@ -469,6 +504,8 @@ class LiteLLMBridgeDefunct(BaseBridge):
                     if be2.category in (ErrorCategory.AUTH, ErrorCategory.UNKNOWN):
                         self._mark_model_unavailable(provider_ref, model_ref, str(e2)[:500])
                     elapsed_ms = int((time.time() - t0) * 1000)
+                    self._record_error_seq(provider_ref, model_ref, "error",
+                                           error_code=getattr(be2, "code", ""), is_cost=False)
                     self._log_call(provider_ref, model_ref,
                                    "quota_exhausted" if be2.category == ErrorCategory.RATE_LIMIT
                                    else "error",
@@ -478,6 +515,8 @@ class LiteLLMBridgeDefunct(BaseBridge):
                                    latency_ms=elapsed_ms)
                     raise be2
             elapsed_ms = int((time.time() - t0) * 1000)
+            self._record_error_seq(provider_ref, model_ref, "error",
+                                   error_code=getattr(be, "code", ""), is_cost=False)
             self._log_call(provider_ref, model_ref,
                            "quota_exhausted" if be.category == ErrorCategory.RATE_LIMIT
                            else "error",
@@ -618,8 +657,8 @@ class LiteLLMBridgeDefunct(BaseBridge):
                 result.append(entry)
         return result
 
-def list_available_models(self,
-                          provider_ref: str) -> List[Dict[str, Any]]:
+    def list_available_models(self,
+                              provider_ref: str) -> List[Dict[str, Any]]:
         if self.cat:
             cur = self.cat.conn.execute("""
                 SELECT DISTINCT m.ref, m.name, m.developer,
@@ -649,8 +688,7 @@ def list_available_models(self,
             return [dict(zip(cols, row)) for row in cur.fetchall()]
         return []
 
-    def health_check(self,
-                     provider_ref: Optional[str] = None) -> Dict[str, Any]:
+    def health_check(self, provider_ref: Optional[str] = None) -> Dict[str, Any]:
         self._lazy_import()
         if not provider_ref:
             return {"bridge": "litellm", "status": "loaded",
