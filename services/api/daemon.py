@@ -1093,6 +1093,15 @@ def _start_service_ticker(log=None) -> None:
         if log:
             log.warning("petri_runtime non enregistré", error=str(e))
 
+    # budget_cost_interrogator : interrogation systémique coûts/quotas/keys (60s).
+    try:
+        from services.budget_cost_interrogator import interrogate as bci_tick
+        st.register("budget_cost_interrogator", interval_s=60, fn=bci_tick,
+                    cmd="services.budget_cost_interrogator:interrogate")
+    except Exception as e:
+        if log:
+            log.warning("budget_cost_interrogator non enregistré", error=str(e))
+
     st.start()
     if log:
         log.info("ServiceTicker démarré")

@@ -139,31 +139,21 @@ def _set_job(job_id: int, status: str, log=None, pid=None) -> None:
 # ──────────────────────────────────────────────
 
 def _record_usage(mw, ref: str, etat: str) -> None:
-    """Trace l'état d'install local (télémétrie opt-in, phase 2/3)."""
-    install_id = os.environ.get("MODELWEAVER_INSTALL_ID", "local")
-    mw.conn.execute(
-        "INSERT INTO tool_usage (install_id, outil_ref, version_ref, recette_id, etat) "
-        "VALUES (?,?,?,?,?)", (install_id, ref, "latest", None, etat))
-    mw.commit()
+    """Trace l'état d'install local → hardware_software.installed_software."""
+    try:
+        from services.installer_worker.catalogue_bridge import record_usage
+        record_usage(ref, etat)
+    except Exception:
+        pass
 
 
-def _lookup_tool(ref: str, cat_shared) -> Optional[Dict[str, Any]]:
-    """Lit un outil depuis catalogue_outils, avec sa classe métier."""
-    cur = cat_shared.conn.execute("""
-        SELECT o.ref, o.nom, o.description, o.tool_type,
-               c.ref AS classe_ref, c.nom AS classe_nom
-        FROM catalogue_outils o
-        LEFT JOIN classes_outils c ON c.classe_id = o.classe_outil_id
-        WHERE o.ref = ?
-    """, (ref,))
-    row = cur.fetchone()
-    if not row:
+def _lookup_tool(ref: str, cat_shared=None) -> Optional[Dict[str, Any]]:
+    """Lit un outil depuis le catalogue local 'tool' (remplace catalogue_outils)."""
+    try:
+        from services.installer_worker.catalogue_bridge import lookup_tool
+        return lookup_tool(ref)
+    except Exception:
         return None
-    classe_ref = row["classe_ref"] or (row["tool_type"] if row["tool_type"] else "other")
-    classe_nom = row["classe_nom"] or classe_ref
-    return {"ref": row["ref"], "name": row["nom"],
-            "description": row["description"], "tool_type": row["tool_type"],
-            "classe_ref": classe_ref, "classe": classe_nom}
 
 
 def install_tool(ref: str, mw_shared=None, cat_shared=None) -> dict:

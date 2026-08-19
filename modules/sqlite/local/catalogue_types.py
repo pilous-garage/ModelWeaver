@@ -66,14 +66,54 @@ CATALOGUE_TYPES: Dict[str, Dict[str, Any]] = {
     },
     "model_provider_endpoint_typekey": {
         "description": "capacity + coût + quota par (model_provider_endpoint × "
-                       "provider_typekey) — UNE data_type catalogue",
+                        "provider_typekey) — UNE data_type catalogue",
         "extra_cols": {},
+    },
+    "cost": {
+        "description": "coût déclaré (data_init) : ratio unit_in→unit_out par "
+                       "modèle×endpoint×typekey (source models.dev via buffer)",
+        "extra_cols": {
+            "unit_in": "TEXT DEFAULT 'tok_in'",
+            "unit_out": "TEXT DEFAULT 'money'",
+            "ratio_low": "REAL DEFAULT 0",
+            "ratio_high": "REAL DEFAULT 0",
+            "depends_on_time": "INTEGER DEFAULT 0",
+        },
+    },
+    "quota": {
+        "description": "quota déclaré (data_init) : limite par modèle×endpoint×"
+                       "typekey (source models.dev via buffer)",
+        "extra_cols": {
+            "limit_value": "REAL DEFAULT 0",
+            "window": "TEXT DEFAULT 'day'",
+            "unit": "TEXT DEFAULT 'request'",
+        },
+    },
+    "tool": {
+        "description": "catalogue des outils : nom, ref, version, cmd, hash",
+        "extra_cols": {
+            "version_json": "TEXT DEFAULT '{}'",
+            "cmd_json": "TEXT DEFAULT '{}'",
+            "hash_sha256": "TEXT DEFAULT ''",
+            "hash_md5": "TEXT DEFAULT ''",
+        },
+    },
+    "tool_recipe": {
+        "description": "recette d'installation séparée du catalogue (os, arch, manager, package, content)",
+        "extra_cols": {
+            "os": "TEXT DEFAULT 'all'",
+            "arch": "TEXT DEFAULT 'all'",
+            "manager": "TEXT",
+            "package": "TEXT",
+            "content": "TEXT",
+        },
     },
 }
 
 CATALOGUE_ORDER = ["model_official", "provider", "endpoint", "provider_endpoint",
                    "model_provider_endpoint", "provider_typekey",
-                   "model_provider_endpoint_typekey"]
+                   "model_provider_endpoint_typekey", "tool",
+                   "tool_recipe", "cost", "quota"]
 
 # type → {tag_type: (tag_value_type, description)} — registres x_tag_type que
 # les écritures devront déclarer avant tag_attach. Valeurs tag_value_type :
@@ -168,6 +208,20 @@ TAG_REGISTRIES: Dict[str, Dict[str, tuple]] = {
         "quota_tok_per_min": ("number", "quota : tokens/minute"),
         "quota_tok_per_day": ("number", "quota : tokens/jour"),
         "quota_cost_per_day": ("number", "quota : coût/jour"),
+    },
+    "tool": {
+        "privilege_tag": ("text", "privilège d'utilisation : default/restricted/admin"),
+        "category": ("text", "catégorie : dev-tool, ide, language, agent, system, router, context"),
+        "license": ("text", "licence : MIT, Apache-2.0, GPL, proprietary…"),
+        "platform": ("list", "plateformes supportées : linux, darwin, windows"),
+    },
+    "cost": {
+        "source": ("text", "origine du coût : models.dev, manual, guess"),
+        "currency": ("text", "unité de sortie : money, time, thinking_power"),
+    },
+    "quota": {
+        "window": ("text", "fenêtre de reset : minute, hour, day, month"),
+        "unit": ("text", "unité : request, token, cost"),
     },
 }
 
