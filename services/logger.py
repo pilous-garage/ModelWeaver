@@ -82,8 +82,10 @@ class MWLogger:
         self._service = service
         self._logger = logging.getLogger(f"mw.{service}")
 
-    def _log(self, level: int, msg: str, **kwargs):
+    def _log(self, level: int, msg: str, *args, **kwargs):
         exc_info = kwargs.pop("exc_info", None)
+        if args:
+            msg = msg % args
         extra = {"extra": kwargs} if kwargs else {}
         extra["service"] = self._service
         self._logger.log(level, msg, extra=extra, exc_info=exc_info)
@@ -93,17 +95,17 @@ class MWLogger:
         for h in logging.getLogger("mw").handlers:
             h.flush()
 
-    def debug(self, msg: str, **kwargs):
-        self._log(logging.DEBUG, msg, **kwargs)
+    def debug(self, msg: str, *args, **kwargs):
+        self._log(logging.DEBUG, msg, *args, **kwargs)
 
-    def info(self, msg: str, **kwargs):
-        self._log(logging.INFO, msg, **kwargs)
+    def info(self, msg: str, *args, **kwargs):
+        self._log(logging.INFO, msg, *args, **kwargs)
 
-    def warning(self, msg: str, **kwargs):
-        self._log(logging.WARNING, msg, **kwargs)
+    def warning(self, msg: str, *args, **kwargs):
+        self._log(logging.WARNING, msg, *args, **kwargs)
 
-    def error(self, msg: str, **kwargs):
-        self._log(logging.ERROR, msg, **kwargs)
+    def error(self, msg: str, *args, **kwargs):
+        self._log(logging.ERROR, msg, *args, **kwargs)
 
-    def critical(self, msg: str, **kwargs):
-        self._log(logging.CRITICAL, msg, **kwargs)
+    def critical(self, msg: str, *args, **kwargs):
+        self._log(logging.CRITICAL, msg, *args, **kwargs)

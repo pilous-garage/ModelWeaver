@@ -910,6 +910,15 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
     except Exception as e:
         log.warning("Vérification tokens de domaine ignorée", error=str(e))
 
+    # Onboard des clés API depuis .env → key_manager sqlite (keys.db).
+    try:
+        from modules.sqlite.keys.onboard import onboard_from_env
+        _onb = onboard_from_env()
+        log.info("Clés API onboardées depuis .env",
+                 loaded=len(_onb.get("loaded", [])), existing=_onb.get("existing"))
+    except Exception as _e:
+        log.warning("Onboarding clés .env échoué", error=str(_e))
+
     # bind avec retry (port occupé au boot)
     server = None
     for attempt in range(10):
@@ -1034,6 +1043,17 @@ def serve(port: int = 8770, bind: str = "127.0.0.1") -> None:
 
     # Boot teams : charge les manifests .team.yaml
     _ensure_teams(log)
+
+    # Auto-découverte des modules/routes → modules.db (route /v1/infra/modules).
+    try:
+        from modules.sqlite.modules import db as M_DB, write as M_W
+        mdb = M_DB()
+        res = M_W.discover(mdb)
+        mdb.close()
+        log.info("Modules découverts", count=res.get("total", 0),
+                 loaded=res.get("loaded", 0))
+    except Exception as _e:
+        log.warning("discover modules échoué", error=str(_e))
 
     try:
         server.serve_forever()

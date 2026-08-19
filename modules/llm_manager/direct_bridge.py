@@ -1631,8 +1631,8 @@ class DirectBridge(BaseBridge):
 
     # ── Capacités ──────────────────────────────────────────
 
-def get_capabilities(self, provider_ref: str,
-                     model_ref: str) -> ModelCapabilities:
+    def get_capabilities(self, provider_ref: str,
+                         model_ref: str) -> ModelCapabilities:
         """Retourne les capacités depuis la base de données model_capability
         (nouvelle schema) ou valeurs par défaut.
 

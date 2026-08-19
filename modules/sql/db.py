@@ -1,9 +1,2 @@
-"""Compat shim modules.sql.db → modules.sqlite"""
-
-from modules.sqlite.base import Db
-from modules.sqlite.local import db as CatalogueDB
-from modules.sqlite.runtime_llm import db as RuntimeDB
-
-ModelWeaverDB = Db
-
-__all__ = ["Db", "CatalogueDB", "RuntimeDB", "ModelWeaverDB"]
+"""Shim compat: modules.sql.db -> modules.sql_old.db"""
+from modules.sql_old.db import *  # noqa: F401,F403
