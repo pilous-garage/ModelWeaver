@@ -226,6 +226,22 @@ CREATE TABLE IF NOT EXISTS quota_error_seq (
 CREATE INDEX IF NOT EXISTS idx_qes_bundle ON quota_error_seq(bundle_id, guess_id);
 CREATE INDEX IF NOT EXISTS idx_qes_at ON quota_error_seq(at_epoch);
 
+-- Journal des dépassements de CONTEXTE (hérité de catalogue.context_audit_log).
+-- Quand un appel LLM dépasse la fenêtre de contexte détectée, on trace pour
+-- affiner context_window_effective. Complémentaire à model_call_log (status
+-- error) : ici on garde les détails de tokens/limite.
+CREATE TABLE IF NOT EXISTS context_audit_log (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_ref            TEXT NOT NULL,
+    model_ref               TEXT NOT NULL,
+    tokens_sent             INTEGER NOT NULL,
+    detected_context_limit INTEGER,
+    context_window_effective INTEGER,
+    created_at              INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cal_provider_model
+    ON context_audit_log(provider_ref, model_ref);
+
 CREATE TABLE IF NOT EXISTS cost_error_seq (
     seq_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     bundle_id   INTEGER NOT NULL,   -- → budget_cost.guess_bundle_cost

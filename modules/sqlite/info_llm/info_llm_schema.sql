@@ -152,6 +152,12 @@ CREATE TABLE IF NOT EXISTS alias_model (
     source_name  TEXT NOT NULL,
     source       TEXT NOT NULL,
     source_type  TEXT NOT NULL CHECK(source_type IN ('provider','benchmark','manual')),
+    -- Fusion catalogue_aliases : réconciliation de noms externes → canonical
+    canonical    TEXT DEFAULT '',       -- canonical_ref ModelWeaver (ex: openai/gpt-4)
+    used         INTEGER DEFAULT 0,      -- 1 = alias effectivement utilisé
+    user_type    TEXT DEFAULT 'source'   -- source | provider (qui déclare l'alias)
+                 CHECK(user_type IN ('source','provider')),
+    user_ref     TEXT DEFAULT '',        -- ref de la source/provider déclarante
     confidence   TEXT DEFAULT 'auto',
     status       TEXT NOT NULL DEFAULT 'linked'
                  CHECK(status IN ('linked','unresolved','ambiguous')),
