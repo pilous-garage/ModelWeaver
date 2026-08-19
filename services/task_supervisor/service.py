@@ -97,7 +97,7 @@ class TaskSupervisor:
         Remplace les règles existantes de la team pour cette workspace, puis
         insère la liste fournie. Retourne le nombre de règles actives."""
         sc = self.db.for_workspace(workspace_id)
-        sc.conn.execute(
+        self.db.conn.execute(
             "DELETE FROM task_supervisor_rules "
             "WHERE workspace_id = ? AND team_id = ?",
             (workspace_id, team_id))
@@ -209,7 +209,7 @@ class TaskSupervisor:
         try:
             from services.agent_manager.service import AgentManager
             _amgr = AgentManager()
-            _cancel_rows = sc.conn.execute("""
+            _cancel_rows = self.db.conn.execute("""
                 SELECT s.sub_task_id, s.assigned_to, t.task_id
                 FROM sub_tasks s JOIN tasks t ON t.task_id = s.task_id
                 WHERE s.workspace_id = ? AND s.team_id = ?
@@ -296,16 +296,16 @@ class TaskSupervisor:
         try:
             import time as _t
             _cutoff_ts = _t.time() - 180
-            sc.conn.execute("""
+            self.db.conn.execute("""
                 UPDATE sub_tasks SET status = 'done', tag = 'ok', supervised = 1
                 WHERE sub_task_type = 'exploration'
                   AND status = 'doing'
                   AND julianday(updated_at) < julianday(?, 'unixepoch')
             """, (_cutoff_ts,))
-            sc.conn.commit()
+            self.db.conn.commit()
         except Exception:
             pass
-        rows = sc.conn.execute(
+        rows = self.db.conn.execute(
             "SELECT task_id FROM sub_tasks WHERE team_id = ? GROUP BY task_id",
             (team_id,)).fetchall()
         n = 0
@@ -320,7 +320,7 @@ class TaskSupervisor:
             # (explorations laissées doing par un ask_intel dont l'explorer n'a
             # pas conclu). Sinon la tâche reste todo pour toujours.
             if stype in ("chat_entry", "completion_entry"):
-                respond_done = sc.conn.execute(
+                respond_done = self.db.conn.execute(
                     "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
                     "AND sub_task_type = 'respond' "
                     "AND status IN ('done','supervised')",
@@ -328,7 +328,7 @@ class TaskSupervisor:
                 if respond_done:
                     # Clôturer les sub_tasks orphelines restantes (explorations
                     # en doing/unattributed) pour ne pas laisser de résidus.
-                    sc.conn.execute(
+                    self.db.conn.execute(
                         "UPDATE sub_tasks SET supervised = 1, "
                         "status = 'supervised' WHERE task_id = ? "
                         "AND status IN ('doing','unattributed',"
@@ -336,7 +336,7 @@ class TaskSupervisor:
                         (tid,))
                     sc.tasks.update(tid, status="supervised",
                                     tag=task.get("tag") or "ok")
-                    sc.conn.execute(
+                    self.db.conn.execute(
                         "UPDATE sub_tasks SET supervised = 1, "
                         "status = 'supervised' WHERE task_id = ?",
                         (tid,))
@@ -344,7 +344,7 @@ class TaskSupervisor:
                     continue
                 # Pas encore de respond : le créer (réponse finale de
                 # l'exitpoint), le prepare-response le piochera.
-                has_respond = sc.conn.execute(
+                has_respond = self.db.conn.execute(
                     "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
                     "AND sub_task_type = 'respond'",
                     (tid,)).fetchone()[0]
@@ -365,7 +365,7 @@ class TaskSupervisor:
                     except Exception:
                         pass
                 continue
-            open_ = sc.conn.execute(
+            open_ = self.db.conn.execute(
                 "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
                 "AND status IN ('unattributed', 'doing', 'waiting_dependencies')",
                 (tid,)).fetchone()[0]
@@ -373,7 +373,7 @@ class TaskSupervisor:
                 continue
             # Création du respond pour les entrées du swarm-as-llm.
             if stype in ("chat_entry", "completion_entry"):
-                has_respond = sc.conn.execute(
+                has_respond = self.db.conn.execute(
                     "SELECT COUNT(*) FROM sub_tasks WHERE task_id = ? "
                     "AND sub_task_type = 'respond' AND status IN ('done','supervised')",
                     (tid,)).fetchone()[0]
@@ -391,7 +391,7 @@ class TaskSupervisor:
                         pass
                     continue  # attend le prepare-response
             sc.tasks.update(tid, status="supervised", tag=task.get("tag") or "ok")
-            sc.conn.execute(
+            self.db.conn.execute(
                 "UPDATE sub_tasks SET supervised = 1, status = 'supervised' "
                 "WHERE task_id = ?", (tid,))
             n += 1

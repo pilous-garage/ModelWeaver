@@ -1227,9 +1227,11 @@ class AgentManager:
         # (C'EST le canal de réveil : le supervisor pose des signaux wakeup
         # quand une sub_task devient dispo — pas de waker de scan).
         woken = self._wake_sleeping_agents()
-        # (le waker de tâches _wake_for_tasks est DÉSACTIVÉ : le supervisor
-        # réveille les agents par SIGNAL à l'attribution, pas par scan.)
-        woken_tasks = 0
+        # Waker de tâches : réveille les agents greedy en attente quand une
+        # condition est remplie (sub_task unattributed dispo, task todo…).
+        # C'est le point de bascule du swarm : sans lui, les greedy ne sont
+        # jamais réveillés → les tâches restent todo/analysis à jamais.
+        woken_tasks = self._wake_for_tasks()
         # (le coordinateur dev-chat est DÉPRÉCIÉ — réveil désactivé.)
         woken_coord = 0
         # Réveiller les agents SUPERVISOR (ils tournent en continu pour

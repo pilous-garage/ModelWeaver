@@ -36,21 +36,42 @@ def _wdb():
 
 
 def create_task(workspace: str, title: str, description: str, task_type="coding") -> int:
-    """Crée une tâche piochable par les greedy (todo). Crée le workspace si
-    absent (la team peut ne pas être bootée)."""
-    wdb = _wdb()
+    """Crée une entrée swarm (task + sub_task analysis initiale) piochable par
+    les greedy. Utilise create_entry (entrypoint as-llm-leader) pour amorcer le
+    taskflow : une sub_task `analysis` unattributed est créée → le waker/supervisor
+    réveille l'analyste → découpe → coding/testing/review/merge → respond.
+
+    Crée le workspace si absent (la team peut ne pas être bootée)."""
     try:
+        from AgentsCatalogue.lib.workspacedb import taskflow
+        # team_id résolu depuis le director du workspace (team:llm-code → 1)
         try:
-            wdb.workspaces.create(workspace, name=workspace)
+            wdb = _wdb()
+            _row = wdb.conn.execute(
+                "SELECT director FROM workspaces WHERE workspace_id=?",
+                (workspace,)).fetchone()
+            _team_id = 1 if _row else -1
+            wdb.close()
         except Exception:
-            pass   # existe déjà
-        task = wdb.for_workspace(workspace).tasks.create(
-            title=title, description=description,
-            difficulty="easy", task_type=task_type, team_id=-1,
-            priority=100)  # priorité haute → pioché en premier
-        return task["task_id"]
-    finally:
-        wdb.close()
+            _team_id = -1
+        r = taskflow.create_entry({
+            "workspace_id": workspace,
+            "title": title,
+            "description": description,
+            "entry_type": "feature",   # skip classification consensus (LLM)
+            "team_id": _team_id,
+            "priority": 100,
+        }, home=str(_wdb_home()))
+        if r.get("ok"):
+            return r["task_id"]
+        # fallback : log
+        sys.stderr.write(f"create_entry échec: {r.get('error')}\n")
+        return -1
+
+
+def _wdb_home():
+    from services._common import mw_home
+    return mw_home()
 
 
 def task_status(workspace: str, task_id: int) -> str:
