@@ -1153,16 +1153,15 @@ def _start_service_ticker(log=None) -> None:
     # point de bascule du swarm : sans ce tick, les sub_tasks unattributed
     # ne sont jamais piquées par les agents → tâches bloquées à tout jamais.
     try:
-        if os.environ.get("MW_DISABLE_AGENT_MANAGER_TICK") != "1":
-            from services.agent_manager.service import AgentManager
-            _am = AgentManager()
-            def _am_tick():
-                try:
-                    _am.tick()
-                except Exception:
-                    pass
-            st.register("agent_manager", interval_s=5, fn=_am_tick,
-                        cmd="services.agent_manager.service:AgentManager.tick")
+        from services.agent_manager.service import AgentManager
+        _am = AgentManager()
+        def _am_tick():
+            try:
+                _am.tick()
+            except Exception:
+                pass
+        st.register("agent_manager", interval_s=5, fn=_am_tick,
+                    cmd="services.agent_manager.service:AgentManager.tick")
     except Exception as e:
         if log:
             log.warning("agent_manager non enregistré", error=str(e))
