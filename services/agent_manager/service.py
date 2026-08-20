@@ -1630,7 +1630,9 @@ class AgentManager:
         active = len(self.list_active())
         count = 0
         for row in rows:
-            if active + count >= MAX_THREAD_AGENTS:
+            # Limite douce : on n'amorce que jusqu'à MIN_ACTIVE_TARGET greedy
+            # en vie (évite 82 threads LLM d'un coup → OOM/crash daemon).
+            if active + count >= MIN_ACTIVE_TARGET:
                 break
             aid = row["agent_id"]
             if _agent_thread_alive(aid):
