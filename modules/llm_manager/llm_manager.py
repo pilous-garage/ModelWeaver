@@ -9,7 +9,6 @@ from typing import Dict, Any, List, Optional
 from modules.llm_manager.base_bridge import (
     BaseBridge, ModelCapabilities, ChatResponse, BridgeError, ErrorCategory,
 )
-from modules.llm_manager.litellm_bridge import LiteLLMBridgeDefunct
 from modules.llm_manager import catalogue_remote
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -120,14 +119,13 @@ class LLMManager:
             return "direct"
 
     def get_bridge(self) -> BaseBridge:
-        """Retourne le bridge actif (créé une fois, sélection par config)."""
+        """Retourne le bridge actif (créé une fois, sélection par config).
+
+        litellm est retiré (legacy) : tout passe par DirectBridge (appels
+        OpenAI-compatibles natifs)."""
         if self._bridge is None:
-            name = self._bridge_name()
-            if name == "litellm":
-                self._bridge = LiteLLMBridgeDefunct(cat=self.cat, km=self.km)
-            else:
-                from modules.llm_manager.direct_bridge import DirectBridge
-                self._bridge = DirectBridge(cat=self.cat, km=self.km)
+            from modules.llm_manager.direct_bridge import DirectBridge
+            self._bridge = DirectBridge(cat=self.cat, km=self.km)
         return self._bridge
 
     def chat(self, provider_ref: str, model_ref: str,
