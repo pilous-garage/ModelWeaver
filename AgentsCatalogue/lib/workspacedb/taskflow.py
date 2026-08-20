@@ -469,9 +469,8 @@ def ask_new_task(inputs: dict, home: str) -> dict:
         # 3) Sinon : demande au supervisor (attribution unattributed → attributed).
         ask_id = sc.ask.create(aid, types)
         db.close()
-        from services.task_supervisor.service import TaskSupervisor
-        sup = TaskSupervisor()
-        res = sup.assign(workspace_id, aid, types)
+        from AgentsCatalogue.lib.supervisor import supervisor as _sup
+        res = _sup.assign_task(workspace_id, aid, types)
         if res.get("ok"):
             # l'assign retourne la sub_task `attributed` → l'agent la prend
             # immédiatement en doing (elle lui est assignée).
@@ -484,10 +483,9 @@ def ask_new_task(inputs: dict, home: str) -> dict:
                        "ask_id": ask_id,
                        "conv_id": _new_conv_id(res["task_id"])}
             return _attach_task_ctx(sc2, res["task_id"], payload)
-        # Rien de dispo → l'agent se déshydrate, mais on l'enregistre en
-        # wait_for (sub_task_available) pour que le waker le réveille quand une
-        # sub_task de son type devient dispo.
-        _register_wait(workspace_id, aid, types)
+        # Rien de dispo → l'agent se déshydrate. Plus de wait_for par type (supprimé) :
+        # le supervisor le réveillera par signal wakeup quand une sub_task de
+        # son type devient dispo — le waker ne scanne plus.
         return {"ok": False, "reason": "wait", "ask_id": ask_id,
                 "note": res.get("note", "aucune sub_task dispo")}
     except Exception as e:

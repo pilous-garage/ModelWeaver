@@ -11,6 +11,7 @@ Pipeline :
 """
 
 from __future__ import annotations
+import os
 from typing import Any, Dict, List, Optional
 
 from services.llm_allocation.strategies import (
@@ -19,6 +20,26 @@ from services.llm_allocation.strategies import (
     get_strategy,
     list_strategies,
 )
+
+# Modèles constatés morts en réel (404/quota/balance/clé invalide).
+# Extensible via ALLOCATION_EXTRA_BLOCKED="provider/model,...".
+BROKEN_MODEL_REFS = {
+    "openai/gpt-3.5-turbo",
+    "nvidia/01-ai/yi-large",
+    "deepseek/deepseek-chat",
+    "groq/compound-mini",
+}
+BROKEN_PROVIDERS = {"mistral"}
+
+
+def _broken_refs() -> set:
+    refs = set(BROKEN_MODEL_REFS)
+    extra = os.environ.get("ALLOCATION_EXTRA_BLOCKED", "")
+    for item in extra.split(","):
+        item = item.strip()
+        if item:
+            refs.add(item)
+    return refs
 
 
 def _get_catalogue() -> Any:
@@ -295,6 +316,7 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
     exclude_set = set(request.exclude or [])
     excl_p = set(exclude_providers or [])
     excl_m = set(exclude_models or [])
+    broken_refs = _broken_refs()
     # Normalisation : matcher aussi par nom de modèle seul (dernier segment
     # après '/') — les callers passent souvent "mimo-v2.5-free" sans préfixe
     # provider (ex. not_same_modele du consensus), alors que provider_model_name
@@ -313,7 +335,11 @@ def _build_candidates(raw_rows: List[Dict], request: AllocationRequest,
             norm_ref = ref
         if ref in exclude_set or norm_ref in exclude_set:
             continue
+        if ref in broken_refs or norm_ref in broken_refs:
+            continue
         if row["provider_ref"] in excl_p:
+            continue
+        if row["provider_ref"] in BROKEN_PROVIDERS:
             continue
         if raw_model in excl_m or raw_model.split("/", 1)[-1] in excl_m_suffix:
             continue

@@ -211,7 +211,8 @@ def _pid_alive(pid: int) -> bool:
 def _find_existing(procs: List[tuple], name: str) -> Optional[int]:
     """Cherche dans /proc un process correspondant au service (adoption)."""
     for pid, cmdline in procs:
-        if _match_service(cmdline, name) and cmdline != "":
+        if _match_service(cmdline, name) and cmdline != "" \
+                and _same_home(pid):
             return pid
     return None
 
@@ -701,6 +702,36 @@ class Supervisor:
         return {"ok": result.get("status") in ("ok",), "result": result, "id": rid}
 
 
+def _same_home(pid: int) -> bool:
+    """Vrai si le process tourne avec le MÊME MODELWEAVER_HOME que nous.
+
+    Le singleton superviseur (et l'adoption des services) est PAR HOME :
+    plusieurs homes peuvent avoir chacun leur superviseur/daemon sans se
+    bloquer (un ancien superviseur d'un home de test ne doit pas empêcher
+    le superviseur d'un autre home de démarrer, ni adopter ses services)."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return True  # ne peut pas lire → conservateur (bloque le doublon)
+    vals = {}
+    for part in raw.split(b"\x00"):
+        if not part:
+            continue
+        k, _, v = part.partition(b"=")
+        vals[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
+    cand = vals.get("MODELWEAVER_HOME", "")
+    ours = os.environ.get("MODELWEAVER_HOME", "")
+    if cand and cand != ours:
+        return False
+    if not cand and not ours:
+        return True
+    if not cand:
+        # candidat sur le home par défaut : même home seulement si nous
+        # tournons aussi sur le home par défaut
+        return ours == str(Path.home() / ".modelweaver")
+    return True
+
+
 def main():
     # Singleton STRICT : s'il y a déjà un superviseur vivant, on s'éteint.
     # (Le kill-and-replace de acquire_instance_lock laissait les services
@@ -709,7 +740,7 @@ def main():
     for pid, cmdline in procs:
         if pid == os.getpid():
             continue
-        if _match_service(cmdline, "supervisor"):
+        if _match_service(cmdline, "supervisor") and _same_home(pid):
             print(f"[supervisor] un autre superviseur tourne déjà "
                   f"(pid {pid}) — arrêt.", file=sys.stderr)
             sys.exit(1)

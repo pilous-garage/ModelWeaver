@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from modules.sql.schema import mw_home
+from modules.sqlite.paths import mw_home
 
 TICK_INTERVAL_S = 10.0
 
@@ -48,9 +48,9 @@ ETATS = ("unattributed", "attributed", "doing", "done", "supervised",
 
 
 def _agents_db() -> Any:
-    from modules.sql.schema import _default_agents_db
+    from modules.sqlite.paths import db_path
     import sqlite3
-    conn = sqlite3.connect(f"file:{_default_agents_db()}?mode=ro", uri=True,
+    conn = sqlite3.connect(f"file:{db_path('agents')}?mode=ro", uri=True,
                            check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn

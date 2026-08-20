@@ -30,6 +30,19 @@ CREATE TABLE IF NOT EXISTS agents (
   last_active_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 
+-- teams — identité STABLE des équipes (hors run). Seedée au register du
+-- manifest (INSERT OR IGNORE par team_ref) : team_id AUTOINCREMENT ne change
+-- JAMAIS (plus de convention MIN(agent_id) — instable). agents.id_team
+-- référence teams.team_id ; la team "default" (agents sans team) = team_id -1.
+CREATE TABLE IF NOT EXISTS teams (
+  team_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_ref TEXT UNIQUE NOT NULL,
+  manifest TEXT DEFAULT '',
+  workspace_id TEXT DEFAULT '',
+  name TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS idx_teams_workspace ON teams(workspace_id);
+
 CREATE TABLE IF NOT EXISTS agent_runtime (
   agent_id INTEGER PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
   thread_id TEXT UNIQUE,

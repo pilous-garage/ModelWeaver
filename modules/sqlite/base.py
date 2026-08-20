@@ -63,6 +63,7 @@ class Db:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._mode = mode
         self._write_token = write_token
+        self._shared = False  # True si domaine SINGLETON partagé entre threads
         self._lock = threading.RLock()
         uri = f"file:{self.db_path}?mode={'ro' if mode == 'ro' else 'rwc'}"
         self._conn = sqlite3.connect(uri, uri=True, timeout=30,
@@ -106,6 +107,14 @@ class Db:
 
     def close(self) -> None:
         self._closed = True
+        if self._shared:
+            # Singleton partagé entre threads (workspace, agents…) : on NE
+            # ferme JAMAIS physiquement la connexion. Un close() concurrent
+            # pendant qu'un autre thread exécute sur cette connexion → 
+            # use-after-free sur le sqlite3* → SEGFAULT (constaté en réel).
+            # Le domaine vit pour le process ; la connexion est libérée à
+            # l'arrêt du process.
+            return
         with self._lock:
             self._conn.close()
 

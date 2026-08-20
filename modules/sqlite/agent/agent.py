@@ -6,7 +6,7 @@ task_supervisor). Pas de token.
 Ce fichier ne contient QUE le SCHÉMA (CREATE) + le câblage Db. Toute la
 logique SQL est dans modules.sqlite.base. Les 4 tables obsolètes
 (wait_for, team_tasks, conversations, conversation_messages) sont DROPPÉES à
-la migration (schema_version 1 -> 2).
+la migration (schema_version 1 -> 2). v3 : + table teams (identité stable).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import List, Optional
 from modules.sqlite.base import Db
 from modules.sqlite.paths import db_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _load_schema() -> List[str]:
@@ -65,6 +65,10 @@ class AgentDomain:
     def meta(self):
         return self.db.table("meta")
 
+    @property
+    def teams(self):
+        return self.db.table("teams")
+
 
 _domain: Optional["AgentDomain"] = None
 
@@ -74,4 +78,5 @@ def get_domain() -> AgentDomain:
     global _domain
     if _domain is None:
         _domain = AgentDomain()
+        _domain.db._shared = True
     return _domain

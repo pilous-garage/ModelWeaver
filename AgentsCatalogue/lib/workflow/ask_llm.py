@@ -5,6 +5,7 @@ capture provider_ref/model_ref dans ses variables (_llm_provider/_llm_model)
 et les réutilise pour les steps llm_call suivants.
 """
 
+import json
 import re
 import time
 
@@ -162,6 +163,30 @@ def _allocate(inputs: dict, home: str) -> dict:
             pass
 
     try:
+        # ALLOCATION EXISTANTE : si l'agent a DÉJÀ un _llm_provider/_llm_model
+        # persisté (alloué à un run précédent, ou posé manuellement), on le
+        # GARDE — pas de ré-allocation à chaque run (le catalogue contient des
+        # modèles théoriquement dispo mais cassés en réel : quota/404/balance).
+        # La ré-allocation reste possible via inputs.reallocate=True (retry
+        # après échec d'appel).
+        if not inputs.get("reallocate"):
+            try:
+                from modules.sqlite.agent.agent import get_domain as _ag
+                _ad = _ag()
+                _r = _ad.db._conn.execute(
+                    "SELECT variables_json FROM agents WHERE agent_id = ?",
+                    (int(agent_id or 0),)).fetchone()
+                if _r:
+                    _v = json.loads(_r["variables_json"] or "{}")
+                    _pp = (_v.get("_llm_provider") or "").strip()
+                    _mm = (_v.get("_llm_model") or "").strip()
+                    if _pp and _mm:
+                        return {"ok": True, "provider_ref": _pp,
+                                "model_ref": _mm, "use_case": use_case,
+                                "used_models": [f"{_pp}/{_mm}"],
+                                "kept": True}
+            except Exception:
+                pass
         llm_mgr = LLMManager(CatalogueDB())
         llm = llm_mgr.assign_llm(use_case=use_case, agent_id=agent_id or None,
                                  min_window=min_window,

@@ -28,6 +28,30 @@ def _get_agent_db():
     return AgentsDB()
 
 
+def _ensure_team_id(team_ref: str, name: str = "", manifest: str = "",
+                    workspace_id: str = "") -> int:
+    """team_id STABLE de la team (table teams, seed INSERT OR IGNORE par
+    team_ref → AUTOINCREMENT, jamais renumérotée). Le manifest est source de
+    vérité pour workspace_id/name (mis à jour idempotent). -1 si échec."""
+    try:
+        from modules.sqlite.agent.agent import get_domain as _ag
+        ad = _ag()
+        ad.db._conn.execute(
+            "INSERT OR IGNORE INTO teams (team_ref, manifest, workspace_id, name) "
+            "VALUES (?, ?, ?, ?)",
+            (team_ref, manifest, workspace_id, name))
+        ad.db._conn.execute(
+            "UPDATE teams SET workspace_id = ?, name = ?, manifest = ? "
+            "WHERE team_ref = ?",
+            (workspace_id, name, manifest, team_ref))
+        ad.db._conn.commit()
+        r = ad.db._conn.execute(
+            "SELECT team_id FROM teams WHERE team_ref = ?", (team_ref,)).fetchone()
+        return int(r[0]) if r else -1
+    except Exception:
+        return -1
+
+
 def _ensure_agent_exists(spec, role: str, occupation: str,
                          team_name: str = "", home: str = "",
                          workspace_id: str = "", team_id: int = -1) -> int:
@@ -66,6 +90,10 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
         # spec n'en définit plus → allocation automatique par le LLMManager).
         updates = ["resources_json = ?"]
         params = [resources_json]
+        # id_team stable (teams.team_id) — toujours resynchronisé au register.
+        if team_id > 0:
+            updates.append("id_team = ?")
+            params.append(team_id)
         # L'agent SUPERVISOR doit toujours connaître son workspace/team
         # (pas de pick) → on injecte/maj variables_json.
         if workspace_id and effective_role == "supervisor":
@@ -108,10 +136,11 @@ def _ensure_agent_exists(spec, role: str, occupation: str,
 
     ref = f"agent:{scoped_name}"
     db.conn.execute("""
-        INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json, home)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO agents (name, ref, role_type, occupation, config_json, resources_json, home, id_team)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (scoped_name, ref, effective_role, effective_occupation,
-          config_json, resources_json, home or ""))
+          config_json, resources_json, home or "",
+          team_id if team_id > 0 else None))
     db.conn.commit()
 
     row = db.conn.execute(
@@ -184,22 +213,13 @@ class Team:
             self._seed_leader_workflow()
 
         # Members
+        # team_id STABLE : table teams (AUTOINCREMENT par team_ref, jamais
+        # renumérotée — l'ancienne convention MIN(agent_id) était instable).
+        _tid = _ensure_team_id(
+            self.spec.team_name, name=self.spec.name,
+            manifest=f"{self.spec.team_name}.team.yaml",
+            workspace_id=self.spec.workspace_id or "")
         for m in self.spec.members:
-            # team_id numérique : le MIN(agent_id) de la team (convention
-            # utilisée par le taskflow) ou -1 si non résolu.
-            _tid = -1
-            try:
-                from services._common import mw_home
-                import sqlite3 as _sq
-                _adb = _sq.connect(str(mw_home() / "agents.db"))
-                _r = _adb.execute(
-                    "SELECT MIN(agent_id) FROM agents WHERE name LIKE ?",
-                    (f"{self.spec.team_name}/%",)).fetchone()
-                _adb.close()
-                if _r and _r[0]:
-                    _tid = _r[0]
-            except Exception:
-                _tid = -1
             aid = _ensure_agent_exists(m, m.role, m.occupation,
                                        team_name=self.spec.team_name,
                                        workspace_id=self.spec.workspace_id or "",
@@ -225,6 +245,19 @@ class Team:
                                          home=master_home)
                 except Exception:
                     pass
+
+        # Fill id_team : tous les agents de la team (existants inclus) portent
+        # le team_id STABLE de la table teams (ciblage du supervisor).
+        if _tid > 0:
+            try:
+                from modules.sqlite.agent.agent import get_domain as _ag
+                _ad = _ag()
+                _ad.db._conn.execute(
+                    "UPDATE agents SET id_team = ? WHERE name LIKE ?",
+                    (_tid, f"{self.spec.team_name}/%"))
+                _ad.db._conn.commit()
+            except Exception:
+                pass
 
         # Lier le workspace à la team (flat ou leader-driven) : les agents du
         # swarm en déduisent le project_id git (repo central de référence).
@@ -628,9 +661,8 @@ class TeamManager:
         # que le supervisor l'applique (workspace → team_id=-1 = généraliste).
         try:
             if spec.workspace_id and spec.supervisor_rules:
-                from services.task_supervisor.service import TaskSupervisor
-                sup = TaskSupervisor()
-                sup.seed_rules(spec.workspace_id, -1, spec.supervisor_rules)
+                from AgentsCatalogue.lib.supervisor import supervisor as _sup
+                _sup.seed_rules(spec.workspace_id, -1, spec.supervisor_rules)
         except Exception:
             pass
         return team

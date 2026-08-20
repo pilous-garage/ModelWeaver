@@ -505,8 +505,8 @@ def _acquire_singleton() -> Optional[object]:
     (à garder pour la durée de vie du process) ou None si un autre tourne déjà.
     """
     import fcntl
-    from pathlib import Path as _Path
-    pidfile = _Path.home() / ".modelweaver" / "run" / "usage_collector.lock"
+    from modules.sqlite.paths import mw_home as _mw_home
+    pidfile = _mw_home() / "run" / "usage_collector.lock"
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     fh = open(pidfile, "a+")
     try:

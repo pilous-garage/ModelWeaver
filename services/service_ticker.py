@@ -203,6 +203,12 @@ class ServiceTicker:
         svc = self._svcs[name]
         fn = svc["fn"] or self._resolve(name)
         if fn is None:
+            # callable non résolu (handlers pas encore enregistrés) → réessaie
+            # plus tard au lieu de disparaître de la heap pour toujours.
+            with self._lock:
+                svc["thread"] = None
+                svc["next_tick"] = time.time() + 5.0
+                heapq.heappush(self._heap, (svc["next_tick"], name))
             return
         with self._lock:
             run_id = None
@@ -227,6 +233,11 @@ class ServiceTicker:
                 with self._lock:
                     svc["thread"] = None
                     svc["next_tick"] = time.time() + svc["interval"]
+                    # RE-QUEUE : l'entrée heap a été poppée au spawn — sans ce
+                    # re-push le service ne tournerait qu'UNE fois par boot
+                    # (bug E09 : agent_manager tickait au boot puis plus jamais
+                    # → swarm mort, sub_tasks à jamais non supervisées).
+                    heapq.heappush(self._heap, (svc["next_tick"], name))
                     if run_id:
                         try:
                             _S_W.log_run(self._db, name, run_id=run_id,
@@ -254,8 +265,14 @@ class ServiceTicker:
         """Un singleton qui BOUCLE : while: fn(); sleep(interval). Le ticker
         ne le relance que s'il est mort."""
         svc = self._svcs[name]
+        # Garde anti double-spawn (tick + re-register simultanés).
+        if svc["thread"] is not None and svc["thread"].is_alive():
+            return
         fn = svc["fn"] or self._resolve(name)
         if fn is None:
+            with self._lock:
+                svc["next_tick"] = time.time() + 5.0
+                heapq.heappush(self._heap, (svc["next_tick"], name))
             return
         interval = max(0.1, svc["interval"])
 
@@ -273,6 +290,10 @@ class ServiceTicker:
                     with self._lock:
                         self._flush(name, last_launch=t0, last_duration_s=dur,
                                     running=1)
+                        # RE-QUEUE permanent : relance détectée par le tick
+                        # maître (thread mort) comme pour les éphémères.
+                        svc["next_tick"] = time.time() + interval
+                        heapq.heappush(self._heap, (svc["next_tick"], name))
                 self._stop.wait(interval)
 
         t = threading.Thread(target=loop, name=f"tick-perm-{name}", daemon=True)

@@ -43,21 +43,41 @@ def create_task(workspace: str, title: str, description: str, task_type="coding"
 
     Crée le workspace si absent (la team peut ne pas être bootée)."""
     from AgentsCatalogue.lib.workspacedb import taskflow
-    # team_id résolu depuis le director du workspace (team:llm-code → 1)
+    # team_id STABLE résolu depuis la table teams (agents.db) par team_ref :
+    # la convention `director` (texte) / MIN(agent_id) / hardcodé 1 était
+    # instable après une recréation de team (AUTOINCREMENT → nouveau id).
     try:
-        wdb = _wdb()
-        _row = wdb.conn.execute(
-            "SELECT director FROM workspaces WHERE workspace_id=?",
-            (workspace,)).fetchone()
-        _team_id = 1 if _row else -1
-        wdb.close()
+        _team_id = -1
+        _row = None
+        try:
+            wdb = _wdb()
+            _row = wdb.conn.execute(
+                "SELECT director FROM workspaces WHERE workspace_id=?",
+                (workspace,)).fetchone()
+            wdb.close()
+        except Exception:
+            pass
+        try:
+            from modules.sqlite.agent.agent import get_domain as _ag
+            _ad = _ag()
+            _director = (_row["director"] if _row and _row["director"] else "")
+            _team_ref = _director if _director.startswith("team:") \
+                else f"team:{_director}"
+            if not _director:
+                _team_ref = f"team:{workspace}"
+            _t = _ad.db._conn.execute(
+                "SELECT team_id FROM teams WHERE team_ref = ?",
+                (_team_ref,)).fetchone()
+            _team_id = int(_t[0]) if _t else -1
+        except Exception:
+            _team_id = -1
     except Exception:
         _team_id = -1
     r = taskflow.create_entry({
         "workspace_id": workspace,
         "title": title,
         "description": description,
-        "entry_type": "feature",   # skip classification consensus (LLM)
+        "entry_type": task_type,   # feature/chat_entry/completion_entry
         "team_id": _team_id,
         "priority": 100,
     }, home=str(_wdb_home()))
@@ -221,7 +241,7 @@ def run(timeout_s: int, workspace: str, task_type: str) -> dict:
     # (commit + finalisation). `done` complet (review/merge) peut ne jamais
     # arriver pour une tâche de test synthétique : on considère FINI dès que la
     # tâche n'est plus `coding` active (transitionnée) ou passée `done`.
-    done_statuses = ("done", "cancelled")
+    done_statuses = ("done", "cancelled", "supervised")
     while time.monotonic() - t0 < timeout_s:
         status = task_status(workspace, tid)
         ttype = task_type_of(workspace, tid)
@@ -231,6 +251,10 @@ def run(timeout_s: int, workspace: str, task_type: str) -> dict:
             done_at = time.monotonic() - t0
             break
         time.sleep(5)
+    if picked_at is None and done_at is not None:
+        # done sans être passé par doing (ex. supervision directe) : compté
+        # comme pické au moment du done.
+        picked_at = done_at
     # SUCCÈS : la tâche a été PIOCHÉE (le swarm s'est activé et travaille).
     # `done` (finalisation complète) est un bonus — le greedy exige un diff git
     # réel que le LLM ne produit pas toujours pour une tâche synthétique.

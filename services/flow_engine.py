@@ -246,9 +246,9 @@ class FlowEngine:
         id_data = f"symbol:{sym.path}"
         # paramètres = règles (détermine le contract)
         params = json.dumps(rules, sort_keys=True)
-        files = [REPO / "services" / "task_supervisor" / "service.py",
-                 REPO / "modules" / "sql" / "workspace.py",
-                 REPO / "modules" / "sql" / "workspace_schema.sql"]
+        files = [REPO / "AgentsCatalogue" / "lib" / "supervisor" / "supervisor.py",
+                 REPO / "modules" / "sqlite" / "workspace" / "workspace.py",
+                 REPO / "modules" / "sqlite" / "workspace" / "workspace_schema.sql"]
         ihash = self._inputs_hash(sym.ref, files, params)
         existing = self.gen.get(project_id, id_data)
         if existing and existing.get("inputs_hash") == ihash and not force:

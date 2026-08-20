@@ -70,6 +70,7 @@ def db() -> Db:
     global _domain
     if _domain is None or getattr(_domain, "_closed", False):
         _domain = get_domain()
+        _domain._shared = True
     return _domain
 
 

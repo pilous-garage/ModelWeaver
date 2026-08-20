@@ -621,11 +621,16 @@ class SubTaskRepository:
         Exclut les sub_tasks dont la TÂCHE est cancelled/supervisée/done (les
         résidus ne remplissent pas le LIMIT avant les sub_tasks actives)."""
         ph = ",".join("?" for _ in statuses)
-        args = tuple([team_id] + statuses + [limit])
+        # team_id == -1 : généraliste (toutes les teams du workspace).
+        if team_id == -1:
+            team_cond, team_args = "1=1", ()
+        else:
+            team_cond, team_args = "s.team_id = ?", (team_id,)
+        args = tuple([*team_args] + statuses + [limit])
         return _rows(self._db._conn.execute(
             f"SELECT s.* FROM sub_tasks s "
             f"JOIN tasks t ON t.task_id = s.task_id "
-            f"WHERE s.team_id = ? AND s.status IN ({ph}) "
+            f"WHERE {team_cond} AND s.status IN ({ph}) "
             f"AND s.supervised = 0 "
             f"AND COALESCE(t.cancelled, 0) = 0 "
             f"AND t.status NOT IN ('supervised', 'done', 'cancelled') "
